@@ -349,6 +349,7 @@ func clearStowageEnv(t *testing.T) {
 		"STOWAGE_STORE_DSN",
 		"STOWAGE_VINDEX_DRIVER",
 		"STOWAGE_GATEWAY_DRIVER",
+		"STOWAGE_GATEWAY_PROVIDER",
 		"STOWAGE_GATEWAY_BASE_URL",
 		"STOWAGE_GATEWAY_API_KEY",
 		"STOWAGE_GATEWAY_MODEL",
@@ -450,6 +451,57 @@ func TestVIndexDriverEnvOverride(t *testing.T) {
 	}
 	if cfg.VIndex.Driver != "brute" {
 		t.Errorf("VIndex.Driver = %q, want %q", cfg.VIndex.Driver, "brute")
+	}
+}
+
+// TestGatewayDriverOpenAICompat verifies openaicompat is a valid gateway driver (D-040/D-049).
+func TestGatewayDriverOpenAICompat(t *testing.T) {
+	clearStowageEnv(t)
+	cfg := config.Defaults()
+	cfg.Gateway.Driver = "openaicompat"
+	if err := cfg.Validate(); err != nil {
+		t.Errorf("Validate() with openaicompat driver: %v", err)
+	}
+}
+
+// TestGatewayDriverBifrostRequiresProvider verifies that driver=bifrost fails
+// validation when gateway.provider is empty (D-049).
+func TestGatewayDriverBifrostRequiresProvider(t *testing.T) {
+	clearStowageEnv(t)
+	cfg := config.Defaults()
+	cfg.Gateway.Driver = "bifrost"
+	cfg.Gateway.Provider = "" // no provider set
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("Validate() = nil, want error for bifrost without provider")
+	}
+	if !strings.Contains(err.Error(), "config.gateway.provider") {
+		t.Errorf("error %q does not contain key path config.gateway.provider", err.Error())
+	}
+}
+
+// TestGatewayDriverBifrostWithProviderValid verifies that driver=bifrost
+// with a provider set passes validation (D-049).
+func TestGatewayDriverBifrostWithProviderValid(t *testing.T) {
+	clearStowageEnv(t)
+	cfg := config.Defaults()
+	cfg.Gateway.Driver = "bifrost"
+	cfg.Gateway.Provider = "openai"
+	if err := cfg.Validate(); err != nil {
+		t.Errorf("Validate() with bifrost+provider: %v", err)
+	}
+}
+
+// TestGatewayProviderEnvOverride verifies STOWAGE_GATEWAY_PROVIDER overrides config.
+func TestGatewayProviderEnvOverride(t *testing.T) {
+	clearStowageEnv(t)
+	t.Setenv("STOWAGE_GATEWAY_PROVIDER", "anthropic")
+	cfg, err := config.Load(context.Background(), "")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Gateway.Provider != "anthropic" {
+		t.Errorf("Gateway.Provider = %q, want %q", cfg.Gateway.Provider, "anthropic")
 	}
 }
 

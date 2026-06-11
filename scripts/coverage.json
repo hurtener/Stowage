@@ -4,6 +4,7 @@
   "github.com/hurtener/stowage/internal/config": 80,
   "github.com/hurtener/stowage/internal/gateway": 80,
   "github.com/hurtener/stowage/internal/gateway/bifrost": 80,
+  "github.com/hurtener/stowage/internal/gateway/openaicompat": 80,
   "github.com/hurtener/stowage/internal/gateway/mock": 80,
   "github.com/hurtener/stowage/internal/identity": 80,
   "github.com/hurtener/stowage/internal/pipeline": 80,

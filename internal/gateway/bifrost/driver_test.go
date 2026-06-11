@@ -6,150 +6,148 @@ import (
 	"errors"
 	"io"
 	"log/slog"
-	"net/http"
-	"net/http/httptest"
 	"os"
-	"strings"
-	"sync/atomic"
 	"testing"
+
+	bfschemas "github.com/maximhq/bifrost/core/schemas"
+	"github.com/prometheus/client_golang/prometheus"
 
 	"github.com/hurtener/stowage/internal/config"
 	"github.com/hurtener/stowage/internal/gateway"
-	_ "github.com/hurtener/stowage/internal/gateway/bifrost" // blank-import driver registration
-	"github.com/prometheus/client_golang/prometheus"
+	. "github.com/hurtener/stowage/internal/gateway/bifrost"
 )
 
-// TestMain sets the test API-key env var once so parallel tests can use it.
-func TestMain(m *testing.M) {
-	os.Setenv("STOWAGE_TEST_BIFROST_KEY", "test-key") //nolint:errcheck
-	os.Exit(m.Run())
+// ─── fake client ─────────────────────────────────────────────────────────────
+
+// fakeClient implements the bifrostClient interface for unit tests.
+type fakeClient struct {
+	chatFn   func(ctx *bfschemas.BifrostContext, req *bfschemas.BifrostChatRequest) (*bfschemas.BifrostChatResponse, *bfschemas.BifrostError)
+	embedFn  func(ctx *bfschemas.BifrostContext, req *bfschemas.BifrostEmbeddingRequest) (*bfschemas.BifrostEmbeddingResponse, *bfschemas.BifrostError)
+	shutdown bool
 }
 
-// newDriver builds a bifrost Gateway pointed at svr.
-// STOWAGE_TEST_BIFROST_KEY is set by TestMain.
-func newDriver(t *testing.T, svr *httptest.Server, dims int) gateway.Gateway {
+func (f *fakeClient) ChatCompletionRequest(ctx *bfschemas.BifrostContext, req *bfschemas.BifrostChatRequest) (*bfschemas.BifrostChatResponse, *bfschemas.BifrostError) {
+	if f.chatFn != nil {
+		return f.chatFn(ctx, req)
+	}
+	return nil, &bfschemas.BifrostError{Error: &bfschemas.ErrorField{Message: "not configured"}}
+}
+
+func (f *fakeClient) EmbeddingRequest(ctx *bfschemas.BifrostContext, req *bfschemas.BifrostEmbeddingRequest) (*bfschemas.BifrostEmbeddingResponse, *bfschemas.BifrostError) {
+	if f.embedFn != nil {
+		return f.embedFn(ctx, req)
+	}
+	return nil, &bfschemas.BifrostError{Error: &bfschemas.ErrorField{Message: "not configured"}}
+}
+
+func (f *fakeClient) Shutdown() { f.shutdown = true }
+
+// newTestDriver builds a Driver wired to the given fakeClient.
+func newTestDriver(t *testing.T, fake *fakeClient, dims int) gateway.Gateway {
 	t.Helper()
 	cfg := config.GatewayConfig{
 		Driver:     "bifrost",
-		BaseURL:    svr.URL,
-		APIKey:     "env.STOWAGE_TEST_BIFROST_KEY",
+		Provider:   "openai",
+		APIKey:     "env.STOWAGE_TEST_BIFROST_SDK_KEY",
 		Model:      "gpt-4o",
 		EmbedModel: "text-embedding-3-small",
 		EmbedDims:  dims,
 	}
-	gw, err := gateway.Open(context.Background(), cfg, discardLog(), prometheus.NewRegistry())
-	if err != nil {
-		t.Fatalf("open bifrost driver: %v", err)
+	prom := prometheus.NewRegistry()
+	d := NewDriverWithClient(fake, bfschemas.OpenAI, cfg, discardLog(), prom)
+	t.Cleanup(func() { d.Close(context.Background()) }) //nolint:errcheck
+	return d
+}
+
+func discardLog() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }
+
+// ─── helper: successful embed response ───────────────────────────────────────
+
+func okEmbedResponse(vecs [][]float64) *bfschemas.BifrostEmbeddingResponse {
+	data := make([]bfschemas.EmbeddingData, len(vecs))
+	for i, v := range vecs {
+		data[i] = bfschemas.EmbeddingData{
+			Index:     i,
+			Object:    "embedding",
+			Embedding: bfschemas.EmbeddingStruct{EmbeddingArray: v},
+		}
 	}
-	t.Cleanup(func() { gw.Close(context.Background()) }) //nolint:errcheck
-	return gw
+	usage := &bfschemas.BifrostLLMUsage{PromptTokens: 2}
+	return &bfschemas.BifrostEmbeddingResponse{Data: data, Usage: usage}
 }
 
-func discardLog() *slog.Logger {
-	return slog.New(slog.NewTextHandler(io.Discard, nil))
+// ─── helper: successful chat response ────────────────────────────────────────
+
+func okChatResponse(content string) *bfschemas.BifrostChatResponse {
+	finishReason := "stop"
+	return &bfschemas.BifrostChatResponse{
+		ID: "test-1",
+		Choices: []bfschemas.BifrostResponseChoice{
+			{
+				FinishReason: &finishReason,
+				ChatNonStreamResponseChoice: &bfschemas.ChatNonStreamResponseChoice{
+					Message: &bfschemas.ChatMessage{
+						Role:    bfschemas.ChatMessageRoleAssistant,
+						Content: &bfschemas.ChatMessageContent{ContentStr: &content},
+					},
+				},
+			},
+		},
+		Usage: &bfschemas.BifrostLLMUsage{PromptTokens: 10, CompletionTokens: 5},
+	}
 }
 
-// ── Golden wire tests (AC-1) ─────────────────────────────────────────────────
+// ─── TestMain ────────────────────────────────────────────────────────────────
 
-// goldenEmbedRequestBody is the exact JSON the driver must send for a single-input
-// embed request. Tests assert byte-for-byte match after normalisation.
-const goldenEmbedRequestBody = `{"model":"text-embedding-3-small","input":["hello world"]}`
+func TestMain(m *testing.M) {
+	os.Setenv("STOWAGE_TEST_BIFROST_SDK_KEY", "test-key") //nolint:errcheck
+	os.Exit(m.Run())
+}
 
-func TestBifrost_GoldenEmbedRequest(t *testing.T) {
+// ─── Embed: translate both directions ────────────────────────────────────────
+
+func TestBifrostSDK_EmbedTranslateRequest(t *testing.T) {
 	t.Parallel()
 
-	var gotBody []byte
-	svr := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/embeddings" {
-			gotBody, _ = io.ReadAll(r.Body)
-			resp := `{"object":"list","data":[{"object":"embedding","embedding":[0.1,0.2,0.3,0.4],"index":0}],"model":"text-embedding-3-small","usage":{"prompt_tokens":2,"total_tokens":2}}`
-			w.Header().Set("Content-Type", "application/json")
-			w.Write([]byte(resp)) //nolint:errcheck
-		}
-	}))
-	defer svr.Close()
+	var gotReq *bfschemas.BifrostEmbeddingRequest
+	fake := &fakeClient{
+		embedFn: func(_ *bfschemas.BifrostContext, req *bfschemas.BifrostEmbeddingRequest) (*bfschemas.BifrostEmbeddingResponse, *bfschemas.BifrostError) {
+			gotReq = req
+			return okEmbedResponse([][]float64{{0.1, 0.2, 0.3, 0.4}}), nil
+		},
+	}
 
-	gw := newDriver(t, svr, 4)
-	_, err := gw.Embed(context.Background(), gateway.EmbedRequest{Inputs: []string{"hello world"}})
+	gw := newTestDriver(t, fake, 4)
+	_, err := gw.Embed(context.Background(), gateway.EmbedRequest{Inputs: []string{"hello"}})
 	if err != nil {
 		t.Fatalf("Embed: %v", err)
 	}
 
-	// Normalise by re-marshalling to canonical JSON.
-	var wantObj, gotObj any
-	if err := json.Unmarshal([]byte(goldenEmbedRequestBody), &wantObj); err != nil {
-		t.Fatalf("parse golden: %v", err)
+	if gotReq == nil {
+		t.Fatal("EmbeddingRequest was not called")
 	}
-	if err := json.Unmarshal(gotBody, &gotObj); err != nil {
-		t.Fatalf("parse captured body: %v", err)
+	if gotReq.Provider != bfschemas.OpenAI {
+		t.Errorf("want provider=openai, got %q", gotReq.Provider)
 	}
-	wantNorm, _ := json.Marshal(wantObj)
-	gotNorm, _ := json.Marshal(gotObj)
-	if string(wantNorm) != string(gotNorm) {
-		t.Errorf("embed request body mismatch:\nwant: %s\n got: %s", wantNorm, gotNorm)
+	if gotReq.Model != "text-embedding-3-small" {
+		t.Errorf("want model=text-embedding-3-small, got %q", gotReq.Model)
 	}
-}
-
-// goldenCompleteRequestBody is the canonical JSON the driver must send for a
-// chat/completions request with json_schema response_format.
-const goldenCompleteRequestBody = `{
-	"model":"gpt-4o",
-	"messages":[{"role":"user","content":"say hello"}],
-	"max_tokens":100,
-	"response_format":{"type":"json_schema","json_schema":{"name":"response","schema":{"type":"object","properties":{"msg":{"type":"string"}},"required":["msg"]},"strict":true}}
-}`
-
-func TestBifrost_GoldenCompleteRequest(t *testing.T) {
-	t.Parallel()
-
-	var gotBody []byte
-	svr := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/chat/completions" {
-			gotBody, _ = io.ReadAll(r.Body)
-			resp := `{"id":"chatcmpl-1","object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant","content":"{\"msg\":\"hello\"}"},"finish_reason":"stop"}],"usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15}}`
-			w.Header().Set("Content-Type", "application/json")
-			w.Write([]byte(resp)) //nolint:errcheck
-		}
-	}))
-	defer svr.Close()
-
-	gw := newDriver(t, svr, 4)
-	schema := json.RawMessage(`{"type":"object","properties":{"msg":{"type":"string"}},"required":["msg"]}`)
-	_, err := gw.Complete(context.Background(), gateway.CompleteRequest{
-		Messages:  []gateway.Message{{Role: "user", Content: "say hello"}},
-		Schema:    schema,
-		MaxTokens: 100,
-	})
-	if err != nil {
-		t.Fatalf("Complete: %v", err)
-	}
-
-	var wantObj, gotObj any
-	if err := json.Unmarshal([]byte(goldenCompleteRequestBody), &wantObj); err != nil {
-		t.Fatalf("parse golden: %v", err)
-	}
-	if err := json.Unmarshal(gotBody, &gotObj); err != nil {
-		t.Fatalf("parse captured body: %v", err)
-	}
-	wantNorm, _ := json.Marshal(wantObj)
-	gotNorm, _ := json.Marshal(gotObj)
-	if string(wantNorm) != string(gotNorm) {
-		t.Errorf("complete request body mismatch:\nwant: %s\n got: %s", wantNorm, gotNorm)
+	if gotReq.Input == nil || gotReq.Input.Text == nil || *gotReq.Input.Text != "hello" {
+		t.Errorf("want single-text input 'hello', got %+v", gotReq.Input)
 	}
 }
 
-func TestBifrost_GoldenEmbedResponseDecodes(t *testing.T) {
+func TestBifrostSDK_EmbedTranslateResponse(t *testing.T) {
 	t.Parallel()
 
-	// Server returns a single-vector response; we verify structure not specific values.
-	svr := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		io.WriteString(w, `{"object":"list","data":[{"object":"embedding","embedding":[0.1,0.2],"index":0}],"model":"text-embedding-3-small","usage":{"prompt_tokens":2,"total_tokens":2}}`) //nolint:errcheck
-	}))
-	defer svr.Close()
+	fake := &fakeClient{
+		embedFn: func(_ *bfschemas.BifrostContext, _ *bfschemas.BifrostEmbeddingRequest) (*bfschemas.BifrostEmbeddingResponse, *bfschemas.BifrostError) {
+			return okEmbedResponse([][]float64{{0.5, 0.6}}), nil
+		},
+	}
 
-	gw := newDriver(t, svr, 2)
-	resp, err := gw.Embed(context.Background(), gateway.EmbedRequest{Inputs: []string{"a"}})
+	gw := newTestDriver(t, fake, 2)
+	resp, err := gw.Embed(context.Background(), gateway.EmbedRequest{Inputs: []string{"x"}})
 	if err != nil {
 		t.Fatalf("Embed: %v", err)
 	}
@@ -157,36 +155,77 @@ func TestBifrost_GoldenEmbedResponseDecodes(t *testing.T) {
 		t.Fatalf("want 1 vector, got %d", len(resp.Vectors))
 	}
 	if len(resp.Vectors[0]) != 2 {
-		t.Errorf("want 2 dims, got %d: %v", len(resp.Vectors[0]), resp.Vectors[0])
+		t.Fatalf("want 2 dims, got %d", len(resp.Vectors[0]))
 	}
-	if resp.Vectors[0][0] != 0.1 || resp.Vectors[0][1] != 0.2 {
-		t.Errorf("unexpected vector: %v", resp.Vectors[0])
+	const eps = 1e-5
+	if abs32(resp.Vectors[0][0]-0.5) > eps || abs32(resp.Vectors[0][1]-0.6) > eps {
+		t.Errorf("unexpected vector values: %v", resp.Vectors[0])
 	}
 }
 
-// ── Schema validation + retry (AC-2) ─────────────────────────────────────────
+func abs32(x float32) float32 {
+	if x < 0 {
+		return -x
+	}
+	return x
+}
 
-func TestBifrost_SchemaValidationRetryOnce(t *testing.T) {
+// ─── Complete: translate both directions ─────────────────────────────────────
+
+func TestBifrostSDK_CompleteTranslateRequest(t *testing.T) {
 	t.Parallel()
 
-	var callCount atomic.Int32
-	svr := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		n := callCount.Add(1)
-		w.Header().Set("Content-Type", "application/json")
-		if n == 1 {
-			// First call: return invalid JSON (missing required field)
-			io.WriteString(w, `{"id":"1","object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant","content":"{\"wrong\":\"field\"}"},"finish_reason":"stop"}],"usage":{"prompt_tokens":5,"completion_tokens":3,"total_tokens":8}}`) //nolint:errcheck
-		} else {
-			// Second call: return valid JSON
-			io.WriteString(w, `{"id":"2","object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant","content":"{\"name\":\"Alice\"}"},"finish_reason":"stop"}],"usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15}}`) //nolint:errcheck
-		}
-	}))
-	defer svr.Close()
+	var gotReq *bfschemas.BifrostChatRequest
+	fake := &fakeClient{
+		chatFn: func(_ *bfschemas.BifrostContext, req *bfschemas.BifrostChatRequest) (*bfschemas.BifrostChatResponse, *bfschemas.BifrostError) {
+			gotReq = req
+			return okChatResponse(`{"name":"Alice"}`), nil
+		},
+	}
 
-	gw := newDriver(t, svr, 4)
+	gw := newTestDriver(t, fake, 4)
 	schema := json.RawMessage(`{"type":"object","properties":{"name":{"type":"string"}},"required":["name"]}`)
+	_, err := gw.Complete(context.Background(), gateway.CompleteRequest{
+		System:    "you are helpful",
+		Messages:  []gateway.Message{{Role: "user", Content: "give a name"}},
+		Schema:    schema,
+		MaxTokens: 50,
+	})
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+
+	if gotReq == nil {
+		t.Fatal("ChatCompletionRequest was not called")
+	}
+	if gotReq.Provider != bfschemas.OpenAI {
+		t.Errorf("want provider=openai, got %q", gotReq.Provider)
+	}
+	if gotReq.Model != "gpt-4o" {
+		t.Errorf("want model=gpt-4o, got %q", gotReq.Model)
+	}
+	// Expect 2 messages: system + user
+	if len(gotReq.Input) != 2 {
+		t.Fatalf("want 2 messages (system+user), got %d", len(gotReq.Input))
+	}
+	if gotReq.Input[0].Role != bfschemas.ChatMessageRoleSystem {
+		t.Errorf("want first message role=system, got %q", gotReq.Input[0].Role)
+	}
+}
+
+func TestBifrostSDK_CompleteTranslateResponse(t *testing.T) {
+	t.Parallel()
+
+	fake := &fakeClient{
+		chatFn: func(_ *bfschemas.BifrostContext, _ *bfschemas.BifrostChatRequest) (*bfschemas.BifrostChatResponse, *bfschemas.BifrostError) {
+			return okChatResponse(`{"greeting":"hello","count":1}`), nil
+		},
+	}
+
+	gw := newTestDriver(t, fake, 4)
+	schema := json.RawMessage(`{"type":"object","properties":{"greeting":{"type":"string"},"count":{"type":"integer"}},"required":["greeting","count"]}`)
 	resp, err := gw.Complete(context.Background(), gateway.CompleteRequest{
-		Messages:  []gateway.Message{{Role: "user", Content: "give me a name"}},
+		Messages:  []gateway.Message{{Role: "user", Content: "hi"}},
 		Schema:    schema,
 		MaxTokens: 50,
 	})
@@ -198,211 +237,65 @@ func TestBifrost_SchemaValidationRetryOnce(t *testing.T) {
 	if err := json.Unmarshal(resp.JSON, &got); err != nil {
 		t.Fatalf("unmarshal response: %v", err)
 	}
-	if got["name"] != "Alice" {
-		t.Errorf("expected name=Alice, got %v", got["name"])
-	}
-	if callCount.Load() != 2 {
-		t.Errorf("expected exactly 2 provider calls (1 retry), got %d", callCount.Load())
+	if got["greeting"] != "hello" {
+		t.Errorf("want greeting=hello, got %v", got["greeting"])
 	}
 }
 
-func TestBifrost_SchemaValidationFailsTwice(t *testing.T) {
+// ─── Error classification ─────────────────────────────────────────────────────
+
+func TestBifrostSDK_EmbedBifrostErrorPropagated(t *testing.T) {
 	t.Parallel()
 
-	svr := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		// Always return invalid JSON
-		io.WriteString(w, `{"id":"1","object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant","content":"{\"wrong\":\"field\"}"},"finish_reason":"stop"}],"usage":{"prompt_tokens":5,"completion_tokens":3,"total_tokens":8}}`) //nolint:errcheck
-	}))
-	defer svr.Close()
+	statusCode := 429
+	fake := &fakeClient{
+		embedFn: func(_ *bfschemas.BifrostContext, _ *bfschemas.BifrostEmbeddingRequest) (*bfschemas.BifrostEmbeddingResponse, *bfschemas.BifrostError) {
+			return nil, &bfschemas.BifrostError{
+				StatusCode: &statusCode,
+				Error:      &bfschemas.ErrorField{Message: "rate limited"},
+			}
+		},
+	}
 
-	gw := newDriver(t, svr, 4)
-	schema := json.RawMessage(`{"type":"object","properties":{"name":{"type":"string"}},"required":["name"]}`)
+	gw := newTestDriver(t, fake, 4)
+	_, err := gw.Embed(context.Background(), gateway.EmbedRequest{Inputs: []string{"x"}})
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+}
+
+func TestBifrostSDK_CompleteBifrostErrorPropagated(t *testing.T) {
+	t.Parallel()
+
+	statusCode := 401
+	fake := &fakeClient{
+		chatFn: func(_ *bfschemas.BifrostContext, _ *bfschemas.BifrostChatRequest) (*bfschemas.BifrostChatResponse, *bfschemas.BifrostError) {
+			return nil, &bfschemas.BifrostError{
+				StatusCode: &statusCode,
+				Error:      &bfschemas.ErrorField{Message: "unauthorized"},
+			}
+		},
+	}
+
+	gw := newTestDriver(t, fake, 4)
 	_, err := gw.Complete(context.Background(), gateway.CompleteRequest{
-		Messages:  []gateway.Message{{Role: "user", Content: "give me a name"}},
-		Schema:    schema,
-		MaxTokens: 50,
+		Messages: []gateway.Message{{Role: "user", Content: "hi"}},
+		Schema:   json.RawMessage(`{"type":"object"}`),
 	})
 	if err == nil {
-		t.Fatal("expected schema validation error, got nil")
-	}
-	if !errors.Is(err, gateway.ErrSchemaValidation) {
-		t.Errorf("expected ErrSchemaValidation, got %v", err)
+		t.Fatal("expected error, got nil")
 	}
 }
 
-// ── Retry policy (AC-6) ───────────────────────────────────────────────────────
+// ─── Fail-closed: missing API key ────────────────────────────────────────────
 
-func TestBifrost_Retries429(t *testing.T) {
+func TestBifrostSDK_FailsClosedOnMissingAPIKey(t *testing.T) {
 	t.Parallel()
 
-	var callCount atomic.Int32
-	svr := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		n := callCount.Add(1)
-		if n < 3 {
-			w.WriteHeader(http.StatusTooManyRequests)
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-		io.WriteString(w, `{"object":"list","data":[{"object":"embedding","embedding":[0.1,0.2,0.3,0.4],"index":0}],"model":"m","usage":{"prompt_tokens":1,"total_tokens":1}}`) //nolint:errcheck
-	}))
-	defer svr.Close()
-
-	gw := newDriver(t, svr, 4)
-	_, err := gw.Embed(context.Background(), gateway.EmbedRequest{Inputs: []string{"x"}})
-	if err != nil {
-		t.Fatalf("expected success after retries, got: %v", err)
-	}
-	if callCount.Load() != 3 {
-		t.Errorf("expected 3 calls (2×429 + 1 success), got %d", callCount.Load())
-	}
-}
-
-func TestBifrost_Retries503(t *testing.T) {
-	t.Parallel()
-
-	var callCount atomic.Int32
-	svr := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		n := callCount.Add(1)
-		if n < 2 {
-			w.WriteHeader(http.StatusServiceUnavailable)
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-		io.WriteString(w, `{"object":"list","data":[{"object":"embedding","embedding":[0.1,0.2,0.3,0.4],"index":0}],"model":"m","usage":{"prompt_tokens":1,"total_tokens":1}}`) //nolint:errcheck
-	}))
-	defer svr.Close()
-
-	gw := newDriver(t, svr, 4)
-	_, err := gw.Embed(context.Background(), gateway.EmbedRequest{Inputs: []string{"x"}})
-	if err != nil {
-		t.Fatalf("expected success after retry: %v", err)
-	}
-}
-
-func TestBifrost_DoesNotRetry400(t *testing.T) {
-	t.Parallel()
-
-	var callCount atomic.Int32
-	svr := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		callCount.Add(1)
-		w.WriteHeader(http.StatusBadRequest)
-	}))
-	defer svr.Close()
-
-	gw := newDriver(t, svr, 4)
-	_, err := gw.Embed(context.Background(), gateway.EmbedRequest{Inputs: []string{"x"}})
-	if err == nil {
-		t.Fatal("expected error on 400")
-	}
-	if callCount.Load() != 1 {
-		t.Errorf("expected exactly 1 call for 400, got %d", callCount.Load())
-	}
-}
-
-// ── Circuit breaker (AC-5) ────────────────────────────────────────────────────
-
-func TestBifrost_BreakerOpensAfter5Failures(t *testing.T) {
-	t.Parallel()
-
-	svr := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusInternalServerError)
-	}))
-	defer svr.Close()
-
-	gw := newDriver(t, svr, 4)
-
-	var openErr error
-	// Each Embed goes through the retry loop (maxRetries=3), recording 3 failures.
-	// After 5 consecutive failures the breaker opens. With maxRetries=3 per call,
-	// we need 2 calls to accumulate ≥5 failures (3+3=6 ≥ 5).
-	for i := range 3 {
-		_, err := gw.Embed(context.Background(), gateway.EmbedRequest{Inputs: []string{"x"}})
-		if errors.Is(err, gateway.ErrGatewayUnavailable) {
-			openErr = err
-			t.Logf("breaker opened on call %d", i+1)
-			break
-		}
-	}
-
-	// The breaker must have opened by now.
-	if !errors.Is(openErr, gateway.ErrGatewayUnavailable) {
-		// If not yet open, the next call should be fast-failed.
-		_, openErr = gw.Embed(context.Background(), gateway.EmbedRequest{Inputs: []string{"x"}})
-		if !errors.Is(openErr, gateway.ErrGatewayUnavailable) {
-			t.Errorf("expected ErrGatewayUnavailable after 5+ failures, got %v", openErr)
-		}
-	}
-}
-
-// ── Probe (AC-7) ─────────────────────────────────────────────────────────────
-
-func TestBifrost_ProbeFailsOnWrongDims(t *testing.T) {
-	t.Parallel()
-
-	svr := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Return a 2-dim vector, but the driver is configured for 4 dims.
-		w.Header().Set("Content-Type", "application/json")
-		io.WriteString(w, `{"object":"list","data":[{"object":"embedding","embedding":[0.1,0.2],"index":0}],"model":"m","usage":{"prompt_tokens":1,"total_tokens":1}}`) //nolint:errcheck
-	}))
-	defer svr.Close()
-
-	gw := newDriver(t, svr, 4) // configured for 4 dims
-	err := gw.Probe(context.Background())
-	if err == nil {
-		t.Fatal("expected probe to fail on dim mismatch")
-	}
-	if !errors.Is(err, gateway.ErrProbeFailed) {
-		t.Errorf("expected ErrProbeFailed, got %v", err)
-	}
-}
-
-func TestBifrost_ProbeSucceedsOnCorrectDims(t *testing.T) {
-	t.Parallel()
-
-	svr := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		io.WriteString(w, `{"object":"list","data":[{"object":"embedding","embedding":[0.1,0.2,0.3,0.4],"index":0}],"model":"m","usage":{"prompt_tokens":1,"total_tokens":1}}`) //nolint:errcheck
-	}))
-	defer svr.Close()
-
-	gw := newDriver(t, svr, 4)
-	if err := gw.Probe(context.Background()); err != nil {
-		t.Errorf("expected probe success, got: %v", err)
-	}
-}
-
-// ── Authorization header ──────────────────────────────────────────────────────
-
-func TestBifrost_SendsAuthorizationHeader(t *testing.T) {
-	t.Parallel()
-
-	var gotAuth string
-	svr := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		gotAuth = r.Header.Get("Authorization")
-		w.Header().Set("Content-Type", "application/json")
-		io.WriteString(w, `{"object":"list","data":[{"object":"embedding","embedding":[1,2,3,4],"index":0}],"model":"m","usage":{"prompt_tokens":1,"total_tokens":1}}`) //nolint:errcheck
-	}))
-	defer svr.Close()
-
-	gw := newDriver(t, svr, 4)
-	gw.Embed(context.Background(), gateway.EmbedRequest{Inputs: []string{"x"}}) //nolint:errcheck
-
-	if !strings.HasPrefix(gotAuth, "Bearer ") {
-		t.Errorf("expected Bearer auth, got %q", gotAuth)
-	}
-}
-
-// ── fail-closed: missing API key ─────────────────────────────────────────────
-
-func TestBifrost_FailsClosedOnMissingAPIKey(t *testing.T) {
-	t.Parallel()
-
-	// Deliberately do NOT set STOWAGE_TEST_BIFROST_KEY2
 	cfg := config.GatewayConfig{
 		Driver:     "bifrost",
-		BaseURL:    "http://localhost:9",
-		APIKey:     "env.STOWAGE_TEST_BIFROST_KEY2",
+		Provider:   "openai",
+		APIKey:     "env.STOWAGE_TEST_BIFROST_MISSING_KEY_9999",
 		Model:      "m",
 		EmbedModel: "e",
 		EmbedDims:  4,
@@ -411,23 +304,180 @@ func TestBifrost_FailsClosedOnMissingAPIKey(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error when API key env var is unset")
 	}
+	if !errors.Is(err, ErrMissingAPIKey) {
+		t.Errorf("want ErrMissingAPIKey, got: %v", err)
+	}
 }
 
-// ── Truncation (finish_reason "length") ──────────────────────────────────────
+// ─── Fail-closed: invalid provider ───────────────────────────────────────────
 
-// TestBifrost_TruncatedResponse asserts that a provider stop on the token
-// limit surfaces as gateway.ErrTruncated, not as a schema-validation failure
-// (found by live validation against a thinking model with a small budget).
-func TestBifrost_TruncatedResponse(t *testing.T) {
+func TestBifrostSDK_FailsClosedOnInvalidProvider(t *testing.T) {
 	t.Parallel()
 
-	svr := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		io.WriteString(w, `{"id":"1","object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant","content":"Here is"},"finish_reason":"length"}],"usage":{"prompt_tokens":5,"completion_tokens":128,"total_tokens":133}}`) //nolint:errcheck
-	}))
-	defer svr.Close()
+	cfg := config.GatewayConfig{
+		Driver:     "bifrost",
+		Provider:   "not-a-real-provider",
+		APIKey:     "env.STOWAGE_TEST_BIFROST_SDK_KEY",
+		Model:      "m",
+		EmbedModel: "e",
+		EmbedDims:  4,
+	}
+	_, err := gateway.Open(context.Background(), cfg, discardLog(), prometheus.NewRegistry())
+	if err == nil {
+		t.Fatal("expected error for invalid provider")
+	}
+	if !errors.Is(err, ErrInvalidProvider) {
+		t.Errorf("want ErrInvalidProvider, got: %v", err)
+	}
+}
 
-	gw := newDriver(t, svr, 4)
+// ─── Fail-closed: empty provider ─────────────────────────────────────────────
+
+func TestBifrostSDK_FailsClosedOnEmptyProvider(t *testing.T) {
+	t.Parallel()
+
+	cfg := config.GatewayConfig{
+		Driver:     "bifrost",
+		Provider:   "", // not set
+		APIKey:     "env.STOWAGE_TEST_BIFROST_SDK_KEY",
+		Model:      "m",
+		EmbedModel: "e",
+		EmbedDims:  4,
+	}
+	_, err := gateway.Open(context.Background(), cfg, discardLog(), prometheus.NewRegistry())
+	if err == nil {
+		t.Fatal("expected error for empty provider")
+	}
+	if !errors.Is(err, ErrInvalidProvider) {
+		t.Errorf("want ErrInvalidProvider, got: %v", err)
+	}
+}
+
+// ─── Probe: dims mismatch ─────────────────────────────────────────────────────
+
+func TestBifrostSDK_ProbeDimsMismatch(t *testing.T) {
+	t.Parallel()
+
+	fake := &fakeClient{
+		embedFn: func(_ *bfschemas.BifrostContext, _ *bfschemas.BifrostEmbeddingRequest) (*bfschemas.BifrostEmbeddingResponse, *bfschemas.BifrostError) {
+			// Return 2-dim vector, driver configured for 4
+			return okEmbedResponse([][]float64{{0.1, 0.2}}), nil
+		},
+	}
+
+	gw := newTestDriver(t, fake, 4) // configured for 4 dims
+	err := gw.Probe(context.Background())
+	if err == nil {
+		t.Fatal("expected probe to fail on dim mismatch")
+	}
+	if !errors.Is(err, gateway.ErrProbeFailed) {
+		t.Errorf("want ErrProbeFailed, got %v", err)
+	}
+}
+
+func TestBifrostSDK_ProbeSuccess(t *testing.T) {
+	t.Parallel()
+
+	fake := &fakeClient{
+		embedFn: func(_ *bfschemas.BifrostContext, _ *bfschemas.BifrostEmbeddingRequest) (*bfschemas.BifrostEmbeddingResponse, *bfschemas.BifrostError) {
+			return okEmbedResponse([][]float64{{0.1, 0.2, 0.3, 0.4}}), nil
+		},
+	}
+
+	gw := newTestDriver(t, fake, 4)
+	if err := gw.Probe(context.Background()); err != nil {
+		t.Errorf("expected probe success, got: %v", err)
+	}
+}
+
+// ─── Schema validation + retry (seam policy) ─────────────────────────────────
+
+func TestBifrostSDK_SchemaValidationRetryOnce(t *testing.T) {
+	t.Parallel()
+
+	callCount := 0
+	fake := &fakeClient{
+		chatFn: func(_ *bfschemas.BifrostContext, _ *bfschemas.BifrostChatRequest) (*bfschemas.BifrostChatResponse, *bfschemas.BifrostError) {
+			callCount++
+			if callCount == 1 {
+				return okChatResponse(`{"wrong":"field"}`), nil
+			}
+			return okChatResponse(`{"name":"Alice"}`), nil
+		},
+	}
+
+	gw := newTestDriver(t, fake, 4)
+	schema := json.RawMessage(`{"type":"object","properties":{"name":{"type":"string"}},"required":["name"]}`)
+	resp, err := gw.Complete(context.Background(), gateway.CompleteRequest{
+		Messages:  []gateway.Message{{Role: "user", Content: "give me a name"}},
+		Schema:    schema,
+		MaxTokens: 50,
+	})
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(resp.JSON, &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if got["name"] != "Alice" {
+		t.Errorf("want name=Alice, got %v", got["name"])
+	}
+	if callCount != 2 {
+		t.Errorf("expected 2 calls (1 retry), got %d", callCount)
+	}
+}
+
+func TestBifrostSDK_SchemaValidationFailsTwice(t *testing.T) {
+	t.Parallel()
+
+	fake := &fakeClient{
+		chatFn: func(_ *bfschemas.BifrostContext, _ *bfschemas.BifrostChatRequest) (*bfschemas.BifrostChatResponse, *bfschemas.BifrostError) {
+			return okChatResponse(`{"wrong":"field"}`), nil
+		},
+	}
+
+	gw := newTestDriver(t, fake, 4)
+	schema := json.RawMessage(`{"type":"object","properties":{"name":{"type":"string"}},"required":["name"]}`)
+	_, err := gw.Complete(context.Background(), gateway.CompleteRequest{
+		Messages:  []gateway.Message{{Role: "user", Content: "give me a name"}},
+		Schema:    schema,
+		MaxTokens: 50,
+	})
+	if err == nil {
+		t.Fatal("expected schema validation error")
+	}
+	if !errors.Is(err, gateway.ErrSchemaValidation) {
+		t.Errorf("want ErrSchemaValidation, got %v", err)
+	}
+}
+
+// ─── ErrTruncated ─────────────────────────────────────────────────────────────
+
+func TestBifrostSDK_TruncatedResponse(t *testing.T) {
+	t.Parallel()
+
+	lengthReason := "length"
+	fake := &fakeClient{
+		chatFn: func(_ *bfschemas.BifrostContext, _ *bfschemas.BifrostChatRequest) (*bfschemas.BifrostChatResponse, *bfschemas.BifrostError) {
+			content := "partial"
+			return &bfschemas.BifrostChatResponse{
+				Choices: []bfschemas.BifrostResponseChoice{
+					{
+						FinishReason: &lengthReason,
+						ChatNonStreamResponseChoice: &bfschemas.ChatNonStreamResponseChoice{
+							Message: &bfschemas.ChatMessage{
+								Role:    bfschemas.ChatMessageRoleAssistant,
+								Content: &bfschemas.ChatMessageContent{ContentStr: &content},
+							},
+						},
+					},
+				},
+			}, nil
+		},
+	}
+
+	gw := newTestDriver(t, fake, 4)
 	_, err := gw.Complete(context.Background(), gateway.CompleteRequest{
 		Messages: []gateway.Message{{Role: "user", Content: "hi"}},
 		Schema:   json.RawMessage(`{"type":"object"}`),
@@ -435,45 +485,362 @@ func TestBifrost_TruncatedResponse(t *testing.T) {
 	if !errors.Is(err, gateway.ErrTruncated) {
 		t.Fatalf("want ErrTruncated, got %v", err)
 	}
-	if errors.Is(err, gateway.ErrSchemaValidation) {
-		t.Fatalf("truncation must not be reported as schema validation: %v", err)
+}
+
+// ─── Account interface methods ────────────────────────────────────────────────
+
+func TestAccount_GetConfiguredProviders(t *testing.T) {
+	t.Parallel()
+
+	cfg := config.GatewayConfig{
+		Driver:     "bifrost",
+		Provider:   "openai",
+		APIKey:     "env.STOWAGE_TEST_BIFROST_SDK_KEY",
+		Model:      "m",
+		EmbedModel: "e",
+		EmbedDims:  4,
+	}
+	account, err := NewAccount(cfg)
+	if err != nil {
+		t.Fatalf("NewAccount: %v", err)
+	}
+	providers, err := account.GetConfiguredProviders()
+	if err != nil {
+		t.Fatalf("GetConfiguredProviders: %v", err)
+	}
+	if len(providers) != 1 || providers[0] != bfschemas.OpenAI {
+		t.Errorf("want [openai], got %v", providers)
 	}
 }
 
-// ── Provider error envelope (HTTP 200 + {"error":...}) ───────────────────────
-
-// Some OpenAI-compatible providers (OpenRouter) wrap upstream failures in an
-// HTTP 200 body. Found by live validation: a capped upstream returned
-// 200+{"error":{"code":429,...}} and the driver reported "0 vectors".
-func TestBifrost_EmbedErrorEnvelope(t *testing.T) {
+func TestAccount_GetKeysForProvider(t *testing.T) {
 	t.Parallel()
-	svr := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		io.WriteString(w, `{"error":{"code":429,"message":"spending cap exceeded"}}`) //nolint:errcheck
-	}))
-	defer svr.Close()
 
-	gw := newDriver(t, svr, 4)
+	cfg := config.GatewayConfig{
+		Driver:     "bifrost",
+		Provider:   "openai",
+		APIKey:     "env.STOWAGE_TEST_BIFROST_SDK_KEY",
+		Model:      "m",
+		EmbedModel: "e",
+		EmbedDims:  4,
+	}
+	account, err := NewAccount(cfg)
+	if err != nil {
+		t.Fatalf("NewAccount: %v", err)
+	}
+
+	keys, err := account.GetKeysForProvider(context.Background(), bfschemas.OpenAI)
+	if err != nil {
+		t.Fatalf("GetKeysForProvider: %v", err)
+	}
+	if len(keys) != 1 {
+		t.Fatalf("want 1 key, got %d", len(keys))
+	}
+	if keys[0].ID != "stowage-default" {
+		t.Errorf("want ID=stowage-default, got %q", keys[0].ID)
+	}
+}
+
+func TestAccount_GetKeysForProvider_WrongProvider(t *testing.T) {
+	t.Parallel()
+
+	cfg := config.GatewayConfig{
+		Driver:     "bifrost",
+		Provider:   "openai",
+		APIKey:     "env.STOWAGE_TEST_BIFROST_SDK_KEY",
+		Model:      "m",
+		EmbedModel: "e",
+	}
+	account, err := NewAccount(cfg)
+	if err != nil {
+		t.Fatalf("NewAccount: %v", err)
+	}
+	_, err = account.GetKeysForProvider(context.Background(), bfschemas.Anthropic)
+	if err == nil {
+		t.Fatal("expected error for wrong provider")
+	}
+}
+
+func TestAccount_GetConfigForProvider(t *testing.T) {
+	t.Parallel()
+
+	cfg := config.GatewayConfig{
+		Driver:     "bifrost",
+		Provider:   "openai",
+		APIKey:     "env.STOWAGE_TEST_BIFROST_SDK_KEY",
+		BaseURL:    "https://custom.endpoint",
+		Model:      "m",
+		EmbedModel: "e",
+	}
+	account, err := NewAccount(cfg)
+	if err != nil {
+		t.Fatalf("NewAccount: %v", err)
+	}
+
+	provCfg, err := account.GetConfigForProvider(bfschemas.OpenAI)
+	if err != nil {
+		t.Fatalf("GetConfigForProvider: %v", err)
+	}
+	if provCfg.NetworkConfig.BaseURL != "https://custom.endpoint" {
+		t.Errorf("want BaseURL=https://custom.endpoint, got %q", provCfg.NetworkConfig.BaseURL)
+	}
+}
+
+func TestAccount_GetConfigForProvider_WrongProvider(t *testing.T) {
+	t.Parallel()
+
+	cfg := config.GatewayConfig{
+		Driver:     "bifrost",
+		Provider:   "openai",
+		APIKey:     "env.STOWAGE_TEST_BIFROST_SDK_KEY",
+		Model:      "m",
+		EmbedModel: "e",
+	}
+	account, err := NewAccount(cfg)
+	if err != nil {
+		t.Fatalf("NewAccount: %v", err)
+	}
+	_, err = account.GetConfigForProvider(bfschemas.Anthropic)
+	if err == nil {
+		t.Fatal("expected error for wrong provider")
+	}
+}
+
+// ─── Close: both shutdown paths ───────────────────────────────────────────────
+
+func TestBifrostSDK_CloseTwiceIsIdempotent(t *testing.T) {
+	t.Parallel()
+
+	fake := &fakeClient{}
+	gw := newTestDriver(t, fake, 4)
+	if err := gw.Close(context.Background()); err != nil {
+		t.Errorf("first Close: %v", err)
+	}
+	if err := gw.Close(context.Background()); err != nil {
+		t.Errorf("second Close (idempotent): %v", err)
+	}
+}
+
+func TestBifrostSDK_EmbedAfterClosedReturnsUnavailable(t *testing.T) {
+	t.Parallel()
+
+	fake := &fakeClient{}
+	gw := newTestDriver(t, fake, 4)
+	_ = gw.Close(context.Background())
 	_, err := gw.Embed(context.Background(), gateway.EmbedRequest{Inputs: []string{"x"}})
-	if err == nil || !strings.Contains(err.Error(), "error envelope") || !strings.Contains(err.Error(), "spending cap") {
-		t.Fatalf("want envelope error with provider message, got %v", err)
+	if !errors.Is(err, gateway.ErrGatewayUnavailable) {
+		t.Errorf("want ErrGatewayUnavailable after close, got %v", err)
 	}
 }
 
-func TestBifrost_CompleteErrorEnvelope(t *testing.T) {
+func TestBifrostSDK_CompleteAfterClosedReturnsUnavailable(t *testing.T) {
 	t.Parallel()
-	svr := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		io.WriteString(w, `{"error":{"code":"rate_limited","message":"upstream unavailable"}}`) //nolint:errcheck
-	}))
-	defer svr.Close()
 
-	gw := newDriver(t, svr, 4)
+	fake := &fakeClient{}
+	gw := newTestDriver(t, fake, 4)
+	_ = gw.Close(context.Background())
 	_, err := gw.Complete(context.Background(), gateway.CompleteRequest{
 		Messages: []gateway.Message{{Role: "user", Content: "hi"}},
 		Schema:   json.RawMessage(`{"type":"object"}`),
 	})
-	if err == nil || !strings.Contains(err.Error(), "error envelope") {
-		t.Fatalf("want envelope error, got %v", err)
+	if !errors.Is(err, gateway.ErrGatewayUnavailable) {
+		t.Errorf("want ErrGatewayUnavailable after close, got %v", err)
+	}
+}
+
+func TestBifrostSDK_ProbeAfterClosedFails(t *testing.T) {
+	t.Parallel()
+
+	fake := &fakeClient{}
+	gw := newTestDriver(t, fake, 4)
+	_ = gw.Close(context.Background())
+	err := gw.Probe(context.Background())
+	if !errors.Is(err, gateway.ErrProbeFailed) {
+		t.Errorf("want ErrProbeFailed after close, got %v", err)
+	}
+}
+
+// ─── Probe: error cases ───────────────────────────────────────────────────────
+
+func TestBifrostSDK_ProbeEmbedFails(t *testing.T) {
+	t.Parallel()
+
+	statusCode := 500
+	fake := &fakeClient{
+		embedFn: func(_ *bfschemas.BifrostContext, _ *bfschemas.BifrostEmbeddingRequest) (*bfschemas.BifrostEmbeddingResponse, *bfschemas.BifrostError) {
+			return nil, &bfschemas.BifrostError{
+				StatusCode: &statusCode,
+				Error:      &bfschemas.ErrorField{Message: "probe embed failed"},
+			}
+		},
+	}
+
+	gw := newTestDriver(t, fake, 4)
+	err := gw.Probe(context.Background())
+	if !errors.Is(err, gateway.ErrProbeFailed) {
+		t.Errorf("want ErrProbeFailed, got %v", err)
+	}
+}
+
+// ─── translateBifrostError: all branches ─────────────────────────────────────
+
+func TestBifrostSDK_ErrorClassification(t *testing.T) {
+	t.Parallel()
+
+	// 403 (auth error branch)
+	statusCode403 := 403
+	fake403 := &fakeClient{
+		embedFn: func(_ *bfschemas.BifrostContext, _ *bfschemas.BifrostEmbeddingRequest) (*bfschemas.BifrostEmbeddingResponse, *bfschemas.BifrostError) {
+			return nil, &bfschemas.BifrostError{
+				StatusCode: &statusCode403,
+				Error:      &bfschemas.ErrorField{Message: "forbidden"},
+			}
+		},
+	}
+	gw403 := newTestDriver(t, fake403, 4)
+	_, err403 := gw403.Embed(context.Background(), gateway.EmbedRequest{Inputs: []string{"x"}})
+	if err403 == nil {
+		t.Error("403: expected error")
+	}
+
+	// no status code
+	fakeNoCode := &fakeClient{
+		embedFn: func(_ *bfschemas.BifrostContext, _ *bfschemas.BifrostEmbeddingRequest) (*bfschemas.BifrostEmbeddingResponse, *bfschemas.BifrostError) {
+			return nil, &bfschemas.BifrostError{
+				StatusCode: nil,
+				Error:      &bfschemas.ErrorField{Message: "no code"},
+			}
+		},
+	}
+	gwNoCode := newTestDriver(t, fakeNoCode, 4)
+	_, errNoCode := gwNoCode.Embed(context.Background(), gateway.EmbedRequest{Inputs: []string{"x"}})
+	if errNoCode == nil {
+		t.Error("no-code: expected error")
+	}
+}
+
+// ─── translateEmbedRequest: multiple texts ───────────────────────────────────
+
+func TestBifrostSDK_EmbedMultipleTexts(t *testing.T) {
+	t.Parallel()
+
+	var gotReq *bfschemas.BifrostEmbeddingRequest
+	fake := &fakeClient{
+		embedFn: func(_ *bfschemas.BifrostContext, req *bfschemas.BifrostEmbeddingRequest) (*bfschemas.BifrostEmbeddingResponse, *bfschemas.BifrostError) {
+			gotReq = req
+			return okEmbedResponse([][]float64{{0.1, 0.2}, {0.3, 0.4}}), nil
+		},
+	}
+
+	gw := newTestDriver(t, fake, 2)
+	resp, err := gw.Embed(context.Background(), gateway.EmbedRequest{Inputs: []string{"a", "b"}})
+	if err != nil {
+		t.Fatalf("Embed: %v", err)
+	}
+	if len(resp.Vectors) != 2 {
+		t.Errorf("want 2 vectors, got %d", len(resp.Vectors))
+	}
+	// Verify multi-text path: Texts slice should be populated, not Text
+	if gotReq != nil && gotReq.Input != nil {
+		if gotReq.Input.Texts == nil {
+			t.Error("want Texts slice for multi-text, got nil")
+		}
+	}
+}
+
+// ─── translateChatResponse: edge cases ───────────────────────────────────────
+
+func TestBifrostSDK_CompleteNoSchema_Fails(t *testing.T) {
+	t.Parallel()
+
+	fake := &fakeClient{}
+	gw := newTestDriver(t, fake, 4)
+	_, err := gw.Complete(context.Background(), gateway.CompleteRequest{
+		Messages: []gateway.Message{{Role: "user", Content: "hi"}},
+		// No Schema — must fail
+	})
+	if err == nil {
+		t.Fatal("expected error for missing schema")
+	}
+}
+
+// ─── extractUsage: non-nil cost ───────────────────────────────────────────────
+
+func TestBifrostSDK_ExtractUsageWithCost(t *testing.T) {
+	t.Parallel()
+
+	costVal := 0.005
+	fake := &fakeClient{
+		chatFn: func(_ *bfschemas.BifrostContext, _ *bfschemas.BifrostChatRequest) (*bfschemas.BifrostChatResponse, *bfschemas.BifrostError) {
+			content := `{"name":"Bob"}`
+			finishReason := "stop"
+			return &bfschemas.BifrostChatResponse{
+				Choices: []bfschemas.BifrostResponseChoice{
+					{
+						FinishReason: &finishReason,
+						ChatNonStreamResponseChoice: &bfschemas.ChatNonStreamResponseChoice{
+							Message: &bfschemas.ChatMessage{
+								Role:    bfschemas.ChatMessageRoleAssistant,
+								Content: &bfschemas.ChatMessageContent{ContentStr: &content},
+							},
+						},
+					},
+				},
+				Usage: &bfschemas.BifrostLLMUsage{
+					PromptTokens:     10,
+					CompletionTokens: 5,
+					Cost:             &bfschemas.BifrostCost{TotalCost: costVal},
+				},
+			}, nil
+		},
+	}
+
+	gw := newTestDriver(t, fake, 4)
+	schema := json.RawMessage(`{"type":"object","properties":{"name":{"type":"string"}},"required":["name"]}`)
+	_, err := gw.Complete(context.Background(), gateway.CompleteRequest{
+		Messages:  []gateway.Message{{Role: "user", Content: "hi"}},
+		Schema:    schema,
+		MaxTokens: 50,
+	})
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+}
+
+// ─── Seam wiring: breaker integrates with SDK driver ─────────────────────────
+
+func TestBifrostSDK_BreakerOpensAfterFailures(t *testing.T) {
+	t.Parallel()
+
+	statusCode := 500
+	fake := &fakeClient{
+		embedFn: func(_ *bfschemas.BifrostContext, _ *bfschemas.BifrostEmbeddingRequest) (*bfschemas.BifrostEmbeddingResponse, *bfschemas.BifrostError) {
+			return nil, &bfschemas.BifrostError{
+				StatusCode: &statusCode,
+				Error:      &bfschemas.ErrorField{Message: "internal error"},
+			}
+		},
+	}
+
+	gw := newTestDriver(t, fake, 4)
+
+	// Drive enough failures to open the breaker (threshold: 5 consecutive
+	// failures in the gateway.CircuitBreaker). Each Embed call to the batcher
+	// goes through embedBatch which records breaker failures.
+	var openErr error
+	for i := range 10 {
+		_, err := gw.Embed(context.Background(), gateway.EmbedRequest{Inputs: []string{"x"}})
+		if errors.Is(err, gateway.ErrGatewayUnavailable) {
+			openErr = err
+			t.Logf("breaker opened on call %d", i+1)
+			break
+		}
+	}
+	if !errors.Is(openErr, gateway.ErrGatewayUnavailable) {
+		// One more call after the loop should get fast-failed.
+		_, openErr = gw.Embed(context.Background(), gateway.EmbedRequest{Inputs: []string{"x"}})
+		if !errors.Is(openErr, gateway.ErrGatewayUnavailable) {
+			t.Errorf("expected ErrGatewayUnavailable after repeated failures, got: %v", openErr)
+		}
 	}
 }

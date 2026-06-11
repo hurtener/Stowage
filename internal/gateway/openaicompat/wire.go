@@ -1,7 +1,8 @@
-// Package bifrost contains the OpenAI-compatible wire format and the bifrost
-// gateway driver (D-040). No types or functions from this package may be
-// imported outside internal/gateway/bifrost — CLAUDE.md §13, P5.
-package bifrost
+// Package openaicompat contains the OpenAI-compatible wire format and the
+// openaicompat gateway driver (D-040, D-049). No types or functions from
+// this package may be imported outside internal/gateway/openaicompat —
+// CLAUDE.md §13, P5.
+package openaicompat
 
 import "encoding/json"
 

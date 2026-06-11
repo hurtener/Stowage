@@ -32,12 +32,12 @@ CGO_ENABLED=1 go test -race -timeout 60s -count=1 \
   && ok "gateway unit tests (mock driver)" \
   || failc "gateway unit tests (mock driver)"
 
-# ── bifrost hermetic tests ────────────────────────────────────────────────────
+# ── openaicompat hermetic tests ──────────────────────────────────────────────
 
 CGO_ENABLED=1 go test -race -timeout 60s -count=1 \
-  ./internal/gateway/bifrost/ 2>/dev/null \
-  && ok "bifrost hermetic tests" \
-  || failc "bifrost hermetic tests"
+  ./internal/gateway/openaicompat/ 2>/dev/null \
+  && ok "openaicompat hermetic tests" \
+  || failc "openaicompat hermetic tests"
 
 # ── live check: SKIP without env vars ────────────────────────────────────────
 
@@ -45,7 +45,7 @@ if [[ -z "${STOWAGE_TEST_OPENROUTER_KEY:-}" ]] || [[ -z "${STOWAGE_TEST_OPENROUT
   skip "live OpenRouter test (STOWAGE_TEST_OPENROUTER_KEY/MODEL not set)"
 else
   CGO_ENABLED=1 go test -race -timeout 120s -tags=live -count=1 \
-    -run TestLive ./internal/gateway/bifrost/ 2>/dev/null \
+    -run TestLive ./internal/gateway/openaicompat/ 2>/dev/null \
     && ok "live OpenRouter test" \
     || failc "live OpenRouter test"
 fi
