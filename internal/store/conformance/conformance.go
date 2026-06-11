@@ -245,8 +245,16 @@ func testNewMethodGuardBranches(t *testing.T, factory Factory) {
 
 	// Fully sub-scoped round-trip exercises every scope-column branch.
 	full := identity.Scope{Tenant: scope.Tenant, Project: "p1", User: "u1", Session: "s1"}
+	backing := store.Memory{
+		ID: newID(), Kind: "fact", Content: "guard-branch backing memory",
+		Status: "active", Importance: 3, Confidence: 0.9,
+		TrustSource: "llm_extracted", Stability: 1.0,
+	}
+	if err := s.Memories().Insert(ctx, full, backing); err != nil {
+		t.Fatalf("insert backing memory: %v", err)
+	}
 	sv := store.StoredVector{
-		MemoryID: "gv-" + ulid.Make().String(), TenantID: full.Tenant,
+		MemoryID: backing.ID, TenantID: full.Tenant,
 		ProjectID: full.Project, UserID: full.User, SessionID: full.Session,
 		Vec: []float32{0.6, 0.8},
 	}
