@@ -343,3 +343,23 @@ drivers are added only when a wire format actually diverges from this baseline
 no other package may import them (CLAUDE.md §13). This supersedes the
 placeholder in D-039's plan entry and is the definitive wire-format decision
 for Phase 04.
+
+## D-042 — Buffer trigger defaults (OQ-3 resolved)
+
+2026-06-11. Resolves the open question OQ-3: what are the starting buffer-flush
+trigger thresholds per profile? Chosen starting values (eval harness re-tunes
+in Phase 13 per D-035):
+
+| Trigger  | assistant | coding-agent | fleet |
+|----------|-----------|--------------|-------|
+| count    |        12 |           20 |    30 |
+| tokens   |      1500 |         2500 |  4000 |
+| max age  |      90 s |        180 s |  120 s |
+
+These are profile-internal constants in `internal/config/profiles.go`
+(`BufferTriggersForProfile`) — not operator-tunable top-level config knobs
+(D-034 knob guardrail). The `internal/pipeline` package imports them via
+`TriggersFromConfig`. Starting values reflect brief 03's multi-agent
+accumulation model: assistant is conversational (small, frequent flushes);
+fleet is high-throughput (larger batches, moderate age); coding-agent is
+session-heavy (larger batches, long age). No new config keys are introduced.

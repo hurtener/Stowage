@@ -98,6 +98,22 @@ func (b *bufferStore) Flush(ctx context.Context, scope identity.Scope, bufferKey
 	return items, tx.Commit(ctx)
 }
 
+func (b *bufferStore) ScanAged(ctx context.Context, olderThanMs int64, limit int) ([]store.BufferItem, error) {
+	rows, err := b.s.pool.Query(ctx,
+		`SELECT id, tenant_id, COALESCE(project_id,''), COALESCE(user_id,''), COALESCE(session_id,''),
+		        buffer_key, branch_id, record_id, token_estimate, flushed_at, created_at
+		 FROM buffer_items
+		 WHERE flushed_at = 0 AND created_at < $1
+		 ORDER BY created_at ASC LIMIT $2`,
+		olderThanMs, limit,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("pgstore: scan aged buffer items: %w", err)
+	}
+	defer rows.Close()
+	return scanBufferItems(rows)
+}
+
 func scanBufferItems(rows interface {
 	Next() bool
 	Scan(...interface{}) error

@@ -88,6 +88,22 @@ func (b *bufferStore) Flush(ctx context.Context, scope identity.Scope, bufferKey
 	return flushed, err
 }
 
+func (b *bufferStore) ScanAged(ctx context.Context, olderThanMs int64, limit int) ([]store.BufferItem, error) {
+	rows, err := b.s.rdb.QueryContext(ctx,
+		`SELECT id, tenant_id, COALESCE(project_id,''), COALESCE(user_id,''), COALESCE(session_id,''),
+		        buffer_key, branch_id, record_id, token_estimate, flushed_at, created_at
+		 FROM buffer_items
+		 WHERE flushed_at = 0 AND created_at < ?
+		 ORDER BY created_at ASC LIMIT ?`,
+		olderThanMs, limit,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("sqlitestore: scan aged buffer items: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	return scanBufferItems(rows)
+}
+
 func scanBufferItems(rows *sql.Rows) ([]store.BufferItem, error) {
 	var out []store.BufferItem
 	for rows.Next() {

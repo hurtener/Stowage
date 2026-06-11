@@ -57,6 +57,7 @@ func Run(t *testing.T, factory Factory) {
 	t.Run("BufferAppendListDue", func(t *testing.T) { testBufferAppendListDue(t, factory) })
 	t.Run("BufferFlushAtomicity", func(t *testing.T) { testBufferFlushAtomicity(t, factory) })
 	t.Run("BufferFlushEmpty", func(t *testing.T) { testBufferFlushEmpty(t, factory) })
+	t.Run("BufferScanAged", func(t *testing.T) { testBufferScanAged(t, factory) })
 	t.Run("KeyringInsertLookupRevoke", func(t *testing.T) { testKeyringInsertLookupRevoke(t, factory) })
 	t.Run("EventEmitList", func(t *testing.T) { testEventEmitList(t, factory) })
 	t.Run("EventOrdering", func(t *testing.T) { testEventOrdering(t, factory) })
@@ -936,6 +937,69 @@ func testBufferFlushEmpty(t *testing.T, factory Factory) {
 	}
 	if len(items) != 0 {
 		t.Errorf("expected 0 items, got %d", len(items))
+	}
+}
+
+func testBufferScanAged(t *testing.T, factory Factory) {
+	t.Helper()
+	s, cleanup := factory()
+	defer cleanup()
+	ctx := context.Background()
+	scope := tenantScope("t-" + newID())
+
+	// Insert items with varying timestamps.
+	past := nowMs() - 10_000   // 10 s ago — aged
+	recent := nowMs() + 60_000 // 60 s in the future — not aged
+
+	for i := 0; i < 3; i++ {
+		item := store.BufferItem{
+			ID:            newID(),
+			BufferKey:     "aged-buf",
+			TokenEstimate: 5,
+			CreatedAt:     past + int64(i),
+		}
+		if err := s.Buffers().AppendItem(ctx, scope, item); err != nil {
+			t.Fatalf("AppendItem aged %d: %v", i, err)
+		}
+	}
+	// One recent item that should NOT appear in ScanAged.
+	recentItem := store.BufferItem{
+		ID:            newID(),
+		BufferKey:     "aged-buf",
+		TokenEstimate: 5,
+		CreatedAt:     recent,
+	}
+	if err := s.Buffers().AppendItem(ctx, scope, recentItem); err != nil {
+		t.Fatalf("AppendItem recent: %v", err)
+	}
+
+	// ScanAged with threshold = now should return only the 3 aged items.
+	aged, err := s.Buffers().ScanAged(ctx, nowMs(), 100)
+	if err != nil {
+		t.Fatalf("ScanAged: %v", err)
+	}
+	count := 0
+	for _, it := range aged {
+		if it.BufferKey == "aged-buf" && it.TenantID == scope.Tenant {
+			count++
+		}
+	}
+	if count != 3 {
+		t.Errorf("ScanAged: got %d aged items want 3 (recent item must be excluded)", count)
+	}
+
+	// After flushing, ScanAged must not return flushed items.
+	if _, err := s.Buffers().Flush(ctx, scope, "aged-buf"); err != nil {
+		t.Fatalf("Flush: %v", err)
+	}
+	afterFlush, err := s.Buffers().ScanAged(ctx, nowMs(), 100)
+	if err != nil {
+		t.Fatalf("ScanAged after flush: %v", err)
+	}
+	for _, it := range afterFlush {
+		if it.TenantID == scope.Tenant && it.FlushedAt != 0 {
+			t.Errorf("ScanAged after flush: got flushed item %q", it.ID)
+		}
 	}
 }
 

@@ -1,4 +1,4 @@
-// Package api implements the Stowage HTTP surface (RFC §9.1, Phase 05).
+// Package api implements the Stowage HTTP surface (RFC §9.1, Phase 05–06).
 //
 // Routing uses stdlib net/http Go 1.22+ ServeMux patterns only (D-041).
 // No router dependency is introduced; the API surface is small by design.
@@ -23,11 +23,12 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
 	"github.com/hurtener/stowage/internal/config"
+	"github.com/hurtener/stowage/internal/pipeline"
 	"github.com/hurtener/stowage/internal/store"
 )
 
 // pipelineCap is the bounded pipeline channel capacity.
-// Not a top-level config knob (per phase plan); Phase 06 replaces the drainer.
+// Not a top-level config knob (D-034 guardrail).
 const pipelineCap = 4096
 
 // Server is the Stowage HTTP server.
@@ -37,13 +38,16 @@ type Server struct {
 	cfg     config.ServerConfig
 	httpSrv *http.Server
 
-	// pipeline is the bounded channel for signalling the downstream pipeline
-	// stage (Phase 06 replaces the stub drainer). Enqueue is non-blocking:
-	// if full, the enqueue is dropped and pipelineDrops is incremented.
-	// The record is already durable at this point (P2, CLAUDE.md §6).
-	pipeline  chan string // ULID record IDs
-	drainDone chan struct{}
-	maxBodyB  int64 // max request body bytes
+	// pipeline is the bounded channel signalling the buffer stage.
+	// Enqueue is non-blocking: if full the enqueue is dropped and
+	// pipelineDrops is incremented. The record is already durable (P2).
+	pipeline chan pipeline.Item // Stage drains this after Shutdown closes it.
+
+	// stage is the buffer pipeline stage (may be nil — tests don't wire it).
+	// Set via SetStage before calling ListenAndServe.
+	stage *pipeline.Stage
+
+	maxBodyB int64 // max request body bytes
 
 	// Prometheus metrics.
 	ingestTotal   prometheus.Counter
@@ -52,6 +56,7 @@ type Server struct {
 
 // New creates a configured Server with all routes registered.
 // The server is ready to serve after New returns; call ListenAndServe to start.
+// Call SetStage to wire the buffer stage before serving (optional — tests skip it).
 func New(cfg *config.Config, st store.Store, log *slog.Logger, reg *prometheus.Registry) (*Server, error) {
 	ingestTotal := prometheus.NewCounter(prometheus.CounterOpts{
 		Name: "stowage_ingest_records_total",
@@ -63,28 +68,15 @@ func New(cfg *config.Config, st store.Store, log *slog.Logger, reg *prometheus.R
 	})
 	reg.MustRegister(ingestTotal, pipelineDrops)
 
-	pipeline := make(chan string, pipelineCap)
-	drainDone := make(chan struct{})
-
 	srv := &Server{
 		st:            st,
 		log:           log,
 		cfg:           cfg.Server,
-		pipeline:      pipeline,
-		drainDone:     drainDone,
+		pipeline:      make(chan pipeline.Item, pipelineCap),
 		maxBodyB:      cfg.Server.MaxBodyBytes,
 		ingestTotal:   ingestTotal,
 		pipelineDrops: pipelineDrops,
 	}
-
-	// Stub drainer goroutine — no-op until Phase 06 replaces it with the
-	// buffer stage. Drains the channel so it never fills during tests.
-	go func() {
-		defer close(drainDone)
-		for range pipeline {
-			// Phase 06: replace with buffer-stage dispatch.
-		}
-	}()
 
 	mux := http.NewServeMux()
 
@@ -98,6 +90,9 @@ func New(cfg *config.Config, st store.Store, log *slog.Logger, reg *prometheus.R
 
 	// Branches — auth required.
 	mux.HandleFunc("POST /v1/branches", srv.authMiddleware(srv.handleBranches, false))
+
+	// Buffers — explicit flush endpoint (Phase 06).
+	mux.HandleFunc("POST /v1/buffers/{key}/flush", srv.authMiddleware(srv.handleFlushBuffer, false))
 
 	// Admin key management — admin role required.
 	// POST /v1/admin/keys is registered without the auth wrapper so that the
@@ -128,6 +123,19 @@ func New(cfg *config.Config, st store.Store, log *slog.Logger, reg *prometheus.R
 	return srv, nil
 }
 
+// SetStage wires the buffer pipeline stage. Must be called before
+// ListenAndServe. The stage receives from the server's internal pipeline
+// channel; the server closes the channel on Shutdown to signal the stage.
+func (s *Server) SetStage(st *pipeline.Stage) {
+	s.stage = st
+}
+
+// Pipeline returns the read end of the ingest pipeline channel.
+// Pass this to pipeline.New so the stage can consume ingest items.
+func (s *Server) Pipeline() <-chan pipeline.Item {
+	return s.pipeline
+}
+
 // ServeHTTP implements http.Handler so *Server can be used directly with
 // httptest.NewServer in tests.
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -145,18 +153,14 @@ func (s *Server) ListenAndServe() error {
 	return nil
 }
 
-// Shutdown gracefully stops the HTTP server, then closes the pipeline channel
-// and waits for the drainer goroutine to finish.
+// Shutdown gracefully stops the HTTP server then closes the pipeline channel,
+// signalling the buffer stage to drain. The caller is responsible for waiting
+// on the stage drain (cmd/stowage does this after Shutdown returns).
 func (s *Server) Shutdown(ctx context.Context) error {
 	if err := s.httpSrv.Shutdown(ctx); err != nil {
 		return fmt.Errorf("api: shutdown: %w", err)
 	}
 	// All HTTP handlers have exited — no more pipeline sends possible.
 	close(s.pipeline)
-	select {
-	case <-s.drainDone:
-	case <-ctx.Done():
-		s.log.Warn("api: shutdown: drain timed out")
-	}
 	return nil
 }

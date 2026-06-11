@@ -96,6 +96,10 @@ func (s *Server) handleBranches(w http.ResponseWriter, r *http.Request) {
 			respondJSON(w, http.StatusInternalServerError, errBody("store error"))
 			return
 		}
+		// Phase 06: flush any buffers associated with this branch (fire-and-forget).
+		if s.stage != nil {
+			go s.stage.FlushBranch(r.Context(), req.BranchID)
+		}
 		respondJSON(w, http.StatusOK, struct{}{})
 
 	default:

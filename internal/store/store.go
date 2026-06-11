@@ -123,6 +123,12 @@ type BufferStore interface {
 	// Flush atomically marks all unflushed items for bufferKey as flushed and
 	// returns them. Returns empty slice (not error) if none are pending.
 	Flush(ctx context.Context, scope identity.Scope, bufferKey string) ([]BufferItem, error)
+
+	// ScanAged returns unflushed items created before olderThanMs (unix millis),
+	// up to limit, ordered by created_at ascending. Scans all tenants — used by
+	// the pipeline ticker for age-triggered flush and crash recovery, following
+	// the same unscoped-scan pattern as RecordStore.ListUnprocessed.
+	ScanAged(ctx context.Context, olderThanMs int64, limit int) ([]BufferItem, error)
 }
 
 // EventStore is the audit trail (RFC §5.8, D-024).
