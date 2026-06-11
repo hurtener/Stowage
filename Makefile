@@ -15,6 +15,7 @@ test:
 coverage:
 	CGO_ENABLED=1 go test -race -coverprofile=coverage.out $(PKG)
 	@go tool cover -func=coverage.out | tail -1
+	@bash scripts/coverage-check.sh coverage.out
 
 bench:
 	go test -bench=. -benchmem -run=^$$ $(PKG)
@@ -23,7 +24,7 @@ vet:
 	go vet $(PKG)
 
 lint:
-	@command -v golangci-lint >/dev/null 2>&1 && golangci-lint run || echo "golangci-lint not installed — skipping (CI runs it)"
+	@if command -v golangci-lint >/dev/null 2>&1; then golangci-lint run; else echo "golangci-lint not installed — skipping (CI runs it)"; fi
 
 drift-audit:
 	scripts/drift-audit.sh

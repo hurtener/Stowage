@@ -22,6 +22,8 @@ jobs:
         run: make vet
       - name: Test (-race)
         run: make test
+      - name: Coverage
+        run: make coverage
 
   hygiene:
     runs-on: ubuntu-latest

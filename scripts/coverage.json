@@ -1,0 +1,6 @@
+{
+  "github.com/hurtener/stowage/internal/config": 80,
+  "github.com/hurtener/stowage/internal/identity": 80,
+  "github.com/hurtener/stowage/internal/telemetry": 80,
+  "github.com/hurtener/stowage/internal/auth": 80
+}
