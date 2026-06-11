@@ -322,3 +322,15 @@ transaction). Per the documented-override rule (class: hermetic-unreachable;
 reason above) the band is set to 81 in `scripts/coverage.json` — to be raised
 back toward 85 in Phase 09 when the vindex work adds pg error-path tests.
 sqlitestore remains at 85 (achieved).
+
+## D-040 — Bifrost driver speaks OpenAI-compatible wire format (base_url-agnostic)
+
+2026-06-11. The bifrost gateway driver uses the OpenAI-compatible wire format
+(`POST {base_url}/chat/completions` with `response_format: json_schema strict`,
+`POST {base_url}/embeddings`) and is base_url-agnostic: it works against
+Bifrost, OpenRouter, or any OpenAI-compatible endpoint. Provider-specific
+drivers are added only when a wire format actually diverges from this baseline
+(P5, RFC §7). All wire structs live exclusively in `internal/gateway/bifrost`;
+no other package may import them (CLAUDE.md §13). This supersedes the
+placeholder in D-039's plan entry and is the definitive wire-format decision
+for Phase 04.
