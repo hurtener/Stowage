@@ -13,7 +13,7 @@ import (
 
 	"github.com/hurtener/stowage/internal/config"
 	"github.com/hurtener/stowage/internal/gateway"
-	_ "github.com/hurtener/stowage/internal/gateway/bifrost"
+	_ "github.com/hurtener/stowage/internal/gateway/openaicompat"
 )
 
 // TestLiveEmbedSemanticOrdering validates the real Embed wire path end-to-end
@@ -28,7 +28,7 @@ func TestLiveEmbedSemanticOrdering(t *testing.T) {
 
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	gw, err := gateway.Open(context.Background(), config.GatewayConfig{
-		Driver:     "bifrost",
+		Driver:     "openaicompat",
 		BaseURL:    "https://openrouter.ai/api/v1",
 		APIKey:     "env.STOWAGE_LIVE_EMBED_KEY",
 		Model:      "google/gemini-3.5-flash",
