@@ -20,6 +20,7 @@ import (
 
 	"github.com/hurtener/stowage/internal/api"
 	"github.com/hurtener/stowage/internal/config"
+	"github.com/hurtener/stowage/internal/pipeline"
 	"github.com/hurtener/stowage/internal/store"
 	"github.com/hurtener/stowage/internal/telemetry"
 	// register drivers via init()
@@ -226,18 +227,20 @@ Flags:
 
 // runServe implements `stowage serve [--config path]`.
 //
-// Boot sequence (Phase 05):
+// Boot sequence (Phase 06):
 //  1. config.Load   — typed config, fail-loud validation
 //  2. telemetry.New — slog + Prometheus registry
 //  3. store.Open    — open store driver
-//  4. Migrate       — apply pending migrations (if auto-migrate is default)
+//  4. Migrate       — apply pending migrations (idempotent)
 //  5. api.New       — build HTTP server with all routes
-//  6. ListenAndServe — start accepting connections
+//  6. pipeline.New  — construct buffer stage between store and api
+//  7. Start stage + no-op downstream consumer
+//  8. ListenAndServe — start accepting connections
 //
 // Graceful shutdown on SIGTERM/SIGINT:
-//  1. Stop accepting new connections (http.Shutdown with 30s timeout)
-//  2. Drain the pipeline channel (Close sends the stop signal)
-//  3. Close the store
+//  1. api.Shutdown  — stop accepting; closes pipeline ingest channel
+//  2. stage.Drain   — wait for workers + ticker to finish
+//  3. store.Close   — via defer (happens after runServe returns)
 func runServe(args []string) {
 	var configPath string
 	for i := 0; i < len(args); i++ {
@@ -312,6 +315,20 @@ func runServe(args []string) {
 		os.Exit(1)
 	}
 
+	// Construct buffer stage (Phase 06). Stage sits between store and api.
+	trig := pipeline.TriggersFromConfig(cfg.Profile)
+	bufStage := pipeline.New(st, log, trig, srv.Pipeline())
+	srv.SetStage(bufStage)
+	bufStage.Start(ctx)
+
+	// No-op downstream consumer — drains FlushedBuffer events until Phase 07
+	// replaces it with the extraction stage.
+	go func() {
+		for range bufStage.Downstream() {
+			// Phase 07: replace with extraction dispatch.
+		}
+	}()
+
 	// Start HTTP server in a goroutine.
 	servErr := make(chan error, 1)
 	go func() {
@@ -334,11 +351,15 @@ func runServe(args []string) {
 		os.Exit(1)
 	}
 
-	// Graceful shutdown: stop accepting → drain pipeline → close store.
+	// Graceful shutdown (Phase 06 order):
+	//  1. api.Shutdown — stop accepting; closes the ingest pipeline channel.
+	//  2. stage.Drain  — workers process remaining items; ticker stops.
+	//  3. store.Close  — happens in the deferred close above.
 	shutdownCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	if err := srv.Shutdown(shutdownCtx); err != nil {
 		log.Error("stowage serve: shutdown", "err", err)
 	}
+	bufStage.Drain(shutdownCtx)
 	log.Info("stowage serve: stopped")
 }

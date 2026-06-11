@@ -1484,3 +1484,151 @@ func BenchmarkIngestACK(b *testing.B) {
 		}
 	})
 }
+
+// --- Buffers handler ---
+
+// TestFlushBuffer_Explicit proves POST /v1/buffers/{key}/flush with trigger
+// "explicit" returns 202 (stage is nil in test server, so flushed=false).
+func TestFlushBuffer_Explicit(t *testing.T) {
+	t.Parallel()
+	_, ts, st := newTestServer(t)
+	_, plaintext := mustCreateAgentKey(t, st, "flush-tenant")
+
+	body := jsonBody(t, map[string]string{"trigger": "explicit"})
+	req, _ := http.NewRequest("POST", ts.URL+"/v1/buffers/my-key/flush", body)
+	req.Header.Set("Authorization", bearerHeader(plaintext))
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("request: %v", err)
+	}
+	defer drainClose(resp.Body)
+	if resp.StatusCode != http.StatusAccepted {
+		t.Errorf("status: got %d want 202", resp.StatusCode)
+	}
+	var got map[string]interface{}
+	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got["trigger"] != "explicit" {
+		t.Errorf("trigger: got %v want explicit", got["trigger"])
+	}
+}
+
+// TestFlushBuffer_SessionEnd proves session_end trigger is accepted.
+func TestFlushBuffer_SessionEnd(t *testing.T) {
+	t.Parallel()
+	_, ts, st := newTestServer(t)
+	_, plaintext := mustCreateAgentKey(t, st, "flush-sess-tenant")
+
+	body := jsonBody(t, map[string]string{"trigger": "session_end"})
+	req, _ := http.NewRequest("POST", ts.URL+"/v1/buffers/sess-key/flush", body)
+	req.Header.Set("Authorization", bearerHeader(plaintext))
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("request: %v", err)
+	}
+	defer drainClose(resp.Body)
+	if resp.StatusCode != http.StatusAccepted {
+		t.Errorf("status: got %d want 202", resp.StatusCode)
+	}
+}
+
+// TestFlushBuffer_DefaultTrigger proves omitting trigger defaults to "explicit".
+func TestFlushBuffer_DefaultTrigger(t *testing.T) {
+	t.Parallel()
+	_, ts, st := newTestServer(t)
+	_, plaintext := mustCreateAgentKey(t, st, "flush-def-tenant")
+
+	body := jsonBody(t, map[string]string{})
+	req, _ := http.NewRequest("POST", ts.URL+"/v1/buffers/k/flush", body)
+	req.Header.Set("Authorization", bearerHeader(plaintext))
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("request: %v", err)
+	}
+	defer drainClose(resp.Body)
+	if resp.StatusCode != http.StatusAccepted {
+		t.Errorf("status: got %d want 202", resp.StatusCode)
+	}
+	var got map[string]interface{}
+	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got["trigger"] != "explicit" {
+		t.Errorf("trigger: got %v want explicit (default)", got["trigger"])
+	}
+}
+
+// TestFlushBuffer_InvalidTrigger proves an unknown trigger returns 400.
+func TestFlushBuffer_InvalidTrigger(t *testing.T) {
+	t.Parallel()
+	_, ts, st := newTestServer(t)
+	_, plaintext := mustCreateAgentKey(t, st, "flush-bad-tenant")
+
+	body := jsonBody(t, map[string]string{"trigger": "invalid"})
+	req, _ := http.NewRequest("POST", ts.URL+"/v1/buffers/k/flush", body)
+	req.Header.Set("Authorization", bearerHeader(plaintext))
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("request: %v", err)
+	}
+	defer drainClose(resp.Body)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("status: got %d want 400", resp.StatusCode)
+	}
+}
+
+// TestFlushBuffer_MissingAuth proves unauthenticated requests return 401.
+func TestFlushBuffer_MissingAuth(t *testing.T) {
+	t.Parallel()
+	_, ts, _ := newTestServer(t)
+
+	body := jsonBody(t, map[string]string{"trigger": "explicit"})
+	req, _ := http.NewRequest("POST", ts.URL+"/v1/buffers/k/flush", body)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("request: %v", err)
+	}
+	defer drainClose(resp.Body)
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Errorf("status: got %d want 401", resp.StatusCode)
+	}
+}
+
+// TestFlushBuffer_WrongContentType proves non-JSON content type returns 415.
+func TestFlushBuffer_WrongContentType(t *testing.T) {
+	t.Parallel()
+	_, ts, st := newTestServer(t)
+	_, plaintext := mustCreateAgentKey(t, st, "flush-ct-tenant")
+
+	req, _ := http.NewRequest("POST", ts.URL+"/v1/buffers/k/flush",
+		strings.NewReader(`{"trigger":"explicit"}`))
+	req.Header.Set("Authorization", bearerHeader(plaintext))
+	req.Header.Set("Content-Type", "text/plain")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("request: %v", err)
+	}
+	defer drainClose(resp.Body)
+	if resp.StatusCode != http.StatusUnsupportedMediaType {
+		t.Errorf("status: got %d want 415", resp.StatusCode)
+	}
+}
+
+// TestServerSetStageAndPipeline proves SetStage and Pipeline can be called
+// without panicking and that Pipeline returns a non-nil channel.
+func TestServerSetStageAndPipeline(t *testing.T) {
+	t.Parallel()
+	srv, _, _ := newTestServer(t)
+	ch := srv.Pipeline()
+	if ch == nil {
+		t.Error("Pipeline() returned nil channel")
+	}
+	// SetStage with nil is a no-op (stage remains nil); just ensure it doesn't panic.
+	srv.SetStage(nil)
+}

@@ -367,6 +367,35 @@ func clearStowageEnv(t *testing.T) {
 	}
 }
 
+// TestBufferTriggersForProfile verifies the per-profile trigger defaults (D-042).
+func TestBufferTriggersForProfile(t *testing.T) {
+	cases := []struct {
+		profile    string
+		wantCount  int
+		wantTokens int64
+	}{
+		{"assistant", 12, 1500},
+		{"coding-agent", 20, 2500},
+		{"fleet", 30, 4000},
+		{"unknown", 12, 1500}, // fallback to assistant
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.profile, func(t *testing.T) {
+			trig := config.BufferTriggersForProfile(tc.profile)
+			if trig.Count != tc.wantCount {
+				t.Errorf("Count: got %d want %d", trig.Count, tc.wantCount)
+			}
+			if trig.Tokens != tc.wantTokens {
+				t.Errorf("Tokens: got %d want %d", trig.Tokens, tc.wantTokens)
+			}
+			if trig.MaxAge == 0 {
+				t.Errorf("MaxAge must be non-zero for profile %q", tc.profile)
+			}
+		})
+	}
+}
+
 func writeTmpFile(t *testing.T, data []byte) string {
 	t.Helper()
 	f, err := os.CreateTemp(t.TempDir(), "stowage-cfg-*.yaml")

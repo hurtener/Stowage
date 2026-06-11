@@ -7,6 +7,7 @@ import (
 	"net/http"
 
 	"github.com/hurtener/stowage/internal/identity"
+	"github.com/hurtener/stowage/internal/pipeline"
 	"github.com/hurtener/stowage/internal/records"
 	"github.com/hurtener/stowage/internal/store"
 )
@@ -31,6 +32,10 @@ type recordInput struct {
 	Outcome       string `json:"outcome"`
 	OutcomeDetail string `json:"outcome_detail"`
 	OccurredAt    int64  `json:"occurred_at"` // unix millis; 0 → now
+	// BufferKey is an optional pipeline routing hint (Phase 06). When provided
+	// the record accumulates in the named buffer instead of the default
+	// (session_id + "/" + branch_id) derived key.
+	BufferKey string `json:"buffer_key"`
 }
 
 type ingestRequest struct {
@@ -77,7 +82,12 @@ func (s *Server) handleIngest(w http.ResponseWriter, r *http.Request) {
 	authKey := keyFromContext(r.Context())
 
 	// Stamp and validate all items up-front so we don't partially commit.
-	stamped := make([]records.Record, 0, len(req.Records))
+	// stampedItem preserves the per-record buffer_key routing hint (Phase 06).
+	type stampedItem struct {
+		rec       records.Record
+		bufferKey string
+	}
+	stamped := make([]stampedItem, 0, len(req.Records))
 	for i, item := range req.Records {
 		if item.TenantID != "" && item.TenantID != authKey.TenantID {
 			respondJSON(w, http.StatusForbidden,
@@ -103,12 +113,13 @@ func (s *Server) handleIngest(w http.ResponseWriter, r *http.Request) {
 				errBody(fmt.Sprintf("item[%d]: %v", i, err)))
 			return
 		}
-		stamped = append(stamped, *rec)
+		stamped = append(stamped, stampedItem{rec: *rec, bufferKey: item.BufferKey})
 	}
 
-	// Build store records from domain records.
+	// Build store records.
 	storeRecs := make([]store.Record, len(stamped))
-	for i, rec := range stamped {
+	for i, si := range stamped {
+		rec := si.rec
 		storeRecs[i] = store.Record{
 			ID:            rec.ID,
 			TenantID:      rec.TenantID,
@@ -137,13 +148,19 @@ func (s *Server) handleIngest(w http.ResponseWriter, r *http.Request) {
 
 	s.ingestTotal.Add(float64(len(stamped)))
 
-	// Non-blocking enqueue: record IDs are sent to the pipeline channel.
+	// Non-blocking enqueue: pipeline Items are sent to the buffer stage.
 	// If the channel is full, the enqueue is silently dropped and counted —
 	// the records are already durable; the Phase 14 re-enqueue sweep recovers.
 	allEnqueued := true
-	for _, rec := range stamped {
+	for _, si := range stamped {
 		select {
-		case s.pipeline <- rec.ID:
+		case s.pipeline <- pipeline.Item{
+			RecordID:  si.rec.ID,
+			TenantID:  authKey.TenantID,
+			BufferKey: si.bufferKey,
+			SessionID: si.rec.SessionID,
+			BranchID:  si.rec.BranchID,
+		}:
 		default:
 			s.pipelineDrops.Add(1)
 			allEnqueued = false
@@ -151,8 +168,8 @@ func (s *Server) handleIngest(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ids := make([]string, len(stamped))
-	for i, rec := range stamped {
-		ids[i] = rec.ID
+	for i, si := range stamped {
+		ids[i] = si.rec.ID
 	}
 
 	respondJSON(w, http.StatusAccepted, ingestResponse{

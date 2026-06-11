@@ -6,6 +6,7 @@
   "github.com/hurtener/stowage/internal/gateway/bifrost": 80,
   "github.com/hurtener/stowage/internal/gateway/mock": 80,
   "github.com/hurtener/stowage/internal/identity": 80,
+  "github.com/hurtener/stowage/internal/pipeline": 80,
   "github.com/hurtener/stowage/internal/records": 85,
   "github.com/hurtener/stowage/internal/store": 85,
   "github.com/hurtener/stowage/internal/store/conformance": 0,

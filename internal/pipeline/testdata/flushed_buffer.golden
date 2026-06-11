@@ -1,0 +1,18 @@
+{
+  "scope": {
+    "Tenant": "acme",
+    "Project": "",
+    "User": "",
+    "Session": ""
+  },
+  "key": "sess-1/branch-1",
+  "branch_id": "branch-1",
+  "record_ids": [
+    "rec-001",
+    "rec-002",
+    "rec-003"
+  ],
+  "token_estimate": 75,
+  "trigger": "count",
+  "skip_promotion": false
+}
