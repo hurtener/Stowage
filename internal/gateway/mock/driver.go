@@ -16,6 +16,7 @@ import (
 	"fmt"
 	"log/slog"
 	"math"
+	"os"
 	"sync"
 
 	"github.com/hurtener/stowage/internal/config"
@@ -35,11 +36,13 @@ type Script struct {
 
 // Driver is the mock gateway driver. It is safe for concurrent use.
 type Driver struct {
-	cfg    config.GatewayConfig
-	log    *slog.Logger
-	meter  gateway.Meter
-	mu     sync.Mutex
-	script []Script
+	cfg        config.GatewayConfig
+	log        *slog.Logger
+	meter      gateway.Meter
+	mu         sync.Mutex
+	scriptPath string // lazy script file (STOWAGE_MOCK_SCRIPT); see Complete
+	fileOffset int    // entries of scriptPath already consumed
+	script     []Script
 }
 
 func open(
@@ -48,11 +51,18 @@ func open(
 	log *slog.Logger,
 	prom *prometheus.Registry,
 ) (gateway.Gateway, error) {
-	return &Driver{
+	drv := &Driver{
 		cfg:   cfg,
 		log:   log,
 		meter: gateway.NewPromMeter(log, prom),
-	}, nil
+	}
+	if path := os.Getenv("STOWAGE_MOCK_SCRIPT"); path != "" {
+		// Lazy mode: the file is (re)read at each Complete call so smoke
+		// tests can write entries after boot (e.g. with runtime record IDs).
+		drv.scriptPath = path
+		log.Info("mock gateway: lazy script file enabled", "path", path)
+	}
+	return drv, nil
 }
 
 // PushScript queues a scripted response for the next Complete call.
@@ -74,6 +84,44 @@ func (d *Driver) Embed(ctx context.Context, req gateway.EmbedRequest) (gateway.E
 	return gateway.EmbedResponse{Vectors: vecs, Usage: usage}, nil
 }
 
+// LoadScriptFile loads scripted Complete responses from a JSON file: an array
+// of raw JSON values consumed FIFO. Used by smoke tests to drive live servers
+// end-to-end (the env var STOWAGE_MOCK_SCRIPT is read at Open). Dev/test
+// affordance only — not a config key (knob guardrail).
+func (d *Driver) LoadScriptFile(path string) error {
+	data, err := os.ReadFile(path) //nolint:gosec // dev/test affordance, operator-supplied path
+	if err != nil {
+		return fmt.Errorf("mock: read script file: %w", err)
+	}
+	var items []json.RawMessage
+	if err := json.Unmarshal(data, &items); err != nil {
+		return fmt.Errorf("mock: parse script file: %w", err)
+	}
+	d.mu.Lock()
+	for _, it := range items {
+		d.script = append(d.script, Script{JSON: it})
+	}
+	d.mu.Unlock()
+	return nil
+}
+
+// nextFromFileLocked reads the lazy script file and returns the next
+// unconsumed entry (FIFO by persistent offset), or `{}` when exhausted or
+// unreadable. Caller must hold d.mu.
+func (d *Driver) nextFromFileLocked() Script {
+	data, err := os.ReadFile(d.scriptPath) //nolint:gosec // dev/test affordance
+	if err != nil {
+		return Script{JSON: json.RawMessage(`{}`)}
+	}
+	var items []json.RawMessage
+	if err := json.Unmarshal(data, &items); err != nil || d.fileOffset >= len(items) {
+		return Script{JSON: json.RawMessage(`{}`)}
+	}
+	s := Script{JSON: items[d.fileOffset]}
+	d.fileOffset++
+	return s
+}
+
 // Complete returns the next scripted response, or `{}` if none is queued.
 func (d *Driver) Complete(ctx context.Context, req gateway.CompleteRequest) (gateway.CompleteResponse, error) {
 	if len(req.Schema) == 0 {
@@ -82,9 +130,12 @@ func (d *Driver) Complete(ctx context.Context, req gateway.CompleteRequest) (gat
 
 	d.mu.Lock()
 	var s Script
-	if len(d.script) > 0 {
+	switch {
+	case len(d.script) > 0:
 		s, d.script = d.script[0], d.script[1:]
-	} else {
+	case d.scriptPath != "":
+		s = d.nextFromFileLocked()
+	default:
 		s = Script{JSON: json.RawMessage(`{}`)}
 	}
 	d.mu.Unlock()

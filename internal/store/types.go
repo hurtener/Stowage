@@ -1,5 +1,7 @@
 package store
 
+import "github.com/hurtener/stowage/internal/identity"
+
 // Record is a verbatim immutable interaction record (RFC P1, D-006).
 // Records are append-only; no Update method exists on RecordStore.
 // All timestamps are unix milliseconds (D-037).
@@ -53,6 +55,7 @@ type Memory struct {
 	PrivacyZone    string
 	CreatedAt      int64
 	UpdatedAt      int64
+	ContentHash    string // SHA-256 hex of NormalizeContent(content); "" for pre-Phase-08 rows
 }
 
 // Link is a typed directed edge between memories (RFC §5.6, D-026).
@@ -146,4 +149,92 @@ type DeadLetter struct {
 	Attempts   int
 	ResolvedAt int64 // unix millis; 0 = unresolved
 	CreatedAt  int64
+}
+
+// MemoryJunctions holds the junction rows for a memory, used in prior-state
+// snapshots (D-017 reversibility contract, Phase 15 rollback).
+// GetJunctions returns an empty MemoryJunctions (not ErrNotFound) when the
+// memory has no junction rows.
+type MemoryJunctions struct {
+	Entities   []string
+	Keywords   []string
+	Queries    []string
+	Provenance []Provenance
+}
+
+// ReconcileAction is the outcome of a reconciliation decision (Phase 08).
+type ReconcileAction string
+
+const (
+	ActionAdd       ReconcileAction = "add"
+	ActionUpdate    ReconcileAction = "update"
+	ActionMerge     ReconcileAction = "merge"
+	ActionSupersede ReconcileAction = "supersede"
+	ActionDiscard   ReconcileAction = "discard"
+	ActionPark      ReconcileAction = "park" // pending_confirmation; target stays active
+)
+
+// NeighborQuery specifies structural overlap parameters for FindNeighbors.
+// Junction-overlap search: memories sharing entities or keywords with the
+// candidate, ranked by overlap count then recency. Status is always 'active'.
+// This is the interim neighbor lookup until Phase 09's semantic lanes.
+type NeighborQuery struct {
+	Entities []string
+	Keywords []string
+	Kinds    []string // optional kind filter (empty = all kinds)
+	Limit    int      // 0 defaults to 8
+}
+
+// CommitSet is the transactional unit for one reconciliation outcome.
+// All writes (memory row, junction rows, provenance rows, link rows, event rows)
+// happen in a single DB transaction — the D-017/D-045 reversibility contract.
+//
+// The reconcile package pre-populates Events with prior-state snapshots before
+// calling Commit; the driver writes them directly into the transaction
+// (EventStore.Emit cannot join an existing tx — see D-045).
+type CommitSet struct {
+	// Action is the reconciliation outcome.
+	Action ReconcileAction
+
+	// Memory is the new or updated memory to persist.
+	// Zero-value for ActionDiscard (nothing is persisted).
+	Memory Memory
+
+	// Entities, Keywords, Queries are junction rows for Memory.
+	// For ActionUpdate these replace the existing junctions for Memory.ID.
+	Entities []string
+	Keywords []string
+	Queries  []string
+
+	// Provenance rows to insert.
+	Provenance []Provenance
+
+	// Links to insert (source = "reconciler" for reconciler-written links).
+	Links []Link
+
+	// Targets are the prior states of memories being modified (for D-017
+	// reversibility). Populate before calling Commit so events carry the
+	// full pre-mutation snapshot.
+	//   update:    one entry (memory before content rewrite)
+	//   merge:     all source memories before supersede
+	//   supersede: the superseded memory before status change
+	//   park:      the target memory (target stays active; snapshot for audit)
+	Targets []Memory
+
+	// Events to write within the same transaction. The reconcile package
+	// builds these (with prior-state JSON payloads) before calling Commit.
+	// The driver writes the rows directly — not via EventStore.Emit — to
+	// ensure they participate in the same tx.
+	Events []Event
+
+	// Scope is the identity scope used when writing events in the same tx.
+	// Must match the scope passed to Commit.
+	Scope identity.Scope
+
+	// FaultHook is a TEST-ONLY injection point. If non-nil, it is called
+	// after inserting the main memory row but before writing junction,
+	// provenance, link, and event rows. Returning a non-nil error causes the
+	// entire transaction to roll back — proving no partial rows remain.
+	// MUST be nil in all production code paths.
+	FaultHook func() error
 }

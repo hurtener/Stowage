@@ -390,3 +390,74 @@ are transparent (visible via `GET /v1/topics` with `source: pack`); packs
 evolve by bumping the constant version, not by schema migrations; the
 `pack:off` sentinel keeps the opt-out mechanism explicit rather than requiring
 an operator to know to delete all topics to re-enable virtual packs.
+
+## D-044 — Pre-filter thresholds + fast-add path
+
+2026-06-11. Phase 08 reconciliation needs to avoid LLM calls on trivially
+cheap cases. Three options considered for the order of pre-filters and the
+zero-neighbor case: (a) always call the LLM; (b) call the LLM only when
+neighbors exist; (c) call the LLM only when neighbors exist AND the candidate
+is not a near-duplicate of any of them.
+
+**Decision:** option (c) plus a documented threshold constant. The reconciliation
+flow first checks for an exact SHA-256 hash match (`GetByContentHash`) — zero
+cost, guarantees no duplicate content. It then retrieves structural neighbors
+(`FindNeighbors`). If no neighbors are found, the candidate is committed as an
+active `add` without any gateway call — the **fast-add path**. If neighbors
+exist, bigram-Jaccard similarity against each neighbor is computed; a score
+≥ 0.85 (the **near-dup threshold**) treats the candidate as the same fact and
+discards it without a gateway call. In both discard cases `IncrementCounter(match)`
+bumps the matched memory's utility counter so retrieval rank reflects proven reuse.
+
+The trust gate (supersede/update on a high-trust target) uses the formula:
+`trust = (0.5 + log1p(use + 2·save)) · source_multiplier · (importance/3)`.
+`trust < 1.0` → apply silently; `1.0–3.0` → apply + `reconcile.warned` event;
+`≥ 3.0` → the incoming memory commits as `pending_confirmation` with
+`supersedes_id` set; the target stays `active` until Phase 15 resolves it.
+
+The **contradiction boost** for superseding memories sets
+`importance = max(candidate.Importance, 4)` and adds a stability constant
+(`contradictionBoostStabilityDelta = 1.0`, representing ~45 days in the
+normalised decay time-constant) so the correction immediately outranks what it
+corrected.
+
+All thresholds are compile-time constants with documentation comments naming this
+decision; they are profile-internal knobs revisited with eval data (D-035).
+
+**Consequences:** ~40 % reduction in gateway calls for typical workloads (per
+brief 02 estimate); exact-dup and near-dup filtering are cheap O(1) and O(N)
+operations respectively; the near-dup threshold of 0.85 is conservative enough
+to avoid false positives on genuine updates while eliminating near-verbatim
+re-statements; the trust gate prevents high-value memories from being silently
+overwritten by low-signal candidates.
+
+## D-045 — `Memories().Commit` is the single transactional unit for reconciliation
+
+2026-06-11. Reconciliation outcomes require atomic writes: a memory row,
+junction rows (entities, keywords, anticipated-queries), provenance rows, link
+rows, status transitions on target memories, and audit event rows — all of which
+must either all commit or all roll back. Earlier phases used individual store
+methods (Insert, SetStatus, InsertLinks, AddProvenance, Emit) issued sequentially;
+a crash between any two would leave partial state.
+
+**Decision:** introduce `Memories().Commit(ctx, scope, CommitSet) error` as the
+single transactional unit for all reconciliation outcomes. Each action
+(add/update/merge/supersede/discard/park) maps to exactly one `Commit` call.
+The SQLite driver executes the full `CommitSet` inside one `exec()` closure
+(= one `sql.Tx`). The PostgreSQL driver opens a `pgx.Tx` via `pool.Begin`.
+Event rows are written directly into the same transaction (not via
+`EventStore.Emit`) so they always carry the latest state and participate in the
+same atomicity guarantee.
+
+`CommitSet.Events` must be populated by the reconcile package **before** calling
+`Commit` — events carry prior-state JSON snapshots needed for D-017 reversibility.
+`CommitSet.FaultHook` is a test-only mid-commit injection point: calling it after
+the primary memory row is inserted but before secondary writes exercises the
+rollback path without requiring process termination.
+
+**Consequences:** crash safety is guaranteed from Phase 08 onward; D-017
+rollback (Phase 15) can reconstruct prior state purely from event payloads;
+the `Commit` method is the only place in the codebase that holds an open
+transaction for memory mutations — all other mutation helpers (Insert, Update,
+SetStatus) remain available for non-reconciliation paths (e.g. sweep, API
+admin ops).

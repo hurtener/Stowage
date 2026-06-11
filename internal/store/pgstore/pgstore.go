@@ -180,3 +180,26 @@ func nullStr(s string) interface{} {
 	}
 	return s
 }
+
+// AppliedMigrations returns versions from schema_migrations ascending; empty
+// (no error) when the table does not exist yet.
+func (s *pgStore) AppliedMigrations(ctx context.Context) ([]string, error) {
+	rows, err := s.pool.Query(ctx,
+		`SELECT version FROM schema_migrations ORDER BY version ASC`)
+	if err != nil {
+		if strings.Contains(err.Error(), "does not exist") {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("pgstore: applied migrations: %w", err)
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var v string
+		if err := rows.Scan(&v); err != nil {
+			return nil, fmt.Errorf("pgstore: scan migration: %w", err)
+		}
+		out = append(out, v)
+	}
+	return out, rows.Err()
+}

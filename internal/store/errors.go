@@ -26,3 +26,9 @@ var ErrClosed = errors.New("store: store is closed")
 
 // ErrBadCursor is returned when a pagination cursor cannot be parsed.
 var ErrBadCursor = errors.New("store: bad cursor")
+
+// ErrDuplicateContent is returned by Commit (ActionAdd/ActionPark) when the
+// content_hash unique constraint fires — i.e., a concurrent goroutine already
+// committed an identical-hash memory. Reconcile handles this as exact-dedup:
+// IncrementCounter("match") on the existing row, candidate discarded (m7).
+var ErrDuplicateContent = errors.New("store: duplicate content hash")

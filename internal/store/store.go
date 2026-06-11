@@ -16,6 +16,9 @@ import (
 type Store interface {
 	// Migrate applies pending migrations idempotently.
 	Migrate(ctx context.Context) error
+	// AppliedMigrations returns the versions recorded in schema_migrations,
+	// ascending. Empty (not an error) before the first Migrate.
+	AppliedMigrations(ctx context.Context) ([]string, error)
 
 	// Records returns the verbatim fidelity sub-store.
 	Records() RecordStore
@@ -95,6 +98,41 @@ type MemoryStore interface {
 
 	// AddProvenance records which verbatim record spans produced a memory.
 	AddProvenance(ctx context.Context, scope identity.Scope, rows []Provenance) error
+
+	// GetByContentHash returns the active memory matching the given SHA-256
+	// content hash within scope. Returns ErrNotFound when absent.
+	// Used by the exact-dedup pre-filter (D-044).
+	GetByContentHash(ctx context.Context, scope identity.Scope, hash string) (*Memory, error)
+
+	// FindNeighbors returns active memories that share entities or keywords
+	// with the candidate, ranked by overlap count descending then recency.
+	// The search is bounded by q.Limit (default 8 when 0). Scope-parameterized
+	// per P3; cross-tenant/cross-user isolation proven by conformance.
+	// This is the interim structural neighbor lookup (Phase 09 adds semantic lanes).
+	FindNeighbors(ctx context.Context, scope identity.Scope, q NeighborQuery) ([]Memory, error)
+
+	// IncrementCounter atomically increments one of the six utility counters
+	// on a memory. counter must be one of: "match", "inject", "use", "save",
+	// "fail", "noise". Returns an error for unrecognised counter names.
+	IncrementCounter(ctx context.Context, scope identity.Scope, id, counter string) error
+
+	// GetJunctions returns the junction rows (entities, keywords, anticipated
+	// queries) and provenance spans for a memory. Used to build complete
+	// prior-state snapshots (D-017, Phase 15 rollback).
+	// Returns an empty MemoryJunctions (not ErrNotFound) when the memory
+	// exists but has no junction rows.
+	GetJunctions(ctx context.Context, scope identity.Scope, id string) (MemoryJunctions, error)
+
+	// Commit executes one reconciliation outcome as a single atomic transaction:
+	// memory insert/update, junction rows, provenance rows, link rows, status
+	// transitions on targets, and event rows — all in one DB transaction.
+	//   SQLite driver:  ONE exec closure = ONE sql.Tx (D-045).
+	//   Postgres driver: pool.Begin → pgx.Tx (D-045).
+	// Events are written directly into the transaction; not via EventStore.Emit.
+	// CommitSet.FaultHook is a test-only mid-commit failure injection.
+	// Commit returns ErrDuplicateContent for ActionAdd/ActionPark when the
+	// content_hash unique index fires (m7 TOCTOU guard).
+	Commit(ctx context.Context, scope identity.Scope, cs CommitSet) error
 }
 
 // TopicStore manages extraction magnets (RFC §4.1, D-007).

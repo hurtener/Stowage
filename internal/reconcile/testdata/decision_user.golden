@@ -1,0 +1,20 @@
+## Candidate memory
+
+**Kind:** fact
+**Content:** Go uses goroutines for concurrency
+**Context:** concurrent programming discussion
+**Entities:** Go, goroutines
+**Keywords:** concurrency, programming
+**Importance:** 4  **Confidence:** 0.85
+
+## Existing neighbors (1)
+
+### Neighbor 1 (id: mem-001)
+**Kind:** fact  **Status:** active
+**Content:** Go has channels for communication
+**Context:** concurrency model
+**Confidence:** 0.80  **Importance:** 3
+**Trust:** use_count=0  save_count=0  trust_source=
+
+
+Decide: should this candidate be added, updated, merged, superseded, discarded, or parked?

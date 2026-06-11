@@ -22,7 +22,9 @@ import (
 	"github.com/hurtener/stowage/internal/config"
 	"github.com/hurtener/stowage/internal/gateway"
 	"github.com/hurtener/stowage/internal/pipeline"
+	"github.com/hurtener/stowage/internal/reconcile"
 	"github.com/hurtener/stowage/internal/store"
+	"github.com/hurtener/stowage/internal/store/migrations"
 	"github.com/hurtener/stowage/internal/telemetry"
 	"github.com/hurtener/stowage/internal/topics"
 	// register drivers via init()
@@ -203,13 +205,24 @@ func runMigrate(args []string) {
 	}()
 
 	if statusOnly {
-		// Show status: run migrate (idempotent) then report.
-		// If migrations haven't been applied yet we just show "pending".
 		fmt.Printf("driver: %s\n", storeCfg.Driver)
 		fmt.Printf("dsn:    %s\n", storeCfg.DSN)
 		fmt.Println()
 		fmt.Println("known migrations:")
-		fmt.Println("  0001_init  (run 'stowage migrate' to apply)")
+		applied, aerr := s.AppliedMigrations(ctx)
+		appliedSet := map[string]bool{}
+		if aerr == nil {
+			for _, v := range applied {
+				appliedSet[v] = true
+			}
+		}
+		for _, name := range migrations.Known(storeCfg.Driver) {
+			status := "pending (run 'stowage migrate' to apply)"
+			if appliedSet[name] {
+				status = "applied"
+			}
+			fmt.Printf("  %-22s %s\n", name, status)
+		}
 		return
 	}
 
@@ -351,13 +364,16 @@ func runServe(args []string) {
 	extractStage := pipeline.NewExtractStage(st, gw, topicSvc, log, cfg.Profile, bufStage.Downstream())
 	extractStage.Start(ctx)
 
-	// No-op Phase 08 placeholder consumer — drains CandidateBatch events until
-	// Phase 08 replaces it with reconciliation dispatch.
-	go func() {
-		for range extractStage.Downstream() {
-			// Phase 08: replace with reconciliation dispatch.
-		}
-	}()
+	// Phase 08: reconciliation stage wired to extract stage downstream.
+	reconcileStage := reconcile.New(
+		st.Memories(),
+		st.Ops(),
+		st.Events(),
+		gw,
+		log,
+		extractStage.Downstream(),
+	)
+	reconcileStage.Start(ctx)
 
 	// Start HTTP server in a goroutine.
 	servErr := make(chan error, 1)
@@ -394,6 +410,7 @@ func runServe(args []string) {
 	}
 	bufStage.Drain(shutdownCtx)
 	extractStage.Drain(shutdownCtx)
+	reconcileStage.Drain(shutdownCtx)
 	if gwErr := gw.Close(shutdownCtx); gwErr != nil {
 		log.Warn("stowage serve: gateway close", "err", gwErr)
 	}
