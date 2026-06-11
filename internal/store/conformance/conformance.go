@@ -14,8 +14,10 @@ package conformance
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -63,6 +65,18 @@ func Run(t *testing.T, factory Factory) {
 	t.Run("OpsDeadLetterAllStages", func(t *testing.T) { testOpsDeadLetterAllStages(t, factory) })
 	t.Run("OpsJobMarker", func(t *testing.T) { testOpsJobMarker(t, factory) })
 	t.Run("OpsAdvisoryLock", func(t *testing.T) { testOpsAdvisoryLock(t, factory) })
+	// S1 — empty-tenant guard (P3: store layer fails closed)
+	t.Run("EmptyScopeRejected", func(t *testing.T) { testEmptyScopeRejected(t, factory) })
+	// S2 — cross-user / cross-project / cross-session isolation
+	t.Run("CrossUserIsolation", func(t *testing.T) { testCrossUserIsolation(t, factory) })
+	t.Run("CrossProjectIsolation", func(t *testing.T) { testCrossProjectIsolation(t, factory) })
+	t.Run("CrossSessionIsolation", func(t *testing.T) { testCrossSessionIsolation(t, factory) })
+	// Q1 — composite cursor handles timestamp ties without dropping rows
+	t.Run("CursorTimestampTieRecords", func(t *testing.T) { testCursorTimestampTieRecords(t, factory) })
+	t.Run("CursorTimestampTieMemories", func(t *testing.T) { testCursorTimestampTieMemories(t, factory) })
+	t.Run("CursorTimestampTieEvents", func(t *testing.T) { testCursorTimestampTieEvents(t, factory) })
+	// O1 — concurrent job-marker atomicity
+	t.Run("OpsJobMarkerConcurrent", func(t *testing.T) { testOpsJobMarkerConcurrent(t, factory) })
 }
 
 // --- helpers ----------------------------------------------------------------
@@ -807,17 +821,14 @@ func testRecordListBySessionCursor(t *testing.T, factory Factory) {
 		t.Error("expected non-empty cursor after first page")
 	}
 
-	// Second page using cursor — 6 records with page size 3, second page has 3 more.
-	// Cursor points to record[3]; filter is occurred_at > record[3].occurred_at
-	// → returns records 4, 5 (wait, cursor = record at limit index, records after cursor)
-	// With 6 records and limit=3: query LIMIT 4 → gets [r0,r1,r2,r3], cursor=r3.ID
-	// page2: occurred_at > r3.occurred_at → [r4, r5] = 2 records.
+	// Q1: cursor encodes last item of page1 (recs[2]); page2 filter is
+	// (occurred_at, id) > cursor → returns recs[3], recs[4], recs[5] = 3 items.
 	page2, _, err := s.Records().ListBySession(ctx, scope, "sess2", "", 3, cursor)
 	if err != nil {
 		t.Fatalf("page2: %v", err)
 	}
-	if len(page2) != 2 {
-		t.Errorf("page2 len: got %d want 2 (remaining after cursor)", len(page2))
+	if len(page2) != 3 {
+		t.Errorf("page2 len: got %d want 3 (cursor is last of page1, no rows dropped)", len(page2))
 	}
 }
 
@@ -876,14 +887,13 @@ func testMemoryListByStatusCursor(t *testing.T, factory Factory) {
 		t.Error("expected cursor after first page")
 	}
 
+	// Q1: cursor is last item of page1 (mem[2]); page2 filter gives mem[3..5] = 3 items.
 	page2, _, err := s.Memories().ListByStatus(ctx, scope, "active", 3, cursor)
 	if err != nil {
 		t.Fatalf("page2: %v", err)
 	}
-	// 6 memories, page size 3: page1 returns [0,1,2], cursor=mem[3].ID
-	// page2: created_at > mem[3].created_at → mem[4], mem[5] = 2 items
-	if len(page2) != 2 {
-		t.Errorf("page2 len: got %d want 2 (remaining after cursor)", len(page2))
+	if len(page2) != 3 {
+		t.Errorf("page2 len: got %d want 3 (cursor is last of page1, no rows dropped)", len(page2))
 	}
 }
 
@@ -950,14 +960,13 @@ func testEventListCursor(t *testing.T, factory Factory) {
 		t.Error("expected cursor after first page")
 	}
 
+	// Q1: cursor is last item of page1 (ev[2]); page2 filter gives ev[3..5] = 3 items.
 	page2, _, err := s.Events().List(ctx, scope, 3, cursor)
 	if err != nil {
 		t.Fatalf("page2: %v", err)
 	}
-	// 6 events, page size 3: page1 returns [0,1,2], cursor=ev[3].ID
-	// page2: created_at > ev[3].created_at → ev[4], ev[5] = 2 items
-	if len(page2) != 2 {
-		t.Errorf("page2 len: got %d want 2 (remaining after cursor)", len(page2))
+	if len(page2) != 3 {
+		t.Errorf("page2 len: got %d want 3 (cursor is last of page1, no rows dropped)", len(page2))
 	}
 }
 
@@ -986,5 +995,422 @@ func testOpsDeadLetterAllStages(t *testing.T, factory Factory) {
 	}
 	if len(all) != 2 {
 		t.Errorf("got %d dead letters want 2", len(all))
+	}
+}
+
+// =============================================================================
+// S1 — empty-tenant guard (store layer fails closed, P3)
+// =============================================================================
+
+// testEmptyScopeRejected asserts that every scoped read AND write method
+// returns store.ErrScopeRequired when called with an empty Tenant.
+func testEmptyScopeRejected(t *testing.T, factory Factory) {
+	t.Helper()
+	s, cleanup := factory()
+	defer cleanup()
+	ctx := context.Background()
+	zero := identity.Scope{} // empty tenant
+
+	assertScopeRequired := func(t *testing.T, label string, err error) {
+		t.Helper()
+		if !errors.Is(err, store.ErrScopeRequired) {
+			t.Errorf("%s: got %v want store.ErrScopeRequired", label, err)
+		}
+	}
+
+	// RecordStore
+	assertScopeRequired(t, "Records.Append",
+		s.Records().Append(ctx, zero, []store.Record{{ID: newID(), Role: "user", Content: "x", OccurredAt: nowMs(), CreatedAt: nowMs()}}))
+	_, err := s.Records().Get(ctx, zero, "any")
+	assertScopeRequired(t, "Records.Get", err)
+	_, _, err = s.Records().ListBySession(ctx, zero, "", "", 1, "")
+	assertScopeRequired(t, "Records.ListBySession", err)
+
+	// MemoryStore
+	assertScopeRequired(t, "Memories.Insert",
+		s.Memories().Insert(ctx, zero, store.Memory{ID: newID(), Kind: "fact", Content: "x", Status: "active", TrustSource: "llm_extracted", Stability: 1.0, CreatedAt: nowMs(), UpdatedAt: nowMs()}))
+	_, err = s.Memories().Get(ctx, zero, "any")
+	assertScopeRequired(t, "Memories.Get", err)
+	_, _, err = s.Memories().ListByStatus(ctx, zero, "active", 1, "")
+	assertScopeRequired(t, "Memories.ListByStatus", err)
+	assertScopeRequired(t, "Memories.InsertLinks",
+		s.Memories().InsertLinks(ctx, zero, []store.Link{{ID: newID(), FromMemory: "x", ToMemory: "y", Type: "supports", Source: "explicit", Confidence: 1.0, CreatedAt: nowMs()}}))
+	_, err = s.Memories().ListLinks(ctx, zero, "", "")
+	assertScopeRequired(t, "Memories.ListLinks", err)
+	assertScopeRequired(t, "Memories.AddProvenance",
+		s.Memories().AddProvenance(ctx, zero, []store.Provenance{{ID: newID(), MemoryID: "m", RecordID: "r", CreatedAt: nowMs()}}))
+
+	// TopicStore
+	assertScopeRequired(t, "Topics.Upsert",
+		s.Topics().Upsert(ctx, zero, store.Topic{ID: newID(), Key: "k", Status: "active", CreatedAt: nowMs(), UpdatedAt: nowMs()}))
+	_, err = s.Topics().Get(ctx, zero, "k")
+	assertScopeRequired(t, "Topics.Get", err)
+	_, err = s.Topics().List(ctx, zero)
+	assertScopeRequired(t, "Topics.List", err)
+	assertScopeRequired(t, "Topics.Delete", s.Topics().Delete(ctx, zero, "k"))
+
+	// BufferStore
+	assertScopeRequired(t, "Buffers.AppendItem",
+		s.Buffers().AppendItem(ctx, zero, store.BufferItem{ID: newID(), BufferKey: "b", CreatedAt: nowMs()}))
+	_, err = s.Buffers().ListDue(ctx, zero, "b", 1)
+	assertScopeRequired(t, "Buffers.ListDue", err)
+	_, err = s.Buffers().Flush(ctx, zero, "b")
+	assertScopeRequired(t, "Buffers.Flush", err)
+
+	// EventStore
+	assertScopeRequired(t, "Events.Emit",
+		s.Events().Emit(ctx, zero, store.Event{ID: newID(), Type: "t", CreatedAt: nowMs()}))
+	_, _, err = s.Events().List(ctx, zero, 1, "")
+	assertScopeRequired(t, "Events.List", err)
+}
+
+// =============================================================================
+// S2 — cross-user / cross-project / cross-session isolation (same tenant)
+// =============================================================================
+
+// testCrossUserIsolation verifies that narrowing the scope to a specific user
+// hides data belonging to a different user in the same tenant.
+func testCrossUserIsolation(t *testing.T, factory Factory) {
+	t.Helper()
+	s, cleanup := factory()
+	defer cleanup()
+	ctx := context.Background()
+	tenant := "t-" + newID()
+	scopeA := identity.Scope{Tenant: tenant, User: "user-A"}
+	scopeB := identity.Scope{Tenant: tenant, User: "user-B"}
+
+	base := nowMs()
+
+	// Insert a record for user A.
+	rec := store.Record{ID: newID(), Role: "user", Content: "user-A secret",
+		OccurredAt: base, CreatedAt: base}
+	if err := s.Records().Append(ctx, scopeA, []store.Record{rec}); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+	// User B must not see user A's record.
+	if _, err := s.Records().Get(ctx, scopeB, rec.ID); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("Records.Get cross-user: got err=%v want ErrNotFound", err)
+	}
+	list, _, _ := s.Records().ListBySession(ctx, scopeB, "", "", 10, "")
+	for _, r := range list {
+		if r.ID == rec.ID {
+			t.Error("Records.ListBySession cross-user: saw user-A record in user-B list")
+		}
+	}
+
+	// Insert a memory for user A.
+	mem := store.Memory{ID: newID(), Kind: "fact", Content: "user-A memory",
+		Status: "active", TrustSource: "llm_extracted", Stability: 1.0,
+		CreatedAt: base, UpdatedAt: base}
+	if err := s.Memories().Insert(ctx, scopeA, mem); err != nil {
+		t.Fatalf("Insert memory: %v", err)
+	}
+	if _, err := s.Memories().Get(ctx, scopeB, mem.ID); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("Memories.Get cross-user: got err=%v want ErrNotFound", err)
+	}
+	mems, _, _ := s.Memories().ListByStatus(ctx, scopeB, "active", 10, "")
+	for _, m := range mems {
+		if m.ID == mem.ID {
+			t.Error("Memories.ListByStatus cross-user: saw user-A memory in user-B list")
+		}
+	}
+
+	// Insert a topic for user A.
+	topic := store.Topic{ID: newID(), Key: "ua-topic", Description: "secret",
+		Status: "active", CreatedAt: base, UpdatedAt: base}
+	if err := s.Topics().Upsert(ctx, scopeA, topic); err != nil {
+		t.Fatalf("Upsert topic: %v", err)
+	}
+	if _, err := s.Topics().Get(ctx, scopeB, "ua-topic"); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("Topics.Get cross-user: got err=%v want ErrNotFound", err)
+	}
+	topics, _ := s.Topics().List(ctx, scopeB)
+	for _, tp := range topics {
+		if tp.ID == topic.ID {
+			t.Error("Topics.List cross-user: saw user-A topic in user-B list")
+		}
+	}
+
+	// Insert a buffer item for user A.
+	bItem := store.BufferItem{ID: newID(), BufferKey: "ua-buf", TokenEstimate: 1, CreatedAt: base}
+	if err := s.Buffers().AppendItem(ctx, scopeA, bItem); err != nil {
+		t.Fatalf("AppendItem: %v", err)
+	}
+	due, _ := s.Buffers().ListDue(ctx, scopeB, "ua-buf", 10)
+	for _, it := range due {
+		if it.ID == bItem.ID {
+			t.Error("Buffers.ListDue cross-user: saw user-A item in user-B list")
+		}
+	}
+
+	// Links are tenant-scoped only (no user/project/session columns in the links
+	// table). User B in the same tenant CAN see links inserted by user A — this
+	// is intentional; see the ListLinks doc comment.
+}
+
+// testCrossProjectIsolation verifies that a narrower project scope hides data
+// from a different project in the same tenant.
+func testCrossProjectIsolation(t *testing.T, factory Factory) {
+	t.Helper()
+	s, cleanup := factory()
+	defer cleanup()
+	ctx := context.Background()
+	tenant := "t-" + newID()
+	scopeA := identity.Scope{Tenant: tenant, Project: "proj-A"}
+	scopeB := identity.Scope{Tenant: tenant, Project: "proj-B"}
+
+	base := nowMs()
+
+	rec := store.Record{ID: newID(), Role: "user", Content: "proj-A secret",
+		OccurredAt: base, CreatedAt: base}
+	if err := s.Records().Append(ctx, scopeA, []store.Record{rec}); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+	if _, err := s.Records().Get(ctx, scopeB, rec.ID); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("Records.Get cross-project: got err=%v want ErrNotFound", err)
+	}
+	list, _, _ := s.Records().ListBySession(ctx, scopeB, "", "", 10, "")
+	for _, r := range list {
+		if r.ID == rec.ID {
+			t.Error("Records.ListBySession cross-project: saw proj-A record in proj-B list")
+		}
+	}
+
+	mem := store.Memory{ID: newID(), Kind: "fact", Content: "proj-A memory",
+		Status: "active", TrustSource: "llm_extracted", Stability: 1.0,
+		CreatedAt: base, UpdatedAt: base}
+	if err := s.Memories().Insert(ctx, scopeA, mem); err != nil {
+		t.Fatalf("Insert memory: %v", err)
+	}
+	if _, err := s.Memories().Get(ctx, scopeB, mem.ID); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("Memories.Get cross-project: got err=%v want ErrNotFound", err)
+	}
+
+	topic := store.Topic{ID: newID(), Key: "pa-topic", Description: "secret",
+		Status: "active", CreatedAt: base, UpdatedAt: base}
+	if err := s.Topics().Upsert(ctx, scopeA, topic); err != nil {
+		t.Fatalf("Upsert topic: %v", err)
+	}
+	if _, err := s.Topics().Get(ctx, scopeB, "pa-topic"); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("Topics.Get cross-project: got err=%v want ErrNotFound", err)
+	}
+}
+
+// testCrossSessionIsolation verifies that a session-scoped ListBySession hides
+// records from a different session in the same tenant.
+func testCrossSessionIsolation(t *testing.T, factory Factory) {
+	t.Helper()
+	s, cleanup := factory()
+	defer cleanup()
+	ctx := context.Background()
+	tenant := "t-" + newID()
+	scopeA := identity.Scope{Tenant: tenant, Session: "sess-A"}
+	scopeB := identity.Scope{Tenant: tenant, Session: "sess-B"}
+
+	base := nowMs()
+	rec := store.Record{ID: newID(), Role: "user", Content: "sess-A secret",
+		OccurredAt: base, CreatedAt: base}
+	if err := s.Records().Append(ctx, scopeA, []store.Record{rec}); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+
+	// scopeB filters by session_id = sess-B, so sess-A records must not appear.
+	list, _, _ := s.Records().ListBySession(ctx, scopeB, "sess-B", "", 10, "")
+	for _, r := range list {
+		if r.ID == rec.ID {
+			t.Error("Records.ListBySession cross-session: saw sess-A record in sess-B list")
+		}
+	}
+}
+
+// =============================================================================
+// Q1 — composite cursor: no rows lost or duplicated under timestamp ties
+// =============================================================================
+
+// testCursorTimestampTieRecords inserts ≥5 records sharing one occurred_at,
+// paginates with a page size that straddles the tie, and asserts every row is
+// returned exactly once.
+func testCursorTimestampTieRecords(t *testing.T, factory Factory) {
+	t.Helper()
+	s, cleanup := factory()
+	defer cleanup()
+	ctx := context.Background()
+	scope := tenantScope("t-" + newID())
+
+	const n = 6
+	const limit = 3
+	ts := nowMs()
+
+	var recs []store.Record
+	for i := 0; i < n; i++ {
+		recs = append(recs, store.Record{
+			ID: newID(), Role: "user", Content: fmt.Sprintf("tie%d", i),
+			OccurredAt: ts, // all share the same timestamp
+			CreatedAt:  nowMs(),
+		})
+	}
+	if err := s.Records().Append(ctx, scope, recs); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+
+	seen := make(map[string]int)
+	cursor := ""
+	for {
+		page, next, err := s.Records().ListBySession(ctx, scope, "", "", limit, cursor)
+		if err != nil {
+			t.Fatalf("ListBySession: %v", err)
+		}
+		for _, r := range page {
+			seen[r.ID]++
+		}
+		cursor = next
+		if cursor == "" {
+			break
+		}
+	}
+	if len(seen) != n {
+		t.Errorf("tie cursor (records): got %d distinct rows want %d", len(seen), n)
+	}
+	for id, cnt := range seen {
+		if cnt != 1 {
+			t.Errorf("tie cursor (records): row %q seen %d times want 1", id, cnt)
+		}
+	}
+}
+
+// testCursorTimestampTieMemories is the same tie test for memories.ListByStatus.
+func testCursorTimestampTieMemories(t *testing.T, factory Factory) {
+	t.Helper()
+	s, cleanup := factory()
+	defer cleanup()
+	ctx := context.Background()
+	scope := tenantScope("t-" + newID())
+
+	const n = 6
+	const limit = 3
+	ts := nowMs()
+
+	for i := 0; i < n; i++ {
+		mem := store.Memory{
+			ID: newID(), Kind: "fact", Content: fmt.Sprintf("tie%d", i),
+			Status: "active", TrustSource: "llm_extracted", Stability: 1.0,
+			CreatedAt: ts, // all share the same timestamp
+			UpdatedAt: ts,
+		}
+		if err := s.Memories().Insert(ctx, scope, mem); err != nil {
+			t.Fatalf("Insert %d: %v", i, err)
+		}
+	}
+
+	seen := make(map[string]int)
+	cursor := ""
+	for {
+		page, next, err := s.Memories().ListByStatus(ctx, scope, "active", limit, cursor)
+		if err != nil {
+			t.Fatalf("ListByStatus: %v", err)
+		}
+		for _, m := range page {
+			seen[m.ID]++
+		}
+		cursor = next
+		if cursor == "" {
+			break
+		}
+	}
+	if len(seen) != n {
+		t.Errorf("tie cursor (memories): got %d distinct rows want %d", len(seen), n)
+	}
+	for id, cnt := range seen {
+		if cnt != 1 {
+			t.Errorf("tie cursor (memories): row %q seen %d times want 1", id, cnt)
+		}
+	}
+}
+
+// testCursorTimestampTieEvents is the same tie test for events.List.
+func testCursorTimestampTieEvents(t *testing.T, factory Factory) {
+	t.Helper()
+	s, cleanup := factory()
+	defer cleanup()
+	ctx := context.Background()
+	scope := tenantScope("t-" + newID())
+
+	const n = 6
+	const limit = 3
+	ts := nowMs()
+
+	for i := 0; i < n; i++ {
+		ev := store.Event{
+			ID:        newID(),
+			Type:      fmt.Sprintf("tie.%d", i),
+			CreatedAt: ts, // all share the same timestamp
+		}
+		if err := s.Events().Emit(ctx, scope, ev); err != nil {
+			t.Fatalf("Emit %d: %v", i, err)
+		}
+	}
+
+	seen := make(map[string]int)
+	cursor := ""
+	for {
+		page, next, err := s.Events().List(ctx, scope, limit, cursor)
+		if err != nil {
+			t.Fatalf("List: %v", err)
+		}
+		for _, ev := range page {
+			seen[ev.ID]++
+		}
+		cursor = next
+		if cursor == "" {
+			break
+		}
+	}
+	if len(seen) != n {
+		t.Errorf("tie cursor (events): got %d distinct rows want %d", len(seen), n)
+	}
+	for id, cnt := range seen {
+		if cnt != 1 {
+			t.Errorf("tie cursor (events): row %q seen %d times want 1", id, cnt)
+		}
+	}
+}
+
+// =============================================================================
+// O1 — concurrent job-marker atomicity
+// =============================================================================
+
+// testOpsJobMarkerConcurrent launches N goroutines calling CheckAndSetJobMarker
+// for the same (job, marker) concurrently. Exactly one must receive true.
+// On SQLite the single-writer goroutine serializes writes; on PostgreSQL the
+// INSERT ... ON CONFLICT DO NOTHING is inherently atomic.
+func testOpsJobMarkerConcurrent(t *testing.T, factory Factory) {
+	t.Helper()
+	s, cleanup := factory()
+	defer cleanup()
+	ctx := context.Background()
+
+	const N = 8
+	job, marker := "concurrent-sweep", newID()
+
+	var wg sync.WaitGroup
+	var winners atomic.Int64
+	for i := 0; i < N; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			set, err := s.Ops().CheckAndSetJobMarker(ctx, job, marker, nowMs())
+			if err != nil {
+				t.Errorf("CheckAndSetJobMarker: %v", err)
+				return
+			}
+			if set {
+				winners.Add(1)
+			}
+		}()
+	}
+	wg.Wait()
+
+	if winners.Load() != 1 {
+		t.Errorf("concurrent job marker: %d goroutines won, want exactly 1", winners.Load())
 	}
 }

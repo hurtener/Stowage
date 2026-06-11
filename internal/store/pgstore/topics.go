@@ -15,8 +15,19 @@ import (
 type topicStore struct{ s *pgStore }
 
 // Upsert inserts or updates a topic keyed by (scope, key).
-// Uses UPDATE-then-INSERT for correct NULL-safe composite key handling.
+//
+// Uses a single atomic INSERT ... ON CONFLICT ... DO UPDATE (M2).
+// The UNIQUE NULLS NOT DISTINCT constraint on topics ensures that NULL-valued
+// scope fields (project_id, user_id, session_id) are treated as equal for
+// conflict detection, making the single-statement upsert TOCTOU-free.
+//
+// SQLite uses UPDATE-then-INSERT serialized through its single writer goroutine
+// instead (see sqlitestore/topics.go) — the NULLS NOT DISTINCT syntax is only
+// available in SQLite 3.45+ and is not used in the modernc pure-Go driver.
 func (t *topicStore) Upsert(ctx context.Context, scope identity.Scope, topic store.Topic) error {
+	if scope.Tenant == "" { // S1: fail closed
+		return store.ErrScopeRequired
+	}
 	now := time.Now().UnixMilli()
 	if topic.CreatedAt == 0 {
 		topic.CreatedAt = now
@@ -24,50 +35,32 @@ func (t *topicStore) Upsert(ctx context.Context, scope identity.Scope, topic sto
 	if topic.UpdatedAt == 0 {
 		topic.UpdatedAt = now
 	}
-
-	tx, err := t.s.pool.Begin(ctx)
-	if err != nil {
-		return fmt.Errorf("pgstore: upsert topic begin: %w", err)
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
-
-	// Try UPDATE first (handles existing row by composite key regardless of id).
 	pj := nullStr(scope.Project)
 	us := nullStr(scope.User)
 	se := nullStr(scope.Session)
-	tag, err := tx.Exec(ctx, `
-		UPDATE topics SET description=$1, status=$2, pack=$3, updated_at=$4
-		WHERE tenant_id=$5
-		  AND project_id IS NOT DISTINCT FROM $6
-		  AND user_id    IS NOT DISTINCT FROM $7
-		  AND session_id IS NOT DISTINCT FROM $8
-		  AND key=$9`,
-		topic.Description, topic.Status, topic.Pack, topic.UpdatedAt,
-		scope.Tenant, pj, us, se, topic.Key,
-	)
-	if err != nil {
-		return fmt.Errorf("pgstore: upsert topic update: %w", err)
-	}
-	if tag.RowsAffected() > 0 {
-		return tx.Commit(ctx)
-	}
-
-	// INSERT new row.
-	if _, err := tx.Exec(ctx, `
+	_, err := t.s.pool.Exec(ctx, `
 		INSERT INTO topics
-			(id, tenant_id, project_id, user_id, session_id, key, description, status, pack, created_at, updated_at)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
+			(id, tenant_id, project_id, user_id, session_id,
+			 key, description, status, pack, created_at, updated_at)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+		ON CONFLICT (tenant_id, project_id, user_id, session_id, key)
+		DO UPDATE SET
+			description = EXCLUDED.description,
+			status      = EXCLUDED.status,
+			pack        = EXCLUDED.pack,
+			updated_at  = EXCLUDED.updated_at`,
 		topic.ID, scope.Tenant, pj, us, se,
 		topic.Key, topic.Description, topic.Status, topic.Pack,
 		topic.CreatedAt, topic.UpdatedAt,
-	); err != nil {
-		return fmt.Errorf("pgstore: upsert topic insert: %w", err)
-	}
-	return tx.Commit(ctx)
+	)
+	return err
 }
 
 func (t *topicStore) Get(ctx context.Context, scope identity.Scope, key string) (*store.Topic, error) {
-	whereClause, args, next := buildScopeWhere(scope, 1)
+	whereClause, args, next, err := buildScopeWhere(scope, 1)
+	if err != nil {
+		return nil, err
+	}
 	args = append(args, key)
 	row := t.s.pool.QueryRow(ctx,
 		`SELECT id, tenant_id, COALESCE(project_id,''), COALESCE(user_id,''), COALESCE(session_id,''),
@@ -76,7 +69,7 @@ func (t *topicStore) Get(ctx context.Context, scope identity.Scope, key string) 
 		args...,
 	)
 	var topic store.Topic
-	err := row.Scan(
+	err = row.Scan(
 		&topic.ID, &topic.TenantID, &topic.ProjectID, &topic.UserID, &topic.SessionID,
 		&topic.Key, &topic.Description, &topic.Status, &topic.Pack,
 		&topic.CreatedAt, &topic.UpdatedAt,
@@ -91,7 +84,10 @@ func (t *topicStore) Get(ctx context.Context, scope identity.Scope, key string) 
 }
 
 func (t *topicStore) List(ctx context.Context, scope identity.Scope) ([]store.Topic, error) {
-	whereClause, args, _ := buildScopeWhere(scope, 1)
+	whereClause, args, _, err := buildScopeWhere(scope, 1)
+	if err != nil {
+		return nil, err
+	}
 	rows, err := t.s.pool.Query(ctx,
 		`SELECT id, tenant_id, COALESCE(project_id,''), COALESCE(user_id,''), COALESCE(session_id,''),
 		        key, description, status, pack, created_at, updated_at
@@ -119,14 +115,17 @@ func (t *topicStore) List(ctx context.Context, scope identity.Scope) ([]store.To
 }
 
 func (t *topicStore) Delete(ctx context.Context, scope identity.Scope, key string) error {
-	whereClause, whereArgs, next := buildScopeWhere(scope, 3)
+	whereClause, whereArgs, next, err := buildScopeWhere(scope, 3)
+	if err != nil {
+		return err
+	}
 	args := []interface{}{
 		"deleted",
 		time.Now().UnixMilli(),
 	}
 	args = append(args, whereArgs...)
 	args = append(args, key)
-	_, err := t.s.pool.Exec(ctx,
+	_, err = t.s.pool.Exec(ctx,
 		fmt.Sprintf(`UPDATE topics SET status=$1, updated_at=$2 WHERE %s AND key=$%d`, whereClause, next),
 		args...,
 	)

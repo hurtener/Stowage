@@ -13,6 +13,9 @@ import (
 type eventStore struct{ s *sqliteStore }
 
 func (e *eventStore) Emit(ctx context.Context, scope identity.Scope, ev store.Event) error {
+	if scope.Tenant == "" { // S1: fail closed
+		return store.ErrScopeRequired
+	}
 	return e.s.exec(ctx, func(tx *sql.Tx) error {
 		now := time.Now().UnixMilli()
 		if ev.CreatedAt == 0 {
@@ -33,15 +36,24 @@ func (e *eventStore) Emit(ctx context.Context, scope identity.Scope, ev store.Ev
 	})
 }
 
+// List returns events ordered by (created_at, id) ASC.
+// cursor is an opaque "<millis>:<id>" pagination token (Q1 composite cursor).
 func (e *eventStore) List(ctx context.Context, scope identity.Scope, limit int, cursor string) ([]store.Event, string, error) {
-	whereClause, args := buildScopeWhere(scope)
+	whereClause, args, err := buildScopeWhere(scope)
+	if err != nil {
+		return nil, "", err
+	}
 	if cursor != "" {
-		whereClause += " AND created_at > (SELECT created_at FROM events WHERE id = ?)"
-		args = append(args, cursor)
+		ts, cid, perr := parseCursor(cursor)
+		if perr != nil {
+			return nil, "", perr
+		}
+		whereClause += " AND (created_at > ? OR (created_at = ? AND id > ?))"
+		args = append(args, ts, ts, cid)
 	}
 	args = append(args, limit+1)
 
-	q := `SELECT id, tenant_id, COALESCE(project_id,''), COALESCE(user_id,''), COALESCE(session_id,''), type, subject_id, reason, payload, created_at FROM events WHERE ` + whereClause + ` ORDER BY created_at ASC LIMIT ?` //nolint:gosec // whereClause is built from controlled helper, not user input
+	q := `SELECT id, tenant_id, COALESCE(project_id,''), COALESCE(user_id,''), COALESCE(session_id,''), type, subject_id, reason, payload, created_at FROM events WHERE ` + whereClause + ` ORDER BY created_at ASC, id ASC LIMIT ?` //nolint:gosec // whereClause is built from controlled helper, not user input
 	rows, err := e.s.rdb.QueryContext(ctx, q, args...)
 	if err != nil {
 		return nil, "", fmt.Errorf("sqlitestore: list events: %w", err)
@@ -64,7 +76,7 @@ func (e *eventStore) List(ctx context.Context, scope identity.Scope, limit int, 
 	}
 	var nextCursor string
 	if len(out) > limit {
-		nextCursor = out[limit].ID
+		nextCursor = encodeCursor(out[limit-1].CreatedAt, out[limit-1].ID)
 		out = out[:limit]
 	}
 	return out, nextCursor, nil

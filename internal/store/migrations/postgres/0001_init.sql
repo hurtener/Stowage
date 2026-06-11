@@ -123,7 +123,7 @@ CREATE TABLE IF NOT EXISTS injections (
     rank        INTEGER          NOT NULL DEFAULT 0,
     score       DOUBLE PRECISION NOT NULL DEFAULT 0.0,
     lane        TEXT             NOT NULL DEFAULT '',
-    was_cited   BOOLEAN          NOT NULL DEFAULT FALSE,
+    was_cited   INTEGER          NOT NULL DEFAULT 0,   -- M1: INTEGER 0/1 matches sqlite (D-037 uniform semantics)
     feedback    TEXT             NOT NULL DEFAULT '',
     created_at  BIGINT           NOT NULL
 );
@@ -194,7 +194,10 @@ CREATE TABLE IF NOT EXISTS topics (
     pack        TEXT   NOT NULL DEFAULT '',
     created_at  BIGINT NOT NULL,
     updated_at  BIGINT NOT NULL,
-    UNIQUE(tenant_id, project_id, user_id, session_id, key)
+    -- M2: NULLS NOT DISTINCT (postgres 17) makes NULL fields equal for conflict
+    -- detection, enabling the single-statement INSERT...ON CONFLICT upsert in
+    -- pgstore/topics.go without TOCTOU. SQLite uses UPDATE-then-INSERT instead.
+    UNIQUE NULLS NOT DISTINCT (tenant_id, project_id, user_id, session_id, key)
 );
 
 CREATE TABLE IF NOT EXISTS buffer_items (

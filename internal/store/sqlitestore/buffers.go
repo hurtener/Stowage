@@ -13,6 +13,9 @@ import (
 type bufferStore struct{ s *sqliteStore }
 
 func (b *bufferStore) AppendItem(ctx context.Context, scope identity.Scope, item store.BufferItem) error {
+	if scope.Tenant == "" { // S1: fail closed
+		return store.ErrScopeRequired
+	}
 	return b.s.exec(ctx, func(tx *sql.Tx) error {
 		now := time.Now().UnixMilli()
 		if item.CreatedAt == 0 {
@@ -31,7 +34,10 @@ func (b *bufferStore) AppendItem(ctx context.Context, scope identity.Scope, item
 }
 
 func (b *bufferStore) ListDue(ctx context.Context, scope identity.Scope, bufferKey string, limit int) ([]store.BufferItem, error) {
-	whereClause, args := buildScopeWhere(scope)
+	whereClause, args, err := buildScopeWhere(scope)
+	if err != nil {
+		return nil, err
+	}
 	args = append(args, bufferKey, limit)
 	q := `SELECT id, tenant_id, COALESCE(project_id,''), COALESCE(user_id,''), COALESCE(session_id,''), buffer_key, branch_id, record_id, token_estimate, flushed_at, created_at FROM buffer_items WHERE ` + whereClause + ` AND buffer_key = ? AND flushed_at = 0 ORDER BY created_at ASC LIMIT ?` //nolint:gosec // whereClause is built from controlled helper, not user input
 	rows, err := b.s.rdb.QueryContext(ctx, q, args...)
@@ -44,10 +50,13 @@ func (b *bufferStore) ListDue(ctx context.Context, scope identity.Scope, bufferK
 
 // Flush atomically marks all unflushed items for bufferKey as flushed.
 func (b *bufferStore) Flush(ctx context.Context, scope identity.Scope, bufferKey string) ([]store.BufferItem, error) {
+	whereClause, whereArgs, err := buildScopeWhere(scope)
+	if err != nil {
+		return nil, err
+	}
 	var flushed []store.BufferItem
-	whereClause, whereArgs := buildScopeWhere(scope)
 
-	err := b.s.exec(ctx, func(tx *sql.Tx) error {
+	err = b.s.exec(ctx, func(tx *sql.Tx) error {
 		// Select unflushed items (inside the transaction = atomic).
 		selArgs := append(append([]interface{}(nil), whereArgs...), bufferKey)
 		qf := `SELECT id, tenant_id, COALESCE(project_id,''), COALESCE(user_id,''), COALESCE(session_id,''), buffer_key, branch_id, record_id, token_estimate, flushed_at, created_at FROM buffer_items WHERE ` + whereClause + ` AND buffer_key = ? AND flushed_at = 0 ORDER BY created_at ASC` //nolint:gosec // whereClause is built from controlled helper, not user input

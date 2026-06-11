@@ -14,9 +14,16 @@ import (
 type topicStore struct{ s *sqliteStore }
 
 // Upsert inserts or updates a topic keyed by (scope, key).
-// Uses UPDATE-then-INSERT to handle NULL-valued scope fields correctly
-// and avoid primary-key / composite-key dual-conflict edge cases.
+//
+// Uses UPDATE-then-INSERT inside a single serialized writer-goroutine transaction.
+// This is safe on SQLite because the single writer goroutine serializes all
+// mutations, making the two-step UPDATE+INSERT atomic from callers' perspective.
+// PostgreSQL uses a single INSERT ... ON CONFLICT ... DO UPDATE instead
+// (see pgstore/topics.go) because it cannot rely on serialization for isolation.
 func (t *topicStore) Upsert(ctx context.Context, scope identity.Scope, topic store.Topic) error {
+	if scope.Tenant == "" { // S1: fail closed
+		return store.ErrScopeRequired
+	}
 	return t.s.exec(ctx, func(tx *sql.Tx) error {
 		now := time.Now().UnixMilli()
 		if topic.CreatedAt == 0 {
@@ -63,12 +70,15 @@ func (t *topicStore) Upsert(ctx context.Context, scope identity.Scope, topic sto
 }
 
 func (t *topicStore) Get(ctx context.Context, scope identity.Scope, key string) (*store.Topic, error) {
-	whereClause, args := buildScopeWhere(scope)
+	whereClause, args, err := buildScopeWhere(scope)
+	if err != nil {
+		return nil, err
+	}
 	args = append(args, key)
 	qtg := `SELECT id, tenant_id, COALESCE(project_id,''), COALESCE(user_id,''), COALESCE(session_id,''), key, description, status, pack, created_at, updated_at FROM topics WHERE ` + whereClause + ` AND key = ? AND status != 'deleted'` //nolint:gosec // whereClause is built from controlled helper, not user input
 	row := t.s.rdb.QueryRowContext(ctx, qtg, args...)
 	var topic store.Topic
-	err := row.Scan(
+	err = row.Scan(
 		&topic.ID, &topic.TenantID, &topic.ProjectID, &topic.UserID, &topic.SessionID,
 		&topic.Key, &topic.Description, &topic.Status, &topic.Pack,
 		&topic.CreatedAt, &topic.UpdatedAt,
@@ -83,7 +93,10 @@ func (t *topicStore) Get(ctx context.Context, scope identity.Scope, key string) 
 }
 
 func (t *topicStore) List(ctx context.Context, scope identity.Scope) ([]store.Topic, error) {
-	whereClause, args := buildScopeWhere(scope)
+	whereClause, args, err := buildScopeWhere(scope)
+	if err != nil {
+		return nil, err
+	}
 	qt := `SELECT id, tenant_id, COALESCE(project_id,''), COALESCE(user_id,''), COALESCE(session_id,''), key, description, status, pack, created_at, updated_at FROM topics WHERE ` + whereClause + ` AND status != 'deleted' ORDER BY created_at ASC` //nolint:gosec // whereClause is built from controlled helper, not user input
 	rows, err := t.s.rdb.QueryContext(ctx, qt, args...)
 	if err != nil {
@@ -107,7 +120,10 @@ func (t *topicStore) List(ctx context.Context, scope identity.Scope) ([]store.To
 }
 
 func (t *topicStore) Delete(ctx context.Context, scope identity.Scope, key string) error {
-	whereClause, whereArgs := buildScopeWhere(scope)
+	whereClause, whereArgs, err := buildScopeWhere(scope)
+	if err != nil {
+		return err
+	}
 	return t.s.exec(ctx, func(tx *sql.Tx) error {
 		now := time.Now().UnixMilli()
 		queryArgs := []interface{}{now}

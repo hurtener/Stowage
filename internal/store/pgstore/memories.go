@@ -15,6 +15,9 @@ import (
 type memoryStore struct{ s *pgStore }
 
 func (m *memoryStore) Insert(ctx context.Context, scope identity.Scope, mem store.Memory) error {
+	if scope.Tenant == "" { // S1: fail closed
+		return store.ErrScopeRequired
+	}
 	now := time.Now().UnixMilli()
 	if mem.CreatedAt == 0 {
 		mem.CreatedAt = now
@@ -43,7 +46,10 @@ func (m *memoryStore) Insert(ctx context.Context, scope identity.Scope, mem stor
 }
 
 func (m *memoryStore) Get(ctx context.Context, scope identity.Scope, id string) (*store.Memory, error) {
-	whereClause, args, next := buildScopeWhere(scope, 1)
+	whereClause, args, next, err := buildScopeWhere(scope, 1)
+	if err != nil {
+		return nil, err
+	}
 	args = append(args, id)
 	row := m.s.pool.QueryRow(ctx,
 		`SELECT id, tenant_id, COALESCE(project_id,''), COALESCE(user_id,''), COALESCE(session_id,''),
@@ -68,7 +74,6 @@ func (m *memoryStore) Update(ctx context.Context, scope identity.Scope, mem stor
 	if mem.UpdatedAt == 0 {
 		mem.UpdatedAt = now
 	}
-	whereClause, whereArgs, next := buildScopeWhere(scope, 1)
 	// Build update args: mem fields first, then scope args, then id.
 	args := []interface{}{
 		mem.Kind, mem.Content, mem.Context, mem.Status,
@@ -79,14 +84,13 @@ func (m *memoryStore) Update(ctx context.Context, scope identity.Scope, mem stor
 		mem.UpdatedAt,
 	}
 	baseIdx := len(args) + 1
-	// Rebuild scope where with correct indices.
-	whereClause2, scopeArgs, finalNext := buildScopeWhere(scope, baseIdx)
+	whereClause, scopeArgs, finalNext, err := buildScopeWhere(scope, baseIdx)
+	if err != nil {
+		return err
+	}
 	args = append(args, scopeArgs...)
 	args = append(args, mem.ID)
-	_ = whereClause
-	_ = whereArgs
-	_ = next
-	_, err := m.s.pool.Exec(ctx,
+	_, err = m.s.pool.Exec(ctx,
 		fmt.Sprintf(`UPDATE memories SET
 			kind=$1, content=$2, context=$3, status=$4,
 			importance=$5, confidence=$6, trust_source=$7,
@@ -94,33 +98,46 @@ func (m *memoryStore) Update(ctx context.Context, scope identity.Scope, mem stor
 			stability=$14, last_accessed_at=$15, valid_from=$16, valid_until=$17,
 			episode_id=$18, supersedes_id=$19, superseded_by_id=$20, privacy_zone=$21,
 			updated_at=$22
-			WHERE %s AND id=$%d`, whereClause2, finalNext),
+			WHERE %s AND id=$%d`, whereClause, finalNext),
 		args...,
 	)
 	return err
 }
 
 func (m *memoryStore) SetStatus(ctx context.Context, scope identity.Scope, id string, status string, updatedAt int64) error {
-	whereClause, args, next := buildScopeWhere(scope, 3)
+	whereClause, args, next, err := buildScopeWhere(scope, 3)
+	if err != nil {
+		return err
+	}
 	args = append([]interface{}{status, updatedAt}, args...)
 	args = append(args, id)
-	_, err := m.s.pool.Exec(ctx,
+	_, err = m.s.pool.Exec(ctx,
 		fmt.Sprintf(`UPDATE memories SET status=$1, updated_at=$2 WHERE %s AND id=$%d`, whereClause, next),
 		args...,
 	)
 	return err
 }
 
+// ListByStatus returns memories ordered by (created_at, id) ASC.
+// cursor is an opaque "<millis>:<id>" pagination token (Q1 composite cursor).
 func (m *memoryStore) ListByStatus(ctx context.Context, scope identity.Scope, status string, limit int, cursor string) ([]store.Memory, string, error) {
-	whereClause, args, next := buildScopeWhere(scope, 1)
+	whereClause, args, next, err := buildScopeWhere(scope, 1)
+	if err != nil {
+		return nil, "", err
+	}
 	whereClause += fmt.Sprintf(` AND status = $%d`, next)
 	args = append(args, status)
 	next++
 
+	// Q1: composite cursor — PostgreSQL row-value comparison (created_at, id) > ($n, $m).
 	if cursor != "" {
-		whereClause += fmt.Sprintf(` AND created_at > (SELECT created_at FROM memories WHERE id = $%d)`, next)
-		args = append(args, cursor)
-		next++
+		ts, cid, perr := parseCursor(cursor)
+		if perr != nil {
+			return nil, "", perr
+		}
+		whereClause += fmt.Sprintf(` AND (created_at, id) > ($%d, $%d)`, next, next+1)
+		args = append(args, ts, cid)
+		next += 2
 	}
 	args = append(args, limit+1)
 
@@ -132,7 +149,7 @@ func (m *memoryStore) ListByStatus(ctx context.Context, scope identity.Scope, st
 		        stability, last_accessed_at, valid_from, valid_until,
 		        episode_id, supersedes_id, superseded_by_id, privacy_zone,
 		        created_at, updated_at
-		 FROM memories WHERE `+whereClause+fmt.Sprintf(` ORDER BY created_at ASC LIMIT $%d`, next),
+		 FROM memories WHERE `+whereClause+fmt.Sprintf(` ORDER BY created_at ASC, id ASC LIMIT $%d`, next),
 		args...,
 	)
 	if err != nil {
@@ -153,13 +170,16 @@ func (m *memoryStore) ListByStatus(ctx context.Context, scope identity.Scope, st
 	}
 	var nextCursor string
 	if len(out) > limit {
-		nextCursor = out[limit].ID
+		nextCursor = encodeCursor(out[limit-1].CreatedAt, out[limit-1].ID)
 		out = out[:limit]
 	}
 	return out, nextCursor, nil
 }
 
 func (m *memoryStore) InsertLinks(ctx context.Context, scope identity.Scope, links []store.Link) error {
+	if scope.Tenant == "" { // S1: fail closed
+		return store.ErrScopeRequired
+	}
 	if len(links) == 0 {
 		return nil
 	}
@@ -185,7 +205,16 @@ func (m *memoryStore) InsertLinks(ctx context.Context, scope identity.Scope, lin
 	return tx.Commit(ctx)
 }
 
+// ListLinks returns edges matching fromMemoryID or toMemoryID within the tenant.
+//
+// Note: links are scoped by tenant_id only (the links table has no project_id,
+// user_id or session_id columns). This is by design — links connect memories
+// that may span users/projects within a tenant. scope.Project, scope.User and
+// scope.Session are intentionally ignored here.
 func (m *memoryStore) ListLinks(ctx context.Context, scope identity.Scope, fromMemoryID, toMemoryID string) ([]store.Link, error) {
+	if scope.Tenant == "" { // S1: fail closed
+		return nil, store.ErrScopeRequired
+	}
 	clause := "tenant_id = $1"
 	args := []interface{}{scope.Tenant}
 	next := 2
@@ -219,6 +248,9 @@ func (m *memoryStore) ListLinks(ctx context.Context, scope identity.Scope, fromM
 }
 
 func (m *memoryStore) AddProvenance(ctx context.Context, scope identity.Scope, provRows []store.Provenance) error {
+	if scope.Tenant == "" { // S1: fail closed
+		return store.ErrScopeRequired
+	}
 	if len(provRows) == 0 {
 		return nil
 	}

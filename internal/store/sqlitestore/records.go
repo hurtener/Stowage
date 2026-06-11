@@ -15,6 +15,9 @@ type recordStore struct{ s *sqliteStore }
 
 // Append stores records. Duplicate IDs are silently ignored (idempotent).
 func (r *recordStore) Append(ctx context.Context, scope identity.Scope, records []store.Record) error {
+	if scope.Tenant == "" { // S1: fail closed
+		return store.ErrScopeRequired
+	}
 	if len(records) == 0 {
 		return nil
 	}
@@ -46,7 +49,10 @@ func (r *recordStore) Append(ctx context.Context, scope identity.Scope, records 
 
 // Get returns a record by ID within scope.
 func (r *recordStore) Get(ctx context.Context, scope identity.Scope, id string) (*store.Record, error) {
-	whereClause, args := buildScopeWhere(scope)
+	whereClause, args, err := buildScopeWhere(scope)
+	if err != nil {
+		return nil, err
+	}
 	args = append(args, id)
 	qr := `SELECT id, tenant_id, COALESCE(project_id,''), COALESCE(user_id,''), COALESCE(session_id,''), branch_id, role, content, source_agent, response_id, outcome, outcome_detail, token_estimate, occurred_at, created_at, processed_at FROM records WHERE ` + whereClause + ` AND id = ?` //nolint:gosec // whereClause is built from controlled helper, not user input
 	row := r.s.rdb.QueryRowContext(ctx, qr, args...)
@@ -57,10 +63,14 @@ func (r *recordStore) Get(ctx context.Context, scope identity.Scope, id string) 
 	return rec, err
 }
 
-// ListBySession returns records for a session/branch, ordered by occurred_at ASC.
-// If sessionID or branchID is empty, that filter is omitted.
+// ListBySession returns records for a session/branch, ordered by (occurred_at, id) ASC.
+// cursor is an opaque "<millis>:<id>" pagination token (Q1 composite cursor);
+// pass "" for the first page.
 func (r *recordStore) ListBySession(ctx context.Context, scope identity.Scope, sessionID, branchID string, limit int, cursor string) ([]store.Record, string, error) {
-	whereClause, args := buildScopeWhere(scope)
+	whereClause, args, err := buildScopeWhere(scope)
+	if err != nil {
+		return nil, "", err
+	}
 	if sessionID != "" {
 		whereClause += " AND session_id = ?"
 		args = append(args, sessionID)
@@ -69,13 +79,19 @@ func (r *recordStore) ListBySession(ctx context.Context, scope identity.Scope, s
 		whereClause += " AND branch_id = ?"
 		args = append(args, branchID)
 	}
+	// Q1: composite cursor — (occurred_at, id) tuple comparison avoids dropping
+	// rows when multiple records share the same occurred_at timestamp.
 	if cursor != "" {
-		whereClause += " AND occurred_at > (SELECT occurred_at FROM records WHERE id = ?)"
-		args = append(args, cursor)
+		ts, cid, perr := parseCursor(cursor)
+		if perr != nil {
+			return nil, "", perr
+		}
+		whereClause += " AND (occurred_at > ? OR (occurred_at = ? AND id > ?))"
+		args = append(args, ts, ts, cid)
 	}
 	args = append(args, limit+1)
 
-	q := `SELECT id, tenant_id, COALESCE(project_id,''), COALESCE(user_id,''), COALESCE(session_id,''), branch_id, role, content, source_agent, response_id, outcome, outcome_detail, token_estimate, occurred_at, created_at, processed_at FROM records WHERE ` + whereClause + ` ORDER BY occurred_at ASC LIMIT ?` //nolint:gosec // whereClause is built from controlled helper, not user input
+	q := `SELECT id, tenant_id, COALESCE(project_id,''), COALESCE(user_id,''), COALESCE(session_id,''), branch_id, role, content, source_agent, response_id, outcome, outcome_detail, token_estimate, occurred_at, created_at, processed_at FROM records WHERE ` + whereClause + ` ORDER BY occurred_at ASC, id ASC LIMIT ?` //nolint:gosec // whereClause is built from controlled helper, not user input
 	rows, err := r.s.rdb.QueryContext(ctx, q, args...)
 	if err != nil {
 		return nil, "", fmt.Errorf("sqlitestore: list records: %w", err)
@@ -150,6 +166,8 @@ func scanRecord(row rowScanner) (*store.Record, error) {
 	return &rec, nil
 }
 
+// collectRecords collects rows and produces a composite cursor from the last
+// item on the page (Q1: cursor = last item, filter is strictly-after).
 func collectRecords(rows *sql.Rows, limit int) ([]store.Record, string, error) {
 	var out []store.Record
 	for rows.Next() {
@@ -164,7 +182,9 @@ func collectRecords(rows *sql.Rows, limit int) ([]store.Record, string, error) {
 	}
 	var nextCursor string
 	if len(out) > limit {
-		nextCursor = out[limit].ID
+		// Cursor is the last item of the current page (not the overflow item),
+		// so page N+1 uses (occurred_at, id) > cursor to get items strictly after.
+		nextCursor = encodeCursor(out[limit-1].OccurredAt, out[limit-1].ID)
 		out = out[:limit]
 	}
 	return out, nextCursor, nil

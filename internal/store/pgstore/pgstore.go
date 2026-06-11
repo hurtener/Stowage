@@ -3,7 +3,7 @@
 // It uses github.com/jackc/pgx/v5/pgxpool. Tests are gated on the
 // STOWAGE_TEST_PG_DSN environment variable and skipped when unset.
 //
-// AdvisoryLock uses pg_try_advisory_lock / pg_advisory_unlock.
+// AdvisoryLock uses pg_advisory_lock (blocking) / pg_advisory_unlock.
 package pgstore
 
 import (

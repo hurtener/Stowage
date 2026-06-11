@@ -2,11 +2,9 @@ package pgstore
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"time"
 
-	"github.com/jackc/pgx/v5"
 	"github.com/oklog/ulid/v2"
 
 	"github.com/hurtener/stowage/internal/store"
@@ -82,33 +80,21 @@ func (o *opsStore) ResolveDeadLetter(ctx context.Context, id string, resolvedAt 
 	return nil
 }
 
+// CheckAndSetJobMarker atomically checks whether (job, marker) has run and sets
+// it if not (O1). Drops the pre-SELECT TOCTOU: a single INSERT ... ON CONFLICT
+// DO NOTHING is atomic — RowsAffected()==1 means newly set (run), 0 means
+// already present (skip).
 func (o *opsStore) CheckAndSetJobMarker(ctx context.Context, job, marker string, ranAt int64) (bool, error) {
-	tx, err := o.s.pool.Begin(ctx)
-	if err != nil {
-		return false, err
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
-
-	var existing int64
-	err = tx.QueryRow(ctx,
-		`SELECT ran_at FROM job_markers WHERE job = $1 AND marker = $2`, job, marker,
-	).Scan(&existing)
-	if err == nil {
-		return false, tx.Commit(ctx)
-	}
-	if !errors.Is(err, pgx.ErrNoRows) {
-		return false, fmt.Errorf("pgstore: check job marker: %w", err)
-	}
-
 	id := ulid.Make().String()
-	if _, err := tx.Exec(ctx,
+	tag, err := o.s.pool.Exec(ctx,
 		`INSERT INTO job_markers (id, job, marker, ran_at) VALUES ($1,$2,$3,$4)
 		 ON CONFLICT(job, marker) DO NOTHING`,
 		id, job, marker, ranAt,
-	); err != nil {
+	)
+	if err != nil {
 		return false, fmt.Errorf("pgstore: set job marker: %w", err)
 	}
-	return true, tx.Commit(ctx)
+	return tag.RowsAffected() == 1, nil
 }
 
 // AdvisoryLock acquires a PostgreSQL session-level advisory lock.

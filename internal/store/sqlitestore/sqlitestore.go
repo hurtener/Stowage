@@ -19,6 +19,7 @@ import (
 	"log/slog"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	// register the modernc pure-Go driver under the name "sqlite"
@@ -37,17 +38,22 @@ const (
 )
 
 // writeOp is a single write operation sent to the writer goroutine.
+// ctx is checked by the writer before executing fn (W2).
 type writeOp struct {
 	fn  func(*sql.Tx) error
 	res chan error
+	ctx context.Context
 }
 
 // sqliteStore implements store.Store backed by modernc.org/sqlite.
 type sqliteStore struct {
-	rdb     *sql.DB       // read pool
-	writeCh chan writeOp  // bounded write channel
-	done    chan struct{} // closed when writer exits
-	log     *slog.Logger
+	rdb       *sql.DB       // read pool
+	writeCh   chan writeOp  // bounded write channel
+	done      chan struct{} // closed when writer exits
+	quit      chan struct{} // closed by Close to fence new ops (W1)
+	closeOnce sync.Once     // ensures Close logic runs exactly once (W1)
+	execMu    sync.RWMutex  // read-held during the send window; write-held by Close (W1)
+	log       *slog.Logger
 }
 
 // Open opens a SQLite store at dsn and starts the writer goroutine.
@@ -76,6 +82,7 @@ func Open(ctx context.Context, cfg config.StoreConfig) (store.Store, error) {
 		rdb:     rdb,
 		writeCh: make(chan writeOp, writerChanSize),
 		done:    make(chan struct{}),
+		quit:    make(chan struct{}),
 		log:     slog.Default().With("driver", "sqlite"),
 	}
 
@@ -148,6 +155,12 @@ func (s *sqliteStore) writerLoop(wdb *sql.DB) {
 
 		batchErr := false
 		for _, op := range batch {
+			// W2: honour ctx cancellation before executing.
+			if op.ctx.Err() != nil {
+				_ = tx.Rollback()
+				batchErr = true
+				break
+			}
 			if err := op.fn(tx); err != nil {
 				_ = tx.Rollback()
 				batchErr = true
@@ -175,8 +188,14 @@ func (s *sqliteStore) writerLoop(wdb *sql.DB) {
 }
 
 // execBatch executes each op individually.
+// W2: checks op.ctx.Err() immediately before executing each op's fn;
+// if the context is already cancelled the fn is skipped and ctx.Err() is returned.
 func (s *sqliteStore) execBatch(wdb *sql.DB, batch []writeOp) {
 	for _, op := range batch {
+		if err := op.ctx.Err(); err != nil {
+			op.res <- err
+			continue
+		}
 		tx, err := wdb.Begin()
 		if err != nil {
 			op.res <- fmt.Errorf("sqlitestore: begin: %w", err)
@@ -196,11 +215,34 @@ func (s *sqliteStore) execBatch(wdb *sql.DB, batch []writeOp) {
 }
 
 // exec sends a write operation to the writer goroutine.
+//
+// Returns store.ErrClosed if Close has been called.
+// Returns ctx.Err() if the context is cancelled before the op is sent.
+//
+// Remaining window (W2): if ctx is cancelled after the op has been sent but
+// before the writer goroutine starts executing it, the writer checks op.ctx.Err()
+// and returns ctx.Err() without executing fn. If cancellation races the start of
+// execution (fn has begun running), the op may commit successfully before this
+// call returns ctx.Err() — callers must be idempotent.
 func (s *sqliteStore) exec(ctx context.Context, fn func(*sql.Tx) error) error {
-	op := writeOp{fn: fn, res: make(chan error, 1)}
+	// W1: hold the read lock only for the send window, not while blocking on result.
+	// Close() takes the write lock after closing quit, so no send races a close.
+	s.execMu.RLock()
+	select {
+	case <-s.quit:
+		s.execMu.RUnlock()
+		return store.ErrClosed
+	default:
+	}
+	op := writeOp{fn: fn, res: make(chan error, 1), ctx: ctx}
 	select {
 	case s.writeCh <- op:
+		s.execMu.RUnlock() // release before blocking on result
+	case <-s.quit:
+		s.execMu.RUnlock()
+		return store.ErrClosed
 	case <-ctx.Done():
+		s.execMu.RUnlock()
 		return ctx.Err()
 	}
 	select {
@@ -314,9 +356,23 @@ func splitStatements(sql string) []string {
 	return strings.Split(sql, ";")
 }
 
-// Close drains the write channel, stops the writer, and closes the read pool.
+// Close signals the store closed, drains in-flight writes, and releases resources.
+//
+// W1 protocol:
+//  1. close(s.quit)    — future exec calls see ErrClosed immediately.
+//  2. s.execMu.Lock()  — wait for any exec call that is mid-send to finish.
+//  3. close(s.writeCh) — signal the writer goroutine to exit after draining.
+//  4. s.execMu.Unlock()
+//
+// After step 2 no new ops can be sent (quit is closed and no sender holds the
+// read lock any more), so closing writeCh is safe.
 func (s *sqliteStore) Close(ctx context.Context) error {
-	close(s.writeCh)
+	s.closeOnce.Do(func() {
+		close(s.quit)    // fence new sends
+		s.execMu.Lock()  // wait for all in-flight sends to complete
+		close(s.writeCh) // drain signal for writerLoop
+		s.execMu.Unlock()
+	})
 	select {
 	case <-s.done:
 	case <-ctx.Done():

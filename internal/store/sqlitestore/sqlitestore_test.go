@@ -51,8 +51,8 @@ func TestConformance(t *testing.T) {
 	})
 }
 
-// TestChecksumMismatch verifies migration idempotency.
-func TestChecksumMismatch(t *testing.T) {
+// TestMigrateTwiceIdempotent verifies migration idempotency.
+func TestMigrateTwiceIdempotent(t *testing.T) {
 	s, cleanup := newTestStore(t)
 	defer cleanup()
 	ctx := context.Background()
@@ -60,6 +60,56 @@ func TestChecksumMismatch(t *testing.T) {
 	// Second migrate is idempotent.
 	if err := s.Migrate(ctx); err != nil {
 		t.Fatalf("second Migrate: %v", err)
+	}
+}
+
+// TestWriteAfterClose verifies that concurrent writers do not panic when the
+// store is closed under them (W1). Each goroutine must receive either nil,
+// store.ErrClosed, or a context error — never a panic.
+func TestWriteAfterClose(t *testing.T) {
+	s, _ := newTestStore(t) // no defer cleanup — we close manually below
+
+	ctx := context.Background()
+	scope := identity.Scope{Tenant: "close-tenant"}
+
+	const workers = 8
+	var wg sync.WaitGroup
+	errs := make([]error, workers)
+
+	for i := 0; i < workers; i++ {
+		i := i
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			rec := store.Record{
+				ID:         ulid.Make().String(),
+				Role:       "user",
+				Content:    fmt.Sprintf("close-race worker %d", i),
+				OccurredAt: time.Now().UnixMilli(),
+				CreatedAt:  time.Now().UnixMilli(),
+			}
+			errs[i] = s.Records().Append(ctx, scope, []store.Record{rec})
+		}()
+	}
+
+	// Close the store while goroutines are still running.
+	closeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := s.Close(closeCtx); err != nil {
+		t.Logf("close: %v", err)
+	}
+
+	wg.Wait()
+
+	// Every error must be nil, store.ErrClosed, or a context error.
+	for i, err := range errs {
+		if err == nil ||
+			errors.Is(err, store.ErrClosed) ||
+			errors.Is(err, context.Canceled) ||
+			errors.Is(err, context.DeadlineExceeded) {
+			continue
+		}
+		t.Errorf("worker %d: unexpected error: %v", i, err)
 	}
 }
 

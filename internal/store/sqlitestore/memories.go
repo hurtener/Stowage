@@ -14,6 +14,9 @@ import (
 type memoryStore struct{ s *sqliteStore }
 
 func (m *memoryStore) Insert(ctx context.Context, scope identity.Scope, mem store.Memory) error {
+	if scope.Tenant == "" { // S1: fail closed
+		return store.ErrScopeRequired
+	}
 	return m.s.exec(ctx, func(tx *sql.Tx) error {
 		now := time.Now().UnixMilli()
 		if mem.CreatedAt == 0 {
@@ -44,7 +47,10 @@ func (m *memoryStore) Insert(ctx context.Context, scope identity.Scope, mem stor
 }
 
 func (m *memoryStore) Get(ctx context.Context, scope identity.Scope, id string) (*store.Memory, error) {
-	whereClause, args := buildScopeWhere(scope)
+	whereClause, args, err := buildScopeWhere(scope)
+	if err != nil {
+		return nil, err
+	}
 	args = append(args, id)
 	qg := `SELECT id, tenant_id, COALESCE(project_id,''), COALESCE(user_id,''), COALESCE(session_id,''), kind, content, context, status, importance, confidence, trust_source, match_count, inject_count, use_count, save_count, fail_count, noise_count, stability, last_accessed_at, valid_from, valid_until, episode_id, supersedes_id, superseded_by_id, privacy_zone, created_at, updated_at FROM memories WHERE ` + whereClause + ` AND id = ?` //nolint:gosec // whereClause is built from controlled helper, not user input
 	row := m.s.rdb.QueryRowContext(ctx, qg, args...)
@@ -56,7 +62,10 @@ func (m *memoryStore) Get(ctx context.Context, scope identity.Scope, id string) 
 }
 
 func (m *memoryStore) Update(ctx context.Context, scope identity.Scope, mem store.Memory) error {
-	whereClause, args := buildScopeWhere(scope)
+	whereClause, args, err := buildScopeWhere(scope)
+	if err != nil {
+		return err
+	}
 	return m.s.exec(ctx, func(tx *sql.Tx) error {
 		now := time.Now().UnixMilli()
 		if mem.UpdatedAt == 0 {
@@ -79,7 +88,10 @@ func (m *memoryStore) Update(ctx context.Context, scope identity.Scope, mem stor
 }
 
 func (m *memoryStore) SetStatus(ctx context.Context, scope identity.Scope, id string, status string, updatedAt int64) error {
-	whereClause, args := buildScopeWhere(scope)
+	whereClause, args, err := buildScopeWhere(scope)
+	if err != nil {
+		return err
+	}
 	return m.s.exec(ctx, func(tx *sql.Tx) error {
 		queryArgs := []interface{}{status, updatedAt}
 		queryArgs = append(queryArgs, args...)
@@ -90,18 +102,27 @@ func (m *memoryStore) SetStatus(ctx context.Context, scope identity.Scope, id st
 	})
 }
 
+// ListByStatus returns memories ordered by (created_at, id) ASC.
+// cursor is an opaque "<millis>:<id>" pagination token (Q1 composite cursor).
 func (m *memoryStore) ListByStatus(ctx context.Context, scope identity.Scope, status string, limit int, cursor string) ([]store.Memory, string, error) {
-	whereClause, args := buildScopeWhere(scope)
+	whereClause, args, err := buildScopeWhere(scope)
+	if err != nil {
+		return nil, "", err
+	}
 	whereClause += " AND status = ?"
 	args = append(args, status)
 
 	if cursor != "" {
-		whereClause += " AND created_at > (SELECT created_at FROM memories WHERE id = ?)"
-		args = append(args, cursor)
+		ts, cid, perr := parseCursor(cursor)
+		if perr != nil {
+			return nil, "", perr
+		}
+		whereClause += " AND (created_at > ? OR (created_at = ? AND id > ?))"
+		args = append(args, ts, ts, cid)
 	}
 	args = append(args, limit+1)
 
-	q := `SELECT id, tenant_id, COALESCE(project_id,''), COALESCE(user_id,''), COALESCE(session_id,''), kind, content, context, status, importance, confidence, trust_source, match_count, inject_count, use_count, save_count, fail_count, noise_count, stability, last_accessed_at, valid_from, valid_until, episode_id, supersedes_id, superseded_by_id, privacy_zone, created_at, updated_at FROM memories WHERE ` + whereClause + ` ORDER BY created_at ASC LIMIT ?` //nolint:gosec // whereClause is built from controlled helper, not user input
+	q := `SELECT id, tenant_id, COALESCE(project_id,''), COALESCE(user_id,''), COALESCE(session_id,''), kind, content, context, status, importance, confidence, trust_source, match_count, inject_count, use_count, save_count, fail_count, noise_count, stability, last_accessed_at, valid_from, valid_until, episode_id, supersedes_id, superseded_by_id, privacy_zone, created_at, updated_at FROM memories WHERE ` + whereClause + ` ORDER BY created_at ASC, id ASC LIMIT ?` //nolint:gosec // whereClause is built from controlled helper, not user input
 	rows, err := m.s.rdb.QueryContext(ctx, q, args...)
 	if err != nil {
 		return nil, "", fmt.Errorf("sqlitestore: list memories by status: %w", err)
@@ -121,13 +142,16 @@ func (m *memoryStore) ListByStatus(ctx context.Context, scope identity.Scope, st
 	}
 	var nextCursor string
 	if len(out) > limit {
-		nextCursor = out[limit].ID
+		nextCursor = encodeCursor(out[limit-1].CreatedAt, out[limit-1].ID)
 		out = out[:limit]
 	}
 	return out, nextCursor, nil
 }
 
 func (m *memoryStore) InsertLinks(ctx context.Context, scope identity.Scope, links []store.Link) error {
+	if scope.Tenant == "" { // S1: fail closed
+		return store.ErrScopeRequired
+	}
 	if len(links) == 0 {
 		return nil
 	}
@@ -151,7 +175,16 @@ func (m *memoryStore) InsertLinks(ctx context.Context, scope identity.Scope, lin
 	})
 }
 
+// ListLinks returns edges matching fromMemoryID or toMemoryID within the tenant.
+//
+// Note: links are scoped by tenant_id only (the links table has no project_id,
+// user_id or session_id columns). This is by design — links connect memories
+// that may span users/projects within a tenant. scope.Project, scope.User and
+// scope.Session are intentionally ignored here.
 func (m *memoryStore) ListLinks(ctx context.Context, scope identity.Scope, fromMemoryID, toMemoryID string) ([]store.Link, error) {
+	if scope.Tenant == "" { // S1: fail closed
+		return nil, store.ErrScopeRequired
+	}
 	clause := "tenant_id = ?"
 	args := []interface{}{scope.Tenant}
 	if fromMemoryID != "" {
@@ -182,6 +215,9 @@ func (m *memoryStore) ListLinks(ctx context.Context, scope identity.Scope, fromM
 }
 
 func (m *memoryStore) AddProvenance(ctx context.Context, scope identity.Scope, rows []store.Provenance) error {
+	if scope.Tenant == "" { // S1: fail closed
+		return store.ErrScopeRequired
+	}
 	if len(rows) == 0 {
 		return nil
 	}

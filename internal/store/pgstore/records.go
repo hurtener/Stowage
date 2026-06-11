@@ -15,6 +15,9 @@ import (
 type recordStore struct{ s *pgStore }
 
 func (r *recordStore) Append(ctx context.Context, scope identity.Scope, records []store.Record) error {
+	if scope.Tenant == "" { // S1: fail closed
+		return store.ErrScopeRequired
+	}
 	if len(records) == 0 {
 		return nil
 	}
@@ -50,7 +53,10 @@ func (r *recordStore) Append(ctx context.Context, scope identity.Scope, records 
 }
 
 func (r *recordStore) Get(ctx context.Context, scope identity.Scope, id string) (*store.Record, error) {
-	whereClause, args, next := buildScopeWhere(scope, 1)
+	whereClause, args, next, err := buildScopeWhere(scope, 1)
+	if err != nil {
+		return nil, err
+	}
 	args = append(args, id)
 	row := r.s.pool.QueryRow(ctx,
 		`SELECT id, tenant_id, COALESCE(project_id,''), COALESCE(user_id,''), COALESCE(session_id,''),
@@ -66,8 +72,13 @@ func (r *recordStore) Get(ctx context.Context, scope identity.Scope, id string) 
 	return rec, err
 }
 
+// ListBySession returns records ordered by (occurred_at, id) ASC.
+// cursor is an opaque "<millis>:<id>" pagination token (Q1 composite cursor).
 func (r *recordStore) ListBySession(ctx context.Context, scope identity.Scope, sessionID, branchID string, limit int, cursor string) ([]store.Record, string, error) {
-	whereClause, args, next := buildScopeWhere(scope, 1)
+	whereClause, args, next, err := buildScopeWhere(scope, 1)
+	if err != nil {
+		return nil, "", err
+	}
 	if sessionID != "" {
 		whereClause += fmt.Sprintf(` AND session_id = $%d`, next)
 		args = append(args, sessionID)
@@ -78,10 +89,15 @@ func (r *recordStore) ListBySession(ctx context.Context, scope identity.Scope, s
 		args = append(args, branchID)
 		next++
 	}
+	// Q1: composite cursor — PostgreSQL row-value comparison (occurred_at, id) > ($n, $m).
 	if cursor != "" {
-		whereClause += fmt.Sprintf(` AND occurred_at > (SELECT occurred_at FROM records WHERE id = $%d)`, next)
-		args = append(args, cursor)
-		next++
+		ts, cid, perr := parseCursor(cursor)
+		if perr != nil {
+			return nil, "", perr
+		}
+		whereClause += fmt.Sprintf(` AND (occurred_at, id) > ($%d, $%d)`, next, next+1)
+		args = append(args, ts, cid)
+		next += 2
 	}
 	args = append(args, limit+1)
 
@@ -90,7 +106,7 @@ func (r *recordStore) ListBySession(ctx context.Context, scope identity.Scope, s
 		        branch_id, role, content, source_agent, response_id, outcome, outcome_detail,
 		        token_estimate, occurred_at, created_at, processed_at
 		 FROM records
-		 WHERE `+whereClause+fmt.Sprintf(` ORDER BY occurred_at ASC LIMIT $%d`, next),
+		 WHERE `+whereClause+fmt.Sprintf(` ORDER BY occurred_at ASC, id ASC LIMIT $%d`, next),
 		args...,
 	)
 	if err != nil {
@@ -162,6 +178,8 @@ func scanRecord(row rowScanner) (*store.Record, error) {
 	return &rec, nil
 }
 
+// collectRecords collects rows and produces a composite cursor from the last
+// item on the page (Q1: cursor = last item, filter is strictly-after).
 func collectRecords(rows pgx.Rows, limit int) ([]store.Record, string, error) {
 	var out []store.Record
 	for rows.Next() {
@@ -176,7 +194,7 @@ func collectRecords(rows pgx.Rows, limit int) ([]store.Record, string, error) {
 	}
 	var nextCursor string
 	if len(out) > limit {
-		nextCursor = out[limit].ID
+		nextCursor = encodeCursor(out[limit-1].OccurredAt, out[limit-1].ID)
 		out = out[:limit]
 	}
 	return out, nextCursor, nil

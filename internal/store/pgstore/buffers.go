@@ -12,6 +12,9 @@ import (
 type bufferStore struct{ s *pgStore }
 
 func (b *bufferStore) AppendItem(ctx context.Context, scope identity.Scope, item store.BufferItem) error {
+	if scope.Tenant == "" { // S1: fail closed
+		return store.ErrScopeRequired
+	}
 	now := time.Now().UnixMilli()
 	if item.CreatedAt == 0 {
 		item.CreatedAt = now
@@ -29,7 +32,10 @@ func (b *bufferStore) AppendItem(ctx context.Context, scope identity.Scope, item
 }
 
 func (b *bufferStore) ListDue(ctx context.Context, scope identity.Scope, bufferKey string, limit int) ([]store.BufferItem, error) {
-	whereClause, args, next := buildScopeWhere(scope, 1)
+	whereClause, args, next, err := buildScopeWhere(scope, 1)
+	if err != nil {
+		return nil, err
+	}
 	args = append(args, bufferKey, limit)
 	bufIdx, limIdx := next, next+1
 	rows, err := b.s.pool.Query(ctx,
@@ -48,13 +54,16 @@ func (b *bufferStore) ListDue(ctx context.Context, scope identity.Scope, bufferK
 }
 
 func (b *bufferStore) Flush(ctx context.Context, scope identity.Scope, bufferKey string) ([]store.BufferItem, error) {
+	whereClause, args, next, err := buildScopeWhere(scope, 1)
+	if err != nil {
+		return nil, err
+	}
 	tx, err := b.s.pool.Begin(ctx)
 	if err != nil {
 		return nil, err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	whereClause, args, next := buildScopeWhere(scope, 1)
 	args = append(args, bufferKey)
 	rows, err := tx.Query(ctx,
 		`SELECT id, tenant_id, COALESCE(project_id,''), COALESCE(user_id,''), COALESCE(session_id,''),
