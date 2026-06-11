@@ -86,6 +86,28 @@ func Run(t *testing.T, factory Factory) {
 	t.Run("CursorTimestampTieEvents", func(t *testing.T) { testCursorTimestampTieEvents(t, factory) })
 	// O1 — concurrent job-marker atomicity
 	t.Run("OpsJobMarkerConcurrent", func(t *testing.T) { testOpsJobMarkerConcurrent(t, factory) })
+	// Phase 08 — new MemoryStore methods
+	t.Run("MemoryGetByContentHash", func(t *testing.T) { testMemoryGetByContentHash(t, factory) })
+	t.Run("MemoryGetByContentHashNotFound", func(t *testing.T) { testMemoryGetByContentHashNotFound(t, factory) })
+	t.Run("MemoryFindNeighbors", func(t *testing.T) { testMemoryFindNeighbors(t, factory) })
+	t.Run("MemoryFindNeighborsEmpty", func(t *testing.T) { testMemoryFindNeighborsEmpty(t, factory) })
+	t.Run("MemoryIncrementCounter", func(t *testing.T) { testMemoryIncrementCounter(t, factory) })
+	t.Run("MemoryIncrementCounterUnknown", func(t *testing.T) { testMemoryIncrementCounterUnknown(t, factory) })
+	t.Run("MemoryCommitAdd", func(t *testing.T) { testMemoryCommitAdd(t, factory) })
+	t.Run("MemoryCommitUpdate", func(t *testing.T) { testMemoryCommitUpdate(t, factory) })
+	t.Run("MemoryCommitDiscard", func(t *testing.T) { testMemoryCommitDiscard(t, factory) })
+	t.Run("MemoryCommitFaultHook", func(t *testing.T) { testMemoryCommitFaultHook(t, factory) })
+	t.Run("MemoryCommitFaultHookUpdate", func(t *testing.T) { testMemoryCommitFaultHookUpdate(t, factory) })
+	t.Run("MemoryCommitFaultHookSupersede", func(t *testing.T) { testMemoryCommitFaultHookSupersede(t, factory) })
+	t.Run("MemoryCommitSupersede", func(t *testing.T) { testMemoryCommitSupersede(t, factory) })
+	t.Run("MemoryCommitMerge", func(t *testing.T) { testMemoryCommitMerge(t, factory) })
+	t.Run("MemoryCommitScopeRequired", func(t *testing.T) { testMemoryCommitScopeRequired(t, factory) })
+	t.Run("MemoryContentHashScopeIsolation", func(t *testing.T) { testMemoryContentHashScopeIsolation(t, factory) })
+	t.Run("MemoryFindNeighborsScopeIsolation", func(t *testing.T) { testMemoryFindNeighborsScopeIsolation(t, factory) })
+	t.Run("MemoryFindNeighborsByKeyword", func(t *testing.T) { testMemoryFindNeighborsByKeyword(t, factory) })
+	t.Run("MemoryCommitAddZeroTimes", func(t *testing.T) { testMemoryCommitAddZeroTimes(t, factory) })
+	t.Run("MemoryCommitUpdateZeroTimes", func(t *testing.T) { testMemoryCommitUpdateZeroTimes(t, factory) })
+	t.Run("MemoryCommitAddWithProvenance", func(t *testing.T) { testMemoryCommitAddWithProvenance(t, factory) })
 }
 
 // --- helpers ----------------------------------------------------------------
@@ -1726,5 +1748,861 @@ func testKeyringList(t *testing.T, factory Factory) {
 	}
 	if !foundA {
 		t.Error("List tenantA did not return keyA")
+	}
+}
+
+// =============================================================================
+// Phase 08 — GetByContentHash, FindNeighbors, IncrementCounter, Commit
+// =============================================================================
+
+func testMemoryGetByContentHash(t *testing.T, factory Factory) {
+	t.Helper()
+	s, cleanup := factory()
+	defer cleanup()
+	ctx := context.Background()
+	scope := tenantScope("t-" + newID())
+
+	hash := "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" // 64 hex chars
+	mem := store.Memory{
+		ID: newID(), Kind: "fact", Content: "some content",
+		Status: "active", Confidence: 0.9, TrustSource: "llm_extracted", Stability: 1.0,
+		ContentHash: hash,
+		CreatedAt:   nowMs(), UpdatedAt: nowMs(),
+	}
+	if err := s.Memories().Insert(ctx, scope, mem); err != nil {
+		t.Fatalf("Insert: %v", err)
+	}
+	got, err := s.Memories().GetByContentHash(ctx, scope, hash)
+	if err != nil {
+		t.Fatalf("GetByContentHash: %v", err)
+	}
+	if got.ID != mem.ID {
+		t.Errorf("ID: got %q want %q", got.ID, mem.ID)
+	}
+	if got.ContentHash != hash {
+		t.Errorf("ContentHash: got %q want %q", got.ContentHash, hash)
+	}
+}
+
+func testMemoryGetByContentHashNotFound(t *testing.T, factory Factory) {
+	t.Helper()
+	s, cleanup := factory()
+	defer cleanup()
+	ctx := context.Background()
+	scope := tenantScope("t-" + newID())
+
+	_, err := s.Memories().GetByContentHash(ctx, scope, "0000000000000000000000000000000000000000000000000000000000000000")
+	if !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("expected ErrNotFound, got %v", err)
+	}
+}
+
+func testMemoryFindNeighbors(t *testing.T, factory Factory) {
+	t.Helper()
+	s, cleanup := factory()
+	defer cleanup()
+	ctx := context.Background()
+	scope := tenantScope("t-" + newID())
+
+	// Insert a memory via Commit so junction rows are written.
+	memID := newID()
+	mem := store.Memory{
+		ID: memID, Kind: "fact", Content: "Go is fast",
+		Status: "active", Confidence: 0.9, TrustSource: "llm_extracted", Stability: 1.0,
+		CreatedAt: nowMs(), UpdatedAt: nowMs(),
+	}
+	cs := store.CommitSet{
+		Action:   store.ActionAdd,
+		Memory:   mem,
+		Entities: []string{"Go", "speed"},
+		Keywords: []string{"programming", "performance"},
+	}
+	if err := s.Memories().Commit(ctx, scope, cs); err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+
+	// FindNeighbors by entity overlap.
+	neighbors, err := s.Memories().FindNeighbors(ctx, scope, store.NeighborQuery{
+		Entities: []string{"Go"},
+		Limit:    5,
+	})
+	if err != nil {
+		t.Fatalf("FindNeighbors: %v", err)
+	}
+	if len(neighbors) != 1 {
+		t.Errorf("got %d neighbors want 1", len(neighbors))
+	}
+	if len(neighbors) > 0 && neighbors[0].ID != memID {
+		t.Errorf("neighbor ID: got %q want %q", neighbors[0].ID, memID)
+	}
+}
+
+func testMemoryFindNeighborsEmpty(t *testing.T, factory Factory) {
+	t.Helper()
+	s, cleanup := factory()
+	defer cleanup()
+	ctx := context.Background()
+	scope := tenantScope("t-" + newID())
+
+	// Empty query → no results, no error.
+	neighbors, err := s.Memories().FindNeighbors(ctx, scope, store.NeighborQuery{})
+	if err != nil {
+		t.Fatalf("FindNeighbors empty: %v", err)
+	}
+	if len(neighbors) != 0 {
+		t.Errorf("expected 0 neighbors, got %d", len(neighbors))
+	}
+}
+
+func testMemoryIncrementCounter(t *testing.T, factory Factory) {
+	t.Helper()
+	s, cleanup := factory()
+	defer cleanup()
+	ctx := context.Background()
+	scope := tenantScope("t-" + newID())
+
+	mem := store.Memory{
+		ID: newID(), Kind: "fact", Content: "counter test",
+		Status: "active", Confidence: 0.5, TrustSource: "llm_extracted", Stability: 1.0,
+		CreatedAt: nowMs(), UpdatedAt: nowMs(),
+	}
+	if err := s.Memories().Insert(ctx, scope, mem); err != nil {
+		t.Fatalf("Insert: %v", err)
+	}
+
+	for _, counter := range []string{"match", "inject", "use", "save", "fail", "noise"} {
+		if err := s.Memories().IncrementCounter(ctx, scope, mem.ID, counter); err != nil {
+			t.Errorf("IncrementCounter(%q): %v", counter, err)
+		}
+	}
+
+	got, err := s.Memories().Get(ctx, scope, mem.ID)
+	if err != nil {
+		t.Fatalf("Get after increment: %v", err)
+	}
+	if got.MatchCount != 1 {
+		t.Errorf("MatchCount: got %d want 1", got.MatchCount)
+	}
+	if got.InjectCount != 1 {
+		t.Errorf("InjectCount: got %d want 1", got.InjectCount)
+	}
+	if got.UseCount != 1 {
+		t.Errorf("UseCount: got %d want 1", got.UseCount)
+	}
+	if got.SaveCount != 1 {
+		t.Errorf("SaveCount: got %d want 1", got.SaveCount)
+	}
+	if got.FailCount != 1 {
+		t.Errorf("FailCount: got %d want 1", got.FailCount)
+	}
+	if got.NoiseCount != 1 {
+		t.Errorf("NoiseCount: got %d want 1", got.NoiseCount)
+	}
+}
+
+func testMemoryIncrementCounterUnknown(t *testing.T, factory Factory) {
+	t.Helper()
+	s, cleanup := factory()
+	defer cleanup()
+	ctx := context.Background()
+	scope := tenantScope("t-" + newID())
+
+	err := s.Memories().IncrementCounter(ctx, scope, "any-id", "invalid_counter")
+	if err == nil {
+		t.Error("expected error for unknown counter, got nil")
+	}
+}
+
+func testMemoryCommitAdd(t *testing.T, factory Factory) {
+	t.Helper()
+	s, cleanup := factory()
+	defer cleanup()
+	ctx := context.Background()
+	scope := tenantScope("t-" + newID())
+
+	memID := newID()
+	evID := newID()
+	hash := "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+	cs := store.CommitSet{
+		Action: store.ActionAdd,
+		Memory: store.Memory{
+			ID: memID, Kind: "fact", Content: "committed fact",
+			Status: "active", Confidence: 0.8, TrustSource: "llm_extracted",
+			Stability: 1.0, ContentHash: hash,
+			CreatedAt: nowMs(), UpdatedAt: nowMs(),
+		},
+		Entities: []string{"entity-A"},
+		Keywords: []string{"keyword-B"},
+		Queries:  []string{"anticipated query for fact"},
+		Events: []store.Event{
+			// CreatedAt: 0 exercises the "set to now" branch in insertEventSQLite.
+			{ID: evID, Type: "memory.committed", SubjectID: memID, Payload: `{"action":"add"}`},
+		},
+	}
+	if err := s.Memories().Commit(ctx, scope, cs); err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+
+	// Memory must be readable.
+	got, err := s.Memories().Get(ctx, scope, memID)
+	if err != nil {
+		t.Fatalf("Get after commit: %v", err)
+	}
+	if got.Content != "committed fact" {
+		t.Errorf("Content: got %q want committed fact", got.Content)
+	}
+	if got.ContentHash != hash {
+		t.Errorf("ContentHash: got %q want %q", got.ContentHash, hash)
+	}
+
+	// GetByContentHash must find it.
+	byHash, err := s.Memories().GetByContentHash(ctx, scope, hash)
+	if err != nil {
+		t.Fatalf("GetByContentHash: %v", err)
+	}
+	if byHash.ID != memID {
+		t.Errorf("GetByContentHash ID: got %q want %q", byHash.ID, memID)
+	}
+
+	// Event must be present.
+	evs, _, err := s.Events().List(ctx, scope, 10, "")
+	if err != nil {
+		t.Fatalf("Events.List: %v", err)
+	}
+	found := false
+	for _, ev := range evs {
+		if ev.ID == evID {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("committed event not found in events table")
+	}
+}
+
+func testMemoryCommitUpdate(t *testing.T, factory Factory) {
+	t.Helper()
+	s, cleanup := factory()
+	defer cleanup()
+	ctx := context.Background()
+	scope := tenantScope("t-" + newID())
+
+	// First add a memory with junctions.
+	memID := newID()
+	cs1 := store.CommitSet{
+		Action: store.ActionAdd,
+		Memory: store.Memory{
+			ID: memID, Kind: "fact", Content: "original",
+			Status: "active", Confidence: 0.7, TrustSource: "llm_extracted",
+			Stability: 1.0, CreatedAt: nowMs(), UpdatedAt: nowMs(),
+		},
+		Entities: []string{"original-entity"},
+	}
+	if err := s.Memories().Commit(ctx, scope, cs1); err != nil {
+		t.Fatalf("first Commit: %v", err)
+	}
+
+	// Now update it with new content and new junctions.
+	newHash := "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+	cs2 := store.CommitSet{
+		Action: store.ActionUpdate,
+		Memory: store.Memory{
+			ID: memID, Kind: "fact", Content: "updated content",
+			Status: "active", Confidence: 0.9, TrustSource: "llm_extracted",
+			Stability: 1.0, ContentHash: newHash,
+			CreatedAt: nowMs(), UpdatedAt: nowMs(),
+		},
+		Entities: []string{"new-entity"},
+		Keywords: []string{"new-keyword"},
+	}
+	if err := s.Memories().Commit(ctx, scope, cs2); err != nil {
+		t.Fatalf("update Commit: %v", err)
+	}
+
+	got, err := s.Memories().Get(ctx, scope, memID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.Content != "updated content" {
+		t.Errorf("Content: got %q want updated content", got.Content)
+	}
+	if got.ContentHash != newHash {
+		t.Errorf("ContentHash: got %q want %q", got.ContentHash, newHash)
+	}
+
+	// FindNeighbors by new entity must find the updated memory.
+	neighbors, err := s.Memories().FindNeighbors(ctx, scope, store.NeighborQuery{Entities: []string{"new-entity"}})
+	if err != nil {
+		t.Fatalf("FindNeighbors: %v", err)
+	}
+	if len(neighbors) != 1 {
+		t.Errorf("got %d neighbors want 1", len(neighbors))
+	}
+
+	// Old entity must no longer match.
+	oldNeighbors, err := s.Memories().FindNeighbors(ctx, scope, store.NeighborQuery{Entities: []string{"original-entity"}})
+	if err != nil {
+		t.Fatalf("FindNeighbors old: %v", err)
+	}
+	if len(oldNeighbors) != 0 {
+		t.Errorf("old entity still matches: got %d want 0", len(oldNeighbors))
+	}
+}
+
+func testMemoryCommitDiscard(t *testing.T, factory Factory) {
+	t.Helper()
+	s, cleanup := factory()
+	defer cleanup()
+	ctx := context.Background()
+	scope := tenantScope("t-" + newID())
+
+	evID := newID()
+	cs := store.CommitSet{
+		Action: store.ActionDiscard,
+		// Memory is zero-value for discard.
+		Events: []store.Event{
+			{ID: evID, Type: "memory.discarded", SubjectID: "some-id", Payload: `{"reason":"exact_dup"}`, CreatedAt: nowMs()},
+		},
+	}
+	if err := s.Memories().Commit(ctx, scope, cs); err != nil {
+		t.Fatalf("Commit discard: %v", err)
+	}
+
+	// Event must be present.
+	evs, _, err := s.Events().List(ctx, scope, 10, "")
+	if err != nil {
+		t.Fatalf("Events.List: %v", err)
+	}
+	found := false
+	for _, ev := range evs {
+		if ev.ID == evID {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("discard event not found in events table")
+	}
+}
+
+func testMemoryCommitFaultHook(t *testing.T, factory Factory) {
+	t.Helper()
+	s, cleanup := factory()
+	defer cleanup()
+	ctx := context.Background()
+	scope := tenantScope("t-" + newID())
+
+	memID := newID()
+	evID := newID()
+	cs := store.CommitSet{
+		Action: store.ActionAdd,
+		Memory: store.Memory{
+			ID: memID, Kind: "fact", Content: "fault hook test",
+			Status: "active", Confidence: 0.8, TrustSource: "llm_extracted",
+			Stability: 1.0, CreatedAt: nowMs(), UpdatedAt: nowMs(),
+		},
+		Entities: []string{"entity-fault"},
+		Events: []store.Event{
+			{ID: evID, Type: "memory.added", SubjectID: memID, CreatedAt: nowMs()},
+		},
+		FaultHook: func() error { return errors.New("injected fault") },
+	}
+
+	err := s.Memories().Commit(ctx, scope, cs)
+	if err == nil {
+		t.Fatal("expected error from FaultHook, got nil")
+	}
+
+	// Memory must NOT exist (transaction rolled back).
+	if _, getErr := s.Memories().Get(ctx, scope, memID); !errors.Is(getErr, store.ErrNotFound) {
+		t.Errorf("memory should not exist after fault; Get returned: %v", getErr)
+	}
+
+	// Event must NOT exist.
+	evs, _, _ := s.Events().List(ctx, scope, 10, "")
+	for _, ev := range evs {
+		if ev.ID == evID {
+			t.Error("event should not exist after fault (partial write)")
+		}
+	}
+}
+
+// testMemoryCommitFaultHookUpdate tests that a FaultHook on ActionUpdate rolls
+// back the entire transaction, leaving no partial rows.
+func testMemoryCommitFaultHookUpdate(t *testing.T, factory Factory) {
+	t.Helper()
+	s, cleanup := factory()
+	defer cleanup()
+	ctx := context.Background()
+	scope := tenantScope("t-" + newID())
+
+	// Insert original memory.
+	memID := newID()
+	orig := store.Memory{
+		ID: memID, Kind: "fact", Content: "original",
+		Status: "active", Confidence: 0.7, TrustSource: "llm_extracted",
+		Stability: 1.0, CreatedAt: nowMs(), UpdatedAt: nowMs(),
+	}
+	if err := s.Memories().Insert(ctx, scope, orig); err != nil {
+		t.Fatalf("Insert: %v", err)
+	}
+
+	// Attempt an update with a FaultHook that fails.
+	cs := store.CommitSet{
+		Action: store.ActionUpdate,
+		Memory: store.Memory{
+			ID: memID, Kind: "fact", Content: "should-not-persist",
+			Status: "active", Confidence: 0.9, TrustSource: "llm_extracted",
+			Stability: 1.0, CreatedAt: nowMs(), UpdatedAt: nowMs(),
+		},
+		Entities:  []string{"updated-entity"},
+		FaultHook: func() error { return errors.New("injected update fault") },
+	}
+	if err := s.Memories().Commit(ctx, scope, cs); err == nil {
+		t.Fatal("expected error from FaultHook on update, got nil")
+	}
+
+	// Memory content must remain original (transaction rolled back).
+	got, err := s.Memories().Get(ctx, scope, memID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.Content != "original" {
+		t.Errorf("update fault: content = %q, want original (rolled back)", got.Content)
+	}
+}
+
+// testMemoryCommitFaultHookSupersede tests that a FaultHook on ActionSupersede
+// rolls back the transaction, leaving the target memory in its original state.
+func testMemoryCommitFaultHookSupersede(t *testing.T, factory Factory) {
+	t.Helper()
+	s, cleanup := factory()
+	defer cleanup()
+	ctx := context.Background()
+	scope := tenantScope("t-" + newID())
+
+	// Insert the target memory.
+	oldID := newID()
+	oldMem := store.Memory{
+		ID: oldID, Kind: "fact", Content: "old fact",
+		Status: "active", Confidence: 0.5, TrustSource: "llm_extracted",
+		Stability: 1.0, CreatedAt: nowMs(), UpdatedAt: nowMs(),
+	}
+	if err := s.Memories().Insert(ctx, scope, oldMem); err != nil {
+		t.Fatalf("Insert: %v", err)
+	}
+
+	newMemID := newID()
+	cs := store.CommitSet{
+		Action: store.ActionSupersede,
+		Memory: store.Memory{
+			ID: newMemID, Kind: "fact", Content: "new fact (should not persist)",
+			Status: "active", Confidence: 0.9, TrustSource: "llm_extracted",
+			Stability: 1.0, SupersedesID: oldID,
+			CreatedAt: nowMs(), UpdatedAt: nowMs(),
+		},
+		Targets:   []store.Memory{oldMem},
+		FaultHook: func() error { return errors.New("injected supersede fault") },
+	}
+	if err := s.Memories().Commit(ctx, scope, cs); err == nil {
+		t.Fatal("expected error from FaultHook on supersede, got nil")
+	}
+
+	// Target must still be active (transaction rolled back).
+	got, err := s.Memories().Get(ctx, scope, oldID)
+	if err != nil {
+		t.Fatalf("Get target: %v", err)
+	}
+	if got.Status != "active" {
+		t.Errorf("supersede fault: target status = %q, want active (rolled back)", got.Status)
+	}
+
+	// New memory must not exist.
+	if _, err := s.Memories().Get(ctx, scope, newMemID); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("supersede fault: new memory should not exist; got %v", err)
+	}
+}
+
+func testMemoryCommitSupersede(t *testing.T, factory Factory) {
+	t.Helper()
+	s, cleanup := factory()
+	defer cleanup()
+	ctx := context.Background()
+	scope := tenantScope("t-" + newID())
+
+	// Insert the memory to be superseded.
+	oldID := newID()
+	oldMem := store.Memory{
+		ID: oldID, Kind: "fact", Content: "old fact",
+		Status: "active", Confidence: 0.5, TrustSource: "llm_extracted",
+		Stability: 1.0, CreatedAt: nowMs(), UpdatedAt: nowMs(),
+	}
+	if err := s.Memories().Insert(ctx, scope, oldMem); err != nil {
+		t.Fatalf("Insert old: %v", err)
+	}
+
+	newID2 := newID()
+	cs := store.CommitSet{
+		Action: store.ActionSupersede,
+		Memory: store.Memory{
+			ID: newID2, Kind: "fact", Content: "corrected fact",
+			Status: "active", Confidence: 0.9, TrustSource: "llm_extracted",
+			Stability: 1.0, SupersedesID: oldID,
+			CreatedAt: nowMs(), UpdatedAt: nowMs(),
+		},
+		Targets: []store.Memory{oldMem},
+		// Contradicts link from new memory to superseded target (both FKs satisfied).
+		Links: []store.Link{
+			{ID: newID(), FromMemory: newID2, ToMemory: oldID, Type: "contradicts", Source: "reconciler", Confidence: 1.0},
+		},
+	}
+	if err := s.Memories().Commit(ctx, scope, cs); err != nil {
+		t.Fatalf("Commit supersede: %v", err)
+	}
+
+	// Old memory must be superseded.
+	gotOld, err := s.Memories().Get(ctx, scope, oldID)
+	if err != nil {
+		t.Fatalf("Get old: %v", err)
+	}
+	if gotOld.Status != "superseded" {
+		t.Errorf("old memory status: got %q want superseded", gotOld.Status)
+	}
+	if gotOld.SupersededByID != newID2 {
+		t.Errorf("old memory SupersededByID: got %q want %q", gotOld.SupersededByID, newID2)
+	}
+
+	// New memory must exist.
+	gotNew, err := s.Memories().Get(ctx, scope, newID2)
+	if err != nil {
+		t.Fatalf("Get new: %v", err)
+	}
+	if gotNew.Content != "corrected fact" {
+		t.Errorf("new memory content: got %q want corrected fact", gotNew.Content)
+	}
+}
+
+func testMemoryCommitMerge(t *testing.T, factory Factory) {
+	t.Helper()
+	s, cleanup := factory()
+	defer cleanup()
+	ctx := context.Background()
+	scope := tenantScope("t-" + newID())
+
+	// Insert two source memories.
+	srcA := store.Memory{
+		ID: newID(), Kind: "fact", Content: "source A",
+		Status: "active", Confidence: 0.6, TrustSource: "llm_extracted",
+		Stability: 1.0, CreatedAt: nowMs(), UpdatedAt: nowMs(),
+	}
+	srcB := store.Memory{
+		ID: newID(), Kind: "fact", Content: "source B",
+		Status: "active", Confidence: 0.6, TrustSource: "llm_extracted",
+		Stability: 1.0, CreatedAt: nowMs(), UpdatedAt: nowMs(),
+	}
+	if err := s.Memories().Insert(ctx, scope, srcA); err != nil {
+		t.Fatalf("Insert srcA: %v", err)
+	}
+	if err := s.Memories().Insert(ctx, scope, srcB); err != nil {
+		t.Fatalf("Insert srcB: %v", err)
+	}
+
+	mergedID := newID()
+	cs := store.CommitSet{
+		Action: store.ActionMerge,
+		Memory: store.Memory{
+			ID: mergedID, Kind: "fact", Content: "merged A and B",
+			Status: "active", Confidence: 0.9, TrustSource: "llm_extracted",
+			Stability: 1.0, CreatedAt: nowMs(), UpdatedAt: nowMs(),
+		},
+		Targets: []store.Memory{srcA, srcB},
+	}
+	if err := s.Memories().Commit(ctx, scope, cs); err != nil {
+		t.Fatalf("Commit merge: %v", err)
+	}
+
+	// Both source memories must be superseded.
+	for _, src := range []store.Memory{srcA, srcB} {
+		got, err := s.Memories().Get(ctx, scope, src.ID)
+		if err != nil {
+			t.Fatalf("Get source %q: %v", src.ID, err)
+		}
+		if got.Status != "superseded" {
+			t.Errorf("source %q status: got %q want superseded", src.ID, got.Status)
+		}
+		if got.SupersededByID != mergedID {
+			t.Errorf("source %q SupersededByID: got %q want %q", src.ID, got.SupersededByID, mergedID)
+		}
+	}
+
+	// Merged memory must exist.
+	gotMerged, err := s.Memories().Get(ctx, scope, mergedID)
+	if err != nil {
+		t.Fatalf("Get merged: %v", err)
+	}
+	if gotMerged.Content != "merged A and B" {
+		t.Errorf("merged content: got %q", gotMerged.Content)
+	}
+}
+
+func testMemoryCommitScopeRequired(t *testing.T, factory Factory) {
+	t.Helper()
+	s, cleanup := factory()
+	defer cleanup()
+	ctx := context.Background()
+	zero := identity.Scope{}
+
+	cs := store.CommitSet{
+		Action: store.ActionAdd,
+		Memory: store.Memory{ID: newID(), Kind: "fact", Content: "x", Status: "active", TrustSource: "llm_extracted", Stability: 1.0, CreatedAt: nowMs(), UpdatedAt: nowMs()},
+	}
+	err := s.Memories().Commit(ctx, zero, cs)
+	if !errors.Is(err, store.ErrScopeRequired) {
+		t.Errorf("Commit with empty scope: got %v want ErrScopeRequired", err)
+	}
+}
+
+func testMemoryContentHashScopeIsolation(t *testing.T, factory Factory) {
+	t.Helper()
+	s, cleanup := factory()
+	defer cleanup()
+	ctx := context.Background()
+	scopeA := tenantScope("tenant-A-" + newID())
+	scopeB := tenantScope("tenant-B-" + newID())
+
+	hash := "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+	memA := store.Memory{
+		ID: newID(), Kind: "fact", Content: "tenant A content",
+		Status: "active", Confidence: 0.9, TrustSource: "llm_extracted",
+		Stability: 1.0, ContentHash: hash,
+		CreatedAt: nowMs(), UpdatedAt: nowMs(),
+	}
+	if err := s.Memories().Insert(ctx, scopeA, memA); err != nil {
+		t.Fatalf("Insert: %v", err)
+	}
+
+	// Tenant B must not see tenant A's hash.
+	_, err := s.Memories().GetByContentHash(ctx, scopeB, hash)
+	if !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("cross-tenant GetByContentHash: got %v want ErrNotFound", err)
+	}
+}
+
+func testMemoryFindNeighborsScopeIsolation(t *testing.T, factory Factory) {
+	t.Helper()
+	s, cleanup := factory()
+	defer cleanup()
+	ctx := context.Background()
+	scopeA := tenantScope("tenant-A-" + newID())
+	scopeB := tenantScope("tenant-B-" + newID())
+
+	// Commit a memory with entities in tenant A.
+	cs := store.CommitSet{
+		Action: store.ActionAdd,
+		Memory: store.Memory{
+			ID: newID(), Kind: "fact", Content: "tenant A memory",
+			Status: "active", Confidence: 0.9, TrustSource: "llm_extracted",
+			Stability: 1.0, CreatedAt: nowMs(), UpdatedAt: nowMs(),
+		},
+		Entities: []string{"shared-entity"},
+	}
+	if err := s.Memories().Commit(ctx, scopeA, cs); err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+
+	// Tenant B finds no neighbors for the same entity.
+	neighbors, err := s.Memories().FindNeighbors(ctx, scopeB, store.NeighborQuery{
+		Entities: []string{"shared-entity"},
+	})
+	if err != nil {
+		t.Fatalf("FindNeighbors: %v", err)
+	}
+	if len(neighbors) != 0 {
+		t.Errorf("cross-tenant FindNeighbors: got %d results want 0", len(neighbors))
+	}
+}
+
+// testMemoryFindNeighborsByKeyword verifies that FindNeighbors works when
+// the query uses Keywords (not just Entities). Covers the keyword CTE branch.
+func testMemoryFindNeighborsByKeyword(t *testing.T, factory Factory) {
+	t.Helper()
+	s, cleanup := factory()
+	defer cleanup()
+	ctx := context.Background()
+	scope := tenantScope("t-" + newID())
+
+	memID := newID()
+	cs := store.CommitSet{
+		Action: store.ActionAdd,
+		Memory: store.Memory{
+			ID: memID, Kind: "fact", Content: "Go uses goroutines",
+			Status: "active", Confidence: 0.9, TrustSource: "llm_extracted",
+			Stability: 1.0, CreatedAt: nowMs(), UpdatedAt: nowMs(),
+		},
+		Keywords: []string{"goroutine", "concurrency"},
+	}
+	if err := s.Memories().Commit(ctx, scope, cs); err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+
+	// Search by keyword only — exercises the keyword CTE path in FindNeighbors.
+	neighbors, err := s.Memories().FindNeighbors(ctx, scope, store.NeighborQuery{
+		Keywords: []string{"goroutine"},
+		Limit:    5,
+	})
+	if err != nil {
+		t.Fatalf("FindNeighbors by keyword: %v", err)
+	}
+	if len(neighbors) != 1 {
+		t.Errorf("got %d neighbors want 1", len(neighbors))
+	}
+	if len(neighbors) > 0 && neighbors[0].ID != memID {
+		t.Errorf("neighbor ID: got %q want %q", neighbors[0].ID, memID)
+	}
+}
+
+// testMemoryCommitAddZeroTimes verifies that Commit with zero-valued CreatedAt
+// and UpdatedAt on the Memory, and an Event with empty Payload, are all
+// defaulted to server-side values. Covers the zero-timestamp branches in
+// insertMemorySQLite and insertEventSQLite.
+func testMemoryCommitAddZeroTimes(t *testing.T, factory Factory) {
+	t.Helper()
+	s, cleanup := factory()
+	defer cleanup()
+	ctx := context.Background()
+	scope := tenantScope("t-" + newID())
+
+	memID := newID()
+	evID := newID()
+	cs := store.CommitSet{
+		Action: store.ActionAdd,
+		Memory: store.Memory{
+			ID: memID, Kind: "fact", Content: "zero-time fact",
+			Status: "active", Confidence: 0.8, TrustSource: "llm_extracted",
+			Stability: 1.0,
+			// CreatedAt and UpdatedAt deliberately zero — defaults applied server-side.
+		},
+		Events: []store.Event{
+			// Payload deliberately empty — insertEventSQLite must set it to "{}".
+			{ID: evID, Type: "memory.added", SubjectID: memID},
+		},
+	}
+	if err := s.Memories().Commit(ctx, scope, cs); err != nil {
+		t.Fatalf("Commit with zero timestamps: %v", err)
+	}
+
+	got, err := s.Memories().Get(ctx, scope, memID)
+	if err != nil {
+		t.Fatalf("Get after zero-time commit: %v", err)
+	}
+	if got.CreatedAt == 0 {
+		t.Error("CreatedAt should have been defaulted to non-zero")
+	}
+	if got.UpdatedAt == 0 {
+		t.Error("UpdatedAt should have been defaulted to non-zero")
+	}
+}
+
+// testMemoryCommitUpdateZeroTimes verifies that an ActionUpdate CommitSet with
+// a zero-valued UpdatedAt on the Memory is defaulted server-side. Covers the
+// zero-timestamp branch in updateMemorySQLite.
+func testMemoryCommitUpdateZeroTimes(t *testing.T, factory Factory) {
+	t.Helper()
+	s, cleanup := factory()
+	defer cleanup()
+	ctx := context.Background()
+	scope := tenantScope("t-" + newID())
+
+	// Insert original memory.
+	memID := newID()
+	cs1 := store.CommitSet{
+		Action: store.ActionAdd,
+		Memory: store.Memory{
+			ID: memID, Kind: "fact", Content: "original",
+			Status: "active", Confidence: 0.7, TrustSource: "llm_extracted",
+			Stability: 1.0, CreatedAt: nowMs(), UpdatedAt: nowMs(),
+		},
+	}
+	if err := s.Memories().Commit(ctx, scope, cs1); err != nil {
+		t.Fatalf("first Commit: %v", err)
+	}
+
+	// Update with zero UpdatedAt — should default server-side.
+	cs2 := store.CommitSet{
+		Action: store.ActionUpdate,
+		Memory: store.Memory{
+			ID: memID, Kind: "fact", Content: "updated",
+			Status: "active", Confidence: 0.9, TrustSource: "llm_extracted",
+			Stability: 1.0,
+			// UpdatedAt deliberately zero.
+		},
+	}
+	if err := s.Memories().Commit(ctx, scope, cs2); err != nil {
+		t.Fatalf("Commit update with zero UpdatedAt: %v", err)
+	}
+
+	got, err := s.Memories().Get(ctx, scope, memID)
+	if err != nil {
+		t.Fatalf("Get after update: %v", err)
+	}
+	if got.Content != "updated" {
+		t.Errorf("Content: got %q want updated", got.Content)
+	}
+	if got.UpdatedAt == 0 {
+		t.Error("UpdatedAt should have been defaulted to non-zero")
+	}
+}
+
+// testMemoryCommitAddWithProvenance verifies that a CommitSet with Provenance
+// rows (including a zero CreatedAt) writes provenance correctly. Covers the
+// insertProvenanceSQLite loop body.
+func testMemoryCommitAddWithProvenance(t *testing.T, factory Factory) {
+	t.Helper()
+	s, cleanup := factory()
+	defer cleanup()
+	ctx := context.Background()
+	scope := tenantScope("t-" + newID())
+
+	// Create a record so the FK on provenance.record_id is satisfied.
+	recID := newID()
+	rec := store.Record{
+		ID:         recID,
+		Role:       "user",
+		Content:    "source record for provenance",
+		OccurredAt: nowMs(),
+		CreatedAt:  nowMs(),
+	}
+	if err := s.Records().Append(ctx, scope, []store.Record{rec}); err != nil {
+		t.Fatalf("Append record: %v", err)
+	}
+
+	memID := newID()
+	provID := newID()
+	cs := store.CommitSet{
+		Action: store.ActionAdd,
+		Memory: store.Memory{
+			ID: memID, Kind: "fact", Content: "provenance fact",
+			Status: "active", Confidence: 0.8, TrustSource: "llm_extracted",
+			Stability: 1.0, CreatedAt: nowMs(), UpdatedAt: nowMs(),
+		},
+		Provenance: []store.Provenance{
+			{
+				ID:       provID,
+				MemoryID: memID,
+				RecordID: recID,
+				// CreatedAt deliberately zero — defaulted server-side.
+			},
+		},
+	}
+	if err := s.Memories().Commit(ctx, scope, cs); err != nil {
+		t.Fatalf("Commit with provenance: %v", err)
+	}
+
+	// Memory must be readable.
+	got, err := s.Memories().Get(ctx, scope, memID)
+	if err != nil {
+		t.Fatalf("Get after commit with provenance: %v", err)
+	}
+	if got.Content != "provenance fact" {
+		t.Errorf("Content: got %q want provenance fact", got.Content)
 	}
 }

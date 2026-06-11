@@ -5,13 +5,26 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
+
+	"github.com/oklog/ulid/v2"
 
 	"github.com/hurtener/stowage/internal/identity"
 	"github.com/hurtener/stowage/internal/store"
 )
 
 type memoryStore struct{ s *sqliteStore }
+
+// memorySelectCols is the column list for all SELECT queries on the memories table.
+// content_hash uses COALESCE to return "" for pre-Phase-08 NULL rows.
+const memorySelectCols = `id, tenant_id, COALESCE(project_id,''), COALESCE(user_id,''), COALESCE(session_id,''),
+       kind, content, context, status,
+       importance, confidence, trust_source,
+       match_count, inject_count, use_count, save_count, fail_count, noise_count,
+       stability, last_accessed_at, valid_from, valid_until,
+       episode_id, supersedes_id, superseded_by_id, privacy_zone,
+       created_at, updated_at, COALESCE(content_hash,'')`
 
 func (m *memoryStore) Insert(ctx context.Context, scope identity.Scope, mem store.Memory) error {
 	if scope.Tenant == "" { // S1: fail closed
@@ -32,15 +45,15 @@ func (m *memoryStore) Insert(ctx context.Context, scope identity.Scope, mem stor
 				 match_count, inject_count, use_count, save_count, fail_count, noise_count,
 				 stability, last_accessed_at, valid_from, valid_until,
 				 episode_id, supersedes_id, superseded_by_id, privacy_zone,
-				 created_at, updated_at)
-			VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+				 created_at, updated_at, content_hash)
+			VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 			mem.ID, scope.Tenant, nullStr(scope.Project), nullStr(scope.User), nullStr(scope.Session),
 			mem.Kind, mem.Content, mem.Context, mem.Status,
 			mem.Importance, mem.Confidence, mem.TrustSource,
 			mem.MatchCount, mem.InjectCount, mem.UseCount, mem.SaveCount, mem.FailCount, mem.NoiseCount,
 			mem.Stability, mem.LastAccessedAt, mem.ValidFrom, mem.ValidUntil,
 			mem.EpisodeID, mem.SupersedesID, mem.SupersededByID, mem.PrivacyZone,
-			mem.CreatedAt, mem.UpdatedAt,
+			mem.CreatedAt, mem.UpdatedAt, nullStr(mem.ContentHash),
 		)
 		return err
 	})
@@ -52,8 +65,8 @@ func (m *memoryStore) Get(ctx context.Context, scope identity.Scope, id string) 
 		return nil, err
 	}
 	args = append(args, id)
-	qg := `SELECT id, tenant_id, COALESCE(project_id,''), COALESCE(user_id,''), COALESCE(session_id,''), kind, content, context, status, importance, confidence, trust_source, match_count, inject_count, use_count, save_count, fail_count, noise_count, stability, last_accessed_at, valid_from, valid_until, episode_id, supersedes_id, superseded_by_id, privacy_zone, created_at, updated_at FROM memories WHERE ` + whereClause + ` AND id = ?` //nolint:gosec // whereClause is built from controlled helper, not user input
-	row := m.s.rdb.QueryRowContext(ctx, qg, args...)
+	q := `SELECT ` + memorySelectCols + ` FROM memories WHERE ` + whereClause + ` AND id = ?` //nolint:gosec
+	row := m.s.rdb.QueryRowContext(ctx, q, args...)
 	mem, err := scanMemory(row)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, store.ErrNotFound
@@ -77,11 +90,11 @@ func (m *memoryStore) Update(ctx context.Context, scope identity.Scope, mem stor
 			mem.MatchCount, mem.InjectCount, mem.UseCount, mem.SaveCount, mem.FailCount, mem.NoiseCount,
 			mem.Stability, mem.LastAccessedAt, mem.ValidFrom, mem.ValidUntil,
 			mem.EpisodeID, mem.SupersedesID, mem.SupersededByID, mem.PrivacyZone,
-			mem.UpdatedAt,
+			mem.UpdatedAt, nullStr(mem.ContentHash),
 		}
 		queryArgs = append(queryArgs, args...)
 		queryArgs = append(queryArgs, mem.ID)
-		qu := `UPDATE memories SET kind=?, content=?, context=?, status=?, importance=?, confidence=?, trust_source=?, match_count=?, inject_count=?, use_count=?, save_count=?, fail_count=?, noise_count=?, stability=?, last_accessed_at=?, valid_from=?, valid_until=?, episode_id=?, supersedes_id=?, superseded_by_id=?, privacy_zone=?, updated_at=? WHERE ` + whereClause + ` AND id=?` //nolint:gosec // whereClause is built from controlled helper, not user input
+		qu := `UPDATE memories SET kind=?, content=?, context=?, status=?, importance=?, confidence=?, trust_source=?, match_count=?, inject_count=?, use_count=?, save_count=?, fail_count=?, noise_count=?, stability=?, last_accessed_at=?, valid_from=?, valid_until=?, episode_id=?, supersedes_id=?, superseded_by_id=?, privacy_zone=?, updated_at=?, content_hash=? WHERE ` + whereClause + ` AND id=?` //nolint:gosec
 		_, err := tx.Exec(qu, queryArgs...)
 		return err
 	})
@@ -96,7 +109,7 @@ func (m *memoryStore) SetStatus(ctx context.Context, scope identity.Scope, id st
 		queryArgs := []interface{}{status, updatedAt}
 		queryArgs = append(queryArgs, args...)
 		queryArgs = append(queryArgs, id)
-		qs := `UPDATE memories SET status=?, updated_at=? WHERE ` + whereClause + ` AND id=?` //nolint:gosec // whereClause is built from controlled helper, not user input
+		qs := `UPDATE memories SET status=?, updated_at=? WHERE ` + whereClause + ` AND id=?` //nolint:gosec
 		_, err := tx.Exec(qs, queryArgs...)
 		return err
 	})
@@ -122,7 +135,7 @@ func (m *memoryStore) ListByStatus(ctx context.Context, scope identity.Scope, st
 	}
 	args = append(args, limit+1)
 
-	q := `SELECT id, tenant_id, COALESCE(project_id,''), COALESCE(user_id,''), COALESCE(session_id,''), kind, content, context, status, importance, confidence, trust_source, match_count, inject_count, use_count, save_count, fail_count, noise_count, stability, last_accessed_at, valid_from, valid_until, episode_id, supersedes_id, superseded_by_id, privacy_zone, created_at, updated_at FROM memories WHERE ` + whereClause + ` ORDER BY created_at ASC, id ASC LIMIT ?` //nolint:gosec // whereClause is built from controlled helper, not user input
+	q := `SELECT ` + memorySelectCols + ` FROM memories WHERE ` + whereClause + ` ORDER BY created_at ASC, id ASC LIMIT ?` //nolint:gosec
 	rows, err := m.s.rdb.QueryContext(ctx, q, args...)
 	if err != nil {
 		return nil, "", fmt.Errorf("sqlitestore: list memories by status: %w", err)
@@ -196,7 +209,7 @@ func (m *memoryStore) ListLinks(ctx context.Context, scope identity.Scope, fromM
 		args = append(args, toMemoryID)
 	}
 
-	ql := `SELECT id, tenant_id, from_memory, to_memory, type, source, confidence, created_at FROM links WHERE ` + clause + ` ORDER BY created_at ASC` //nolint:gosec // clause is built from controlled params, not user input
+	ql := `SELECT id, tenant_id, from_memory, to_memory, type, source, confidence, created_at FROM links WHERE ` + clause + ` ORDER BY created_at ASC` //nolint:gosec
 	rows, err := m.s.rdb.QueryContext(ctx, ql, args...)
 	if err != nil {
 		return nil, fmt.Errorf("sqlitestore: list links: %w", err)
@@ -241,6 +254,388 @@ func (m *memoryStore) AddProvenance(ctx context.Context, scope identity.Scope, r
 	})
 }
 
+// GetByContentHash returns the active memory matching hash within scope.
+// Returns ErrNotFound when absent (D-044).
+func (m *memoryStore) GetByContentHash(ctx context.Context, scope identity.Scope, hash string) (*store.Memory, error) {
+	whereClause, args, err := buildScopeWhere(scope)
+	if err != nil {
+		return nil, err
+	}
+	args = append(args, hash)
+	q := `SELECT ` + memorySelectCols + ` FROM memories WHERE ` + whereClause + ` AND status = 'active' AND content_hash = ? LIMIT 1` //nolint:gosec
+	row := m.s.rdb.QueryRowContext(ctx, q, args...)
+	mem, err := scanMemory(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, store.ErrNotFound
+	}
+	return mem, err
+}
+
+// FindNeighbors returns active memories sharing entities or keywords with q,
+// ranked by overlap count descending then recency (D-044).
+// Scope-parameterized per P3; cross-tenant isolation proven by conformance.
+func (m *memoryStore) FindNeighbors(ctx context.Context, scope identity.Scope, q store.NeighborQuery) ([]store.Memory, error) {
+	if len(q.Entities) == 0 && len(q.Keywords) == 0 {
+		return nil, nil
+	}
+	scopeWhere, scopeArgs, err := buildScopeWhere(scope)
+	if err != nil {
+		return nil, err
+	}
+	limit := q.Limit
+	if limit <= 0 {
+		limit = 8
+	}
+
+	var unionParts []string
+	var cteArgs []interface{}
+
+	if len(q.Entities) > 0 {
+		ph := make([]string, len(q.Entities))
+		cteArgs = append(cteArgs, scope.Tenant)
+		for i, e := range q.Entities {
+			ph[i] = "?"
+			cteArgs = append(cteArgs, e)
+		}
+		unionParts = append(unionParts, "SELECT memory_id FROM memory_entities WHERE tenant_id = ? AND entity IN ("+strings.Join(ph, ",")+")")
+	}
+	if len(q.Keywords) > 0 {
+		ph := make([]string, len(q.Keywords))
+		cteArgs = append(cteArgs, scope.Tenant)
+		for i, k := range q.Keywords {
+			ph[i] = "?"
+			cteArgs = append(cteArgs, k)
+		}
+		unionParts = append(unionParts, "SELECT memory_id FROM memory_keywords WHERE tenant_id = ? AND keyword IN ("+strings.Join(ph, ",")+")")
+	}
+
+	allArgs := append(cteArgs, scopeArgs...) //nolint:gocritic
+	allArgs = append(allArgs, limit)
+
+	// Build query: all variable parts are either compile-time constants or built
+	// from controlled helpers (unionParts contains only ? placeholders;
+	// scopeWhere is from buildScopeWhere; memorySelectCols is a constant).
+	cteUnion := strings.Join(unionParts, " UNION ALL ")
+	qStr := "WITH overlap AS (SELECT memory_id,COUNT(*) AS cnt FROM (" + cteUnion + ") sub GROUP BY memory_id) " + //nolint:gosec
+		"SELECT " + memorySelectCols + " FROM memories m " +
+		"JOIN overlap o ON o.memory_id=m.id " +
+		"WHERE " + scopeWhere + " AND m.status='active' " +
+		"ORDER BY o.cnt DESC,m.created_at DESC LIMIT ?"
+
+	rows, err := m.s.rdb.QueryContext(ctx, qStr, allArgs...)
+	if err != nil {
+		return nil, fmt.Errorf("sqlitestore: find neighbors: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var out []store.Memory
+	for rows.Next() {
+		mem, err := scanMemory(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, *mem)
+	}
+	return out, rows.Err()
+}
+
+// counterColumn maps the counter name to its SQL column.
+var counterColumn = map[string]string{
+	"match":  "match_count",
+	"inject": "inject_count",
+	"use":    "use_count",
+	"save":   "save_count",
+	"fail":   "fail_count",
+	"noise":  "noise_count",
+}
+
+// IncrementCounter atomically increments one utility counter on a memory.
+func (m *memoryStore) IncrementCounter(ctx context.Context, scope identity.Scope, id, counter string) error {
+	col, ok := counterColumn[counter]
+	if !ok {
+		return fmt.Errorf("sqlitestore: unknown counter %q", counter)
+	}
+	whereClause, args, err := buildScopeWhere(scope)
+	if err != nil {
+		return err
+	}
+	return m.s.exec(ctx, func(tx *sql.Tx) error {
+		queryArgs := append(args, id)                                                                                 //nolint:gocritic
+		_, err := tx.Exec(`UPDATE memories SET `+col+` = `+col+` + 1 WHERE `+whereClause+` AND id = ?`, queryArgs...) //nolint:gosec
+		return err
+	})
+}
+
+// Commit executes one reconciliation outcome as a single atomic transaction.
+// SQLite driver: ONE exec closure = ONE sql.Tx (D-045).
+// Events in CommitSet.Events are written directly into the same tx.
+func (m *memoryStore) Commit(ctx context.Context, scope identity.Scope, cs store.CommitSet) error {
+	if scope.Tenant == "" {
+		return store.ErrScopeRequired
+	}
+	return m.s.exec(ctx, func(tx *sql.Tx) error {
+		return execCommitSQLite(tx, scope, cs)
+	})
+}
+
+// execCommitSQLite runs the full commit logic inside a sql.Tx.
+func execCommitSQLite(tx *sql.Tx, scope identity.Scope, cs store.CommitSet) error {
+	now := time.Now().UnixMilli()
+
+	switch cs.Action {
+	case store.ActionAdd, store.ActionPark:
+		if err := insertMemorySQLite(tx, scope, cs.Memory, now); err != nil {
+			return fmt.Errorf("sqlitestore: commit %s insert memory: %w", cs.Action, err)
+		}
+		if cs.FaultHook != nil {
+			if err := cs.FaultHook(); err != nil {
+				return err
+			}
+		}
+		if err := insertJunctionsSQLite(tx, scope, cs.Memory.ID, cs.Entities, cs.Keywords, cs.Queries); err != nil {
+			return err
+		}
+		if err := insertProvenanceSQLite(tx, scope, cs.Provenance, now); err != nil {
+			return err
+		}
+		if err := insertLinksSQLite(tx, scope, cs.Links, now); err != nil {
+			return err
+		}
+
+	case store.ActionUpdate:
+		if err := updateMemorySQLite(tx, scope, cs.Memory, now); err != nil {
+			return fmt.Errorf("sqlitestore: commit update: %w", err)
+		}
+		if cs.FaultHook != nil {
+			if err := cs.FaultHook(); err != nil {
+				return err
+			}
+		}
+		if err := deleteJunctionsSQLite(tx, cs.Memory.ID); err != nil {
+			return err
+		}
+		if err := insertJunctionsSQLite(tx, scope, cs.Memory.ID, cs.Entities, cs.Keywords, cs.Queries); err != nil {
+			return err
+		}
+		if err := insertProvenanceSQLite(tx, scope, cs.Provenance, now); err != nil {
+			return err
+		}
+		if err := insertLinksSQLite(tx, scope, cs.Links, now); err != nil {
+			return err
+		}
+
+	case store.ActionMerge:
+		if err := insertMemorySQLite(tx, scope, cs.Memory, now); err != nil {
+			return fmt.Errorf("sqlitestore: commit merge insert: %w", err)
+		}
+		if cs.FaultHook != nil {
+			if err := cs.FaultHook(); err != nil {
+				return err
+			}
+		}
+		if err := insertJunctionsSQLite(tx, scope, cs.Memory.ID, cs.Entities, cs.Keywords, cs.Queries); err != nil {
+			return err
+		}
+		if err := insertProvenanceSQLite(tx, scope, cs.Provenance, now); err != nil {
+			return err
+		}
+		for _, t := range cs.Targets {
+			if _, err := tx.Exec(
+				`UPDATE memories SET status='superseded', superseded_by_id=?, updated_at=? WHERE tenant_id=? AND id=?`,
+				cs.Memory.ID, now, scope.Tenant, t.ID,
+			); err != nil {
+				return fmt.Errorf("sqlitestore: commit merge supersede %q: %w", t.ID, err)
+			}
+		}
+		if err := insertLinksSQLite(tx, scope, cs.Links, now); err != nil {
+			return err
+		}
+
+	case store.ActionSupersede:
+		if err := insertMemorySQLite(tx, scope, cs.Memory, now); err != nil {
+			return fmt.Errorf("sqlitestore: commit supersede insert: %w", err)
+		}
+		if cs.FaultHook != nil {
+			if err := cs.FaultHook(); err != nil {
+				return err
+			}
+		}
+		if err := insertJunctionsSQLite(tx, scope, cs.Memory.ID, cs.Entities, cs.Keywords, cs.Queries); err != nil {
+			return err
+		}
+		if err := insertProvenanceSQLite(tx, scope, cs.Provenance, now); err != nil {
+			return err
+		}
+		for _, t := range cs.Targets {
+			if _, err := tx.Exec(
+				`UPDATE memories SET status='superseded', superseded_by_id=?, updated_at=? WHERE tenant_id=? AND id=?`,
+				cs.Memory.ID, now, scope.Tenant, t.ID,
+			); err != nil {
+				return fmt.Errorf("sqlitestore: commit supersede target %q: %w", t.ID, err)
+			}
+		}
+		if err := insertLinksSQLite(tx, scope, cs.Links, now); err != nil {
+			return err
+		}
+
+	case store.ActionDiscard:
+		// Nothing to persist; events carry the reason.
+
+	default:
+		return fmt.Errorf("sqlitestore: commit: unknown action %q", cs.Action)
+	}
+
+	// Write all events in the same transaction (D-045).
+	for _, ev := range cs.Events {
+		if err := insertEventSQLite(tx, scope, ev, now); err != nil {
+			return fmt.Errorf("sqlitestore: commit event: %w", err)
+		}
+	}
+	return nil
+}
+
+// insertMemorySQLite inserts a new memory row within an existing tx.
+func insertMemorySQLite(tx *sql.Tx, scope identity.Scope, mem store.Memory, now int64) error {
+	if mem.CreatedAt == 0 {
+		mem.CreatedAt = now
+	}
+	if mem.UpdatedAt == 0 {
+		mem.UpdatedAt = now
+	}
+	_, err := tx.Exec(`
+		INSERT INTO memories
+			(id, tenant_id, project_id, user_id, session_id, kind, content, context, status,
+			 importance, confidence, trust_source,
+			 match_count, inject_count, use_count, save_count, fail_count, noise_count,
+			 stability, last_accessed_at, valid_from, valid_until,
+			 episode_id, supersedes_id, superseded_by_id, privacy_zone,
+			 created_at, updated_at, content_hash)
+		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		mem.ID, scope.Tenant, nullStr(scope.Project), nullStr(scope.User), nullStr(scope.Session),
+		mem.Kind, mem.Content, mem.Context, mem.Status,
+		mem.Importance, mem.Confidence, mem.TrustSource,
+		mem.MatchCount, mem.InjectCount, mem.UseCount, mem.SaveCount, mem.FailCount, mem.NoiseCount,
+		mem.Stability, mem.LastAccessedAt, mem.ValidFrom, mem.ValidUntil,
+		mem.EpisodeID, mem.SupersedesID, mem.SupersededByID, mem.PrivacyZone,
+		mem.CreatedAt, mem.UpdatedAt, nullStr(mem.ContentHash),
+	)
+	return err
+}
+
+// updateMemorySQLite updates an existing memory row within an existing tx.
+func updateMemorySQLite(tx *sql.Tx, scope identity.Scope, mem store.Memory, now int64) error {
+	if mem.UpdatedAt == 0 {
+		mem.UpdatedAt = now
+	}
+	_, err := tx.Exec(`UPDATE memories SET
+		kind=?, content=?, context=?, status=?,
+		importance=?, confidence=?, trust_source=?,
+		match_count=?, inject_count=?, use_count=?, save_count=?, fail_count=?, noise_count=?,
+		stability=?, last_accessed_at=?, valid_from=?, valid_until=?,
+		episode_id=?, supersedes_id=?, superseded_by_id=?, privacy_zone=?,
+		updated_at=?, content_hash=?
+		WHERE tenant_id=? AND id=?`,
+		mem.Kind, mem.Content, mem.Context, mem.Status,
+		mem.Importance, mem.Confidence, mem.TrustSource,
+		mem.MatchCount, mem.InjectCount, mem.UseCount, mem.SaveCount, mem.FailCount, mem.NoiseCount,
+		mem.Stability, mem.LastAccessedAt, mem.ValidFrom, mem.ValidUntil,
+		mem.EpisodeID, mem.SupersedesID, mem.SupersededByID, mem.PrivacyZone,
+		mem.UpdatedAt, nullStr(mem.ContentHash),
+		scope.Tenant, mem.ID,
+	)
+	return err
+}
+
+// insertJunctionsSQLite inserts entities, keywords, queries for a memory.
+func insertJunctionsSQLite(tx *sql.Tx, scope identity.Scope, memID string, entities, keywords, queries []string) error {
+	for _, e := range entities {
+		if _, err := tx.Exec(
+			`INSERT OR IGNORE INTO memory_entities (id, memory_id, entity, tenant_id) VALUES (?,?,?,?)`,
+			ulid.Make().String(), memID, e, scope.Tenant,
+		); err != nil {
+			return fmt.Errorf("sqlitestore: insert entity: %w", err)
+		}
+	}
+	for _, k := range keywords {
+		if _, err := tx.Exec(
+			`INSERT OR IGNORE INTO memory_keywords (id, memory_id, keyword, tenant_id) VALUES (?,?,?,?)`,
+			ulid.Make().String(), memID, k, scope.Tenant,
+		); err != nil {
+			return fmt.Errorf("sqlitestore: insert keyword: %w", err)
+		}
+	}
+	for _, q := range queries {
+		if _, err := tx.Exec(
+			`INSERT OR IGNORE INTO memory_queries (id, memory_id, query, tenant_id) VALUES (?,?,?,?)`,
+			ulid.Make().String(), memID, q, scope.Tenant,
+		); err != nil {
+			return fmt.Errorf("sqlitestore: insert query: %w", err)
+		}
+	}
+	return nil
+}
+
+// deleteJunctionsSQLite removes all junction rows for a memory (used on update).
+func deleteJunctionsSQLite(tx *sql.Tx, memID string) error {
+	for _, table := range []string{"memory_entities", "memory_keywords", "memory_queries"} {
+		if _, err := tx.Exec(`DELETE FROM `+table+` WHERE memory_id = ?`, memID); err != nil { //nolint:gosec
+			return fmt.Errorf("sqlitestore: delete junctions from %s: %w", table, err)
+		}
+	}
+	return nil
+}
+
+// insertProvenanceSQLite inserts provenance rows within an existing tx.
+func insertProvenanceSQLite(tx *sql.Tx, scope identity.Scope, rows []store.Provenance, now int64) error {
+	for _, p := range rows {
+		if p.CreatedAt == 0 {
+			p.CreatedAt = now
+		}
+		if _, err := tx.Exec(`
+			INSERT OR IGNORE INTO provenance (id, memory_id, record_id, span_start, span_end, tenant_id, created_at)
+			VALUES (?,?,?,?,?,?,?)`,
+			p.ID, p.MemoryID, p.RecordID, p.SpanStart, p.SpanEnd, scope.Tenant, p.CreatedAt,
+		); err != nil {
+			return fmt.Errorf("sqlitestore: insert provenance: %w", err)
+		}
+	}
+	return nil
+}
+
+// insertLinksSQLite inserts link rows within an existing tx.
+func insertLinksSQLite(tx *sql.Tx, scope identity.Scope, links []store.Link, now int64) error {
+	for _, l := range links {
+		if l.CreatedAt == 0 {
+			l.CreatedAt = now
+		}
+		if _, err := tx.Exec(`
+			INSERT OR IGNORE INTO links (id, tenant_id, from_memory, to_memory, type, source, confidence, created_at)
+			VALUES (?,?,?,?,?,?,?,?)`,
+			l.ID, scope.Tenant, l.FromMemory, l.ToMemory, l.Type, l.Source, l.Confidence, l.CreatedAt,
+		); err != nil {
+			return fmt.Errorf("sqlitestore: insert link: %w", err)
+		}
+	}
+	return nil
+}
+
+// insertEventSQLite writes one event row within an existing tx (D-045).
+func insertEventSQLite(tx *sql.Tx, scope identity.Scope, ev store.Event, now int64) error {
+	if ev.CreatedAt == 0 {
+		ev.CreatedAt = now
+	}
+	if ev.Payload == "" {
+		ev.Payload = "{}"
+	}
+	_, err := tx.Exec(`
+		INSERT INTO events (id, tenant_id, project_id, user_id, session_id, type, subject_id, reason, payload, created_at)
+		VALUES (?,?,?,?,?,?,?,?,?,?)`,
+		ev.ID, scope.Tenant, nullStr(scope.Project), nullStr(scope.User), nullStr(scope.Session),
+		ev.Type, ev.SubjectID, ev.Reason, ev.Payload, ev.CreatedAt,
+	)
+	return err
+}
+
 func scanMemory(row rowScanner) (*store.Memory, error) {
 	var mem store.Memory
 	err := row.Scan(
@@ -250,7 +645,7 @@ func scanMemory(row rowScanner) (*store.Memory, error) {
 		&mem.MatchCount, &mem.InjectCount, &mem.UseCount, &mem.SaveCount, &mem.FailCount, &mem.NoiseCount,
 		&mem.Stability, &mem.LastAccessedAt, &mem.ValidFrom, &mem.ValidUntil,
 		&mem.EpisodeID, &mem.SupersedesID, &mem.SupersededByID, &mem.PrivacyZone,
-		&mem.CreatedAt, &mem.UpdatedAt,
+		&mem.CreatedAt, &mem.UpdatedAt, &mem.ContentHash,
 	)
 	if err != nil {
 		return nil, err

@@ -22,6 +22,7 @@ import (
 	"github.com/hurtener/stowage/internal/config"
 	"github.com/hurtener/stowage/internal/gateway"
 	"github.com/hurtener/stowage/internal/pipeline"
+	"github.com/hurtener/stowage/internal/reconcile"
 	"github.com/hurtener/stowage/internal/store"
 	"github.com/hurtener/stowage/internal/telemetry"
 	"github.com/hurtener/stowage/internal/topics"
@@ -351,13 +352,16 @@ func runServe(args []string) {
 	extractStage := pipeline.NewExtractStage(st, gw, topicSvc, log, cfg.Profile, bufStage.Downstream())
 	extractStage.Start(ctx)
 
-	// No-op Phase 08 placeholder consumer — drains CandidateBatch events until
-	// Phase 08 replaces it with reconciliation dispatch.
-	go func() {
-		for range extractStage.Downstream() {
-			// Phase 08: replace with reconciliation dispatch.
-		}
-	}()
+	// Phase 08: reconciliation stage wired to extract stage downstream.
+	reconcileStage := reconcile.New(
+		st.Memories(),
+		st.Ops(),
+		st.Events(),
+		gw,
+		log,
+		extractStage.Downstream(),
+	)
+	reconcileStage.Start(ctx)
 
 	// Start HTTP server in a goroutine.
 	servErr := make(chan error, 1)
@@ -394,6 +398,7 @@ func runServe(args []string) {
 	}
 	bufStage.Drain(shutdownCtx)
 	extractStage.Drain(shutdownCtx)
+	reconcileStage.Drain(shutdownCtx)
 	if gwErr := gw.Close(shutdownCtx); gwErr != nil {
 		log.Warn("stowage serve: gateway close", "err", gwErr)
 	}

@@ -117,6 +117,14 @@ New terms land here in the same PR that introduces them (CLAUDE.md §14).
   redesigns (its project name is not used in this repository; see D-001/D-003).
 - **The CC-memory predecessor** — the internal Go memory system for coding
   agents whose lifecycle model Stowage adopts (brief 02).
+- **Fast-add** — committing a no-neighbor candidate as an active memory without
+  an LLM decision call (D-044). The common case for a fresh scope; eliminates
+  the gateway round-trip when there is nothing to reconcile against.
+- **Parked** — a memory in `pending_confirmation` status awaiting human review
+  or Phase 15 resolution. Created by the trust gate when an incoming supersede/
+  update targets a high-trust memory (score ≥ 3.0), or when the LLM explicitly
+  decides `park`. The `supersedes_id` field records which active memory the
+  parked candidate intends to replace.
 - **Pack** (default topic pack) — a compiled-in set of topic entries applied
   at extraction prompt-build time when a scope has no explicit active topics
   (D-043). Two packs ship: `pack:preferences` (assistant profile —

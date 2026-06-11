@@ -95,6 +95,32 @@ type MemoryStore interface {
 
 	// AddProvenance records which verbatim record spans produced a memory.
 	AddProvenance(ctx context.Context, scope identity.Scope, rows []Provenance) error
+
+	// GetByContentHash returns the active memory matching the given SHA-256
+	// content hash within scope. Returns ErrNotFound when absent.
+	// Used by the exact-dedup pre-filter (D-044).
+	GetByContentHash(ctx context.Context, scope identity.Scope, hash string) (*Memory, error)
+
+	// FindNeighbors returns active memories that share entities or keywords
+	// with the candidate, ranked by overlap count descending then recency.
+	// The search is bounded by q.Limit (default 8 when 0). Scope-parameterized
+	// per P3; cross-tenant/cross-user isolation proven by conformance.
+	// This is the interim structural neighbor lookup (Phase 09 adds semantic lanes).
+	FindNeighbors(ctx context.Context, scope identity.Scope, q NeighborQuery) ([]Memory, error)
+
+	// IncrementCounter atomically increments one of the six utility counters
+	// on a memory. counter must be one of: "match", "inject", "use", "save",
+	// "fail", "noise". Returns an error for unrecognised counter names.
+	IncrementCounter(ctx context.Context, scope identity.Scope, id, counter string) error
+
+	// Commit executes one reconciliation outcome as a single atomic transaction:
+	// memory insert/update, junction rows, provenance rows, link rows, status
+	// transitions on targets, and event rows — all in one DB transaction.
+	//   SQLite driver:  ONE exec closure = ONE sql.Tx (D-045).
+	//   Postgres driver: pool.Begin → pgx.Tx (D-045).
+	// Events are written directly into the transaction; not via EventStore.Emit.
+	// CommitSet.FaultHook is a test-only mid-commit failure injection.
+	Commit(ctx context.Context, scope identity.Scope, cs CommitSet) error
 }
 
 // TopicStore manages extraction magnets (RFC §4.1, D-007).
