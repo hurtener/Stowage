@@ -102,9 +102,11 @@ for every later phase build on this.
 
 A `-tags=live` test gated on `STOWAGE_TEST_OPENROUTER_KEY` +
 `STOWAGE_TEST_OPENROUTER_MODEL` exercises `Complete` against OpenRouter
-(schema-constrained round-trip). Embeddings have no OpenRouter path (checked
-2026-06-11 — no embedding models there); live-embed validation waits for a
-Bifrost/OpenAI-compatible embeddings endpoint and is not a phase gate.
+(schema-constrained round-trip). **Update 2026-06-11 (post-merge):** OpenRouter
+now serves embeddings — `google/gemini-embedding-2` verified live (3072 dims
+default); use it for `Embed`-path live validation going forward. For the
+optional rerank lane (Phase 12), `cohere/rerank-4-fast` is the designated
+validation model.
 
 ## Files added or changed
 
