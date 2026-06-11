@@ -13,10 +13,17 @@ Stowage  — memory infrastructure  (this project)
 Stowage ingests raw interactions with a fire-and-forget API, asynchronously
 extracts structured memories guided by configurable **topics**, actively
 **reconciles** new information against what it already knows (update,
-supersede, merge, forget), and serves **hybrid retrieval** (lexical + vector +
-structured, fused) with utility-driven ranking and **provenance drill-down** to
-the verbatim source. Embeddings and LLM calls go through one provider-agnostic
-gateway seam (Bifrost first) — no local models, no workers, no CGo.
+supersede, merge, forget — reversibly), and serves **hybrid retrieval**
+(lexical + vector + structured, fused) with utility-driven ranking and
+**provenance drill-down** to the verbatim source. Fleets self-improve through
+built-in **reflection and playbooks** (ACE): task outcomes become shared
+strategies, assembled deterministically into an evolving context, shareable
+across a team via **grants**. Embeddings and LLM calls go through one
+provider-agnostic gateway seam (Bifrost first) — no local models, no workers,
+no CGo.
+
+Runs as a standalone binary (HTTP + MCP + CLI) over Postgres, or fully
+embedded in a host process over pure-Go sqlite — same code, same seams.
 
 ## Status
 

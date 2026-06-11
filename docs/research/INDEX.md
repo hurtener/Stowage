@@ -10,6 +10,7 @@ no predecessor files are vendored (D-003).
 | [02](02-predecessor-ccmem.md) | The CC-memory predecessor: scoring & lifecycle model |
 | [03](03-engram.md) | Weaviate Engram: pipeline shape and memory-as-infrastructure framing |
 | [04](04-cl-bench.md) | CL-Bench (arXiv 2606.05661): failure modes and the gain metric |
+| [05](05-ace.md) | ACE (arXiv 2510.04618): reflection, delta updates, playbooks, context collapse |
 
 ## Subsystem → briefs
 
@@ -24,6 +25,7 @@ no predecessor files are vendored (D-003).
 | lifecycle (decay, sweeps, supersede) | 02, 01, 04 |
 | gateway (embeddings, LLM) | 01 (pain points), Harbor's bifrost driver pattern |
 | store / vindex | 01, 02 (contention lessons) |
-| scopes & privacy | 03, 01 |
-| eval | 04, 02 (LoCoMo methodology) |
+| scopes, privacy & grants | 03, 01 |
+| reflection & playbooks | 05, 02 |
+| eval | 04, 05 (online adaptation), 02 (LoCoMo methodology) |
 | API / MCP surface | 01, 02 (surface-sprawl cautionary tales) |

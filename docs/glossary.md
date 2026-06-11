@@ -55,6 +55,23 @@ New terms land here in the same PR that introduces them (CLAUDE.md §14).
   re-enter the pipeline.
 - **Dead letter** — a pipeline item that exhausted retries; persisted for
   inspection, never silently dropped.
+- **Grant** — a store-layer-enforced share of a slice of an owner scope to a
+  named group (team), with read or contribute access, a privacy-zone ceiling,
+  and optional redaction (D-016).
+- **Outcome** — the success/failure + execution-feedback tag a record or buffer
+  flush can carry; the label-free fuel for reflection (D-018).
+- **Reflection** — the outcome-aware extraction mode that distills `strategy`
+  and `failure_mode` memories from trajectories (ACE's Reflector, brief 05).
+- **Playbook** — the deterministic, sectioned, budget-packed context view over
+  a scope's strategy/failure-mode memories (`GET /v1/playbook`); evolves only
+  through delta reconciliation, never LLM rewrite (context-collapse defense).
+- **Context collapse** — the degradation ACE documents when an accumulated
+  context is monolithically rewritten by an LLM; the reason playbook assembly
+  contains no LLM call.
+- **Rollback** — reverting a reconciliation decision from its event, restoring
+  prior state and tombstoning the result (D-017).
+- **Embedded mode** — running the full Stowage server in-process via
+  `sdk/stowage`, no daemon or network (D-022); e.g. inside a Wails desktop app.
 - **The Python predecessor** — the internal Python memory server Stowage
   redesigns (its project name is not used in this repository; see D-001/D-003).
 - **The CC-memory predecessor** — the internal Go memory system for coding

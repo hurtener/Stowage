@@ -101,4 +101,75 @@ negative gain on the standard scenarios blocks release (RFC §12, Phase 17).
 
 2026-06-10. Both predecessors grew sprawling surfaces (50+ endpoints / 70+
 tools). Stowage's MCP surface is deliberately six tools; additions require an
-RFC amendment.
+RFC amendment. *(Amended by D-018: `memory_playbook` makes it seven.)*
+
+## D-016 — Team sharing via grants, not federation
+
+2026-06-11. Fleet use cases need team-level shared memory; the Python
+predecessor solved it with federation graphs + RBAC (8+ tables) — too heavy.
+Stowage: a **grant** gives a named group read/contribute access to a slice of
+an owner scope, capped by privacy-zone ceiling, optional redaction, enforced in
+the store layer like scopes (P3). Cross-tenant federation stays out of scope.
+RFC §5.3; own phase in Wave 4.
+
+## D-017 — Reconciliation is reversible; rollback API
+
+2026-06-11. Every destructive reconciliation op (update/merge/supersede) must
+be invertible from its event within retention: sources kept as `superseded`,
+prior content stored on update events, `POST /v1/memories/{id}/rollback`
+restores and tombstones with its own event. The LLM gets to be wrong
+recoverably. RFC §6; lands with Phase 14.
+
+## D-018 — ACE built in: outcomes, reflection, deterministic playbooks
+
+2026-06-11. From brief 05 (arXiv 2510.04618). Three capabilities: (1)
+outcome-tagged ingestion (success/failure + execution feedback; Harbor task
+events as the label-free source); (2) a reflection extraction mode producing
+`strategy`/`failure_mode` memories, reconciled like any candidate, with a
+multi-epoch re-reflection sweep; (3) `GET /v1/playbook` — deterministic,
+sectioned, budget-packed assembly with **no LLM in the assembly path**
+(context-collapse defense) and append-biased output for prompt caching. Adds
+the `memory_playbook` MCP tool (amends D-015). RFC §6a.
+
+## D-019 — Harbor: speak the protocol, don't build on the runtime
+
+2026-06-11. Stowage's core pipeline is channels + supervision, never Harbor
+flows/planner (dependency direction: Harbor depends on Stowage; Stowage must
+run standalone). Stowage adopts Harbor's protocol surface instead: identity
+quadruple, bus-shaped `memory.*` events, `llm.cost.recorded` governance
+semantics. Stowage ops appear as tools *inside* Harbor flows (consolidation,
+reflection recipes). The eval harness's agent loop runs on Harbor — the
+canonical "Harbor powering a non-agent" showcase. RFC §10.
+
+## D-020 — MCP surface built with Dockyard; console as a Dockyard MCP App
+
+2026-06-11. Phase 16 implements `stowage mcp` with Dockyard (contract-first
+typed tools, generated schemas, inspector, validate gates) — Stowage becomes
+Dockyard's first external consumer. Post-v1, the operator console ships as a
+Dockyard MCP App. RFC §9.2.
+
+## D-021 — Postgres is the principal store; sqlite is the embedded driver
+
+2026-06-11. Refines D-009: postgres (pgx + pgvector) is the recommended
+production/fleet/managed-cloud driver; sqlite (modernc, pure Go) is the
+embedded/portable driver and must remain CGo-free forever. Both pass the same
+conformance suite; the seam is the contract and future backends are new
+drivers. RFC §8.1.
+
+## D-022 — Embedded library mode is a supported deployment
+
+2026-06-11. `sdk/stowage` in-process mode (full server in the host process, no
+daemon, no network) is a first-class deployment, not a test convenience. Target
+picture: Harbor agent + Stowage inside a Wails desktop app. This is a standing
+reason behind the no-CGo rule. RFC §2.
+
+## D-023 — Open-source gated on SOTA benchmarks; managed cloud is the business
+
+2026-06-11. Strategy: open-source release as an AI-first capability showcase,
+gated on a reproducible report showing state-of-the-art results on public
+memory benchmarks (LoCoMo-style ≥ 0.86, CL-Bench gain, ACE online-adaptation
+scenarios); monetization via a managed cloud (Engram-style). Consequences:
+multi-tenancy/isolation/metering are first-class from day one; everything in
+the repo is written as if public (with D-003 hygiene); the control plane is a
+separate future codebase (RFC §14); license choice is OQ-5, decided when the
+gate is in sight.

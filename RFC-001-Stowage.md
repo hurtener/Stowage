@@ -17,7 +17,7 @@ retrieval** (lexical + vector + structured) with utility-driven ranking and
 **provenance drill-down** to the verbatim source.
 
 It is a ground-up redesign of our internal Python memory server (referred to
-throughout as *the Python predecessor*), informed by three additional sources:
+throughout as *the Python predecessor*), informed by four additional sources:
 
 1. *The CC-memory predecessor* — an internal Go memory system for coding agents
    with an exceptionally good scoring/lifecycle model.
@@ -25,8 +25,10 @@ throughout as *the Python predecessor*), informed by three additional sources:
    buffers, scope isolation, fire-and-forget API.
 3. **CL-Bench** (arXiv 2606.05661) — empirical failure modes of current memory
    systems; its headline finding drives our fidelity-first design.
+4. **ACE** (arXiv 2510.04618) — agentic context engineering; its
+   reflection-and-playbook loop is built in as a server capability (§6a).
 
-Detailed findings live in `docs/research/` (briefs 01–04). No code or files from
+Detailed findings live in `docs/research/` (briefs 01–05). No code or files from
 the predecessors are vendored here; this repository is a clean-room redesign.
 
 ### Why a rewrite, and why Go
@@ -64,11 +66,23 @@ Stowage ships **one CGo-free static binary** — `stowage` — that runs as:
 - an **MCP server** (`stowage mcp`) so agent hosts can use memory as tools, and
 - a **CLI** for operations (migrate, inspect, evaluate, export).
 
-A Go client package (`sdk/`) gives Harbor in-process, typed access.
+The same code is consumable as a **library**: `sdk/stowage`'s in-process mode
+embeds the full server (pipeline, store, retrieval) inside a host process with
+no daemon and no network hop. This is a supported deployment, not a test
+convenience — the target picture includes a Harbor agent + Stowage embedded in
+a Wails desktop app, which is why CGo-freedom and the pure-Go sqlite driver are
+non-negotiable even though Postgres is the principal server-mode store (§8.1).
 
 Memory is treated as **infrastructure, not a feature** (Engram's framing): it gets
 storage-layer guarantees — predictable latency, hard isolation, durability,
 lifecycle management — and an async pipeline so callers never block on memory I/O.
+
+**Positioning.** Stowage is built to be shown: the eval harness (§12) targets
+state-of-the-art results on public memory benchmarks as the proof point for an
+eventual open-source release, with a managed-cloud offering (Engram-style) as
+the monetization path. Multi-tenancy, scope isolation, and metering are
+therefore first-class from day one, and everything in this repository is
+written as if it becomes public (D-003 hygiene).
 
 ### 2.1 Five binding properties
 
@@ -104,7 +118,7 @@ A change that weakens any of these is wrong — amend this RFC first.
 ## 3. Informing findings (condensed)
 
 Full briefs: `docs/research/01-predecessor-python.md`, `02-predecessor-ccmem.md`,
-`03-engram.md`, `04-cl-bench.md`.
+`03-engram.md`, `04-cl-bench.md`, `05-ace.md`.
 
 **From the Python predecessor — keep the ideas, not the weight.** Hybrid BM25 +
 vector retrieval with fusion; privacy zones; confidence as a composed,
@@ -130,6 +144,19 @@ active reconciliation as an LLM tool-call decision over retrieved neighbors
 (add / update / merge / supersede / discard / delete); buffers that collect
 fragments across runs and agents and flush on triggers; scope primitives with
 hard isolation; fire-and-forget ergonomics.
+
+**From ACE (arXiv 2510.04618) — self-improving contexts as a memory-server
+capability.** ACE's Generator/Reflector/Curator loop turns agent trajectories
+into an evolving, itemized playbook: insights are distilled from successes and
+*failures*, stored as discrete bullets with IDs and helpful/harmful counters,
+updated by deltas merged deterministically — never by monolithic LLM rewrites,
+which it shows cause "context collapse" (an 18k-token context compressed to 122
+tokens in one rewrite, dropping accuracy below baseline). Stowage's memory
+model is already ACE's bullet model (itemized entries, IDs, counters, delta
+reconciliation, grow-and-refine dedup); §6a builds in the missing pieces —
+outcome-tagged ingestion, a reflection extraction mode, and deterministic
+playbook assembly — so a fleet's experience compounds without any per-agent
+prompt engineering.
 
 **From CL-Bench — what kills memory systems.** Lossy extraction that can't be
 recovered at retrieval time; stale memories actively misleading agents after
@@ -176,7 +203,9 @@ positive gain is not done.
 ### 4.1 Write path
 
 1. `POST /v1/records` (or MCP `memory_ingest`, or SDK call) with identity scope,
-   the interaction content, and optional hints (session, turn, source agent).
+   the interaction content, and optional hints (session, turn, source agent,
+   and — for ACE reflection, §6a — a task outcome: success/failure plus
+   execution feedback).
 2. Handler validates, stamps scope + ULID, **appends the verbatim record**, ACKs.
    Target p99 under 15 ms on sqlite, dominated by the durable write.
 3. The record ID is sent down a bounded channel into the pipeline:
@@ -252,7 +281,9 @@ memory:  id · scope · kind · content · context · status ·
 ```
 
 - **Kinds:** `fact`, `preference`, `decision`, `gotcha`, `pattern`, `task`,
-  `narrative` (extensible enum; kinds carry default scoring weights).
+  `narrative`, plus the ACE reflection kinds `strategy` and `failure_mode`
+  (extensible enum; kinds carry default scoring weights; reflection kinds are
+  the building blocks of playbooks, §6a).
 - **Status:** `active`, `pending_confirmation` (trust-gated supersede),
   `superseded`, `quarantined`, `expired`, `deleted` (tombstone).
 - **Trust source hierarchy:** `user_stated` > `agreed_upon` > `agent_suggested` >
@@ -279,6 +310,16 @@ Identity quadruple (Harbor convention): `tenant / project / user / session`.
 - **Privacy zones** on memories (`public`/`work`/`personal`/`intimate`) cap how
   far a memory can be shared or promoted; carried over from the Python
   predecessor, simplified: zones gate *promotion and export*, scopes gate *access*.
+- **Grants — team sharing without federation.** A memory always belongs to its
+  owner scope; a **grant** gives a named group (a team) `read` or `contribute`
+  access to a slice of that scope (filterable by topic and kind), capped by a
+  privacy-zone ceiling (`work` shareable, `personal`/`intimate` never) and an
+  optional redaction profile. Grants are enforced in the store layer exactly
+  like scopes (P3) and every grant/revoke is an event. This is the fleet
+  primitive: many agents across users contribute to and read a team memory
+  pool — one agent's `failure_mode` becomes every teammate's avoided mistake —
+  without the predecessor's federation-graph machinery (RFC §14 keeps full
+  cross-tenant federation out of scope).
 
 ### 5.4 Topics (extraction magnets)
 
@@ -316,6 +357,14 @@ On each candidate memory, after the cheap dedup pre-filters:
 5. Supersede chains are walked with cycle detection (recursive CTE, hop cap).
 6. Every decision is an event with the model's stated reason — auditable memory.
 
+**Reversibility (binding).** Every destructive reconciliation operation is
+invertible from its event within the retention window: `merge` and `supersede`
+keep their sources as `superseded` (linked, never deleted); `update` events
+store the prior content. `POST /v1/memories/{id}/rollback` (or
+rollback-by-event-id) restores the prior state and tombstones the result of the
+reverted operation, emitting its own event. Reconciliation is an editor with
+undo, not a shredder — the LLM gets to be wrong recoverably.
+
 Scheduled lifecycle (jittered tickers + singleflight + idempotency markers, all
 in-process):
 
@@ -328,6 +377,38 @@ in-process):
 - **Shift detection (v1.x):** when a scope's recent `fail`/`noise` rates spike
   against a memory cluster, downweight the cluster and surface a
   `memory.shift_suspected` event (CL-Bench's distribution-shift prescription).
+
+---
+
+## 6a. Self-improvement built in (ACE)
+
+Stowage makes the ACE loop (brief 05) a server capability so fleets compound
+experience without per-agent prompt engineering. Three pieces complete what the
+memory model already provides:
+
+1. **Outcome-tagged ingestion.** Records and buffer flushes can carry a task
+   outcome (`success`/`failure` + execution feedback). Harbor task-completion
+   events are the natural label-free source (ACE's key result: reflection works
+   from execution feedback alone). Outcomes also feed the `use`/`fail` counters
+   of the memories that were injected into the task (§4.2.6).
+2. **Reflection extraction mode.** Alongside topic extraction, an outcome-aware
+   reflector pass distills `strategy` and `failure_mode` candidates from
+   trajectories ("what worked, what to avoid, why"), iteratively refined, then
+   reconciled like any candidate — so strategies dedupe, update, and supersede
+   under the same trust gates. Multi-epoch reflection (re-reflecting over old
+   outcome-tagged records as the playbook matures) runs as a lifecycle sweep.
+3. **Deterministic playbook assembly.** `GET /v1/playbook` renders a curated,
+   sectioned context for a scope: strategies and failure modes grouped by
+   topic, ranked by utility counters, budget-packed, with provenance refs. The
+   assembly path contains **no LLM call** — ACE shows monolithic LLM rewrites
+   cause context collapse; Stowage's playbook is a deterministic view over
+   itemized memories whose evolution happens only through delta reconciliation.
+   Output is stable and append-biased so host-side prompt caching stays warm
+   (ACE reports 91.8 % KV-cache hit rates from exactly this property).
+
+A Harbor fleet's loop: agents run → outcomes ingest (fire-and-forget) →
+reflection + reconciliation evolve the team playbook (shared via grants, §5.3)
+→ every agent's next session starts from `GET /v1/playbook`.
 
 ---
 
@@ -365,13 +446,19 @@ could front llama.cpp-style servers — as an HTTP driver, still no CGo.
 ### 8.1 Store seam
 
 All durable state behind one interface with a conformance suite every driver
-must pass (Dockyard's store-seam discipline):
+must pass (Dockyard's store-seam discipline). **Postgres is the principal
+store** for server deployments (fleets, managed cloud); sqlite is the embedded/
+portable driver (dev, desktop embedding, single-user). Both are full citizens
+of the conformance suite — the seam, not either driver, is the contract, and
+future backends arrive as new drivers behind it.
 
-- **`sqlite`** (modernc.org/sqlite, pure Go): single-node default, FTS5 for
-  lexical lanes, vectors as BLOBs with an in-memory pure-Go HNSW (persisted
-  snapshots) above brute-force fallback.
-- **`postgres`** (pgx): fleet deployments — tsvector lexical lanes, pgvector
-  HNSW for vectors, advisory locks for scheduler singleflight across replicas.
+- **`postgres`** (pgx, principal): tsvector lexical lanes, pgvector HNSW for
+  vectors, advisory locks for scheduler singleflight across replicas,
+  connection pooling for fleet concurrency.
+- **`sqlite`** (modernc.org/sqlite, pure Go, embedded): FTS5 for lexical lanes,
+  vectors as BLOBs with an in-memory pure-Go HNSW (persisted snapshots) above
+  brute-force fallback. This driver is what makes the Wails-embedded
+  deployment (§2) possible — it must stay CGo-free forever.
 
 Migrations are forward-only, embedded, applied on boot (configurable), one
 sequence per driver. Target schema is ~12 tables: records, memories, three
@@ -392,14 +479,17 @@ transactions per commit batch.
 ### 9.1 HTTP (v1, stable JSON contracts)
 
 ```text
-POST /v1/records            fire-and-forget ingest (single or batch)
+POST /v1/records            fire-and-forget ingest (single or batch; optional outcome)
 POST /v1/buffers/{key}/flush
 POST /v1/retrieve           hybrid retrieval with profile + budget
+GET  /v1/playbook           deterministic curated context for a scope (§6a)
 POST /v1/drilldown          provenance expansion to verbatim ranges
 POST /v1/feedback           use/save/fail/noise signals per memory
 GET  /v1/memories/{id}      inspect (with provenance + chain)
 PATCH /v1/memories/{id}     assert/correct/quarantine (user-stated writes)
+POST /v1/memories/{id}/rollback   revert a reconciliation decision (§6)
 GET/PUT /v1/scopes/{scope}/topics
+GET/PUT /v1/scopes/{scope}/grants  team sharing with zone ceilings (§5.3)
 GET  /v1/events             SSE stream (scoped)
 GET  /healthz · /readyz · /metrics
 ```
@@ -411,9 +501,15 @@ the key record; Portico can front this for anything fancier. mTLS/JWT deferred.
 
 `stowage mcp` exposes a deliberately small tool set (the Python predecessor's
 50-endpoint surface and the CC-memory predecessor's 70 tools are both cautionary
-tales): `memory_ingest`, `memory_retrieve`, `memory_drilldown`,
-`memory_feedback`, `memory_assert`, `memory_topics`. Built on the official
-`modelcontextprotocol/go-sdk` (same dependency Harbor uses).
+tales): `memory_ingest`, `memory_retrieve`, `memory_playbook`,
+`memory_drilldown`, `memory_feedback`, `memory_assert`, `memory_topics`.
+
+The MCP surface is **built with Dockyard**: tool contracts are typed Go structs
+with generated schemas, validated by Dockyard's quality gates and exercised
+through its inspector — making Stowage Dockyard's first external consumer.
+Post-v1, the operator console (browse memories, walk supersede chains, drill
+provenance, edit topics/grants, watch the event stream) ships as a **Dockyard
+MCP App** rendered inline in the host's chat surface.
 
 ### 9.3 Go SDK
 
@@ -423,19 +519,42 @@ as Harbor in-proc tools via `inproc.RegisterFunc`.
 
 ---
 
-## 10. Harbor integration
+## 10. Harbor integration — speak the protocol, don't build on the runtime
+
+Stowage is the showcase of Harbor's protocol powering something agentic that is
+**not an agent**. The integration is deliberately one-directional: Harbor
+depends on Stowage for memory; Stowage's core never depends on Harbor's runtime
+(no dependency cycle, and Stowage must run standalone for non-Harbor hosts).
+The internal pipeline is a deterministic four-stage flow — it needs channels
+and supervision, not a planner; building it on an agent runtime would repeat
+the Python predecessor's custom-orchestration mistake.
+
+What Stowage *does* adopt is Harbor's protocol surface:
 
 - **Identity:** Stowage adopts Harbor's identity quadruple verbatim; an SDK
   helper lifts Harbor's `identity.Identity` into a Stowage scope.
-- **Tools:** recipe + helper for registering the memory tool set on a Harbor
-  `ToolCatalog` (in-proc when embedded, HTTP otherwise, MCP for non-Harbor hosts).
 - **Events:** Stowage's event stream maps onto Harbor's bus event shape; an
   adapter publishes `memory.*` events (`memory.committed`, `memory.superseded`,
-  `memory.cost_recorded`, `memory.shift_suspected`) so Harbor governance sees
-  memory cost like LLM cost.
+  `memory.rolled_back`, `memory.cost_recorded`, `memory.shift_suspected`) with
+  full identity attribution — so the Harbor console shows memory pipelines,
+  reconciliation decisions, and per-scope memory cost next to agent runs, with
+  zero Stowage-side UI.
+- **Governance:** gateway cost events follow Harbor's `llm.cost.recorded`
+  semantics, so Harbor's per-identity cost ceilings govern memory's LLM spend
+  exactly as they govern agents'.
+- **Tools:** recipe + helper for registering the memory tool set on a Harbor
+  `ToolCatalog` (in-proc when embedded, HTTP otherwise, MCP for non-Harbor hosts).
+- **Flows, where they belong:** Stowage operations appear as tools *inside*
+  Harbor flows — an operator-triggered "consolidate project memory" typed DAG,
+  a post-task-group reflection flow — memory ops as flow nodes, never memory
+  built from flow nodes.
 - **Buffers ↔ tasks:** Harbor background tasks and subagents write to a shared
   buffer key derived from (session, task group); flush on task-group completion
-  is the default multi-agent learning loop (Engram §buffers, Harbor §task groups).
+  is the default multi-agent learning loop, and task outcomes feed reflection
+  (§6a).
+- **The eval harness runs on Harbor** (§12): the gain harness's agent loop is a
+  Harbor fleet — the canonical dogfood, a fleet measurably better with Stowage
+  than without, observed through the Harbor console.
 
 ---
 
@@ -453,14 +572,20 @@ as Harbor in-proc tools via `inproc.RegisterFunc`.
 
 ## 12. Evaluation (a deliverable, not an afterthought)
 
-`stowage eval` ships in-tree:
+`stowage eval` ships in-tree, and it is also the marketing artifact: the
+open-source release is gated on demonstrating **state-of-the-art results on
+public memory benchmarks**, published as a reproducible report.
 
 - **Gain harness** (CL-Bench-inspired): scripted multi-session scenarios run
-  twice — memory on vs. off — against a configurable agent loop; reports the
-  performance delta. Negative gain on the standard scenarios fails release.
+  twice — memory on vs. off — with a Harbor fleet as the agent loop (§10);
+  reports the performance delta. Negative gain on the standard scenarios fails
+  release.
 - **LoCoMo-style retrieval benchmark** (the CC-memory predecessor demonstrated
-  0.86+ vs 0.65 single-hop RAG; we adopt the methodology): recall@k and answer
-  accuracy over long conversations.
+  0.86+ vs 0.65 single-hop RAG; we adopt the methodology and target ≥ that
+  bar): recall@k and answer accuracy over long conversations.
+- **Online-adaptation scenarios** (ACE-inspired, AppWorld-style): contexts
+  evolve during evaluation via the reflection → playbook loop; measures
+  compounding improvement across sequential tasks.
 - **Go benchmarks** for ingest ACK latency, pipeline throughput, retrieval p99
   at 10k/100k/1M memories per scope.
 
@@ -481,10 +606,16 @@ as Harbor in-proc tools via `inproc.RegisterFunc`.
 
 ## 14. Non-goals (v1)
 
-- No UI/console (the event stream and CLI are the operator surface; a Dockyard
-  app can come later).
-- No federation/cross-tenant sharing (the Python predecessor's federation graph
-  is deliberately out — revisit post-v1 with real demand).
+- No UI/console in v1 (the event stream, CLI, and Harbor console are the
+  operator surface; the Stowage Console ships post-v1 as a Dockyard MCP App —
+  §9.2).
+- No cross-tenant federation (the Python predecessor's federation graphs are
+  deliberately out). Team sharing *within* a tenant is in scope via grants
+  (§5.3) — that covers the fleet use case without the graph machinery.
+- No managed-cloud control plane in this repository (billing, org signup,
+  cluster orchestration). The product keeps the seams clean for it — identity,
+  metering events, per-scope ceilings — but the control plane is a separate
+  codebase when it comes.
 - No local embedding/reranker models (P5).
 - No proxy/context-window-management mode (the CC-memory predecessor's proxy is
   clever but couples memory to a specific host's wire protocol; Harbor owns
@@ -498,11 +629,12 @@ as Harbor in-proc tools via `inproc.RegisterFunc`.
 
 See `docs/plans/README.md`. Waves: **W1 foundation** (scaffold/CI, config +
 identity + telemetry, store seam + migrations, gateway seam + bifrost driver),
-**W2 write path** (records + ingest API, buffers, extraction, reconciliation),
-**W3 read path** (lanes + fusion, scoring, drill-down + feedback, optional
-rerank), **W4 lifecycle** (sweeps, supersede chains + trust gates, shift
-detection groundwork), **W5 surfaces & proof** (MCP server, Go SDK + Harbor
-recipes, eval harness, hardening + docs).
+**W2 write path** (records + ingest API with outcomes, buffers, extraction +
+reflection, reconciliation), **W3 read path** (lanes + fusion, scoring,
+drill-down + feedback, optional rerank), **W4 lifecycle & sharing** (sweeps,
+supersede chains + rollback, grants), **W5 surfaces & proof** (MCP server on
+Dockyard, Go SDK + Harbor recipes + embedded mode, playbooks, eval harness,
+hardening + open-source readiness).
 
 ---
 
@@ -517,4 +649,12 @@ recipes, eval harness, hardening + docs).
   the eval harness.
 - **OQ-4:** Does `pending_confirmation` need a TTL that auto-resolves in favor of
   the newer memory? (Lean yes; decide in Phase 14.)
-- **OQ-5:** License before any public release (private for now).
+- **OQ-5:** Open-source license and timing — release is gated on the SOTA
+  benchmark report (§12); pick the license (Apache-2.0 vs BSL-style
+  cloud-protective) when the gate is in sight. Private until then.
+- **OQ-6:** Playbook delivery for prompt caching — exact stability contract
+  (section ordering, append-bias rules) so host-side KV caches stay warm;
+  decide in the playbooks phase with measurements.
+- **OQ-7:** Grants and contribute-mode reconciliation — when a teammate's agent
+  contributes to a granted pool, whose trust hierarchy applies? Decide in the
+  grants phase.

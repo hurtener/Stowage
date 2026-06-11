@@ -19,9 +19,9 @@ Usage:
 
 Commands:
   serve     run the HTTP memory service        (lands in Phase 05)
-  mcp       run the MCP tool server            (lands in Phase 15)
+  mcp       run the MCP tool server            (lands in Phase 16)
   migrate   apply store migrations             (lands in Phase 03)
-  eval      run the evaluation harness         (lands in Phase 17)
+  eval      run the evaluation harness         (lands in Phase 19)
   version   print the build version
 `
 

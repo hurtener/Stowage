@@ -118,9 +118,11 @@ When a phase plan and the RFC drift, the RFC wins. File a follow-up to fix the p
 │   ├── records/                 # verbatim record layer (P1)
 │   ├── pipeline/                # buffer → extract → reconcile → commit stages (P2)
 │   ├── topics/                  # topic (extraction magnet) management
-│   ├── reconcile/               # reconciliation decisions, trust gates, chains (P4)
+│   ├── reconcile/               # reconciliation decisions, trust gates, chains, rollback (P4)
 │   ├── retrieval/               # lanes, fusion, scoring, budgeting, drill-down
-│   ├── lifecycle/               # decay / dedupe / rollup / re-enqueue sweeps
+│   ├── grants/                  # team sharing: groups, grants, zone ceilings (RFC §5.3)
+│   ├── playbook/                # deterministic playbook assembly (RFC §6a — no LLM calls)
+│   ├── lifecycle/               # decay / dedupe / rollup / re-enqueue / re-reflection sweeps
 │   ├── gateway/                 # the intelligence seam + drivers {bifrost, mock} (P5)
 │   ├── store/                   # the Store seam + drivers {sqlite, postgres}
 │   ├── vindex/                  # vector index seam + drivers {pgvector, gohnsw, brute}
@@ -244,6 +246,13 @@ These enforce P1–P5 (§1). They are binding on every phase.
 - **One intelligence seam (P5).** No package outside `internal/gateway` imports an
   LLM/embedding provider SDK or constructs provider HTTP requests. New providers
   are new gateway drivers.
+- **Playbook assembly is LLM-free.** `internal/playbook` never calls the
+  gateway — evolution happens only through delta reconciliation (RFC §6a,
+  ACE's context-collapse defense). A gateway import there fails review and the
+  Phase 18 lint test.
+- **Reconciliation is reversible.** Destructive ops (update/merge/supersede)
+  must be invertible from their events (D-017); a reconciliation change that
+  breaks rollback round-trips is wrong.
 - **No-CGo, single binary.** Every artifact compiles CGo-free and cross-compiles.
 
 ---
@@ -276,8 +285,11 @@ These enforce P1–P5 (§1). They are binding on every phase.
 
 ## 9. Persistence — the `Store` seam rules
 
-- All durable state goes through the `Store` interface. V1 drivers:
-  `modernc.org/sqlite` (pure-Go, CGo-free) and `postgres` (pgx).
+- All durable state goes through the `Store` interface. V1 drivers: `postgres`
+  (pgx — the principal production store, D-021) and `modernc.org/sqlite`
+  (pure-Go, CGo-free — the embedded/portable driver; it must stay CGo-free
+  forever, D-022). Both pass the same conformance suite; neither is "the real
+  one" in code — the seam is the contract.
 - A new persistence concern adds a method to the seam and is implemented by **every**
   driver, proven by the shared conformance suite — not bolted onto one driver.
 - Migrations are forward-only; never edit a migration after it merges.
