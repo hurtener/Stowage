@@ -112,6 +112,53 @@ func TestCosineSimilarityLengthMismatch(t *testing.T) {
 	}
 }
 
+// --- registry tests ---------------------------------------------------------
+
+func TestOpen_BruteDriver(t *testing.T) {
+	st, cleanup := openSQLiteStore(t)
+	defer cleanup()
+	vi, err := vindex.Open(config.VIndexConfig{Driver: "brute"}, st.Vectors(), 4, "test-model")
+	if err != nil {
+		t.Fatalf("Open(brute): unexpected error: %v", err)
+	}
+	if vi == nil {
+		t.Fatal("Open(brute): returned nil Index")
+	}
+}
+
+func TestOpen_UnknownDriver(t *testing.T) {
+	st, cleanup := openSQLiteStore(t)
+	defer cleanup()
+	_, err := vindex.Open(config.VIndexConfig{Driver: "does-not-exist"}, st.Vectors(), 4, "test-model")
+	if err == nil {
+		t.Fatal("Open(does-not-exist): expected error, got nil")
+	}
+	if !errors.As(err, new(interface{ Error() string })) {
+		t.Fatalf("unexpected error type: %T", err)
+	}
+}
+
+func TestRegisterAndOpen(t *testing.T) {
+	// Register a custom driver and verify Open uses it.
+	called := false
+	vindex.Register("test-custom-driver", func(vs store.VectorStore, dims int, model string) (vindex.Index, error) {
+		called = true
+		return vindex.New(vs, dims, model), nil
+	})
+	st, cleanup := openSQLiteStore(t)
+	defer cleanup()
+	vi, err := vindex.Open(config.VIndexConfig{Driver: "test-custom-driver"}, st.Vectors(), 4, "m")
+	if err != nil {
+		t.Fatalf("Open(test-custom-driver): %v", err)
+	}
+	if vi == nil {
+		t.Fatal("Open(test-custom-driver): returned nil Index")
+	}
+	if !called {
+		t.Error("custom factory was not called")
+	}
+}
+
 // --- BenchmarkVectorScan ---------------------------------------------------
 
 func BenchmarkVectorScan(b *testing.B) {

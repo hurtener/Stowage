@@ -15,6 +15,9 @@ package conformance
 
 import (
 	"context"
+	"fmt"
+	"math"
+	"math/rand"
 	"testing"
 	"time"
 
@@ -349,4 +352,165 @@ func testDegradedNilVec(t *testing.T, factory Factory) {
 	if hits != nil {
 		t.Errorf("Search(nil vec): expected nil hits, got %v", hits)
 	}
+}
+
+// --- recall oracle ----------------------------------------------------------
+
+// RecallOracle asserts that the hnswFactory's recall@10 vs the bruteFactory
+// (exact-recall oracle) is ≥ minRecall on a seeded corpus of 1 000 vectors
+// across 50 fixed-seed queries.
+//
+// Corpus: 1 000 32-dimensional random vectors seeded at seed 42.
+//   - Mixed sub-scopes (3 users per tenant).
+//   - Mixed kinds: "fact", "preference", "decision" in round-robin.
+//
+// This case runs against the HNSW driver in CI. The brute driver is the
+// oracle (exact nearest-neighbour). See Phase 09b plan, AC-1.
+func RecallOracle(t *testing.T, hnswFactory, bruteFactory Factory, minRecall float64) {
+	t.Helper()
+	const (
+		corpusSize = 1000
+		dims       = 32
+		numQueries = 50
+		k          = 10
+		seed       = 42
+	)
+
+	kinds := []string{"fact", "preference", "decision"}
+	users := []string{"user-a", "user-b", "user-c"}
+
+	rng := rand.New(rand.NewSource(seed)) //nolint:gosec // G404: deterministic seed for reproducible tests
+
+	// Generate corpus vectors (fixed seed → deterministic for every CI run).
+	type corpusEntry struct {
+		idx  int
+		vec  []float32
+		kind string
+		user string
+	}
+	corpus := make([]corpusEntry, corpusSize)
+	for i := range corpus {
+		corpus[i] = corpusEntry{
+			idx:  i,
+			vec:  randVec(rng, dims),
+			kind: kinds[i%len(kinds)],
+			user: users[i%len(users)],
+		}
+	}
+
+	// Generate 50 query vectors (fixed seed).
+	queries := make([][]float32, numQueries)
+	for i := range queries {
+		queries[i] = randVec(rng, dims)
+	}
+
+	// Helper: build an index with the corpus and return it.
+	buildIndex := func(fac Factory) (vindex.Index, func()) {
+		vi, st, cleanup := fac()
+		ctx := context.Background()
+		tenant := fmt.Sprintf("recall-oracle-%d", seed)
+		for _, e := range corpus {
+			scope := identity.Scope{
+				Tenant: tenant,
+				User:   e.user,
+			}
+			// Insert the memory in the backing store (required for lazy build).
+			id := recallID(e.idx)
+			cs := store.CommitSet{
+				Action: store.ActionAdd,
+				Memory: store.Memory{
+					ID: id, Kind: e.kind, Content: "recall corpus entry",
+					Status: "active", Confidence: 0.9, TrustSource: "llm_extracted",
+					Stability: 1.0, ContentHash: recallID(e.idx + 200000),
+					CreatedAt: int64(e.idx) + 1_000_000,
+					UpdatedAt: int64(e.idx) + 1_000_000,
+				},
+				Events: []store.Event{
+					{ID: recallID(e.idx + 400000), Type: "memory.added", SubjectID: id, Payload: `{}`},
+				},
+			}
+			if err := st.Memories().Commit(ctx, scope, cs); err != nil {
+				t.Fatalf("recall oracle: Commit %d: %v", e.idx, err)
+			}
+			if err := vi.Upsert(ctx, scope, id, e.vec); err != nil {
+				t.Fatalf("recall oracle: Upsert %d: %v", e.idx, err)
+			}
+		}
+		return vi, cleanup
+	}
+
+	bruteVI, bruteClean := buildIndex(bruteFactory)
+	defer bruteClean()
+	hnswVI, hnswClean := buildIndex(hnswFactory)
+	defer hnswClean()
+
+	ctx := context.Background()
+	// Use tenant-only scope for queries (no sub-scope filter — tests recall over
+	// all corpus entries across all users).
+	tenant := fmt.Sprintf("recall-oracle-%d", seed)
+	scope := identity.Scope{Tenant: tenant}
+
+	totalHits := 0
+	totalPossible := 0
+	for qi, q := range queries {
+		bruteHits, err := bruteVI.Search(ctx, scope, q, k, vindex.Filter{})
+		if err != nil {
+			t.Fatalf("recall oracle: brute Search query %d: %v", qi, err)
+		}
+		hnswHits, err := hnswVI.Search(ctx, scope, q, k, vindex.Filter{})
+		if err != nil {
+			t.Fatalf("recall oracle: hnsw Search query %d: %v", qi, err)
+		}
+
+		// Build brute top-k set.
+		bruteSet := make(map[string]bool, len(bruteHits))
+		for _, h := range bruteHits {
+			bruteSet[h.MemoryID] = true
+		}
+
+		// Count overlap.
+		for _, h := range hnswHits {
+			if bruteSet[h.MemoryID] {
+				totalHits++
+			}
+		}
+		totalPossible += len(bruteHits)
+	}
+
+	if totalPossible == 0 {
+		t.Fatal("recall oracle: brute returned no results for any query")
+	}
+
+	recall := float64(totalHits) / float64(totalPossible)
+	t.Logf("recall@%d over %d queries: %.4f (min=%.2f)", k, numQueries, recall, minRecall)
+	if recall < minRecall {
+		t.Errorf("recall@%d = %.4f < %.2f (minimum required)", k, recall, minRecall)
+	}
+}
+
+// randVec generates a random unit-length float32 vector of the given dims.
+func randVec(rng *rand.Rand, dims int) []float32 { //nolint:gocritic // pass-by-value intentional for rand
+	v := make([]float32, dims)
+	var norm float64
+	for i := range v {
+		f := rng.NormFloat64()
+		v[i] = float32(f)
+		norm += f * f
+	}
+	norm = math.Sqrt(norm)
+	if norm > 0 {
+		for i := range v {
+			v[i] = float32(float64(v[i]) / norm)
+		}
+	}
+	return v
+}
+
+// recallID returns a deterministic 26-char ULID-shaped ID for corpus entries.
+func recallID(n int) string {
+	s := fmt.Sprintf("%026d", n)
+	if len(s) > 26 {
+		return s[len(s)-26:]
+	}
+	return s
 }

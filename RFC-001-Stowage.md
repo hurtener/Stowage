@@ -952,7 +952,8 @@ plane).
   decide in Phase 4 with a small retrieval-quality bake-off through the gateway.
 - **OQ-2:** sqlite vector path — pure-Go HNSW from day one, or brute-force first
   and HNSW when scale demands? (Phase 9 spike; brute-force is correct and simple
-  up to ~100k vectors/scope.)
+  up to ~100k vectors/scope.) — superseded by D-048 (owner directive): HNSW
+  default from Phase 09b.
 - **OQ-3:** Buffer flush defaults (count/tokens/age) — tune in Phase 6 against
   the eval harness.
 - **OQ-4:** Does `pending_confirmation` need a TTL that auto-resolves in favor of

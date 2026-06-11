@@ -347,6 +347,7 @@ func clearStowageEnv(t *testing.T) {
 		"STOWAGE_SERVER_MAX_BODY_BYTES",
 		"STOWAGE_STORE_DRIVER",
 		"STOWAGE_STORE_DSN",
+		"STOWAGE_VINDEX_DRIVER",
 		"STOWAGE_GATEWAY_DRIVER",
 		"STOWAGE_GATEWAY_BASE_URL",
 		"STOWAGE_GATEWAY_API_KEY",
@@ -393,6 +394,62 @@ func TestBufferTriggersForProfile(t *testing.T) {
 				t.Errorf("MaxAge must be non-zero for profile %q", tc.profile)
 			}
 		})
+	}
+}
+
+// TestVIndexDriverDefault verifies vindex.driver defaults to "hnsw" (D-048).
+func TestVIndexDriverDefault(t *testing.T) {
+	clearStowageEnv(t)
+	cfg := config.Defaults()
+	if cfg.VIndex.Driver != "hnsw" {
+		t.Errorf("VIndex.Driver = %q, want %q", cfg.VIndex.Driver, "hnsw")
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Errorf("Defaults().Validate() with hnsw: %v", err)
+	}
+}
+
+// TestVIndexDriverBrute verifies vindex.driver="brute" is valid.
+func TestVIndexDriverBrute(t *testing.T) {
+	clearStowageEnv(t)
+	yaml := []byte("vindex:\n  driver: brute\n")
+	tmp := writeTmpFile(t, yaml)
+	cfg, err := config.Load(context.Background(), tmp)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.VIndex.Driver != "brute" {
+		t.Errorf("VIndex.Driver = %q, want %q", cfg.VIndex.Driver, "brute")
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Errorf("Validate() with brute driver: %v", err)
+	}
+}
+
+// TestVIndexDriverUnknownFails verifies unknown vindex.driver fails validation.
+func TestVIndexDriverUnknownFails(t *testing.T) {
+	clearStowageEnv(t)
+	cfg := config.Defaults()
+	cfg.VIndex.Driver = "pgvector"
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("Validate() = nil, want error for unknown vindex driver")
+	}
+	if !strings.Contains(err.Error(), "config.vindex.driver") {
+		t.Errorf("error %q does not contain key path config.vindex.driver", err.Error())
+	}
+}
+
+// TestVIndexDriverEnvOverride verifies STOWAGE_VINDEX_DRIVER overrides config.
+func TestVIndexDriverEnvOverride(t *testing.T) {
+	clearStowageEnv(t)
+	t.Setenv("STOWAGE_VINDEX_DRIVER", "brute")
+	cfg, err := config.Load(context.Background(), "")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.VIndex.Driver != "brute" {
+		t.Errorf("VIndex.Driver = %q, want %q", cfg.VIndex.Driver, "brute")
 	}
 }
 
