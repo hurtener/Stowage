@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/jackc/pgx/v5/pgxpool"
+
 	"github.com/hurtener/stowage/internal/config"
 	"github.com/hurtener/stowage/internal/identity"
 	"github.com/hurtener/stowage/internal/store"
@@ -33,6 +35,7 @@ func openStore(t *testing.T) (store.Store, func()) {
 		_ = s.Close(context.Background())
 		t.Fatalf("migrate: %v", err)
 	}
+	truncateAll(t, dsn)
 	return s, func() {
 		if err := s.Close(context.Background()); err != nil {
 			t.Logf("close store: %v", err)
@@ -145,5 +148,30 @@ func TestExplainQueryPlans(t *testing.T) {
 			// which is verified by TestConformance/MigrateIdempotent.
 			t.Logf("index %q covers query pattern: %s", p.expectedIndex, p.queryFragment)
 		})
+	}
+}
+
+// truncateAll resets every data table so each factory call starts from a
+// clean database — matching the sqlite factory's fresh-temp-file semantics.
+// Required because CI runs the suite twice (test + coverage) against one
+// persistent service-container database, and the ops tables are global
+// (scope-less), so leftovers would otherwise leak across runs.
+func truncateAll(t *testing.T, dsn string) {
+	t.Helper()
+	pool, err := pgxpool.New(context.Background(), dsn)
+	if err != nil {
+		t.Fatalf("truncate pool: %v", err)
+	}
+	defer pool.Close()
+	tables := []string{
+		"records", "memories", "memory_entities", "memory_keywords",
+		"memory_queries", "provenance", "injections", "links", "episodes",
+		"branches", "topics", "buffer_items", "groups", "group_members",
+		"grants", "feedback", "suggestions", "scope_settings", "api_keys",
+		"events", "dead_letters", "job_markers",
+	}
+	if _, err := pool.Exec(context.Background(),
+		"TRUNCATE "+strings.Join(tables, ", ")+" RESTART IDENTITY CASCADE"); err != nil {
+		t.Fatalf("truncate: %v", err)
 	}
 }
