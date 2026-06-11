@@ -294,3 +294,31 @@ unreachable; ingest keeps appending and derivation catches up via re-enqueue.
 Critical for embedded/desktop (D-022) and for the "memory is infrastructure"
 claim. Also adopted from brief 06: temporal-proximity boosting as a Phase 10
 scoring input. RFC §4.2.
+
+## D-037 — Timestamps as INTEGER unix-millis; ULIDs as TEXT; counters as INTEGER
+
+2026-06-11. Portable type policy for both drivers: timestamps stored as INTEGER
+unix-millis (uniform semantics across sqlite and postgres, no dialect-native
+timestamp quirks); IDs are ULIDs stored as TEXT (sortable, human-readable, no
+UUID extension required); the six CC-memory utility counters
+(match/inject/use/save/fail/noise) are dedicated INTEGER columns (not a JSON
+blob). Cross-driver conformance semantics are uniform.
+
+## D-038 — memory_vectors deferred to Phase 09
+
+2026-06-11. The memory_vectors table (embedding storage for pgvector) is
+deferred to Phase 09. Embeddings are recomputable from content — they are
+caches, not signals — so deferral is not a D-024 violation. This keeps the
+pgvector extension and Phase 03's CI dependency-free. The RFC §8.1 table
+inventory is otherwise complete. (Deliberate deviation from the full §8.1
+inventory; footnote added to docs/plans/phase-03-store-schema.md.)
+
+## D-039 — Coverage override: pgstore band 81 (temporary, tracked)
+
+2026-06-11. CLAUDE.md §11 sets store drivers at 85. pgstore conformance +
+EXPLAIN tests reach 81.4 %; the remainder is pgx error branches not reachable
+against a healthy service-container database (connection/Exec failures mid-
+transaction). Per the documented-override rule (class: hermetic-unreachable;
+reason above) the band is set to 81 in `scripts/coverage.json` — to be raised
+back toward 85 in Phase 09 when the vindex work adds pg error-path tests.
+sqlitestore remains at 85 (achieved).

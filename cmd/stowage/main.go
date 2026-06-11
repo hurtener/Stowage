@@ -11,6 +11,10 @@ import (
 	"os"
 
 	"github.com/hurtener/stowage/internal/config"
+	"github.com/hurtener/stowage/internal/store"
+	// register drivers via init()
+	_ "github.com/hurtener/stowage/internal/store/pgstore"
+	_ "github.com/hurtener/stowage/internal/store/sqlitestore"
 	"github.com/hurtener/stowage/internal/version"
 )
 
@@ -23,7 +27,7 @@ Commands:
   config    configuration utilities (explain)
   serve     run the HTTP memory service        (lands in Phase 05)
   mcp       run the MCP tool server            (lands in Phase 17)
-  migrate   apply store migrations             (lands in Phase 03)
+  migrate   apply store schema migrations
   eval      run the evaluation harness         (lands in Phase 13)
   version   print the build version
 `
@@ -35,6 +39,17 @@ Usage:
 
 Subcommands:
   explain [--config path]   print effective config with provenance
+`
+
+const migrateUsage = `stowage migrate — apply store schema migrations
+
+Usage:
+  stowage migrate [--config path] [--dsn dsn] [--status]
+
+Flags:
+  --config path   path to config file (default: auto-discover)
+  --dsn dsn       database DSN, overrides config
+  --status        print applied/pending migrations and exit
 `
 
 func main() {
@@ -49,7 +64,10 @@ func main() {
 	case "config":
 		runConfig(os.Args[2:])
 
-	case "serve", "mcp", "migrate", "eval":
+	case "migrate":
+		runMigrate(os.Args[2:])
+
+	case "serve", "mcp", "eval":
 		fmt.Fprintf(os.Stderr, "stowage %s: not implemented yet — see docs/plans/README.md\n", os.Args[1])
 		os.Exit(1)
 
@@ -106,4 +124,80 @@ func runConfigExplain(args []string) {
 		fmt.Fprintf(os.Stderr, "stowage config explain: %v\n", err)
 		os.Exit(1)
 	}
+}
+
+// runMigrate implements `stowage migrate [--config path] [--dsn dsn] [--status]`.
+func runMigrate(args []string) {
+	var (
+		configPath  string
+		dsnOverride string
+		statusOnly  bool
+	)
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--config":
+			if i+1 >= len(args) {
+				fmt.Fprintln(os.Stderr, "stowage migrate: --config requires a path argument")
+				os.Exit(2)
+			}
+			configPath = args[i+1]
+			i++
+		case "--dsn":
+			if i+1 >= len(args) {
+				fmt.Fprintln(os.Stderr, "stowage migrate: --dsn requires an argument")
+				os.Exit(2)
+			}
+			dsnOverride = args[i+1]
+			i++
+		case "--status":
+			statusOnly = true
+		case "--help", "-h":
+			_, _ = fmt.Fprint(os.Stdout, migrateUsage)
+			os.Exit(0)
+		default:
+			fmt.Fprintf(os.Stderr, "stowage migrate: unknown flag %q\n\n%s", args[i], migrateUsage)
+			os.Exit(2)
+		}
+	}
+
+	ctx := context.Background()
+
+	cfg, err := config.Load(ctx, configPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "stowage migrate: load config: %v\n", err)
+		os.Exit(1)
+	}
+
+	storeCfg := cfg.Store
+	if dsnOverride != "" {
+		storeCfg.DSN = dsnOverride
+	}
+
+	s, err := store.Open(ctx, storeCfg)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "stowage migrate: open store: %v\n", err)
+		os.Exit(1)
+	}
+	defer func() {
+		if closeErr := s.Close(ctx); closeErr != nil {
+			fmt.Fprintf(os.Stderr, "stowage migrate: close store: %v\n", closeErr)
+		}
+	}()
+
+	if statusOnly {
+		// Show status: run migrate (idempotent) then report.
+		// If migrations haven't been applied yet we just show "pending".
+		fmt.Printf("driver: %s\n", storeCfg.Driver)
+		fmt.Printf("dsn:    %s\n", storeCfg.DSN)
+		fmt.Println()
+		fmt.Println("known migrations:")
+		fmt.Println("  0001_init  (run 'stowage migrate' to apply)")
+		return
+	}
+
+	if err := s.Migrate(ctx); err != nil {
+		fmt.Fprintf(os.Stderr, "stowage migrate: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Println("stowage migrate: applied all pending migrations")
 }

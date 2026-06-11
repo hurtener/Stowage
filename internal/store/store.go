@@ -1,0 +1,155 @@
+// Package store defines the Store seam and all sub-store interfaces for the
+// Stowage persistence layer (RFC §8.1, D-009, D-021, D-024).
+//
+// No concrete drivers live here — they register themselves in sub-packages
+// (sqlitestore, pgstore) via init(). Callers use Open() to obtain a Store.
+package store
+
+import (
+	"context"
+
+	"github.com/hurtener/stowage/internal/auth"
+	"github.com/hurtener/stowage/internal/identity"
+)
+
+// Store is the top-level persistence seam.
+type Store interface {
+	// Migrate applies pending migrations idempotently.
+	Migrate(ctx context.Context) error
+
+	// Records returns the verbatim fidelity sub-store.
+	Records() RecordStore
+
+	// Memories returns the abstraction-layer sub-store.
+	Memories() MemoryStore
+
+	// Topics returns the extraction-magnet sub-store.
+	Topics() TopicStore
+
+	// Buffers returns the multi-agent accumulation sub-store.
+	Buffers() BufferStore
+
+	// Keys returns the API-key keyring.
+	Keys() auth.Keyring
+
+	// Events returns the audit-trail sub-store.
+	Events() EventStore
+
+	// Ops returns the dead-letter and job-marker sub-store.
+	Ops() OpsStore
+
+	// Close flushes any pending writes and releases resources.
+	Close(ctx context.Context) error
+}
+
+// RecordStore is the verbatim fidelity layer (RFC P1, D-006, D-024).
+type RecordStore interface {
+	// Append stores records. Duplicate IDs are silently ignored (idempotent).
+	Append(ctx context.Context, scope identity.Scope, records []Record) error
+
+	// Get returns a single record by ID within scope.
+	// Returns ErrNotFound when absent.
+	Get(ctx context.Context, scope identity.Scope, id string) (*Record, error)
+
+	// ListBySession returns records for a session/branch pair, ordered by
+	// occurred_at ascending. cursor is a ULID-string opaque pagination token;
+	// pass "" for the first page. Returns (records, nextCursor, error).
+	ListBySession(ctx context.Context, scope identity.Scope, sessionID, branchID string, limit int, cursor string) ([]Record, string, error)
+
+	// ListUnprocessed returns records where processed_at == 0, older than
+	// olderThan unix-millis, up to limit. Used by the pipeline worker.
+	ListUnprocessed(ctx context.Context, olderThan int64, limit int) ([]Record, error)
+
+	// MarkProcessed sets processed_at for the given record IDs.
+	MarkProcessed(ctx context.Context, ids []string) error
+}
+
+// MemoryStore is the abstraction layer (RFC §5, D-006, D-008, D-024).
+type MemoryStore interface {
+	// Insert stores a new memory.
+	Insert(ctx context.Context, scope identity.Scope, m Memory) error
+
+	// Get returns a single memory by ID within scope.
+	// Returns ErrNotFound when absent.
+	Get(ctx context.Context, scope identity.Scope, id string) (*Memory, error)
+
+	// Update replaces the mutable fields of a memory.
+	Update(ctx context.Context, scope identity.Scope, m Memory) error
+
+	// SetStatus updates only the status + updated_at fields.
+	SetStatus(ctx context.Context, scope identity.Scope, id string, status string, updatedAt int64) error
+
+	// ListByStatus returns memories with the given status ordered by
+	// created_at ascending. cursor is an opaque pagination token.
+	ListByStatus(ctx context.Context, scope identity.Scope, status string, limit int, cursor string) ([]Memory, string, error)
+
+	// InsertLinks stores typed directed edges between memories.
+	InsertLinks(ctx context.Context, scope identity.Scope, links []Link) error
+
+	// ListLinks returns edges matching fromMemoryID or toMemoryID (either can
+	// be "" to omit that filter).
+	ListLinks(ctx context.Context, scope identity.Scope, fromMemoryID, toMemoryID string) ([]Link, error)
+
+	// AddProvenance records which verbatim record spans produced a memory.
+	AddProvenance(ctx context.Context, scope identity.Scope, rows []Provenance) error
+}
+
+// TopicStore manages extraction magnets (RFC §4.1, D-007).
+type TopicStore interface {
+	// Upsert inserts or updates a topic keyed by (scope, key).
+	Upsert(ctx context.Context, scope identity.Scope, t Topic) error
+
+	// Get returns a topic by key within scope. Returns ErrNotFound when absent.
+	Get(ctx context.Context, scope identity.Scope, key string) (*Topic, error)
+
+	// List returns all topics for the scope ordered by created_at ascending.
+	List(ctx context.Context, scope identity.Scope) ([]Topic, error)
+
+	// Delete soft-deletes a topic (sets status = "deleted").
+	Delete(ctx context.Context, scope identity.Scope, key string) error
+}
+
+// BufferStore manages multi-agent accumulation buffers (RFC §4.1, D-007).
+type BufferStore interface {
+	// AppendItem adds an item to a named buffer.
+	AppendItem(ctx context.Context, scope identity.Scope, item BufferItem) error
+
+	// ListDue returns unflushed items for a buffer key, ordered by created_at.
+	ListDue(ctx context.Context, scope identity.Scope, bufferKey string, limit int) ([]BufferItem, error)
+
+	// Flush atomically marks all unflushed items for bufferKey as flushed and
+	// returns them. Returns empty slice (not error) if none are pending.
+	Flush(ctx context.Context, scope identity.Scope, bufferKey string) ([]BufferItem, error)
+}
+
+// EventStore is the audit trail (RFC §5.8, D-024).
+type EventStore interface {
+	// Emit records an audit event.
+	Emit(ctx context.Context, scope identity.Scope, e Event) error
+
+	// List returns events ordered by created_at ascending.
+	// cursor is an opaque pagination token; pass "" for first page.
+	List(ctx context.Context, scope identity.Scope, limit int, cursor string) ([]Event, string, error)
+}
+
+// OpsStore manages dead letters and job markers (RFC §11, D-024).
+type OpsStore interface {
+	// PutDeadLetter records a failed pipeline item.
+	PutDeadLetter(ctx context.Context, d DeadLetter) error
+
+	// ListDeadLetters returns unresolved dead letters for a stage.
+	ListDeadLetters(ctx context.Context, stage string, limit int) ([]DeadLetter, error)
+
+	// ResolveDeadLetter marks a dead letter as resolved.
+	ResolveDeadLetter(ctx context.Context, id string, resolvedAt int64) error
+
+	// CheckAndSetJobMarker atomically checks whether (job, marker) has run and
+	// sets it if not. Returns true if the marker was newly set (i.e. job should
+	// run), false if it was already present.
+	CheckAndSetJobMarker(ctx context.Context, job, marker string, ranAt int64) (bool, error)
+
+	// AdvisoryLock acquires a PostgreSQL advisory lock identified by key.
+	// The returned func releases the lock. No-op on sqlite (returns a no-op
+	// release func and nil error).
+	AdvisoryLock(ctx context.Context, key int64) (func() error, error)
+}
