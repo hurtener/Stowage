@@ -140,6 +140,9 @@ func Run(t *testing.T, factory Factory) {
 	t.Run("QuerySearchScopeIsolation", func(t *testing.T) { testQuerySearchScopeIsolation(t, factory) })
 	t.Run("MemoryGetMany", func(t *testing.T) { testMemoryGetMany(t, factory) })
 	t.Run("MemoryGetManyEmpty", func(t *testing.T) { testMemoryGetManyEmpty(t, factory) })
+	// Phase 10 — RecordStore.CountRecordsSince
+	t.Run("RecordCountRecordsSince", func(t *testing.T) { testRecordCountRecordsSince(t, factory) })
+	t.Run("RecordCountRecordsSinceScopeIsolation", func(t *testing.T) { testRecordCountRecordsSinceScopeIsolation(t, factory) })
 }
 
 // --- helpers ----------------------------------------------------------------
@@ -3149,5 +3152,106 @@ func testMemoryCommitUnknownAction(t *testing.T, factory Factory) {
 	// No row must exist.
 	if _, err := s.Memories().Get(ctx, scope, memID); !errors.Is(err, store.ErrNotFound) {
 		t.Errorf("unknown action: memory should not be persisted; got %v", err)
+	}
+}
+
+// --- Phase 10: RecordStore.CountRecordsSince ---------------------------------
+
+// testRecordCountRecordsSince verifies that CountRecordsSince returns the
+// correct count of records created after sinceMs.
+func testRecordCountRecordsSince(t *testing.T, factory Factory) {
+	t.Helper()
+	s, cleanup := factory()
+	defer cleanup()
+	ctx := context.Background()
+	scope := tenantScope("countsince-" + ulid.Make().String())
+
+	// Nothing yet → 0.
+	n, err := s.Records().CountRecordsSince(ctx, scope, 0)
+	if err != nil {
+		t.Fatalf("CountRecordsSince empty: %v", err)
+	}
+	if n != 0 {
+		t.Errorf("empty store: got %d want 0", n)
+	}
+
+	// Insert three records at different timestamps.
+	base := int64(1_000_000_000_000)
+	for i, ts := range []int64{base, base + 1000, base + 2000} {
+		rec := store.Record{
+			ID: newID(), Role: "user", Content: fmt.Sprintf("msg%d", i),
+			CreatedAt: ts, OccurredAt: ts,
+		}
+		if err := s.Records().Append(ctx, scope, []store.Record{rec}); err != nil {
+			t.Fatalf("Append[%d]: %v", i, err)
+		}
+	}
+
+	// Count since base-1 (before all records) → 3.
+	n, err = s.Records().CountRecordsSince(ctx, scope, base-1)
+	if err != nil {
+		t.Fatalf("CountRecordsSince all: %v", err)
+	}
+	if n != 3 {
+		t.Errorf("all: got %d want 3", n)
+	}
+
+	// Count since base (strictly after base) → 2.
+	n, err = s.Records().CountRecordsSince(ctx, scope, base)
+	if err != nil {
+		t.Fatalf("CountRecordsSince since-base: %v", err)
+	}
+	if n != 2 {
+		t.Errorf("since base: got %d want 2", n)
+	}
+
+	// Count since base+2000 (after all) → 0.
+	n, err = s.Records().CountRecordsSince(ctx, scope, base+2000)
+	if err != nil {
+		t.Fatalf("CountRecordsSince after-all: %v", err)
+	}
+	if n != 0 {
+		t.Errorf("after-all: got %d want 0", n)
+	}
+}
+
+// testRecordCountRecordsSinceScopeIsolation verifies that CountRecordsSince
+// only counts records for the given scope (P3 enforcement).
+func testRecordCountRecordsSinceScopeIsolation(t *testing.T, factory Factory) {
+	t.Helper()
+	s, cleanup := factory()
+	defer cleanup()
+	ctx := context.Background()
+
+	scopeA := tenantScope("countsince-isol-a-" + ulid.Make().String())
+	scopeB := tenantScope("countsince-isol-b-" + ulid.Make().String())
+
+	base := int64(2_000_000_000_000)
+	// Insert 2 records in scopeA and 1 in scopeB.
+	for i := 0; i < 2; i++ {
+		rec := store.Record{ID: newID(), Role: "user", Content: "a", CreatedAt: base + int64(i)*1000, OccurredAt: base}
+		if err := s.Records().Append(ctx, scopeA, []store.Record{rec}); err != nil {
+			t.Fatalf("Append scopeA[%d]: %v", i, err)
+		}
+	}
+	recB := store.Record{ID: newID(), Role: "user", Content: "b", CreatedAt: base, OccurredAt: base}
+	if err := s.Records().Append(ctx, scopeB, []store.Record{recB}); err != nil {
+		t.Fatalf("Append scopeB: %v", err)
+	}
+
+	nA, err := s.Records().CountRecordsSince(ctx, scopeA, base-1)
+	if err != nil {
+		t.Fatalf("CountRecordsSince scopeA: %v", err)
+	}
+	if nA != 2 {
+		t.Errorf("scopeA: got %d want 2", nA)
+	}
+
+	nB, err := s.Records().CountRecordsSince(ctx, scopeB, base-1)
+	if err != nil {
+		t.Fatalf("CountRecordsSince scopeB: %v", err)
+	}
+	if nB != 1 {
+		t.Errorf("scopeB: got %d want 1", nB)
 	}
 }

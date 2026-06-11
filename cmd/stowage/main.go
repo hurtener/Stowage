@@ -380,7 +380,7 @@ func runServe(args []string) {
 	embedder.Start(ctx)
 	go embedder.BackfillSweep(ctx)
 
-	retriever := retrieval.New(st.Memories(), vi, gw, log)
+	retriever := retrieval.New(st.Memories(), st.Records(), vi, gw, log)
 	srv.SetRetriever(retriever)
 
 	// Phase 08: reconciliation stage wired to extract stage downstream.
