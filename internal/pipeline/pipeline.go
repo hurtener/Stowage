@@ -279,9 +279,13 @@ func (s *Stage) processItem(ctx context.Context, item Item) error {
 func (s *Stage) runTicker(ctx context.Context) {
 	defer s.wg.Done()
 	for {
-		// Jitter: 4s + 0–2s random, centred around 5s.
-		jitter := time.Duration(rand.Int64N(2000)) * time.Millisecond //nolint:gosec // non-crypto jitter
-		delay := 4*time.Second + jitter
+		base := s.triggers.TickBase
+		if base <= 0 {
+			base = 4 * time.Second
+		}
+		// Jitter up to base/2 so concurrent instances don't scan in lockstep.
+		jitter := time.Duration(rand.Int64N(int64(base/2)/1e6+1)) * time.Millisecond //nolint:gosec // non-crypto jitter
+		delay := base + jitter
 
 		select {
 		case <-s.stopCh:

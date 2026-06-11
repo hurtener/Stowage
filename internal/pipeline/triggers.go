@@ -13,6 +13,11 @@ type Triggers struct {
 	Count  int
 	Tokens int64
 	MaxAge time.Duration
+
+	// TickBase is the base interval of the due-scan ticker; the effective
+	// delay is TickBase + jitter(0..TickBase/2). Zero means the production
+	// default (4s). Injectable so tests are not timing-flaky.
+	TickBase time.Duration
 }
 
 // TriggersFromConfig returns Triggers for the given profile name, delegating

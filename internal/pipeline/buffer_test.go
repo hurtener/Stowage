@@ -124,7 +124,7 @@ func TestTriggerMatrix(t *testing.T) {
 	t.Parallel()
 
 	// Tight triggers so tests finish quickly.
-	trig := pipeline.Triggers{Count: 3, Tokens: 50, MaxAge: 200 * time.Millisecond}
+	trig := pipeline.Triggers{Count: 3, Tokens: 50, MaxAge: 200 * time.Millisecond, TickBase: 150 * time.Millisecond}
 
 	cases := []struct {
 		name    string
@@ -373,7 +373,7 @@ func TestCrashRecovery(t *testing.T) {
 	t.Parallel()
 	st := newTestStore(t)
 	// Very short max age so the ticker fires quickly in the test.
-	trig := pipeline.Triggers{Count: 1000, Tokens: 1_000_000, MaxAge: 100 * time.Millisecond}
+	trig := pipeline.Triggers{Count: 1000, Tokens: 1_000_000, MaxAge: 100 * time.Millisecond, TickBase: 150 * time.Millisecond}
 
 	tenant := "t-crash"
 
