@@ -531,6 +531,15 @@ func testTopicUpsertGetListDelete(t *testing.T, factory Factory) {
 	if _, err := s.Topics().Get(ctx, scope, "goals"); err == nil {
 		t.Error("expected ErrNotFound after delete")
 	}
+
+	// Driver parity: deleting a missing topic is ErrNotFound on every driver.
+	if err := s.Topics().Delete(ctx, scope, "never-existed"); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("delete missing topic: got %v want ErrNotFound", err)
+	}
+	// Deleting an already-deleted topic is also ErrNotFound (soft-delete is terminal).
+	if err := s.Topics().Delete(ctx, scope, "goals"); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("delete deleted topic: got %v want ErrNotFound", err)
+	}
 }
 
 func testTopicScopeIsolation(t *testing.T, factory Factory) {

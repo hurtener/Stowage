@@ -363,3 +363,30 @@ These are profile-internal constants in `internal/config/profiles.go`
 accumulation model: assistant is conversational (small, frequent flushes);
 fleet is high-throughput (larger batches, moderate age); coding-agent is
 session-heavy (larger batches, long age). No new config keys are introduced.
+
+## D-043 — Virtual default topic packs; any explicit topic disables the pack
+
+2026-06-11. Phase 07 introduces extraction gating by topics (brief 03). The
+open question was: what happens when a scope has no explicit topics configured?
+Options considered: (a) extract nothing — zero-config deployments get no
+memories; (b) require operators to always configure topics — too much friction
+for personal assistant use; (c) apply compiled-in default packs at prompt-build
+time, never persisted.
+
+**Decision:** option (c). Two default packs are compiled in as named constants
+in `internal/topics/packs.go`: `pack:preferences` (assistant profile —
+personalisation preferences, communication style, durable personal facts) and
+`pack:agent-learnings` (coding-agent / fleet — gotchas, patterns, decisions).
+The pack is selected by the current profile. When the service's `ActiveTopics`
+call finds no stored active topics for a scope, it synthesises the pack entries
+in memory and returns them with `source="pack"`. No row is written to the
+topics table. Any explicit active topic suppresses the virtual pack entirely
+(all-or-nothing: having even one explicit topic means the operator is in
+control). The `pack:off` sentinel key (status `active`) opts out of virtual
+packs and short-circuits extraction without a gateway call.
+
+**Consequences:** zero-config extraction works out of the box; virtual packs
+are transparent (visible via `GET /v1/topics` with `source: pack`); packs
+evolve by bumping the constant version, not by schema migrations; the
+`pack:off` sentinel keeps the opt-out mechanism explicit rather than requiring
+an operator to know to delete all topics to re-enable virtual packs.

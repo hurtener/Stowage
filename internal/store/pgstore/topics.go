@@ -125,9 +125,16 @@ func (t *topicStore) Delete(ctx context.Context, scope identity.Scope, key strin
 	}
 	args = append(args, whereArgs...)
 	args = append(args, key)
-	_, err = t.s.pool.Exec(ctx,
-		fmt.Sprintf(`UPDATE topics SET status=$1, updated_at=$2 WHERE %s AND key=$%d`, whereClause, next),
+	tag, err := t.s.pool.Exec(ctx,
+		fmt.Sprintf(`UPDATE topics SET status=$1, updated_at=$2 WHERE %s AND key=$%d AND status != 'deleted'`, whereClause, next),
 		args...,
 	)
-	return err
+	if err != nil {
+		return err
+	}
+	// Driver parity with sqlitestore: deleting a missing topic is ErrNotFound.
+	if tag.RowsAffected() == 0 {
+		return store.ErrNotFound
+	}
+	return nil
 }

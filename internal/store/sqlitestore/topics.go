@@ -129,8 +129,15 @@ func (t *topicStore) Delete(ctx context.Context, scope identity.Scope, key strin
 		queryArgs := []interface{}{now}
 		queryArgs = append(queryArgs, whereArgs...)
 		queryArgs = append(queryArgs, key)
-		qd := `UPDATE topics SET status='deleted', updated_at=? WHERE ` + whereClause + ` AND key=?` //nolint:gosec // whereClause is built from controlled helper, not user input
-		_, err := tx.Exec(qd, queryArgs...)
-		return err
+		qd := `UPDATE topics SET status='deleted', updated_at=? WHERE ` + whereClause + ` AND key=? AND status != 'deleted'` //nolint:gosec // whereClause is built from controlled helper, not user input
+		res, execErr := tx.Exec(qd, queryArgs...)
+		if execErr != nil {
+			return execErr
+		}
+		n, _ := res.RowsAffected()
+		if n == 0 {
+			return store.ErrNotFound
+		}
+		return nil
 	})
 }
