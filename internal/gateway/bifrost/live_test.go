@@ -81,7 +81,7 @@ func TestLiveBifrost_CompleteSchemaConstrained(t *testing.T) {
 			{Role: "user", Content: "Say hello and give count=1."},
 		},
 		Schema:    schema,
-		MaxTokens: 128,
+		MaxTokens: 2048, // thinking models burn small budgets on reasoning (ErrTruncated)
 	})
 	if err != nil {
 		if errors.Is(err, gateway.ErrSchemaValidation) {

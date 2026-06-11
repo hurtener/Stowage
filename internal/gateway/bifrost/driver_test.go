@@ -412,3 +412,30 @@ func TestBifrost_FailsClosedOnMissingAPIKey(t *testing.T) {
 		t.Fatal("expected error when API key env var is unset")
 	}
 }
+
+// ── Truncation (finish_reason "length") ──────────────────────────────────────
+
+// TestBifrost_TruncatedResponse asserts that a provider stop on the token
+// limit surfaces as gateway.ErrTruncated, not as a schema-validation failure
+// (found by live validation against a thinking model with a small budget).
+func TestBifrost_TruncatedResponse(t *testing.T) {
+	t.Parallel()
+
+	svr := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		io.WriteString(w, `{"id":"1","object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant","content":"Here is"},"finish_reason":"length"}],"usage":{"prompt_tokens":5,"completion_tokens":128,"total_tokens":133}}`) //nolint:errcheck
+	}))
+	defer svr.Close()
+
+	gw := newDriver(t, svr, 4)
+	_, err := gw.Complete(context.Background(), gateway.CompleteRequest{
+		Messages: []gateway.Message{{Role: "user", Content: "hi"}},
+		Schema:   json.RawMessage(`{"type":"object"}`),
+	})
+	if !errors.Is(err, gateway.ErrTruncated) {
+		t.Fatalf("want ErrTruncated, got %v", err)
+	}
+	if errors.Is(err, gateway.ErrSchemaValidation) {
+		t.Fatalf("truncation must not be reported as schema validation: %v", err)
+	}
+}

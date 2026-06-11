@@ -241,6 +241,10 @@ func (d *Driver) doComplete(ctx context.Context, req gateway.CompleteRequest) (g
 		return gateway.CompleteResponse{}, gateway.Usage{}, fmt.Errorf("bifrost: no choices in response")
 	}
 
+	if resp.Choices[0].FinishReason == "length" {
+		return gateway.CompleteResponse{}, gateway.Usage{}, fmt.Errorf("bifrost: %w", gateway.ErrTruncated)
+	}
+
 	usage := gateway.Usage{
 		InputTokens:  resp.Usage.PromptTokens,
 		OutputTokens: resp.Usage.CompletionTokens,
