@@ -40,7 +40,7 @@ The Python predecessor works, but its architecture fights its runtime:
 | Polling worker pools (0.25 s embedding queue polls), custom DAG orchestration framework | Goroutine pipeline stages connected by bounded channels; no pollers, no external workers, no job framework |
 | GIL workarounds: thread-pool executors around FAISS, per-tenant lock dicts | Native concurrency; `-race`-proven shared structures |
 | Local embedding + reranker models (~300 MB+ resident, slow cold start) | **No local models.** Embeddings and LLM calls go through one gateway seam — Bifrost first, other providers later |
-| 48+ tables, ~76 k lines, 88 migrations | A deliberately small schema (~12 tables) behind a `Store` seam with sqlite + Postgres drivers |
+| 48+ tables, ~76 k lines, 88 migrations | A deliberately budgeted schema (~19 tables, every one signal-bearing — §8.1) behind a `Store` seam with Postgres + sqlite drivers |
 | FastAPI + Uvicorn + SQLAlchemy async stack | One static binary, stdlib HTTP, `log/slog`, graceful shutdown |
 | LLM structured output via DSPy + JSON re-parsing | Typed Go structs + JSON-schema-constrained tool calls through the gateway |
 
@@ -234,34 +234,78 @@ positive gain is not done.
 
 ### 4.2 Read path
 
-1. `POST /v1/retrieve` with scope, query, and an optional retrieval profile.
-2. Lanes run concurrently (errgroup): **lexical** (FTS5/tsvector BM25),
+1. `POST /v1/retrieve` with scope, query, an optional retrieval profile, and an
+   optional time window (temporal filters are native — `occurred_at` is indexed
+   per scope from day one).
+2. **Hot path first:** a hot–warm cache fronts the lanes — frequently retrieved
+   (query-signature, scope) results and the scope's hot memory set (from
+   injection frequency, §5.7) are served without a vector lookup; writes to a
+   scope invalidate its cache entries. Common questions stop paying the full
+   search cost.
+3. Lanes run concurrently (errgroup): **lexical** (FTS5/tsvector BM25),
    **vector** (cosine over gateway embeddings), **anticipated-queries** (lexical
-   over the generated-phrases index), **structured** (entity/keyword/kind
-   filters). Reciprocal-rank fusion merges lanes.
-3. **Scoring** re-ranks fused candidates: utility boost (from the six counters),
+   over the generated-phrases index), **structured** (entity/keyword/kind/
+   time-window filters). Reciprocal-rank fusion merges lanes.
+4. **Scoring** re-ranks fused candidates: utility boost (from the six counters),
    decay, trust/source weight, scope affinity, recency path, hub dampening,
    cooldown suppression. Optional API rerank (gateway) for the top slice.
-4. **Budgeting** packs results to the caller's token budget.
-5. **Drill-down**: every returned memory carries provenance refs; callers (or the
+5. **Budgeting** packs results to the caller's token budget. The response
+   carries a **support summary** (top scores, agreement/conflict among
+   retrieved memories) so callers can express calibrated uncertainty — "I'm
+   not sure" when support is weak or contradictory (§6c) — and **citation
+   handles** (injection IDs) for every returned memory.
+6. The retrieval is recorded as **injections** (§5.7), asynchronously.
+
+**Latency SLO (binding for the read path):** retrieval p99 ≤ 150 ms (cache
+hit ≤ 20 ms) at 1,000 concurrent sessions on the postgres driver on reference
+hardware — measured continuously by the Phase 27 benchmarks. Agents only call
+memory on the hot path if it is actually fast.
+7. **Drill-down**: every returned memory carries provenance refs; callers (or the
    server, when a memory is marked low-fidelity) can expand to the verbatim
    record range in one call. This is the CL-Bench recovery path: abstraction for
    cheap recall, verbatim for ground truth.
-6. Retrieval emits feedback hooks: the caller reports which memories were
+8. Retrieval emits feedback hooks: the caller reports which memories were
    injected/used/ignored, feeding the utility counters.
 
 ---
 
 ## 5. Memory model
 
+### 5.0 The day-one schema principle: record signals before features need them
+
+Most of the roadmap (episodes, citations, causal links, reinforcement signals,
+proactive triggers — §6b–§6d) consumes **signals that cannot be backfilled**.
+You cannot reconstruct which memories were injected into which agent response,
+when an interaction actually occurred, or which branch a turn belonged to,
+months after the fact. So the schema captures these signals from the first
+deployed build, even though the features that consume them land in later
+phases:
+
+- `occurred_at` and `branch_id` on every record (temporal indexing, branching);
+- the **injections** table on every retrieval (citations, feedback, RL, gain);
+- task `outcome` tags on ingest (reflection, episode contrast);
+- typed **links** and **episodes** tables present (empty until their phases).
+
+The corollary: signal-bearing writes are cheap appends on existing hot paths;
+the expensive intelligence that interprets them arrives later without a
+migration crisis. Phase 03's conformance suite covers the full day-one schema.
+
 ### 5.1 Records (the fidelity layer)
 
 Immutable, append-only verbatim interactions.
 
 ```text
-record: id (ULID) · scope · session_id · turn · role(s) · content ·
-        source_agent · token_estimate · created_at · processed_at
+record: id (ULID) · scope · session_id · branch_id · turn · role(s) · content ·
+        source_agent · response_id? · outcome? · token_estimate ·
+        occurred_at · created_at · processed_at
 ```
+
+- `occurred_at` (when the interaction happened) is distinct from `created_at`
+  (when it was ingested) and is indexed per scope — **temporal queries are
+  native**, never derived (§6b).
+- `branch_id` supports exploratory branches (§5.5).
+- `response_id` ties a record to the agent response it contains, joining it to
+  the injections table (§5.7).
 
 Records are lexically indexed (deep search over raw history is a retrieval lane
 for power callers) but never embedded wholesale and never mutated. Retention is a
@@ -275,9 +319,9 @@ memory:  id · scope · kind · content · context · status ·
          entities[] · keywords[] · anticipated_queries[] ·
          importance (1–5) · confidence (0–1) · trust_source ·
          counters {match, inject, use, save, fail, noise} ·
-         stability · last_accessed_at · valid_until? ·
-         provenance [{record_id, span}] · supersedes? · superseded_by? ·
-         created_at · updated_at
+         stability · last_accessed_at · valid_from? · valid_until? ·
+         episode_id? · provenance [{record_id, span}] ·
+         supersedes? · superseded_by? · created_at · updated_at
 ```
 
 - **Kinds:** `fact`, `preference`, `decision`, `gotcha`, `pattern`, `task`,
@@ -285,7 +329,12 @@ memory:  id · scope · kind · content · context · status ·
   (extensible enum; kinds carry default scoring weights; reflection kinds are
   the building blocks of playbooks, §6a).
 - **Status:** `active`, `pending_confirmation` (trust-gated supersede),
-  `superseded`, `quarantined`, `expired`, `deleted` (tombstone).
+  `pending_review` (uncited-claim gate, §6c), `superseded`, `quarantined`,
+  `expired`, `deleted` (tombstone).
+- **Preference fragments** are the `preference` kind plus a default topic pack
+  ("how this user wants to be answered, addressed, and informed") shipped in
+  Phase 07 — personalization works from the first extraction pass, and the
+  preference fragments are the substrate later reinforcement/decay learn from.
 - **Trust source hierarchy:** `user_stated` > `agreed_upon` > `agent_suggested` >
   `llm_extracted` — multipliers in scoring and gates on supersede.
 - **Six utility counters** (CC-memory predecessor): `match` (came back in a
@@ -336,7 +385,50 @@ topics:
 Extraction prompts are assembled from active topics; a candidate that matches no
 topic is never created. Topics double as a retrieval facet and a lifecycle
 boundary (deleting a topic can expire its memories). Default topic packs ship for
-the common cases (assistant personalization, coding-agent learnings).
+the common cases (assistant personalization — the preference-fragments pack —
+and coding-agent learnings).
+
+### 5.5 Branches (exploration without contamination)
+
+A session can fork **branches** ("try a bar chart instead") so exploration
+never pollutes the main thread's memory. Records carry `branch_id`; buffers
+are keyed per branch; extraction from a branch produces branch-scoped working
+memories. Branch lifecycle: `merge` (its memories reconcile into the parent on
+acceptance) or `discard` (working memories expire; verbatim records remain —
+P1). Without this, one long contaminated session degrades knowledge quality
+for every later extraction.
+
+### 5.6 Typed links (the causal/relational graph)
+
+```text
+link: id · scope · from_memory · to_memory ·
+      type {supports, contradicts, depends_on, caused_by, led_to, relates_to} ·
+      source {explicit, reconciler, inferred} · confidence · created_at
+```
+
+Links are written from day one by reconciliation (`supports`/`contradicts`
+fall out of its decisions for free) and by explicit assertion; the *inferred*
+causal-detection pass (§6b) arrives later but writes into the same table.
+Links power "why did this decision lead to that one" traversal and episode
+narratives.
+
+### 5.7 Injections (the attribution backbone)
+
+```text
+injection: id · scope · response_id · memory_id · rank · score ·
+           lane_provenance · was_cited? · feedback {useful, wrong_citation,
+           dismissed}? · created_at
+```
+
+Every retrieval that hands memories to an agent records **what was injected
+into which response, at what rank, with what score** — the single most
+valuable signal in the system and the one that is impossible to backfill.
+Injections are the backbone of: citations (§6c), like/dislike and
+citation-level feedback (`/v1/feedback` resolves a `response_id` to the
+memories behind it), the use/fail counters, reasoning traces, hot-set
+detection for the cache (§4.2), and the gain metric (§12). Writing an
+injection row is an async append — it never adds latency to the retrieval
+response.
 
 ---
 
@@ -390,7 +482,7 @@ memory model already provides:
    outcome (`success`/`failure` + execution feedback). Harbor task-completion
    events are the natural label-free source (ACE's key result: reflection works
    from execution feedback alone). Outcomes also feed the `use`/`fail` counters
-   of the memories that were injected into the task (§4.2.6).
+   of the memories that were injected into the task (§4.2.8).
 2. **Reflection extraction mode.** Alongside topic extraction, an outcome-aware
    reflector pass distills `strategy` and `failure_mode` candidates from
    trajectories ("what worked, what to avoid, why"), iteratively refined, then
@@ -409,6 +501,93 @@ memory model already provides:
 A Harbor fleet's loop: agents run → outcomes ingest (fire-and-forget) →
 reflection + reconciliation evolve the team playbook (shared via grants, §5.3)
 → every agent's next session starts from `GET /v1/playbook`.
+
+---
+
+## 6b. Episodic & temporal memory
+
+Loose fragments answer "what is true"; they cannot answer "what happened when,
+and why did it go the way it did." The episodic layer adds narrative.
+
+- **Episodes.** A boundary-detection pass (temporal gaps, topic shifts, session
+  structure) groups records into coherent temporal units —
+  `episode: id · scope · title · time range · status · narrative_memory_id ·
+  outcome?` — and a gateway call constructs a **narrative memory** for each
+  (kind `narrative`, full provenance to the episode's records): not "we
+  discussed the campaign" but the concrete path of decisions taken. The
+  `episode_id` column exists on memories from day one (§5.0); the detection
+  and narration passes are lifecycle sweeps.
+- **Temporal queries are native.** `occurred_at` is indexed per scope from the
+  first build; retrieval accepts time windows; episodes give coarse temporal
+  units above raw timestamps ("during the March campaign planning").
+- **Causal links.** Reconciliation writes `supports`/`contradicts` edges from
+  day one (§5.6); an inference pass proposes `caused_by`/`led_to` edges between
+  decisions connected through episode narratives. "Why did X lead to Y" is a
+  graph traversal with provenance at every hop.
+- **Episode contrast.** Given the current situation, retrieve the most similar
+  past episode (vector over narratives + structured overlap) and contrast
+  outcomes: "last time this happened, here is what worked and what differs
+  now." Builds on outcome tags (§6a.1) — another signal captured from day one.
+- **Cross-episode aggregation.** "What was I working on in Q1?" returns a
+  structured summary assembled from episode narratives in the window —
+  deterministic assembly first (same machinery as playbooks), optional gateway
+  synthesis as an explicit, cited step — never a raw fragment dump.
+
+## 6c. Trust: citations, verification, reasoning traces
+
+Memory-grounded answers must be checkable — by users, admins, and regulators.
+
+- **Citations v1.** Retrieval responses carry citation handles (injection IDs,
+  §5.7); agents attach them to claims; `/v1/citations/resolve` expands a handle
+  to the memory, its provenance, and its metadata. "This is because {fragment}"
+  becomes a first-class, verifiable reference.
+- **Citation-level feedback.** Users marking a citation wrong feeds
+  `wrong_citation` on the injection and `noise`/`fail` on the memory —
+  retrieval learns which sources users actually trust; bad citations stop
+  resurfacing.
+- **Claim verification.** A safeguard pass (gateway, schema-constrained)
+  checks that a drafted claim is actually entailed by its cited memories —
+  catching "looks-good-but-isn't-real" hallucinations before they reach the
+  user. Exposed as `POST /v1/verify` so any caller can gate on it.
+- **Uncited-claim review.** When agent-generated knowledge arrives for
+  extraction without supporting citations, the candidate parks as
+  `pending_review` in an admin queue instead of silently becoming a memory —
+  hallucinations don't get reinforced into the substrate.
+- **Support summary / calibrated uncertainty.** Every retrieval response
+  reports support strength and conflicts among returned memories (§4.2.5), so
+  agents can say "I'm not sure" instead of confidently asserting on shaky
+  evidence.
+- **Reasoning traces.** The full memory-into-conclusion chain per response —
+  query, injections, drill-downs, verification verdicts — is reconstructable
+  from the day-one tables (injections + events) and exported as a signed
+  bundle per `response_id` for GDPR/regulatory audits. Third-party audit
+  tooling consumes the same export API; traces carry their own retention
+  class.
+
+## 6d. Proactive memory
+
+The service that *holds* the information is the right place to decide it might
+be useful — not the agent that doesn't know what it doesn't know.
+
+- **Trigger engine.** On session start and on configurable events, Stowage
+  evaluates trigger rules (new session in a scope with a recent episode;
+  a query resembling a past episode; an approaching `valid_until`) and
+  *offers* context: "before we start — this is the Q2 plan constructed last
+  year."
+- **Candidate scoring with thresholds.** Proactive candidates run through the
+  same scoring machinery as retrieval (§4.2.4) and only surface above a
+  threshold — silence over spam; at most a strict per-turn budget.
+- **Governance.** Thresholds, budgets, trigger classes, and opt-outs are
+  admin-configurable per tenant/profile (stored scope settings, not config
+  files) — different roles get different proactivity, and a tenant can turn it
+  off entirely.
+- **Feedback tuning.** Accept/dismiss signals adjust per-trigger confidence
+  through the standard six-counter machinery on a `suggestion` record —
+  triggers that annoy decay; triggers that help gain stability. Nothing
+  proactive is static.
+- **Temporal pattern mining (stretch).** Mine recurring routines from episode
+  timing ("Monday 9 am → campaign email") and suggest them as automations;
+  gated behind the same governance and feedback loop.
 
 ---
 
@@ -461,9 +640,36 @@ future backends arrive as new drivers behind it.
   deployment (§2) possible — it must stay CGo-free forever.
 
 Migrations are forward-only, embedded, applied on boot (configurable), one
-sequence per driver. Target schema is ~12 tables: records, memories, three
-junction tables (entities, keywords, anticipated_queries), topics, buffers,
-provenance, events, dead_letters, job_markers, feedback.
+sequence per driver.
+
+**The day-one schema (Phase 03, conformance-tested on both drivers).** Every
+table earns its place by carrying a signal a later capability cannot backfill
+(§5.0):
+
+| Table | Carries | Consumed by |
+|---|---|---|
+| `records` | verbatim fidelity, `occurred_at`, `branch_id`, `outcome` | everything (P1) |
+| `memories` | the abstraction layer, counters, `episode_id`, validity window | retrieval, lifecycle |
+| `memory_entities` / `memory_keywords` / `memory_queries` | structured + anticipated-queries lanes | retrieval |
+| `provenance` | memory ↔ record spans | drill-down, citations, traces |
+| `injections` | what was injected into which response (§5.7) | citations, feedback, RL, cache hot-set, gain |
+| `links` | typed graph edges (§5.6) | causal traversal, narratives |
+| `episodes` | temporal units + narrative refs (§6b) | episodic retrieval |
+| `branches` | exploration lifecycle (§5.5) | write path |
+| `topics` | extraction magnets | pipeline |
+| `buffers` | multi-agent accumulation | pipeline |
+| `grants` / `groups` | team sharing (§5.3) | store-layer enforcement |
+| `feedback` | like/dislike + citation-level signals | counters, tuning |
+| `suggestions` | proactive offers + their counters (§6d) | trigger tuning |
+| `scope_settings` | per-tenant proactivity/retention/zone config | governance |
+| `api_keys` | runtime tenant/agent key management | auth, onboarding |
+| `events` | the audit trail | everything observable |
+| `dead_letters` / `job_markers` | pipeline recovery + sweep idempotency | lifecycle |
+
+Roughly 19 tables plus the two operational ones — half the predecessor's per
+capability, but nothing here is speculative: each column is written by a W1–W3
+hot path and read by a named later phase. Schema extensions beyond this
+inventory require an RFC amendment.
 
 ### 8.2 Concurrency posture
 
@@ -479,19 +685,37 @@ transactions per commit batch.
 ### 9.1 HTTP (v1, stable JSON contracts)
 
 ```text
-POST /v1/records            fire-and-forget ingest (single or batch; optional outcome)
+POST /v1/records            fire-and-forget ingest (single/batch; outcome, branch)
 POST /v1/buffers/{key}/flush
-POST /v1/retrieve           hybrid retrieval with profile + budget
+POST /v1/branches           fork · merge · discard (§5.5)
+POST /v1/retrieve           hybrid retrieval: profile, budget, time window;
+                            returns support summary + citation handles
 GET  /v1/playbook           deterministic curated context for a scope (§6a)
+GET  /v1/episodes           list/inspect; similar-episode contrast; window
+                            aggregation (§6b)
 POST /v1/drilldown          provenance expansion to verbatim ranges
-POST /v1/feedback           use/save/fail/noise signals per memory
-GET  /v1/memories/{id}      inspect (with provenance + chain)
+POST /v1/feedback           use/save/fail/noise + like/dislike per response_id +
+                            citation-level signals (§6c)
+POST /v1/citations/resolve  expand citation handles to memories + provenance
+POST /v1/verify             claim-vs-citations entailment check (§6c)
+GET  /v1/traces/{response_id}     reasoning-trace export bundle (§6c, audit)
+GET  /v1/suggestions        proactive offers for a session (§6d) + accept/dismiss
+GET  /v1/memories/{id}      inspect (with provenance + chain + links)
 PATCH /v1/memories/{id}     assert/correct/quarantine (user-stated writes)
 POST /v1/memories/{id}/rollback   revert a reconciliation decision (§6)
 GET/PUT /v1/scopes/{scope}/topics
-GET/PUT /v1/scopes/{scope}/grants  team sharing with zone ceilings (§5.3)
+GET/PUT /v1/scopes/{scope}/grants    team sharing with zone ceilings (§5.3)
+GET/PUT /v1/scopes/{scope}/settings  proactivity/governance config (§6d)
+POST/GET/DELETE /v1/admin/keys       create/list/rotate/revoke/bulk-revoke
+                            tenant + agent API keys at runtime — onboarding and
+                            incident response without restarts or downtime
+GET  /v1/admin/review       pending_review queue: approve/reject (§6c)
 GET  /v1/events             SSE stream (scoped)
 GET  /healthz · /readyz · /metrics
+
+The surface stays deliberately small per concept; everything above maps 1:1 to
+a §5/§6 primitive. Admin endpoints require admin-class keys; key records live
+in the store (runtime-managed, never config-file-managed).
 ```
 
 Auth v1: per-tenant API keys (constant-time compare), identity scope claims in
@@ -516,6 +740,15 @@ MCP App** rendered inline in the host's chat surface.
 `sdk/stowage` — typed client over HTTP plus an in-process mode (embed the whole
 server in a Harbor process for single-binary deployments). Registers naturally
 as Harbor in-proc tools via `inproc.RegisterFunc`.
+
+**Zero-config memory for every agent.** The point of the SDK is that no agent
+ever re-implements memory plumbing: a Harbor assemble option wires
+ingest-on-turn, retrieve-on-context, feedback-on-outcome automatically, so
+every agent in the fleet reads/writes the shared substrate from its first line
+of code. A thin **Python client** (ingest / retrieve / feedback / playbook)
+ships for the Python agent framework and any non-Go caller; MCP covers
+everything else. An agent framework integration that requires hand-written
+plumbing is a defect in the SDK, not a task for the agent author.
 
 ---
 
@@ -565,8 +798,17 @@ What Stowage *does* adopt is Harbor's protocol surface:
 - Typed event stream for every memory mutation and lifecycle decision —
   the audit trail *is* the event log; SSE + optional Harbor-bus adapter.
 - Prometheus metrics: pipeline depths, stage latencies, gateway tokens/cost,
-  retrieval lane timings, fusion sizes, decay/dedupe sweep stats.
+  retrieval lane timings, cache hit rates, fusion sizes, decay/dedupe sweep
+  stats.
+- **Usage analytics v1** ships with the first observable build: per-tenant and
+  per-agent ingestion/retrieval volumes, active scopes, latency percentiles,
+  cost — the "is the platform healthy, who is using it, where does load come
+  from" dashboard feed, derived from events + metrics (no extra write path).
 - OTel traces optional, off by default, behind the telemetry seam.
+- The full operator console — usage dashboards plus admin functionality
+  (merge/conflict proposals, review queue, memory inspection, retrieval-quality
+  views, narrative browsing, health) — is the post-v1 Dockyard MCP App (§9.2),
+  consuming only these public surfaces: events, metrics, and the admin API.
 
 ---
 
@@ -586,8 +828,11 @@ public memory benchmarks**, published as a reproducible report.
 - **Online-adaptation scenarios** (ACE-inspired, AppWorld-style): contexts
   evolve during evaluation via the reflection → playbook loop; measures
   compounding improvement across sequential tasks.
-- **Go benchmarks** for ingest ACK latency, pipeline throughput, retrieval p99
-  at 10k/100k/1M memories per scope.
+- **Go benchmarks + the latency SLO** (§4.2): ingest ACK latency, pipeline
+  throughput, retrieval p99 at 10k/100k/1M memories per scope, and the binding
+  target — retrieval p99 ≤ 150 ms (cache hit ≤ 20 ms) at 1,000 concurrent
+  sessions on the postgres driver. The SLO benchmark is a release gate like
+  the gain metric.
 
 ---
 
@@ -627,14 +872,20 @@ public memory benchmarks**, published as a reproducible report.
 
 ## 15. Phasing
 
-See `docs/plans/README.md`. Waves: **W1 foundation** (scaffold/CI, config +
-identity + telemetry, store seam + migrations, gateway seam + bifrost driver),
-**W2 write path** (records + ingest API with outcomes, buffers, extraction +
-reflection, reconciliation), **W3 read path** (lanes + fusion, scoring,
-drill-down + feedback, optional rerank), **W4 lifecycle & sharing** (sweeps,
-supersede chains + rollback, grants), **W5 surfaces & proof** (MCP server on
-Dockyard, Go SDK + Harbor recipes + embedded mode, playbooks, eval harness,
-hardening + open-source readiness).
+See `docs/plans/README.md`. Waves: **W1 foundation** (scaffold/CI; config +
+identity + telemetry + runtime API keys; the full day-one schema behind the
+store seam; gateway + bifrost), **W2 write path** (records with
+outcomes/branches, buffers, topic extraction incl. preference fragments,
+reconciliation + links), **W3 read path** (lanes + fusion + temporal filters,
+scoring + support summary, drill-down + feedback + injections, rerank +
+hot–warm cache + the latency SLO), **W4 lifecycle & sharing** (sweeps,
+supersede + rollback, grants), **W5 surfaces** (MCP on Dockyard, SDKs +
+zero-config Harbor wiring + embedded mode), **W6 episodic & temporal**
+(episodes + narratives, episodic retrieval + aggregation, causal links),
+**W7 trust** (citations + feedback, verification + review queue, reasoning
+traces + audit export), **W8 self-improvement & proactive** (reflection +
+playbooks, trigger engine + governance, pattern mining stretch), **W9 proof &
+release** (eval harness, hardening + open-source readiness).
 
 ---
 
@@ -658,3 +909,11 @@ hardening + open-source readiness).
 - **OQ-7:** Grants and contribute-mode reconciliation — when a teammate's agent
   contributes to a granted pool, whose trust hierarchy applies? Decide in the
   grants phase.
+- **OQ-8:** Episode boundary detection — heuristic (temporal gap + topic shift)
+  first, or gateway-assisted from the start? Lean heuristic-first with a
+  gateway refinement pass; decide in the episodes phase with eval data.
+- **OQ-9:** Hot–warm cache invalidation granularity — per-scope flush (simple,
+  correct) vs per-memory dependency tracking (precise, complex). Lean per-scope
+  first; measure hit rates before adding precision.
+- **OQ-10:** Reasoning-trace retention class and export signing scheme —
+  decide in the traces phase with compliance input.

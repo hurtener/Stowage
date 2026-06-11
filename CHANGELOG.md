@@ -7,6 +7,12 @@ All notable changes to Stowage are documented here. Format follows
 
 ### Added
 
+- Roadmap integration: day-one signal-capture schema (injections, links,
+  episodes, branches, suggestions, runtime API keys — RFC §5.0/§8.1), episodic
+  & temporal memory (§6b), trust layer — citations, verification, reasoning
+  traces, review queue (§6c), proactive memory with governance (§6d), branches,
+  hot–warm cache + read-path SLO, zero-config agent wiring + Python client;
+  master plan expanded to 28 phases across 9 waves (D-024–D-032).
 - Design RFC (`RFC-001-Stowage.md`), master phase plan (20 phases, 5 waves),
   research briefs 01–05, decisions log D-001–D-023, glossary, binding
   contributor norms (`CLAUDE.md`/`AGENTS.md`), and the build/preflight/

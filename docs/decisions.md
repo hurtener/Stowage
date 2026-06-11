@@ -95,7 +95,7 @@ any future publication decision (RFC OQ-5); no LICENSE file until then.
 ## D-014 — Eval harness is a release gate
 
 2026-06-10. From CL-Bench's gain metric: `stowage eval` ships in-tree, and
-negative gain on the standard scenarios blocks release (RFC §12, Phase 17).
+negative gain on the standard scenarios blocks release (RFC §12, Phase 27).
 
 ## D-015 — Small MCP surface (6 tools)
 
@@ -173,3 +173,78 @@ multi-tenancy/isolation/metering are first-class from day one; everything in
 the repo is written as if public (with D-003 hygiene); the control plane is a
 separate future codebase (RFC §14); license choice is OQ-5, decided when the
 gate is in sight.
+
+## D-024 — Day-one signal capture (the schema contract)
+
+2026-06-11. Roadmap capabilities (episodes, citations, causal links, RL
+signals, proactive triggers) consume signals that **cannot be backfilled**:
+which memories were injected into which response, when interactions actually
+occurred, which branch a turn belonged to, task outcomes. The first migration
+set therefore ships the full §8.1 schema (~19 signal-bearing tables —
+including `injections`, `links`, `episodes`, `branches`, `suggestions`,
+`api_keys`, `scope_settings`) even though their consuming features land in
+W6–W8. Guardrail against sprawl: every column must be written by a W1–W3 hot
+path and read by a named later phase; extensions beyond the inventory require
+an RFC amendment. Amends D-009's table budget.
+
+## D-025 — Injections are the attribution backbone
+
+2026-06-11. Every retrieval records (response_id, memory_id, rank, score)
+asynchronously. One table powers citations, response-level like/dislike,
+citation-level feedback, use/fail counters, cache hot-set detection, reasoning
+traces, and the gain metric. RFC §5.7.
+
+## D-026 — Episodic memory, native temporal indexing, causal links
+
+2026-06-11. Episodes (boundary detection + narrative construction with full
+provenance), `occurred_at` indexed per scope from day one (time-window queries
+native), typed link graph written by reconciliation from day one
+(`supports`/`contradicts`) with inferred `caused_by`/`led_to` later, similar-
+episode outcome contrast, cross-episode aggregation. RFC §6b; Wave 6.
+
+## D-027 — Trust layer: citations, verification, traces, review queue
+
+2026-06-11. Citation handles from injections; `POST /v1/verify` entailment
+safeguard; uncited agent-generated knowledge parks as `pending_review` (never
+silently becomes memory); reasoning traces reconstructable per response_id and
+exportable as signed bundles for GDPR/regulatory and third-party audit;
+support summary on every retrieval so agents can express calibrated
+uncertainty. RFC §6c; Wave 7.
+
+## D-028 — Proactive memory with governance
+
+2026-06-11. The memory service, not the agent, owns proactive surfacing:
+trigger engine → standard scoring → threshold + strict per-turn budget;
+per-tenant/profile governance (limits, classes, opt-outs) in stored scope
+settings, changeable at runtime; accept/dismiss tunes per-trigger confidence
+through the six-counter machinery. Temporal pattern mining is an explicit
+stretch phase behind the same governance. RFC §6d; Wave 8.
+
+## D-029 — Branches: exploration without contamination
+
+2026-06-11. Records carry `branch_id`; buffers and working memories are
+branch-scoped; merge reconciles into the parent, discard expires working
+memories (records remain — P1). Protects long sessions and extraction quality
+from exploratory tangents. RFC §5.5.
+
+## D-030 — Runtime API-key management; keys never live in config files
+
+2026-06-11. Tenant/agent keys are store-backed with admin endpoints
+(create/list/rotate/revoke/bulk-revoke) so onboarding and incident response
+never require a restart or YAML edit. Constant-time verification; admin-class
+keys for admin surfaces. RFC §9.1.
+
+## D-031 — Read-path SLO and the hot–warm cache
+
+2026-06-11. Binding target: retrieval p99 ≤ 150 ms (cache hit ≤ 20 ms) at
+1,000 concurrent sessions on the postgres driver on reference hardware; the
+SLO benchmark is a release gate alongside the gain metric. A (query-signature,
+scope) result cache + injection-frequency hot set fronts the lanes,
+scope-invalidated on writes (per-scope first — OQ-9). RFC §4.2.
+
+## D-032 — Zero-config memory for every agent; Python client ships
+
+2026-06-11. The SDK's job is that no agent re-implements memory plumbing: a
+Harbor assemble option wires ingest/retrieve/feedback automatically; a thin
+Python client serves the Python agent framework; MCP covers other hosts. An
+integration needing hand-written plumbing is an SDK defect. RFC §9.3; Phase 17.

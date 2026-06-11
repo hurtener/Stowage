@@ -111,8 +111,9 @@ When a phase plan and the RFC drift, the RFC wins. File a follow-up to fix the p
 ├── cmd/
 │   └── stowage/                 # the `stowage` binary entrypoint (serve, mcp, CLI)
 ├── internal/
-│   ├── api/                     # HTTP surface: routing, validation, auth
-│   ├── mcpserver/               # MCP tool surface over go-sdk
+│   ├── api/                     # HTTP surface: routing, validation
+│   ├── auth/                    # runtime API-key store + verification (D-030)
+│   ├── mcpserver/               # MCP tool surface (built with Dockyard, D-020)
 │   ├── identity/                # scope types + enforcement helpers
 │   ├── config/                  # typed config, env indirection, fail-loud validation
 │   ├── records/                 # verbatim record layer (P1)
@@ -121,7 +122,10 @@ When a phase plan and the RFC drift, the RFC wins. File a follow-up to fix the p
 │   ├── reconcile/               # reconciliation decisions, trust gates, chains, rollback (P4)
 │   ├── retrieval/               # lanes, fusion, scoring, budgeting, drill-down
 │   ├── grants/                  # team sharing: groups, grants, zone ceilings (RFC §5.3)
+│   ├── episodes/                # boundary detection, narratives, causal links (RFC §6b)
+│   ├── trust/                   # citations, verification, traces, review queue (RFC §6c)
 │   ├── playbook/                # deterministic playbook assembly (RFC §6a — no LLM calls)
+│   ├── proactive/               # trigger engine, thresholds, governance (RFC §6d)
 │   ├── lifecycle/               # decay / dedupe / rollup / re-enqueue / re-reflection sweeps
 │   ├── gateway/                 # the intelligence seam + drivers {bifrost, mock} (P5)
 │   ├── store/                   # the Store seam + drivers {sqlite, postgres}
@@ -253,6 +257,12 @@ These enforce P1–P5 (§1). They are binding on every phase.
 - **Reconciliation is reversible.** Destructive ops (update/merge/supersede)
   must be invertible from their events (D-017); a reconciliation change that
   breaks rollback round-trips is wrong.
+- **Day-one signal capture (D-024).** The hot paths write the unbackfillable
+  signals — `occurred_at`, `branch_id`, outcomes, injections, reconciler links
+  — from the first build. Removing or skipping one of these writes "because
+  nothing reads it yet" is drift; a named later phase reads it.
+- **Schema is budgeted.** A table or column outside the RFC §8.1 inventory
+  requires an RFC amendment first (D-024 guardrail against sprawl).
 - **No-CGo, single binary.** Every artifact compiles CGo-free and cross-compiles.
 
 ---

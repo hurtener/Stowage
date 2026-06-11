@@ -31,7 +31,7 @@ those using compressed representations.
 
 - **Hybrid memory**: full-context buffers for recent interactions + abstracted
   indexes over older history. → P1: verbatim records forever, memories as the
-  abstraction layer, provenance **drill-down** as the recovery path (RFC §4.2.5).
+  abstraction layer, provenance **drill-down** as the recovery path (RFC §4.2.7).
 - **Multiple retrieval paths** (recency, similarity, task relevance,
   outcome-based) instead of one fixed heuristic. → concurrent lanes + fusion +
   retrieval profiles (RFC §4.2).
@@ -39,9 +39,9 @@ those using compressed representations.
   decay; cluster-level shift detection emitting `memory.shift_suspected`
   (RFC §6, v1.x).
 - **Outcome feedback.** Track whether injected memories actually helped. →
-  `/v1/feedback` and the use/fail counters (RFC §4.2.6).
+  `/v1/feedback` and the use/fail counters (RFC §4.2.8).
 
-## The gain metric (→ Phase 17)
+## The gain metric (→ Phase 27)
 
 `Gain = Performance(with memory) − Performance(without memory)`, controlled for
 base-model capability, measured on both novel and repeated tasks. Positive gain

@@ -72,6 +72,36 @@ New terms land here in the same PR that introduces them (CLAUDE.md §14).
   prior state and tombstoning the result (D-017).
 - **Embedded mode** — running the full Stowage server in-process via
   `sdk/stowage`, no daemon or network (D-022); e.g. inside a Wails desktop app.
+- **Injection** — the recorded fact that a memory was handed to an agent for a
+  given `response_id`, with rank and score; the attribution backbone (D-025).
+- **Citation handle** — the injection ID an agent attaches to a claim;
+  resolvable to the memory, its provenance, and metadata (§6c).
+- **Support summary** — per-retrieval report of evidence strength and
+  agreement/conflict among returned memories; lets agents say "I'm not sure".
+- **Reasoning trace** — the reconstructable memory-into-conclusion chain for a
+  response (query, injections, drill-downs, verification verdicts), exportable
+  as a signed audit bundle.
+- **Episode** — a detected coherent temporal unit of records, with a generated
+  narrative memory carrying full provenance (§6b).
+- **Narrative** — the `narrative`-kind memory telling an episode's concrete
+  path of decisions, not a vague summary.
+- **Causal link** — a `caused_by`/`led_to` typed edge between decision
+  memories, explicit or inferred through episode narratives.
+- **Episode contrast** — surfacing the most similar past episode and comparing
+  outcomes against the current situation.
+- **Branch** — a session fork for exploration; working memories merge on
+  accept or expire on discard, records always remain (D-029).
+- **Hot–warm cache** — the (query-signature, scope) result cache plus
+  injection-frequency hot set that serves frequent retrievals without a vector
+  lookup (D-031).
+- **Preference fragments** — `preference`-kind memories from the default
+  personalization topic pack ("how this user wants to be answered").
+- **Trigger** — a proactive-engine rule (session start, episode similarity,
+  expiring validity) whose confidence is tuned by accept/dismiss feedback.
+- **Suggestion** — a threshold-passing proactive offer, tracked with its own
+  utility counters (§6d).
+- **Review queue** — `pending_review` candidates (e.g. uncited agent-generated
+  claims) awaiting admin approve/reject before becoming memories.
 - **The Python predecessor** — the internal Python memory server Stowage
   redesigns (its project name is not used in this repository; see D-001/D-003).
 - **The CC-memory predecessor** — the internal Go memory system for coding
