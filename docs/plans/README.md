@@ -146,9 +146,13 @@ storms under concurrent writers; EXPLAIN-verified index use (postgres).
 ### Phase 04 — Gateway seam + bifrost driver
 `Gateway` (Embed batched, Complete schema-constrained); bifrost + mock
 drivers; batching, retry/backoff, circuit breaker; embed cache; cost metering
-events; model+dims pinning. Resolves **OQ-1**. **Criteria:** golden wire
-tests; cache hit path proven; cost events emitted; boot fails on dims
-mismatch.
+events; model+dims pinning. Resolves **OQ-1**. **Validation note (checked
+2026-06-11):** OpenRouter (dev key available locally via `.env`, never
+committed) serves 338 chat models incl. current Anthropic tiers — good for
+`Complete`-path validation — but **hosts no embedding models**; `Embed`-path
+validation needs Bifrost fronting an embeddings provider (OpenAI / Voyage /
+Gemini) or a direct provider key. **Criteria:** golden wire tests; cache hit
+path proven; cost events emitted; boot fails on dims mismatch.
 
 ### Phase 05 — Records, ingest API & branches
 Verbatim append (ULID, scope, occurred_at vs created_at, outcome, branch_id,
