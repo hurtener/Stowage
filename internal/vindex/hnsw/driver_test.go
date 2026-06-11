@@ -273,7 +273,10 @@ func TestHNSW_DeleteTombstoneCorrectness(t *testing.T) {
 // Verifies that Search still returns results when HNSW ANN mode is active.
 func TestHNSW_LargeGraphPath(t *testing.T) {
 	t.Parallel()
-	const (n = 2049; dims = 4)
+	const (
+		n    = 2049
+		dims = 4
+	)
 	ctx := context.Background()
 	scope := identity.Scope{Tenant: "large-graph"}
 
@@ -312,7 +315,10 @@ func TestHNSW_LargeGraphPath(t *testing.T) {
 // leaves hits < k on the first ANN fetch and triggers the refetch path.
 func TestHNSW_LargeGraphRefetch(t *testing.T) {
 	t.Parallel()
-	const (noise = 2049; dims = 4)
+	const (
+		noise = 2049
+		dims  = 4
+	)
 	ctx := context.Background()
 	scope := identity.Scope{Tenant: "large-refetch"}
 
