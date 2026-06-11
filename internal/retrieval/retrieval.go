@@ -1,4 +1,4 @@
-// Package retrieval implements the four-lane retrieval read path (Phase 09,
+// Package retrieval implements the four-lane retrieval read path (Phase 09/11,
 // RFC §4.2). Lanes run concurrently via errgroup; results are fused by RRF
 // then re-ranked by the utility scoring function (Phase 10, RFC §5.2).
 //
@@ -24,7 +24,10 @@
 // This is acceptable for Phase 10; a per-item query would be accurate but
 // costly.
 //
-// The response envelope is marked api:"v0" (unstable until Phase 11).
+// Phase 11: every retrieve call is recorded as injection rows (async, zero added
+// latency via InjectionWriter). The envelope graduates to api:"v1" with
+// per-item citation handles (= injection ULIDs, D-051) and a top-level
+// response_id. Profile presets control lane/scoring parameters.
 package retrieval
 
 import (
@@ -32,9 +35,12 @@ import (
 	"errors"
 	"log/slog"
 	"sort"
+	"strings"
 	"time"
 
 	"golang.org/x/sync/errgroup"
+
+	"github.com/oklog/ulid/v2"
 
 	"github.com/hurtener/stowage/internal/gateway"
 	"github.com/hurtener/stowage/internal/identity"
@@ -46,10 +52,6 @@ import (
 const (
 	// maxLimit is the hard cap on the number of items returned.
 	maxLimit = 50
-
-	// laneK is the number of candidates per lane fed into RRF.
-	// Larger than maxLimit to give fusion room to rerank.
-	laneK = 100
 )
 
 // Request is the retrieve request payload.
@@ -64,8 +66,16 @@ type Request struct {
 	// SessionID identifies the caller's current session. Used for:
 	//   1. Write-echo cooldown: memories extracted in this session are
 	//      suppressed for 30 min (Phase 10, see scoring package).
-	//   2. Future: project-affinity scoring (Phase 11).
+	//   2. Future: project-affinity scoring.
 	SessionID string
+
+	// ResponseID is a caller-supplied identifier for this retrieval response.
+	// When absent a ULID is generated and returned in the envelope (D-051).
+	ResponseID string
+
+	// Profile selects a named retrieval preset: "precise", "balanced" (default),
+	// or "broad". Invalid values are rejected by the handler (D-034).
+	Profile string
 }
 
 // MemoryItem is one retrieval result.
@@ -74,29 +84,34 @@ type MemoryItem struct {
 	Score     float64            // utility-adjusted score (Phase 10; RRF score before Phase 10)
 	Lanes     []string           // populated when Request.IncludeLanes is true
 	Breakdown *scoring.Breakdown // populated when Request.Debug is true
+	Citation  string             // injection ULID = citation handle (Phase 11, D-051)
 }
 
 // Response is the retrieve response payload.
 type Response struct {
-	Items    []MemoryItem
-	Support  Support // per-response evidence summary (Phase 10, RFC §4.2.5)
-	Degraded bool    // true when the vector lane was skipped (D-036)
-	API      string  // "v0" until Phase 11 finalises the envelope
+	ResponseID string // caller-supplied or generated ULID (D-051)
+	Items      []MemoryItem
+	Support    Support // per-response evidence summary (Phase 10, RFC §4.2.5)
+	Degraded   bool    // true when the vector lane was skipped (D-036)
+	API        string  // "v1" (Phase 11)
 }
 
 // Retriever executes the four-lane retrieval and returns fused + scored results.
 // It is safe for concurrent use after New returns.
+// Call Close to drain the injection writer goroutine on shutdown.
 type Retriever struct {
-	mem  store.MemoryStore
-	recs store.RecordStore
-	vi   vindex.Index
-	gw   gateway.Gateway
-	hub  *Hub
-	log  *slog.Logger
+	mem   store.MemoryStore
+	recs  store.RecordStore
+	vi    vindex.Index
+	gw    gateway.Gateway
+	hub   *Hub
+	log   *slog.Logger
+	injWr *InjectionWriter // nil when no injection store is wired
 }
 
 // New creates a Retriever wired to the given dependencies.
 // recs is used to compute ActivityTurns for the scoring decay function.
+// injSt may be nil (injection recording disabled — no injection writer started).
 func New(mem store.MemoryStore, recs store.RecordStore, vi vindex.Index, gw gateway.Gateway, log *slog.Logger) *Retriever {
 	return &Retriever{
 		mem:  mem,
@@ -108,16 +123,48 @@ func New(mem store.MemoryStore, recs store.RecordStore, vi vindex.Index, gw gate
 	}
 }
 
+// NewWithInjections creates a Retriever that also records injection rows.
+// Close must be called to drain the injection writer on shutdown.
+func NewWithInjections(mem store.MemoryStore, recs store.RecordStore, vi vindex.Index, gw gateway.Gateway, injSt store.InjectionStore, log *slog.Logger) *Retriever {
+	r := New(mem, recs, vi, gw, log)
+	if injSt != nil {
+		r.injWr = NewInjectionWriter(injSt, log)
+	}
+	return r
+}
+
+// Close drains the injection writer goroutine. No-op when injections are not wired.
+// Must be called before the program exits to ensure all pending injection rows are written.
+func (r *Retriever) Close() {
+	if r.injWr != nil {
+		r.injWr.Close()
+	}
+}
+
 // Retrieve runs the four lanes, fuses with RRF, applies utility scoring, and
 // returns the top-limit memories. The scope is enforced in every lane's store
-// call.
+// call. Injection rows are recorded asynchronously after the limit trim (D-051).
 func (r *Retriever) Retrieve(ctx context.Context, scope identity.Scope, req Request) (*Response, error) {
+	// Resolve profile presets for laneK and scoringK.
+	prof, ok := profileByName(req.Profile)
+	if !ok {
+		// Caller validation should have caught this; degrade to balanced.
+		prof = ProfileBalanced
+	}
+	laneK := prof.LaneK
+
 	limit := req.Limit
 	if limit <= 0 {
-		limit = 10
+		limit = prof.DefaultLimit
 	}
 	if limit > maxLimit {
 		limit = maxLimit
+	}
+
+	// Resolve or generate the response ID (D-051).
+	responseID := req.ResponseID
+	if responseID == "" {
+		responseID = ulid.Make().String()
 	}
 
 	// Embed the query for the vector lane (may fail → degraded).
@@ -240,18 +287,14 @@ func (r *Retriever) Retrieve(ctx context.Context, scope identity.Scope, req Requ
 	// Fuse — use a wider window before scoring to give scoring room to rerank.
 	fused := rrf(lanes)
 
-	// Trim to laneK before scoring to bound the GetMany call; scoring may
-	// reorder items but we only expose at most limit results.
-	scoringK := limit * 2
-	if scoringK > laneK {
-		scoringK = laneK
-	}
+	// Trim to profile.ScoringK before scoring to bound the GetMany call.
+	scoringK := prof.ScoringK
 	if len(fused) > scoringK {
 		fused = fused[:scoringK]
 	}
 
 	if len(fused) == 0 {
-		return &Response{Support: Support{Strength: "weak"}, Degraded: degraded, API: "v0"}, nil
+		return &Response{ResponseID: responseID, Support: Support{Strength: "weak"}, Degraded: degraded, API: "v1"}, nil
 	}
 
 	// Bulk-fetch the top memories.
@@ -351,10 +394,14 @@ func (r *Retriever) Retrieve(ctx context.Context, scope identity.Scope, req Requ
 
 		finalScore, bd := scoring.Score(in)
 
+		// Assign a citation handle (injection ULID) for this item (D-051).
+		citationID := ulid.Make().String()
+
 		item := MemoryItem{
-			Memory: m,
-			Score:  finalScore,
-			Lanes:  nil,
+			Memory:   m,
+			Score:    finalScore,
+			Lanes:    nil,
+			Citation: citationID,
 		}
 		if req.IncludeLanes {
 			item.Lanes = lanesByID[h.MemoryID]
@@ -408,5 +455,30 @@ func (r *Retriever) Retrieve(ctx context.Context, scope identity.Scope, req Requ
 		}
 	}()
 
-	return &Response{Items: items, Support: sup, Degraded: degraded, API: "v0"}, nil
+	// Async injection recording — after limit trim (D-025, D-051).
+	// Non-blocking: Enqueue drops the batch if the channel is full.
+	if r.injWr != nil {
+		injRows := make([]store.Injection, len(items))
+		nowInj := time.Now().UnixMilli()
+		for i, item := range items {
+			injRows[i] = store.Injection{
+				ID:         item.Citation,
+				ResponseID: responseID,
+				MemoryID:   item.Memory.ID,
+				Rank:       i,
+				Score:      item.Score,
+				Lane:       strings.Join(lanesByID[item.Memory.ID], ","),
+				CreatedAt:  nowInj,
+			}
+		}
+		r.injWr.Enqueue(scope, injRows)
+	}
+
+	return &Response{
+		ResponseID: responseID,
+		Items:      items,
+		Support:    sup,
+		Degraded:   degraded,
+		API:        "v1",
+	}, nil
 }

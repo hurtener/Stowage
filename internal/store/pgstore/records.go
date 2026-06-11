@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -178,6 +179,54 @@ func (r *recordStore) CountRecordsSince(ctx context.Context, scope identity.Scop
 		return 0, fmt.Errorf("pgstore: count records since: %w", err)
 	}
 	return count, nil
+}
+
+// GetMany returns records for the given IDs within scope. IDs not found are
+// silently omitted; order matches the order of ids.
+func (r *recordStore) GetMany(ctx context.Context, scope identity.Scope, ids []string) ([]store.Record, error) {
+	if scope.Tenant == "" {
+		return nil, store.ErrScopeRequired
+	}
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	whereClause, args, next, err := buildScopeWhere(scope, 1)
+	if err != nil {
+		return nil, err
+	}
+	// Build $N, $N+1, ... placeholders for the IN clause.
+	placeholders := make([]string, len(ids))
+	for i, id := range ids {
+		placeholders[i] = fmt.Sprintf("$%d", next+i)
+		args = append(args, id)
+	}
+	q := `SELECT id, tenant_id, COALESCE(project_id,''), COALESCE(user_id,''), COALESCE(session_id,''),
+	       branch_id, role, content, source_agent, response_id, outcome, outcome_detail,
+	       token_estimate, occurred_at, created_at, processed_at
+	  FROM records WHERE ` + whereClause + ` AND id IN (` + strings.Join(placeholders, ",") + `)` //nolint:gosec
+	rows, err := r.s.pool.Query(ctx, q, args...)
+	if err != nil {
+		return nil, fmt.Errorf("pgstore: records get many: %w", err)
+	}
+	defer rows.Close()
+	byID := make(map[string]store.Record)
+	for rows.Next() {
+		rec, err := scanRecord(rows)
+		if err != nil {
+			return nil, fmt.Errorf("pgstore: records get many row: %w", err)
+		}
+		byID[rec.ID] = *rec
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	out := make([]store.Record, 0, len(ids))
+	for _, id := range ids {
+		if rec, ok := byID[id]; ok {
+			out = append(out, rec)
+		}
+	}
+	return out, nil
 }
 
 type rowScanner interface {

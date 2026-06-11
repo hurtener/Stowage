@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/hurtener/stowage/internal/identity"
@@ -164,6 +165,53 @@ func (r *recordStore) CountRecordsSince(ctx context.Context, scope identity.Scop
 		return 0, fmt.Errorf("sqlitestore: count records since: %w", err)
 	}
 	return count, nil
+}
+
+// GetMany returns records for the given IDs within scope. IDs not found are
+// silently omitted; order matches the order of ids.
+func (r *recordStore) GetMany(ctx context.Context, scope identity.Scope, ids []string) ([]store.Record, error) {
+	if scope.Tenant == "" {
+		return nil, store.ErrScopeRequired
+	}
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	whereClause, args, err := buildScopeWhere(scope)
+	if err != nil {
+		return nil, err
+	}
+	placeholders := make([]string, len(ids))
+	for i, id := range ids {
+		placeholders[i] = "?"
+		args = append(args, id)
+	}
+	q := `SELECT id, tenant_id, COALESCE(project_id,''), COALESCE(user_id,''), COALESCE(session_id,''),` + //nolint:gosec
+		` branch_id, role, content, source_agent, response_id, outcome, outcome_detail,` +
+		` token_estimate, occurred_at, created_at, processed_at` +
+		` FROM records WHERE ` + whereClause + ` AND id IN (` + strings.Join(placeholders, ",") + `)`
+	rows, err := r.s.rdb.QueryContext(ctx, q, args...)
+	if err != nil {
+		return nil, fmt.Errorf("sqlitestore: records get many: %w", err)
+	}
+	defer rows.Close() //nolint:errcheck
+	byID := make(map[string]store.Record)
+	for rows.Next() {
+		rec, err := scanRecord(rows)
+		if err != nil {
+			return nil, fmt.Errorf("sqlitestore: records get many row: %w", err)
+		}
+		byID[rec.ID] = *rec
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	out := make([]store.Record, 0, len(ids))
+	for _, id := range ids {
+		if rec, ok := byID[id]; ok {
+			out = append(out, rec)
+		}
+	}
+	return out, nil
 }
 
 type rowScanner interface {

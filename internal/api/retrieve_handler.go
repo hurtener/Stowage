@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 
 	"github.com/hurtener/stowage/internal/identity"
@@ -10,8 +11,7 @@ import (
 	"github.com/hurtener/stowage/internal/store"
 )
 
-// retrieveRequest is the wire format for POST /v1/retrieve.
-// Envelope is marked api:"v0" (unstable until Phase 11).
+// retrieveRequest is the wire format for POST /v1/retrieve (envelope v1, Phase 11).
 type retrieveRequest struct {
 	Query        string   `json:"query"`
 	Limit        int      `json:"limit"`
@@ -19,8 +19,10 @@ type retrieveRequest struct {
 	Until        int64    `json:"until"` // unix millis; 0 = unbounded
 	Kinds        []string `json:"kinds"`
 	IncludeLanes bool     `json:"include_lanes"`
-	SessionID    string   `json:"session_id"` // used for cooldown + scope affinity (Phase 10)
-	Debug        bool     `json:"debug"`      // if true, include per-item scoring breakdowns (Phase 10)
+	SessionID    string   `json:"session_id"`  // used for cooldown + scope affinity (Phase 10)
+	Debug        bool     `json:"debug"`       // if true, include per-item scoring breakdowns (Phase 10)
+	ResponseID   string   `json:"response_id"` // caller-supplied; generated when absent (D-051)
+	Profile      string   `json:"profile"`     // "precise"|"balanced"|"broad"; default "balanced"
 }
 
 // retrieveBreakdown is the wire format for a per-item scoring breakdown.
@@ -52,24 +54,25 @@ type retrieveSupport struct {
 	Conflicts []retrieveConflict `json:"conflicts,omitempty"`
 }
 
-// retrieveMemoryItem is the wire format for one retrieval result.
+// retrieveMemoryItem is the wire format for one retrieval result (envelope v1).
 type retrieveMemoryItem struct {
 	ID        string             `json:"id"`
 	Kind      string             `json:"kind"`
 	Content   string             `json:"content"`
 	Context   string             `json:"context,omitempty"`
 	Score     float64            `json:"score"`
+	Citation  string             `json:"citation"` // injection ULID = citation handle (D-051)
 	Lanes     []string           `json:"lanes,omitempty"`
 	Breakdown *retrieveBreakdown `json:"breakdown,omitempty"` // present when debug:true
 }
 
-// retrieveResponse is the wire format for POST /v1/retrieve.
-// api:"v0" — unstable until Phase 11 finalises the envelope.
+// retrieveResponse is the wire format for POST /v1/retrieve (envelope v1).
 type retrieveResponse struct {
-	Items    []retrieveMemoryItem `json:"items"`
-	Support  retrieveSupport      `json:"support"`
-	Degraded bool                 `json:"degraded"`
-	API      string               `json:"api"`
+	ResponseID string               `json:"response_id"` // echoed or generated ULID (D-051)
+	Items      []retrieveMemoryItem `json:"items"`
+	Support    retrieveSupport      `json:"support"`
+	Degraded   bool                 `json:"degraded"`
+	API        string               `json:"api"` // "v1"
 }
 
 // handleRetrieve implements POST /v1/retrieve.
@@ -101,6 +104,13 @@ func (s *Server) handleRetrieve(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Validate profile (D-034: knob ships with validation).
+	validProfiles := map[string]bool{"": true, "precise": true, "balanced": true, "broad": true}
+	if !validProfiles[req.Profile] {
+		respondJSON(w, http.StatusBadRequest, errBody(fmt.Sprintf("unknown profile %q (want precise|balanced|broad)", req.Profile)))
+		return
+	}
+
 	authKey := keyFromContext(r.Context())
 	scope := identity.Scope{Tenant: authKey.TenantID}
 
@@ -117,6 +127,8 @@ func (s *Server) handleRetrieve(w http.ResponseWriter, r *http.Request) {
 		IncludeLanes: req.IncludeLanes,
 		SessionID:    req.SessionID,
 		Debug:        req.Debug,
+		ResponseID:   req.ResponseID,
+		Profile:      req.Profile,
 	})
 	if err != nil {
 		s.log.ErrorContext(r.Context(), "api: retrieve failed", "err", err)
@@ -127,11 +139,12 @@ func (s *Server) handleRetrieve(w http.ResponseWriter, r *http.Request) {
 	items := make([]retrieveMemoryItem, 0, len(resp.Items))
 	for _, item := range resp.Items {
 		ri := retrieveMemoryItem{
-			ID:      item.Memory.ID,
-			Kind:    item.Memory.Kind,
-			Content: item.Memory.Content,
-			Context: item.Memory.Context,
-			Score:   item.Score,
+			ID:       item.Memory.ID,
+			Kind:     item.Memory.Kind,
+			Content:  item.Memory.Content,
+			Context:  item.Memory.Context,
+			Score:    item.Score,
+			Citation: item.Citation,
 		}
 		if req.IncludeLanes {
 			ri.Lanes = item.Lanes
@@ -152,10 +165,11 @@ func (s *Server) handleRetrieve(w http.ResponseWriter, r *http.Request) {
 	}
 
 	respondJSON(w, http.StatusOK, retrieveResponse{
-		Items:    items,
-		Support:  sup,
-		Degraded: resp.Degraded,
-		API:      resp.API,
+		ResponseID: resp.ResponseID,
+		Items:      items,
+		Support:    sup,
+		Degraded:   resp.Degraded,
+		API:        resp.API,
 	})
 }
 
