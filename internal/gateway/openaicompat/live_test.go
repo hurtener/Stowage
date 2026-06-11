@@ -1,17 +1,19 @@
 //go:build live
 
-package bifrost_test
+package openaicompat_test
 
 // Live test: exercises Complete against OpenRouter's chat/completions endpoint.
 // Embeddings are skipped (OpenRouter has no embedding models as of 2026-06-11).
 //
 // Requires:
-//   STOWAGE_TEST_OPENROUTER_KEY   — OpenRouter API key (env.* reference resolved here)
-//   STOWAGE_TEST_OPENROUTER_MODEL — model slug, e.g. "openai/gpt-4o-mini"
+//
+//	STOWAGE_TEST_OPENROUTER_KEY   — OpenRouter API key (env.* reference resolved here)
+//	STOWAGE_TEST_OPENROUTER_MODEL — model slug, e.g. "google/gemini-2.5-flash"
 //
 // Run with:
-//   STOWAGE_TEST_OPENROUTER_KEY=... STOWAGE_TEST_OPENROUTER_MODEL=... \
-//     go test -tags=live -v -run TestLive ./internal/gateway/bifrost/
+//
+//	STOWAGE_TEST_OPENROUTER_KEY=... STOWAGE_TEST_OPENROUTER_MODEL=... \
+//	  go test -tags=live -v -run TestLive ./internal/gateway/openaicompat/
 //
 // NOT run in CI or preflight (CLAUDE.md §14).
 
@@ -25,7 +27,7 @@ import (
 
 	"github.com/hurtener/stowage/internal/config"
 	"github.com/hurtener/stowage/internal/gateway"
-	_ "github.com/hurtener/stowage/internal/gateway/bifrost"
+	_ "github.com/hurtener/stowage/internal/gateway/openaicompat"
 	"github.com/prometheus/client_golang/prometheus"
 )
 
@@ -41,7 +43,7 @@ func liveEnv(t *testing.T) (keyEnvVar, model string) {
 	return keyEnvVar, model
 }
 
-func TestLiveBifrost_CompleteSchemaConstrained(t *testing.T) {
+func TestLiveOpenAICompat_CompleteSchemaConstrained(t *testing.T) {
 	apiKey, model := liveEnv(t)
 
 	// Expose the key under a well-known env var so ResolveEnvRef can resolve it.
@@ -52,7 +54,7 @@ func TestLiveBifrost_CompleteSchemaConstrained(t *testing.T) {
 	t.Cleanup(func() { os.Unsetenv(keyEnv) }) //nolint:errcheck
 
 	cfg := config.GatewayConfig{
-		Driver:     "bifrost",
+		Driver:     "openaicompat",
 		BaseURL:    openRouterBase,
 		APIKey:     fmt.Sprintf("env.%s", keyEnv),
 		Model:      model,

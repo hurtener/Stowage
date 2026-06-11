@@ -69,6 +69,7 @@ type VIndexConfig struct {
 // APIKey must use env.VAR_NAME indirection (secret:"true", D-030).
 type GatewayConfig struct {
 	Driver     string `yaml:"driver"`
+	Provider   string `yaml:"provider"` // required iff driver=bifrost; one of the Bifrost SDK's supported providers (D-049)
 	BaseURL    string `yaml:"base_url"`
 	APIKey     string `yaml:"api_key"` // secret:"true" — must be env.VAR_NAME
 	Model      string `yaml:"model"`
@@ -96,6 +97,7 @@ var allKeys = []string{
 	"store.dsn",
 	"vindex.driver",
 	"gateway.driver",
+	"gateway.provider",
 	"gateway.base_url",
 	"gateway.api_key",
 	"gateway.model",
@@ -130,6 +132,7 @@ var envKeys = []struct {
 	{"STOWAGE_STORE_DSN", "store.dsn"},
 	{"STOWAGE_VINDEX_DRIVER", "vindex.driver"},
 	{"STOWAGE_GATEWAY_DRIVER", "gateway.driver"},
+	{"STOWAGE_GATEWAY_PROVIDER", "gateway.provider"},
 	{"STOWAGE_GATEWAY_BASE_URL", "gateway.base_url"},
 	{"STOWAGE_GATEWAY_MODEL", "gateway.model"},
 	{"STOWAGE_GATEWAY_EMBED_MODEL", "gateway.embed_model"},
@@ -252,9 +255,15 @@ func (c *Config) Validate() error {
 		errs = append(errs, fmt.Errorf("config.vindex.driver: unknown driver %q (valid: hnsw, brute)", c.VIndex.Driver))
 	}
 
-	validGWDrivers := map[string]bool{"mock": true, "bifrost": true}
+	// driver enum: mock (default), bifrost (SDK — all providers), openaicompat (OpenAI-compatible HTTP, D-040)
+	validGWDrivers := map[string]bool{"mock": true, "bifrost": true, "openaicompat": true}
 	if !validGWDrivers[c.Gateway.Driver] {
-		errs = append(errs, fmt.Errorf("config.gateway.driver: unknown driver %q", c.Gateway.Driver))
+		errs = append(errs, fmt.Errorf("config.gateway.driver: unknown driver %q (valid: mock, bifrost, openaicompat)", c.Gateway.Driver))
+	}
+
+	// gateway.provider is required iff driver=bifrost (D-049).
+	if c.Gateway.Driver == "bifrost" && c.Gateway.Provider == "" {
+		errs = append(errs, errors.New("config.gateway.provider: required when gateway.driver=bifrost; set to a supported provider (e.g. openai, anthropic, gemini)"))
 	}
 
 	// Secret fields must use env.VAR indirection (D-030).
@@ -394,6 +403,8 @@ func (c *Config) getByPath(path string) string {
 		return c.VIndex.Driver
 	case "gateway.driver":
 		return c.Gateway.Driver
+	case "gateway.provider":
+		return c.Gateway.Provider
 	case "gateway.base_url":
 		return c.Gateway.BaseURL
 	case "gateway.api_key":
@@ -454,6 +465,8 @@ func (c *Config) setByPath(path, value string) error {
 		c.VIndex.Driver = value
 	case "gateway.driver":
 		c.Gateway.Driver = value
+	case "gateway.provider":
+		c.Gateway.Provider = value
 	case "gateway.base_url":
 		c.Gateway.BaseURL = value
 	case "gateway.api_key":

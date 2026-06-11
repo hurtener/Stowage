@@ -30,8 +30,9 @@ import (
 	"github.com/hurtener/stowage/internal/topics"
 	"github.com/hurtener/stowage/internal/vindex"
 	// register drivers via init()
-	_ "github.com/hurtener/stowage/internal/gateway/bifrost"
+	_ "github.com/hurtener/stowage/internal/gateway/bifrost" // SDK driver: all providers in-process (D-049)
 	_ "github.com/hurtener/stowage/internal/gateway/mock"
+	_ "github.com/hurtener/stowage/internal/gateway/openaicompat" // OpenAI-compatible HTTP client (D-040)
 	_ "github.com/hurtener/stowage/internal/store/pgstore"
 	_ "github.com/hurtener/stowage/internal/store/sqlitestore"
 	"github.com/hurtener/stowage/internal/version"

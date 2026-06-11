@@ -1,0 +1,33 @@
+package bifrost
+
+import (
+	"log/slog"
+
+	bfschemas "github.com/maximhq/bifrost/core/schemas"
+	"github.com/prometheus/client_golang/prometheus"
+
+	"github.com/hurtener/stowage/internal/config"
+)
+
+// NewDriverWithClient is a test-only constructor that injects a fake
+// bifrostClient instead of spinning up the real SDK infrastructure.
+// Exported through the package under test so driver_test.go can use it.
+func NewDriverWithClient(
+	client bifrostClient,
+	provider bfschemas.ModelProvider,
+	cfg config.GatewayConfig,
+	log *slog.Logger,
+	prom *prometheus.Registry,
+) *Driver {
+	return newDriverWithClient(client, provider, cfg, log, prom)
+}
+
+// KnownProvidersHuman exports the provider list for test assertions.
+func KnownProvidersHuman() string { return knownProvidersHuman() }
+
+// NewAccount exposes the internal newAccount constructor for tests so that
+// the Account interface methods (GetConfiguredProviders, GetKeysForProvider,
+// GetConfigForProvider) and buildProviderConfig can be covered.
+func NewAccount(cfg config.GatewayConfig) (*Account, error) {
+	return newAccount(cfg)
+}

@@ -332,17 +332,23 @@ design (D-015); stdlib patterns suffice and keep the binary CGo-free. This
 settles the provisional D-040 number noted in the phase-05 plan
 (`docs/plans/phase-05-records-ingest.md`), which has been updated to D-041.
 
-## D-040 — Bifrost driver speaks OpenAI-compatible wire format (base_url-agnostic)
+## D-040 — OpenAI-compatible wire format driver (base_url-agnostic)
 
-2026-06-11. The bifrost gateway driver uses the OpenAI-compatible wire format
+2026-06-11. The gateway driver uses the OpenAI-compatible wire format
 (`POST {base_url}/chat/completions` with `response_format: json_schema strict`,
 `POST {base_url}/embeddings`) and is base_url-agnostic: it works against
-Bifrost, OpenRouter, or any OpenAI-compatible endpoint. Provider-specific
+OpenRouter, Bifrost, or any OpenAI-compatible endpoint. Provider-specific
 drivers are added only when a wire format actually diverges from this baseline
-(P5, RFC §7). All wire structs live exclusively in `internal/gateway/bifrost`;
+(P5, RFC §7). All wire structs live exclusively in `internal/gateway/openaicompat`;
 no other package may import them (CLAUDE.md §13). This supersedes the
 placeholder in D-039's plan entry and is the definitive wire-format decision
 for Phase 04.
+
+**Amendment (Phase 09c, D-049):** the driver package was renamed
+`internal/gateway/bifrost` → `internal/gateway/openaicompat` and the registry
+key changed to `"openaicompat"`. The wire protocol, behavior, and live tests are
+unchanged. The `bifrost` package path now denotes the real SDK integration
+(see D-049).
 
 ## D-042 — Buffer trigger defaults (OQ-3 resolved)
 
@@ -531,3 +537,34 @@ sidecar (memoryID → scope cols, kind, createdAt) maintained for filtered searc
 without store round-trips except when pendingMeta is non-empty; lazy build from
 `Vectors().Scan` on first Search per tenant; `vindex.driver` config key with
 `hnsw` as the validated default.
+
+## D-049 — Real Bifrost SDK driver; HTTP-client driver renamed openaicompat (Phase 09c owner directive)
+
+2026-06-11. The Phase 04 driver named "bifrost" was a from-scratch OpenAI-compatible
+HTTP client — useful, but not the intended direct SDK integration. Owner directive
+(Phase 09c): remediate with minimum blast radius.
+
+**Decision:**
+
+1. **Rename** `internal/gateway/bifrost` → `internal/gateway/openaicompat`; registry
+   key "openaicompat"; config enum "openaicompat". The driver itself is unchanged —
+   it remains the right tool for OpenRouter and any OpenAI-compatible endpoint
+   (D-040 amended: `bifrost` package path changes, everything else is preserved).
+
+2. **Add** `internal/gateway/bifrost` backed by `github.com/maximhq/bifrost/core`
+   (pinned v1.5.15, pure Go, CGo-free — Harbor-proven). The SDK driver implements
+   the full `gateway.Gateway` interface (Complete, Embed, Probe, Close) and is
+   registered as driver `"bifrost"`. Seam-level services (batching, cache, circuit
+   breaker, validation+retry, metering — Phase 04) apply to the SDK driver unchanged
+   because they sit above the driver boundary.
+
+3. New config key `gateway.provider` (required when `gateway.driver=bifrost`;
+   validated at boot; empty → boot error citing `config.gateway.provider`). The
+   key holds any provider name accepted by the SDK (openai, anthropic, gemini, …).
+
+4. Test seam: `bifrostClient` interface wraps SDK's `ChatCompletionRequest` and
+   `EmbeddingRequest` methods; unit tests inject a fake without real network.
+
+**Consequences:** zero call-site changes outside `internal/gateway` and config wiring
+(P5 preserved); `make build` stays CGo-free; Harbor parity for the SDK driver path;
+`openaicompat` remains the live-validated OpenRouter path (live tests unchanged).
