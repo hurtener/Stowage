@@ -152,8 +152,27 @@ func (s *pgStore) applyMigration(ctx context.Context, version, sqlText string) e
 	return tx.Commit(ctx)
 }
 
+// splitStatements splits a migration file into executable statements.
+// Line comments are stripped first so a ';' inside a comment never splits a
+// statement (found in CI: a comment containing ';' produced a bogus
+// fragment). Our postgres migrations contain no ';' inside literals or
+// function bodies; if that changes, this splitter must grow with them.
 func splitStatements(sql string) []string {
-	return strings.Split(sql, ";")
+	var b strings.Builder
+	for _, line := range strings.Split(sql, "\n") {
+		if i := strings.Index(line, "--"); i >= 0 {
+			line = line[:i]
+		}
+		b.WriteString(line)
+		b.WriteString("\n")
+	}
+	var out []string
+	for _, stmt := range strings.Split(b.String(), ";") {
+		if strings.TrimSpace(stmt) != "" {
+			out = append(out, stmt)
+		}
+	}
+	return out
 }
 
 // Close shuts down the connection pool.
