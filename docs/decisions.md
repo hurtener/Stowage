@@ -497,3 +497,37 @@ serves lexically for that memory (degraded per-memory, not per-system).
 **Consequences:** no commit is ever blocked by an embed call (P2 spirit);
 the backfill sweep provides crash-recovery for missed embeds; the enriched
 text improves semantic recall without requiring schema changes.
+
+## D-048 — HNSW as default vector search (owner directive); sidecar filtering; deletion semantics
+
+2026-06-11. The brute-force cosine scan established in D-046 is correct to
+~100k vectors per tenant but does not scale to the volumes Stowage is designed
+for. An owner directive requires HNSW as the default from Phase 09b.
+
+**Decision:** adopt `github.com/coder/hnsw v0.6.1` (pure Go, CGo-free,
+satisfies §5 P1) as the default vector-search driver (`vindex.driver = "hnsw"`).
+The brute-force driver remains as the `"brute"` conformance oracle and debug
+fallback. BLOB storage and no-pgvector stance (D-046) are unchanged — the HNSW
+graph is an in-memory index rebuilt from BLOBs on first access per tenant.
+
+**Deletion semantics (finding):** `Graph.Delete(key)` in coder/hnsw v0.6.1
+performs a hard delete — it removes the node from all layers and replenishes
+neighbourhood connectivity. No tombstone set is required.
+
+**Duplicate-key workaround:** `Graph.Add` panics when called with a key that
+already exists (internal postcondition `Len == preLen+1` fails when Add
+internally deletes-then-reinserts). Workaround: call `graph.Lookup` before
+`graph.Add` and explicitly `graph.Delete` if the key exists.
+
+**Search quality (finding):** coder/hnsw v0.6.1 uses a strict "no improvement
+over current best result" termination condition that limits recall for random
+unit vectors when `fetchN << graphLen`. For graphs with `Len ≤ overFetchCap`
+(2048), the driver requests all nodes from `graph.Search` to achieve
+near-brute-force recall (≥ 0.99 empirically). For larger graphs, approximate
+ANN recall is adequate for real clustered embeddings from language models.
+
+**Consequences:** per-tenant in-memory graphs with per-entry RWMutex; metadata
+sidecar (memoryID → scope cols, kind, createdAt) maintained for filtered search
+without store round-trips except when pendingMeta is non-empty; lazy build from
+`Vectors().Scan` on first Search per tenant; `vindex.driver` config key with
+`hnsw` as the validated default.

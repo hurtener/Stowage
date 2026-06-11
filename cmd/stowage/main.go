@@ -35,6 +35,7 @@ import (
 	_ "github.com/hurtener/stowage/internal/store/pgstore"
 	_ "github.com/hurtener/stowage/internal/store/sqlitestore"
 	"github.com/hurtener/stowage/internal/version"
+	_ "github.com/hurtener/stowage/internal/vindex/hnsw" // register "hnsw" vindex driver (D-048)
 )
 
 const usage = `stowage — memory infrastructure for agentic systems
@@ -366,9 +367,14 @@ func runServe(args []string) {
 	extractStage := pipeline.NewExtractStage(st, gw, topicSvc, log, cfg.Profile, bufStage.Downstream())
 	extractStage.Start(ctx)
 
-	// Phase 09: vindex, embedder, and retriever (D-046, D-047).
+	// Phase 09: vindex, embedder, and retriever (D-046, D-047, D-048).
 	// EmbedDims defaults to 0 when unconfigured; vindex skips dim checks then.
-	vi := vindex.New(st.Vectors(), cfg.Gateway.EmbedDims, cfg.Gateway.EmbedModel)
+	// Driver selected by cfg.VIndex.Driver (default "hnsw" per D-048).
+	vi, err := vindex.Open(cfg.VIndex, st.Vectors(), cfg.Gateway.EmbedDims, cfg.Gateway.EmbedModel)
+	if err != nil {
+		log.Error("stowage serve: vindex open failed", "err", err)
+		os.Exit(1)
+	}
 	embedder := reconcile.NewEmbedder(st.Vectors(), vi, gw, log)
 	embedder.Start(ctx)
 	go embedder.BackfillSweep(ctx)

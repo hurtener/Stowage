@@ -6,10 +6,11 @@ import "time"
 // dot-separated key paths whose values differ from Defaults() for that profile.
 // Merge order: defaults < profile < file < env (D-034 knob guardrail).
 //
-// Currently the only profile-tunable is telemetry.log_format:
-//   - "assistant"   → text  (human-readable; matches the default)
-//   - "coding-agent"→ text  (same as assistant; reserved for future knobs)
-//   - "fleet"       → json  (structured; suited for log aggregators)
+// Profile knobs:
+//   - telemetry.log_format: text (assistant/coding-agent), json (fleet)
+//   - vindex.driver: "hnsw" in all profiles (D-048 owner directive; brute is the
+//     exact-recall oracle and debug driver, selectable via STOWAGE_VINDEX_DRIVER
+//     or config file override)
 func Profiles() map[string]map[string]string {
 	return map[string]map[string]string{
 		"assistant":    {},

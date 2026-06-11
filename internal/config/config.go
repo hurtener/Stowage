@@ -36,6 +36,7 @@ type Config struct {
 	Profile   string          `yaml:"profile"`
 	Server    ServerConfig    `yaml:"server"`
 	Store     StoreConfig     `yaml:"store"`
+	VIndex    VIndexConfig    `yaml:"vindex"`
 	Gateway   GatewayConfig   `yaml:"gateway"`
 	Telemetry TelemetryConfig `yaml:"telemetry"`
 
@@ -55,6 +56,13 @@ type ServerConfig struct {
 type StoreConfig struct {
 	Driver string `yaml:"driver"`
 	DSN    string `yaml:"dsn"`
+}
+
+// VIndexConfig selects the vector-index driver (Phase 09b, D-048).
+// Driver must be "hnsw" (default, pure-Go ANN) or "brute" (exact-recall oracle).
+// The knob guardrail (D-034) requires this key in every profile and a tuned default.
+type VIndexConfig struct {
+	Driver string `yaml:"driver"` // "hnsw" (default) | "brute"
 }
 
 // GatewayConfig selects the intelligence gateway driver.
@@ -86,6 +94,7 @@ var allKeys = []string{
 	"server.max_body_bytes",
 	"store.driver",
 	"store.dsn",
+	"vindex.driver",
 	"gateway.driver",
 	"gateway.base_url",
 	"gateway.api_key",
@@ -119,6 +128,7 @@ var envKeys = []struct {
 	{"STOWAGE_SERVER_MAX_BODY_BYTES", "server.max_body_bytes"},
 	{"STOWAGE_STORE_DRIVER", "store.driver"},
 	{"STOWAGE_STORE_DSN", "store.dsn"},
+	{"STOWAGE_VINDEX_DRIVER", "vindex.driver"},
 	{"STOWAGE_GATEWAY_DRIVER", "gateway.driver"},
 	{"STOWAGE_GATEWAY_BASE_URL", "gateway.base_url"},
 	{"STOWAGE_GATEWAY_MODEL", "gateway.model"},
@@ -143,6 +153,9 @@ func Defaults() *Config {
 		Store: StoreConfig{
 			Driver: "sqlite",
 			DSN:    "./data/stowage.db",
+		},
+		VIndex: VIndexConfig{
+			Driver: "hnsw", // default: HNSW (D-048; owner directive — 100k brute ceiling too low)
 		},
 		Gateway: GatewayConfig{ //nolint:gosec // G101: api_key holds an env-var *name* (reference), not a credential
 			Driver:     "mock",
@@ -232,6 +245,11 @@ func (c *Config) Validate() error {
 	validStoreDrivers := map[string]bool{"sqlite": true, "postgres": true}
 	if !validStoreDrivers[c.Store.Driver] {
 		errs = append(errs, fmt.Errorf("config.store.driver: unknown driver %q", c.Store.Driver))
+	}
+
+	validVIndexDrivers := map[string]bool{"hnsw": true, "brute": true}
+	if !validVIndexDrivers[c.VIndex.Driver] {
+		errs = append(errs, fmt.Errorf("config.vindex.driver: unknown driver %q (valid: hnsw, brute)", c.VIndex.Driver))
 	}
 
 	validGWDrivers := map[string]bool{"mock": true, "bifrost": true}
@@ -372,6 +390,8 @@ func (c *Config) getByPath(path string) string {
 		return c.Store.Driver
 	case "store.dsn":
 		return c.Store.DSN
+	case "vindex.driver":
+		return c.VIndex.Driver
 	case "gateway.driver":
 		return c.Gateway.Driver
 	case "gateway.base_url":
@@ -430,6 +450,8 @@ func (c *Config) setByPath(path, value string) error {
 		c.Store.Driver = value
 	case "store.dsn":
 		c.Store.DSN = value
+	case "vindex.driver":
+		c.VIndex.Driver = value
 	case "gateway.driver":
 		c.Gateway.Driver = value
 	case "gateway.base_url":
