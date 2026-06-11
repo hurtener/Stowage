@@ -15,6 +15,7 @@ test:
 coverage:
 	CGO_ENABLED=1 go test -race -coverprofile=coverage.out $(PKG)
 	@go tool cover -func=coverage.out | tail -1
+	@bash scripts/coverage-check.sh coverage.out
 
 bench:
 	go test -bench=. -benchmem -run=^$$ $(PKG)
