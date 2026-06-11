@@ -95,7 +95,7 @@ any future publication decision (RFC OQ-5); no LICENSE file until then.
 ## D-014 — Eval harness is a release gate
 
 2026-06-10. From CL-Bench's gain metric: `stowage eval` ships in-tree, and
-negative gain on the standard scenarios blocks release (RFC §12, Phase 27).
+negative gain on the standard scenarios blocks release (RFC §12, Phases 13 and 20).
 
 ## D-015 — Small MCP surface (6 tools)
 
@@ -110,7 +110,7 @@ predecessor solved it with federation graphs + RBAC (8+ tables) — too heavy.
 Stowage: a **grant** gives a named group read/contribute access to a slice of
 an owner scope, capped by privacy-zone ceiling, optional redaction, enforced in
 the store layer like scopes (P3). Cross-tenant federation stays out of scope.
-RFC §5.3; own phase in Wave 4.
+RFC §5.3; own phase (16) in Wave 5.
 
 ## D-017 — Reconciliation is reversible; rollback API
 
@@ -118,7 +118,7 @@ RFC §5.3; own phase in Wave 4.
 be invertible from its event within retention: sources kept as `superseded`,
 prior content stored on update events, `POST /v1/memories/{id}/rollback`
 restores and tombstones with its own event. The LLM gets to be wrong
-recoverably. RFC §6; lands with Phase 14.
+recoverably. RFC §6; lands with Phase 15.
 
 ## D-018 — ACE built in: outcomes, reflection, deterministic playbooks
 
@@ -143,7 +143,7 @@ canonical "Harbor powering a non-agent" showcase. RFC §10.
 
 ## D-020 — MCP surface built with Dockyard; console as a Dockyard MCP App
 
-2026-06-11. Phase 16 implements `stowage mcp` with Dockyard (contract-first
+2026-06-11. Phase 17 implements `stowage mcp` with Dockyard (contract-first
 typed tools, generated schemas, inspector, validate gates) — Stowage becomes
 Dockyard's first external consumer. Post-v1, the operator console ships as a
 Dockyard MCP App. RFC §9.2.
@@ -247,4 +247,50 @@ scope-invalidated on writes (per-scope first — OQ-9). RFC §4.2.
 2026-06-11. The SDK's job is that no agent re-implements memory plumbing: a
 Harbor assemble option wires ingest/retrieve/feedback automatically; a thin
 Python client serves the Python agent framework; MCP covers other hosts. An
-integration needing hand-written plumbing is an SDK defect. RFC §9.3; Phase 17.
+integration needing hand-written plumbing is an SDK defect. RFC §9.3; Phase 18.
+
+## D-033 — The adversarial scope cut: launch track vs post-launch tracks
+
+2026-06-11. Adversarial review verdict: the 28-phase plan had drifted from
+"best memory server for agent builders" toward an enterprise platform roadmap.
+Agent builders choose on setup time, retrieval quality (published benchmarks),
+latency, cost, and API ergonomics — not on audit hooks or review queues.
+**Launch (v1.0) = phases 01–21**: all differentiators (single binary +
+embedded mode, fidelity + drill-down, utility scoring, fire-and-forget +
+buffers, injections attribution + citations v1, reversibility, grants,
+playbooks, SLO'd performance) plus the proof. **Deferred** (signals already
+captured by D-024, so zero structural cost): episodes/causal inference
+(v1.1), verification/review/traces (v1.2), proactive engine (v1.3), pattern
+mining + console + control plane (backlog). RFC §15.
+
+## D-034 — The five-minute rule: zero-config start, profiles, runtime knobs
+
+2026-06-11. Adoption requirements (RFC §9.4): `stowage serve` works with one
+secret env var (embedded sqlite, tuned defaults); production adds only a
+postgres DSN; three profiles (assistant / coding-agent / fleet) bundle tuned
+knob values; tunables live in scope_settings and change at runtime;
+`stowage config explain` shows every effective value + provenance; every new
+knob ships with default + profile placement + docs in the same PR (the knob
+guardrail — the CC-memory predecessor's 50-knob paralysis is the cautionary
+tale). Time-to-first-memory < 5 min is a scripted launch smoke (Phase 21).
+
+## D-035 — Evaluation at launch and continuous; the public benchmark suite
+
+2026-06-11. Supersedes the eval-last sequencing (kept D-014's gate). The eval
+harness lands immediately after the read path (Phase 13) and runs in CI as a
+**benchmark gate** — any later phase that regresses a benchmark or the SLO
+does not merge. The suite is the set competitors publish on: **LongMemEval,
+LoCoMo, ConvoMem, MemBench**, plus the gain harness and SLO; per-question
+results committed; one-command reproduction; launch report includes a
+comparison table against published competitor numbers (mempalace's
+benchmark-led positioning is the model — brief 06). RFC §12.
+
+## D-036 — Gateway-free degraded retrieval
+
+2026-06-11. From brief 06's zero-API-call mode: the lexical,
+anticipated-queries, and structured lanes require no gateway, so retrieval
+degrades to those lanes (flagged) instead of failing when the provider is
+unreachable; ingest keeps appending and derivation catches up via re-enqueue.
+Critical for embedded/desktop (D-022) and for the "memory is infrastructure"
+claim. Also adopted from brief 06: temporal-proximity boosting as a Phase 10
+scoring input. RFC §4.2.

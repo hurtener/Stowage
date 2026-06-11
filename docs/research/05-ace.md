@@ -50,7 +50,7 @@ Offline: optimize the context on a training split (multi-epoch — revisit old
 queries as the playbook matures → Stowage's re-reflection sweep). Online: the
 context evolves sequentially during evaluation — each sample triggers
 generate → reflect → curate before the next. The eval harness includes
-online-adaptation scenarios (RFC §12, Phase 27).
+online-adaptation scenarios (RFC §12, Phases 13 and 20).
 
 ## What Stowage deliberately does differently
 

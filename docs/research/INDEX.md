@@ -11,6 +11,7 @@ no predecessor files are vendored (D-003).
 | [03](03-engram.md) | Weaviate Engram: pipeline shape and memory-as-infrastructure framing |
 | [04](04-cl-bench.md) | CL-Bench (arXiv 2606.05661): failure modes and the gain metric |
 | [05](05-ace.md) | ACE (arXiv 2510.04618): reflection, delta updates, playbooks, context collapse |
+| [06](06-mempalace.md) | mempalace: benchmark-led positioning, verbatim vindication, temporal-proximity boost, gateway-free retrieval |
 
 ## Subsystem → briefs
 
@@ -27,5 +28,6 @@ no predecessor files are vendored (D-003).
 | store / vindex | 01, 02 (contention lessons) |
 | scopes, privacy & grants | 03, 01 |
 | reflection & playbooks | 05, 02 |
-| eval | 04, 05 (online adaptation), 02 (LoCoMo methodology) |
+| eval | 06 (benchmark suite + positioning), 04, 05 (online adaptation), 02 (LoCoMo methodology) |
+| config & adoption | 06, 02 (knob-paralysis cautionary tale) |
 | API / MCP surface | 01, 02 (surface-sprawl cautionary tales) |

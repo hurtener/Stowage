@@ -5,6 +5,17 @@ All notable changes to Stowage are documented here. Format follows
 
 ## [Unreleased]
 
+### Changed
+
+- Adversarial scope review (D-033–D-036): plan restructured into a 21-phase
+  launch track (every differentiator + proof) and post-launch tracks v1.1–v1.3
+  (episodic, trust extensions, proactive); eval pulled forward as its own wave
+  with a CI benchmark gate (LongMemEval/LoCoMo/ConvoMem/MemBench + gain + SLO)
+  and a launch-day competitor comparison report; configuration redesigned
+  around the five-minute rule (zero-config start, profiles, runtime knobs,
+  `config explain`, knob guardrail); gateway-free degraded retrieval and
+  temporal-proximity boosting adopted from the mempalace review (brief 06).
+
 ### Added
 
 - Roadmap integration: day-one signal-capture schema (injections, links,

@@ -102,6 +102,17 @@ New terms land here in the same PR that introduces them (CLAUDE.md §14).
   utility counters (§6d).
 - **Review queue** — `pending_review` candidates (e.g. uncited agent-generated
   claims) awaiting admin approve/reject before becoming memories.
+- **Profile** — a named preset (`assistant` | `coding-agent` | `fleet`)
+  bundling tuned knob values; the unit of configuration users actually touch
+  (D-034).
+- **Benchmark gate** — the CI rule (from Phase 13) that a regression on the
+  public benchmark suite or the latency SLO blocks merge (D-035).
+- **Degraded mode** — gateway-free retrieval over the lexical, anticipated-
+  queries, and structured lanes when the provider is unreachable (D-036).
+- **Temporal-proximity boost** — scoring input favoring candidates whose
+  `occurred_at` is near the query's explicit or implied time window (brief 06).
+- **Launch track** — phases 01–21 (v1.0): every differentiator plus the proof;
+  post-launch tracks v1.1–v1.3 consume signals already captured (D-033).
 - **The Python predecessor** — the internal Python memory server Stowage
   redesigns (its project name is not used in this repository; see D-001/D-003).
 - **The CC-memory predecessor** — the internal Go memory system for coding

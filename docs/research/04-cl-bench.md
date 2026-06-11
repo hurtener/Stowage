@@ -41,7 +41,7 @@ those using compressed representations.
 - **Outcome feedback.** Track whether injected memories actually helped. →
   `/v1/feedback` and the use/fail counters (RFC §4.2.8).
 
-## The gain metric (→ Phase 27)
+## The gain metric (→ Phases 13 and 20)
 
 `Gain = Performance(with memory) − Performance(without memory)`, controlled for
 base-model capability, measured on both novel and repeated tasks. Positive gain

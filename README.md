@@ -31,7 +31,8 @@ Pre-implementation. The design RFC and the master phase plan are complete; code
 lands phase by phase.
 
 - **Design:** [`RFC-001-Stowage.md`](RFC-001-Stowage.md)
-- **Plan:** [`docs/plans/README.md`](docs/plans/README.md) (28 phases, 9 waves)
+- **Plan:** [`docs/plans/README.md`](docs/plans/README.md) — launch track
+  (21 phases, eval as its own early wave) + post-launch tracks v1.1–v1.3
 - **Working norms:** [`CLAUDE.md`](CLAUDE.md) / `AGENTS.md` (binding,
   mirrored)
 - **Research briefs:** [`docs/research/INDEX.md`](docs/research/INDEX.md)

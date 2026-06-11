@@ -261,6 +261,16 @@ These enforce P1–P5 (§1). They are binding on every phase.
   signals — `occurred_at`, `branch_id`, outcomes, injections, reconciler links
   — from the first build. Removing or skipping one of these writes "because
   nothing reads it yet" is drift; a named later phase reads it.
+- **The benchmark gate (D-035).** From Phase 13 on, the eval suite runs in CI;
+  a change that regresses a public benchmark or the latency SLO does not
+  merge. Eval is continuous, never a final phase.
+- **The knob guardrail (D-034).** A new config knob ships in the same PR with
+  a tuned default, a placement in every profile, and docs — or it doesn't
+  ship. Zero-config start (`stowage serve` + one secret env var) is a smoke-
+  tested invariant.
+- **Graceful degradation (D-036).** Retrieval must serve gateway-free
+  (lexical + anticipated + structured lanes, flagged degraded) when the
+  provider is unreachable; ingest never stops appending.
 - **Schema is budgeted.** A table or column outside the RFC §8.1 inventory
   requires an RFC amendment first (D-024 guardrail against sprawl).
 - **No-CGo, single binary.** Every artifact compiles CGo-free and cross-compiles.

@@ -28,7 +28,7 @@ throughout as *the Python predecessor*), informed by four additional sources:
 4. **ACE** (arXiv 2510.04618) — agentic context engineering; its
    reflection-and-playbook loop is built in as a server capability (§6a).
 
-Detailed findings live in `docs/research/` (briefs 01–05). No code or files from
+Detailed findings live in `docs/research/` (briefs 01–06). No code or files from
 the predecessors are vendored here; this repository is a clean-room redesign.
 
 ### Why a rewrite, and why Go
@@ -118,7 +118,7 @@ A change that weakens any of these is wrong — amend this RFC first.
 ## 3. Informing findings (condensed)
 
 Full briefs: `docs/research/01-predecessor-python.md`, `02-predecessor-ccmem.md`,
-`03-engram.md`, `04-cl-bench.md`, `05-ace.md`.
+`03-engram.md`, `04-cl-bench.md`, `05-ace.md`, `06-mempalace.md`.
 
 **From the Python predecessor — keep the ideas, not the weight.** Hybrid BM25 +
 vector retrieval with fusion; privacy zones; confidence as a composed,
@@ -247,8 +247,10 @@ positive gain is not done.
    over the generated-phrases index), **structured** (entity/keyword/kind/
    time-window filters). Reciprocal-rank fusion merges lanes.
 4. **Scoring** re-ranks fused candidates: utility boost (from the six counters),
-   decay, trust/source weight, scope affinity, recency path, hub dampening,
-   cooldown suppression. Optional API rerank (gateway) for the top slice.
+   decay, trust/source weight, scope affinity, recency path,
+   temporal-proximity boost (candidates near the query's explicit or implied
+   time window — brief 06), hub dampening, cooldown suppression. Optional API
+   rerank (gateway) for the top slice.
 5. **Budgeting** packs results to the caller's token budget. The response
    carries a **support summary** (top scores, agreement/conflict among
    retrieved memories) so callers can express calibrated uncertainty — "I'm
@@ -258,8 +260,15 @@ positive gain is not done.
 
 **Latency SLO (binding for the read path):** retrieval p99 ≤ 150 ms (cache
 hit ≤ 20 ms) at 1,000 concurrent sessions on the postgres driver on reference
-hardware — measured continuously by the Phase 27 benchmarks. Agents only call
-memory on the hot path if it is actually fast.
+hardware — measured continuously from the moment the read path exists (§12).
+Agents only call memory on the hot path if it is actually fast.
+
+**Graceful degradation (binding):** the lexical, anticipated-queries, and
+structured lanes require no gateway. When the gateway is unreachable (desktop
+offline, provider outage) retrieval serves from those lanes with a degraded
+flag instead of failing, and ingest keeps appending (derivation catches up via
+the re-enqueue sweep). A memory server that goes dark with its LLM provider is
+not infrastructure (brief 06, D-036).
 7. **Drill-down**: every returned memory carries provenance refs; callers (or the
    server, when a memory is marked low-fidelity) can expand to the verbatim
    record range in one call. This is the CL-Bench recovery path: abstraction for
@@ -752,6 +761,33 @@ plumbing is a defect in the SDK, not a task for the agent author.
 
 ---
 
+### 9.4 Configuration & adoption (the five-minute rule)
+
+Adoption dies in config files. The CC-memory predecessor's 50+ knobs produced
+documented "config paralysis" (brief 02); competitors win users in the first
+five minutes. Binding rules:
+
+- **Zero-config start.** `stowage serve` with exactly one secret
+  (`STOWAGE_GATEWAY_API_KEY`) runs a working server: embedded sqlite,
+  default topics, tuned defaults for every knob. `stowage serve --postgres
+  <dsn>` is the only addition for production. Time-to-first-memory < 5 minutes
+  is a smoke-tested acceptance criterion.
+- **Profiles, not knob lists.** A scope declares a profile —
+  `assistant` | `coding-agent` | `fleet` — that bundles tuned values (decay
+  constants, buffer triggers, retrieval profile, proactivity defaults).
+  Tweaking starts from a working preset, never from raw constants.
+- **Runtime-tweakable, per scope.** Tunable knobs live in `scope_settings`
+  (PUT `/v1/scopes/{scope}/settings`), effective without restart. Config files
+  hold only boot concerns (store DSN, gateway, listen address).
+- **Explainable.** `stowage config explain` prints the effective configuration
+  and where each value came from (default | profile | scope override | env) —
+  no guessing what the server is actually doing.
+- **The knob guardrail.** Every new knob ships in the same PR with: a tuned
+  default, a placement in every profile, docs, and a justification for why a
+  profile can't absorb it. Knobs are a cost, not a feature.
+
+---
+
 ## 10. Harbor integration — speak the protocol, don't build on the runtime
 
 Stowage is the showcase of Harbor's protocol powering something agentic that is
@@ -814,25 +850,37 @@ What Stowage *does* adopt is Harbor's protocol surface:
 
 ## 12. Evaluation (a deliverable, not an afterthought)
 
-`stowage eval` ships in-tree, and it is also the marketing artifact: the
-open-source release is gated on demonstrating **state-of-the-art results on
-public memory benchmarks**, published as a reproducible report.
+Evaluation is not a final phase — it is **at launch and continuous from the
+moment the read path exists** (D-035). The eval harness lands immediately
+after Wave 3 and runs in CI from then on; every subsequent phase keeps the
+numbers green or improving. Launch day ships the numbers, because in a crowded
+market (Mem0, Zep, Letta, Engram, mempalace, …) a memory server without
+published benchmarks loses by default — mempalace's benchmark-led positioning
+(brief 06) is the model.
 
+`stowage eval` ships in-tree:
+
+- **The public benchmark suite** — the same set competitors publish on, so
+  comparison is direct: **LongMemEval**, **LoCoMo**, **ConvoMem**,
+  **MemBench**. Per-question result files are committed; every number has a
+  one-command reproduction; the report includes a comparison table against
+  competitors' published figures. Targets: SOTA or top-tier on each (D-023;
+  reference points: mempalace publishes 98.4 % R@5 LongMemEval hybrid,
+  88.9 % R@10 LoCoMo).
 - **Gain harness** (CL-Bench-inspired): scripted multi-session scenarios run
   twice — memory on vs. off — with a Harbor fleet as the agent loop (§10);
   reports the performance delta. Negative gain on the standard scenarios fails
   release.
-- **LoCoMo-style retrieval benchmark** (the CC-memory predecessor demonstrated
-  0.86+ vs 0.65 single-hop RAG; we adopt the methodology and target ≥ that
-  bar): recall@k and answer accuracy over long conversations.
-- **Online-adaptation scenarios** (ACE-inspired, AppWorld-style): contexts
-  evolve during evaluation via the reflection → playbook loop; measures
-  compounding improvement across sequential tasks.
+- **Online-adaptation scenarios** (ACE-inspired): contexts evolve during
+  evaluation via the reflection → playbook loop; measures compounding
+  improvement across sequential tasks.
 - **Go benchmarks + the latency SLO** (§4.2): ingest ACK latency, pipeline
   throughput, retrieval p99 at 10k/100k/1M memories per scope, and the binding
-  target — retrieval p99 ≤ 150 ms (cache hit ≤ 20 ms) at 1,000 concurrent
-  sessions on the postgres driver. The SLO benchmark is a release gate like
-  the gain metric.
+  1k-concurrent-sessions target. The SLO benchmark is a release gate like the
+  benchmark suite.
+
+The open-source release is gated on the full report (`eval/REPORT.md`),
+published the same day as the code.
 
 ---
 
@@ -872,20 +920,29 @@ public memory benchmarks**, published as a reproducible report.
 
 ## 15. Phasing
 
-See `docs/plans/README.md`. Waves: **W1 foundation** (scaffold/CI; config +
-identity + telemetry + runtime API keys; the full day-one schema behind the
-store seam; gateway + bifrost), **W2 write path** (records with
-outcomes/branches, buffers, topic extraction incl. preference fragments,
-reconciliation + links), **W3 read path** (lanes + fusion + temporal filters,
-scoring + support summary, drill-down + feedback + injections, rerank +
-hot–warm cache + the latency SLO), **W4 lifecycle & sharing** (sweeps,
-supersede + rollback, grants), **W5 surfaces** (MCP on Dockyard, SDKs +
-zero-config Harbor wiring + embedded mode), **W6 episodic & temporal**
-(episodes + narratives, episodic retrieval + aggregation, causal links),
-**W7 trust** (citations + feedback, verification + review queue, reasoning
-traces + audit export), **W8 self-improvement & proactive** (reflection +
-playbooks, trigger engine + governance, pattern mining stretch), **W9 proof &
-release** (eval harness, hardening + open-source readiness).
+See `docs/plans/README.md`. The plan is split into a **launch track** and
+**post-launch tracks** (D-033 — the adversarial scope cut): launch contains
+every differentiator and the proof; the post-launch tracks contain capabilities
+whose unbackfillable signals are already captured by the day-one schema
+(§5.0), so deferring the features costs nothing structurally.
+
+**Launch track (v1.0):** W1 foundation (scaffold/CI; config + identity +
+runtime keys + profiles; the full day-one schema; gateway + bifrost), W2 write
+path (records/outcomes/branches, buffers, topic extraction incl. preference
+fragments, reconciliation + links), W3 read path (lanes + fusion + temporal
+filters, scoring + support summary, injections + feedback + citation handles +
+resolve, rerank + hot–warm cache + SLO + offline degradation), **W4 proof
+(the eval harness — benchmark gate in CI from here on)**, W5 lifecycle &
+sharing (sweeps, supersede + rollback, grants), W6 surfaces & launch (MCP on
+Dockyard, SDKs + zero-config wiring + embedded mode, reflection + playbooks,
+eval finalization + competitor report, hardening + release).
+
+**Post-launch tracks:** v1.1 episodic & temporal (episodes + narratives,
+episodic retrieval + aggregation, causal-link inference); v1.2 trust
+extensions (claim verification, review queue, reasoning-trace export + audit
+hooks); v1.3 proactive (trigger engine + governance + tuning); backlog
+(temporal pattern mining, Stowage Console MCP App, managed-cloud control
+plane).
 
 ---
 
@@ -899,7 +956,7 @@ release** (eval harness, hardening + open-source readiness).
 - **OQ-3:** Buffer flush defaults (count/tokens/age) — tune in Phase 6 against
   the eval harness.
 - **OQ-4:** Does `pending_confirmation` need a TTL that auto-resolves in favor of
-  the newer memory? (Lean yes; decide in Phase 14.)
+  the newer memory? (Lean yes; decide in Phase 15.)
 - **OQ-5:** Open-source license and timing — release is gated on the SOTA
   benchmark report (§12); pick the license (Apache-2.0 vs BSL-style
   cloud-protective) when the gate is in sight. Private until then.
