@@ -16,6 +16,14 @@ import (
 
 type memoryStore struct{ s *sqliteStore }
 
+// sqliteIsUnique reports whether err is a SQLite UNIQUE constraint violation.
+// modernc.org/sqlite surfaces these as errors containing the string
+// "UNIQUE constraint failed"; we detect them by message inspection since the
+// pure-Go driver does not export a typed error sentinel.
+func sqliteIsUnique(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "UNIQUE constraint failed")
+}
+
 // memorySelectCols is the column list for all SELECT queries on the memories table.
 // content_hash uses COALESCE to return "" for pre-Phase-08 NULL rows.
 const memorySelectCols = `id, tenant_id, COALESCE(project_id,''), COALESCE(user_id,''), COALESCE(session_id,''),
@@ -254,6 +262,102 @@ func (m *memoryStore) AddProvenance(ctx context.Context, scope identity.Scope, r
 	})
 }
 
+// GetJunctions returns the junction rows (entities, keywords, queries, provenance)
+// for a memory within scope. Returns empty slices (not ErrNotFound) when no rows exist.
+func (m *memoryStore) GetJunctions(ctx context.Context, scope identity.Scope, id string) (store.MemoryJunctions, error) {
+	if scope.Tenant == "" {
+		return store.MemoryJunctions{}, store.ErrScopeRequired
+	}
+	var j store.MemoryJunctions
+
+	// Entities.
+	rows, err := m.s.rdb.QueryContext(ctx,
+		`SELECT entity FROM memory_entities WHERE memory_id = ? AND tenant_id = ? ORDER BY rowid`,
+		id, scope.Tenant)
+	if err != nil {
+		return j, fmt.Errorf("sqlitestore: get entities: %w", err)
+	}
+	for rows.Next() {
+		var e string
+		if scanErr := rows.Scan(&e); scanErr != nil {
+			_ = rows.Close()
+			return j, scanErr
+		}
+		j.Entities = append(j.Entities, e)
+	}
+	if err = rows.Close(); err != nil {
+		return j, err
+	}
+	if err = rows.Err(); err != nil {
+		return j, err
+	}
+
+	// Keywords.
+	kwRows, err := m.s.rdb.QueryContext(ctx,
+		`SELECT keyword FROM memory_keywords WHERE memory_id = ? AND tenant_id = ? ORDER BY rowid`,
+		id, scope.Tenant)
+	if err != nil {
+		return j, fmt.Errorf("sqlitestore: get keywords: %w", err)
+	}
+	for kwRows.Next() {
+		var k string
+		if scanErr := kwRows.Scan(&k); scanErr != nil {
+			_ = kwRows.Close()
+			return j, scanErr
+		}
+		j.Keywords = append(j.Keywords, k)
+	}
+	if err = kwRows.Close(); err != nil {
+		return j, err
+	}
+	if err = kwRows.Err(); err != nil {
+		return j, err
+	}
+
+	// Anticipated queries.
+	qRows, err := m.s.rdb.QueryContext(ctx,
+		`SELECT query FROM memory_queries WHERE memory_id = ? AND tenant_id = ? ORDER BY rowid`,
+		id, scope.Tenant)
+	if err != nil {
+		return j, fmt.Errorf("sqlitestore: get queries: %w", err)
+	}
+	for qRows.Next() {
+		var q string
+		if scanErr := qRows.Scan(&q); scanErr != nil {
+			_ = qRows.Close()
+			return j, scanErr
+		}
+		j.Queries = append(j.Queries, q)
+	}
+	if err = qRows.Close(); err != nil {
+		return j, err
+	}
+	if err = qRows.Err(); err != nil {
+		return j, err
+	}
+
+	// Provenance.
+	pRows, err := m.s.rdb.QueryContext(ctx,
+		`SELECT id, memory_id, record_id, span_start, span_end, tenant_id, created_at
+		 FROM provenance WHERE memory_id = ? AND tenant_id = ? ORDER BY created_at`,
+		id, scope.Tenant)
+	if err != nil {
+		return j, fmt.Errorf("sqlitestore: get provenance: %w", err)
+	}
+	for pRows.Next() {
+		var p store.Provenance
+		if scanErr := pRows.Scan(&p.ID, &p.MemoryID, &p.RecordID, &p.SpanStart, &p.SpanEnd, &p.TenantID, &p.CreatedAt); scanErr != nil {
+			_ = pRows.Close()
+			return j, scanErr
+		}
+		j.Provenance = append(j.Provenance, p)
+	}
+	if err = pRows.Close(); err != nil {
+		return j, err
+	}
+	return j, pRows.Err()
+}
+
 // GetByContentHash returns the active memory matching hash within scope.
 // Returns ErrNotFound when absent (D-044).
 func (m *memoryStore) GetByContentHash(ctx context.Context, scope identity.Scope, hash string) (*store.Memory, error) {
@@ -385,6 +489,9 @@ func execCommitSQLite(tx *sql.Tx, scope identity.Scope, cs store.CommitSet) erro
 	switch cs.Action {
 	case store.ActionAdd, store.ActionPark:
 		if err := insertMemorySQLite(tx, scope, cs.Memory, now); err != nil {
+			if sqliteIsUnique(err) {
+				return store.ErrDuplicateContent
+			}
 			return fmt.Errorf("sqlitestore: commit %s insert memory: %w", cs.Action, err)
 		}
 		if cs.FaultHook != nil {
@@ -403,7 +510,10 @@ func execCommitSQLite(tx *sql.Tx, scope identity.Scope, cs store.CommitSet) erro
 		}
 
 	case store.ActionUpdate:
-		if err := updateMemorySQLite(tx, scope, cs.Memory, now); err != nil {
+		// C1: targeted update — only content, context, content_hash, updated_at change.
+		// Counters, trust_source, stability, importance, confidence, validity window,
+		// episode_id, and privacy_zone are preserved from the existing row.
+		if err := updateMemoryContentSQLite(tx, scope, cs.Memory, now); err != nil {
 			return fmt.Errorf("sqlitestore: commit update: %w", err)
 		}
 		if cs.FaultHook != nil {
@@ -522,26 +632,20 @@ func insertMemorySQLite(tx *sql.Tx, scope identity.Scope, mem store.Memory, now 
 	return err
 }
 
-// updateMemorySQLite updates an existing memory row within an existing tx.
-func updateMemorySQLite(tx *sql.Tx, scope identity.Scope, mem store.Memory, now int64) error {
+// updateMemoryContentSQLite performs a targeted UPDATE that touches ONLY the
+// four mutable content fields (content, context, content_hash, updated_at).
+// All counters, trust_source, stability, importance, confidence, validity window,
+// episode_id, and privacy_zone are left unchanged — implementing the C1 fix.
+func updateMemoryContentSQLite(tx *sql.Tx, scope identity.Scope, mem store.Memory, now int64) error {
 	if mem.UpdatedAt == 0 {
 		mem.UpdatedAt = now
 	}
-	_, err := tx.Exec(`UPDATE memories SET
-		kind=?, content=?, context=?, status=?,
-		importance=?, confidence=?, trust_source=?,
-		match_count=?, inject_count=?, use_count=?, save_count=?, fail_count=?, noise_count=?,
-		stability=?, last_accessed_at=?, valid_from=?, valid_until=?,
-		episode_id=?, supersedes_id=?, superseded_by_id=?, privacy_zone=?,
-		updated_at=?, content_hash=?
-		WHERE tenant_id=? AND id=?`,
-		mem.Kind, mem.Content, mem.Context, mem.Status,
-		mem.Importance, mem.Confidence, mem.TrustSource,
-		mem.MatchCount, mem.InjectCount, mem.UseCount, mem.SaveCount, mem.FailCount, mem.NoiseCount,
-		mem.Stability, mem.LastAccessedAt, mem.ValidFrom, mem.ValidUntil,
-		mem.EpisodeID, mem.SupersedesID, mem.SupersededByID, mem.PrivacyZone,
-		mem.UpdatedAt, nullStr(mem.ContentHash),
-		scope.Tenant, mem.ID,
+	_, err := tx.Exec(`
+		UPDATE memories SET
+			content = ?, context = ?, content_hash = ?, updated_at = ?
+		WHERE tenant_id = ? AND id = ?`,
+		mem.Content, mem.Context, nullStr(mem.ContentHash),
+		mem.UpdatedAt, scope.Tenant, mem.ID,
 	)
 	return err
 }

@@ -108,6 +108,17 @@ func Run(t *testing.T, factory Factory) {
 	t.Run("MemoryCommitAddZeroTimes", func(t *testing.T) { testMemoryCommitAddZeroTimes(t, factory) })
 	t.Run("MemoryCommitUpdateZeroTimes", func(t *testing.T) { testMemoryCommitUpdateZeroTimes(t, factory) })
 	t.Run("MemoryCommitAddWithProvenance", func(t *testing.T) { testMemoryCommitAddWithProvenance(t, factory) })
+	// m7 — TOCTOU: unique content-hash constraint + ErrDuplicateContent
+	t.Run("MemoryCommitAddDuplicateContent", func(t *testing.T) { testMemoryCommitAddDuplicateContent(t, factory) })
+	t.Run("MemoryCommitAddConcurrentDedup", func(t *testing.T) { testMemoryCommitAddConcurrentDedup(t, factory) })
+	// m9 — conformance gaps
+	t.Run("MemoryGetJunctions", func(t *testing.T) { testMemoryGetJunctions(t, factory) })
+	t.Run("MemoryGetJunctionsEmpty", func(t *testing.T) { testMemoryGetJunctionsEmpty(t, factory) })
+	t.Run("MemoryGetByContentHashCrossUser", func(t *testing.T) { testMemoryGetByContentHashCrossUser(t, factory) })
+	t.Run("MemoryFindNeighborsCrossUser", func(t *testing.T) { testMemoryFindNeighborsCrossUser(t, factory) })
+	// execCommit coverage — merge FaultHook + unknown action guard
+	t.Run("MemoryCommitFaultHookMerge", func(t *testing.T) { testMemoryCommitFaultHookMerge(t, factory) })
+	t.Run("MemoryCommitUnknownAction", func(t *testing.T) { testMemoryCommitUnknownAction(t, factory) })
 }
 
 // --- helpers ----------------------------------------------------------------
@@ -1142,6 +1153,16 @@ func testEmptyScopeRejected(t *testing.T, factory Factory) {
 	assertScopeRequired(t, "Memories.ListLinks", err)
 	assertScopeRequired(t, "Memories.AddProvenance",
 		s.Memories().AddProvenance(ctx, zero, []store.Provenance{{ID: newID(), MemoryID: "m", RecordID: "r", CreatedAt: nowMs()}}))
+
+	// Phase 08 MemoryStore methods (m9: add to empty-scope sweep).
+	_, err = s.Memories().GetByContentHash(ctx, zero, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+	assertScopeRequired(t, "Memories.GetByContentHash", err)
+	_, err = s.Memories().FindNeighbors(ctx, zero, store.NeighborQuery{Entities: []string{"e"}})
+	assertScopeRequired(t, "Memories.FindNeighbors", err)
+	assertScopeRequired(t, "Memories.IncrementCounter",
+		s.Memories().IncrementCounter(ctx, zero, "any-id", "match"))
+	_, err = s.Memories().GetJunctions(ctx, zero, "any-id")
+	assertScopeRequired(t, "Memories.GetJunctions", err)
 
 	// TopicStore
 	assertScopeRequired(t, "Topics.Upsert",
@@ -2604,5 +2625,384 @@ func testMemoryCommitAddWithProvenance(t *testing.T, factory Factory) {
 	}
 	if got.Content != "provenance fact" {
 		t.Errorf("Content: got %q want provenance fact", got.Content)
+	}
+}
+
+// testMemoryCommitAddDuplicateContent verifies that committing two memories with
+// the same scope+content_hash returns ErrDuplicateContent on the second commit
+// (m7: TOCTOU unique index guard).
+func testMemoryCommitAddDuplicateContent(t *testing.T, factory Factory) {
+	t.Helper()
+	s, cleanup := factory()
+	defer cleanup()
+	ctx := context.Background()
+	scope := tenantScope("t-" + newID())
+
+	hash := "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+
+	cs1 := store.CommitSet{
+		Action: store.ActionAdd,
+		Memory: store.Memory{
+			ID: newID(), Kind: "fact", Content: "first copy",
+			Status: "active", Confidence: 0.8, TrustSource: "llm_extracted",
+			Stability: 1.0, ContentHash: hash,
+			CreatedAt: nowMs(), UpdatedAt: nowMs(),
+		},
+	}
+	if err := s.Memories().Commit(ctx, scope, cs1); err != nil {
+		t.Fatalf("first Commit: %v", err)
+	}
+
+	cs2 := store.CommitSet{
+		Action: store.ActionAdd,
+		Memory: store.Memory{
+			ID: newID(), Kind: "fact", Content: "second copy same hash",
+			Status: "active", Confidence: 0.8, TrustSource: "llm_extracted",
+			Stability: 1.0, ContentHash: hash,
+			CreatedAt: nowMs(), UpdatedAt: nowMs(),
+		},
+	}
+	err := s.Memories().Commit(ctx, scope, cs2)
+	if !errors.Is(err, store.ErrDuplicateContent) {
+		t.Errorf("second Commit with same hash: got %v want ErrDuplicateContent", err)
+	}
+}
+
+// testMemoryCommitAddConcurrentDedup verifies the TOCTOU guard under concurrent
+// load: N goroutines race to commit a memory with the same scope+content_hash;
+// exactly one must succeed and the rest must get ErrDuplicateContent.
+// After all goroutines finish exactly one row with that hash must exist.
+func testMemoryCommitAddConcurrentDedup(t *testing.T, factory Factory) {
+	t.Helper()
+	s, cleanup := factory()
+	defer cleanup()
+	ctx := context.Background()
+	scope := tenantScope("t-" + newID())
+
+	const n = 8
+	hash := "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+
+	var (
+		wg         sync.WaitGroup
+		successCnt int64
+		dedupCnt   int64
+		otherErrs  int64
+	)
+	start := make(chan struct{})
+	wg.Add(n)
+	for i := 0; i < n; i++ {
+		go func() {
+			defer wg.Done()
+			<-start
+			cs := store.CommitSet{
+				Action: store.ActionAdd,
+				Memory: store.Memory{
+					ID: newID(), Kind: "fact", Content: "concurrent copy",
+					Status: "active", Confidence: 0.8, TrustSource: "llm_extracted",
+					Stability: 1.0, ContentHash: hash,
+					CreatedAt: nowMs(), UpdatedAt: nowMs(),
+				},
+			}
+			err := s.Memories().Commit(ctx, scope, cs)
+			switch {
+			case err == nil:
+				atomic.AddInt64(&successCnt, 1)
+			case errors.Is(err, store.ErrDuplicateContent):
+				atomic.AddInt64(&dedupCnt, 1)
+			default:
+				atomic.AddInt64(&otherErrs, 1)
+			}
+		}()
+	}
+	close(start)
+	wg.Wait()
+
+	if successCnt != 1 {
+		t.Errorf("concurrent dedup: %d goroutines succeeded, want exactly 1", successCnt)
+	}
+	if dedupCnt != n-1 {
+		t.Errorf("concurrent dedup: %d ErrDuplicateContent, want %d", dedupCnt, n-1)
+	}
+	if otherErrs != 0 {
+		t.Errorf("concurrent dedup: %d unexpected errors", otherErrs)
+	}
+
+	// Exactly one row with that hash must exist.
+	if _, err := s.Memories().GetByContentHash(ctx, scope, hash); err != nil {
+		t.Errorf("GetByContentHash after concurrent dedup: %v", err)
+	}
+}
+
+// testMemoryGetJunctions verifies that GetJunctions returns the entities,
+// keywords, queries, and provenance rows written by Commit.
+func testMemoryGetJunctions(t *testing.T, factory Factory) {
+	t.Helper()
+	s, cleanup := factory()
+	defer cleanup()
+	ctx := context.Background()
+	scope := tenantScope("t-" + newID())
+
+	// Insert a record to satisfy the provenance FK.
+	recID := newID()
+	rec := store.Record{
+		ID:         recID,
+		Role:       "user",
+		Content:    "source record for junctions",
+		OccurredAt: nowMs(),
+		CreatedAt:  nowMs(),
+	}
+	if err := s.Records().Append(ctx, scope, []store.Record{rec}); err != nil {
+		t.Fatalf("Append record: %v", err)
+	}
+
+	memID := newID()
+	provID := newID()
+	cs := store.CommitSet{
+		Action: store.ActionAdd,
+		Memory: store.Memory{
+			ID: memID, Kind: "fact", Content: "junction fact",
+			Status: "active", Confidence: 0.8, TrustSource: "llm_extracted",
+			Stability: 1.0, CreatedAt: nowMs(), UpdatedAt: nowMs(),
+		},
+		Entities: []string{"entity-X", "entity-Y"},
+		Keywords: []string{"kw-alpha"},
+		Queries:  []string{"what is entity-X?"},
+		Provenance: []store.Provenance{
+			{ID: provID, MemoryID: memID, RecordID: recID},
+		},
+	}
+	if err := s.Memories().Commit(ctx, scope, cs); err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+
+	j, err := s.Memories().GetJunctions(ctx, scope, memID)
+	if err != nil {
+		t.Fatalf("GetJunctions: %v", err)
+	}
+
+	if len(j.Entities) != 2 {
+		t.Errorf("Entities: got %d want 2", len(j.Entities))
+	}
+	if len(j.Keywords) != 1 || j.Keywords[0] != "kw-alpha" {
+		t.Errorf("Keywords: got %v want [kw-alpha]", j.Keywords)
+	}
+	if len(j.Queries) != 1 || j.Queries[0] != "what is entity-X?" {
+		t.Errorf("Queries: got %v want [what is entity-X?]", j.Queries)
+	}
+	if len(j.Provenance) != 1 || j.Provenance[0].RecordID != recID {
+		t.Errorf("Provenance: got %v want 1 row with RecordID=%q", j.Provenance, recID)
+	}
+}
+
+// testMemoryGetJunctionsEmpty verifies that GetJunctions returns empty (not
+// ErrNotFound) when the memory has no junction rows.
+func testMemoryGetJunctionsEmpty(t *testing.T, factory Factory) {
+	t.Helper()
+	s, cleanup := factory()
+	defer cleanup()
+	ctx := context.Background()
+	scope := tenantScope("t-" + newID())
+
+	memID := newID()
+	cs := store.CommitSet{
+		Action: store.ActionAdd,
+		Memory: store.Memory{
+			ID: memID, Kind: "fact", Content: "no junctions",
+			Status: "active", Confidence: 0.8, TrustSource: "llm_extracted",
+			Stability: 1.0, CreatedAt: nowMs(), UpdatedAt: nowMs(),
+		},
+		// No Entities, Keywords, Queries, or Provenance.
+	}
+	if err := s.Memories().Commit(ctx, scope, cs); err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+
+	j, err := s.Memories().GetJunctions(ctx, scope, memID)
+	if err != nil {
+		t.Fatalf("GetJunctions: %v", err)
+	}
+	if len(j.Entities) != 0 {
+		t.Errorf("Entities: got %d want 0", len(j.Entities))
+	}
+	if len(j.Keywords) != 0 {
+		t.Errorf("Keywords: got %d want 0", len(j.Keywords))
+	}
+	if len(j.Queries) != 0 {
+		t.Errorf("Queries: got %d want 0", len(j.Queries))
+	}
+	if len(j.Provenance) != 0 {
+		t.Errorf("Provenance: got %d want 0", len(j.Provenance))
+	}
+}
+
+// testMemoryGetByContentHashCrossUser verifies that GetByContentHash is isolated
+// per user: user A cannot see user B's memory even within the same tenant.
+func testMemoryGetByContentHashCrossUser(t *testing.T, factory Factory) {
+	t.Helper()
+	s, cleanup := factory()
+	defer cleanup()
+	ctx := context.Background()
+	tenant := "tenant-xu-" + newID()
+	scopeA := mustScope(tenant, "", "user-A", "")
+	scopeB := mustScope(tenant, "", "user-B", "")
+
+	hash := "1111111111111111111111111111111111111111111111111111111111111111"
+	cs := store.CommitSet{
+		Action: store.ActionAdd,
+		Memory: store.Memory{
+			ID: newID(), Kind: "fact", Content: "user A content",
+			Status: "active", Confidence: 0.8, TrustSource: "llm_extracted",
+			Stability: 1.0, ContentHash: hash,
+			CreatedAt: nowMs(), UpdatedAt: nowMs(),
+		},
+	}
+	if err := s.Memories().Commit(ctx, scopeA, cs); err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+
+	// User A finds their memory.
+	if _, err := s.Memories().GetByContentHash(ctx, scopeA, hash); err != nil {
+		t.Errorf("user A GetByContentHash: %v", err)
+	}
+
+	// User B must not find user A's memory.
+	_, err := s.Memories().GetByContentHash(ctx, scopeB, hash)
+	if !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("cross-user GetByContentHash: got %v want ErrNotFound", err)
+	}
+}
+
+// testMemoryFindNeighborsCrossUser verifies that FindNeighbors is isolated per
+// user: user A's entities do not surface in user B's neighbor query within the
+// same tenant.
+func testMemoryFindNeighborsCrossUser(t *testing.T, factory Factory) {
+	t.Helper()
+	s, cleanup := factory()
+	defer cleanup()
+	ctx := context.Background()
+	tenant := "tenant-nc-" + newID()
+	scopeA := mustScope(tenant, "", "user-A", "")
+	scopeB := mustScope(tenant, "", "user-B", "")
+
+	cs := store.CommitSet{
+		Action: store.ActionAdd,
+		Memory: store.Memory{
+			ID: newID(), Kind: "fact", Content: "user A entity memory",
+			Status: "active", Confidence: 0.8, TrustSource: "llm_extracted",
+			Stability: 1.0, CreatedAt: nowMs(), UpdatedAt: nowMs(),
+		},
+		Entities: []string{"cross-user-entity"},
+	}
+	if err := s.Memories().Commit(ctx, scopeA, cs); err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+
+	// User A finds their memory.
+	neighborsA, err := s.Memories().FindNeighbors(ctx, scopeA, store.NeighborQuery{
+		Entities: []string{"cross-user-entity"},
+	})
+	if err != nil {
+		t.Fatalf("user A FindNeighbors: %v", err)
+	}
+	if len(neighborsA) != 1 {
+		t.Errorf("user A FindNeighbors: got %d results want 1", len(neighborsA))
+	}
+
+	// User B must see no results.
+	neighborsB, err := s.Memories().FindNeighbors(ctx, scopeB, store.NeighborQuery{
+		Entities: []string{"cross-user-entity"},
+	})
+	if err != nil {
+		t.Fatalf("user B FindNeighbors: %v", err)
+	}
+	if len(neighborsB) != 0 {
+		t.Errorf("cross-user FindNeighbors: got %d results want 0", len(neighborsB))
+	}
+}
+
+// testMemoryCommitFaultHookMerge tests that a FaultHook on ActionMerge rolls
+// back the transaction, leaving source memories unchanged.
+func testMemoryCommitFaultHookMerge(t *testing.T, factory Factory) {
+	t.Helper()
+	s, cleanup := factory()
+	defer cleanup()
+	ctx := context.Background()
+	scope := tenantScope("t-" + newID())
+
+	// Insert two memories to be merged.
+	srcA := store.Memory{
+		ID: newID(), Kind: "fact", Content: "merge src A",
+		Status: "active", Confidence: 0.6, TrustSource: "llm_extracted",
+		Stability: 1.0, CreatedAt: nowMs(), UpdatedAt: nowMs(),
+	}
+	srcB := store.Memory{
+		ID: newID(), Kind: "fact", Content: "merge src B",
+		Status: "active", Confidence: 0.6, TrustSource: "llm_extracted",
+		Stability: 1.0, CreatedAt: nowMs(), UpdatedAt: nowMs(),
+	}
+	if err := s.Memories().Insert(ctx, scope, srcA); err != nil {
+		t.Fatalf("Insert srcA: %v", err)
+	}
+	if err := s.Memories().Insert(ctx, scope, srcB); err != nil {
+		t.Fatalf("Insert srcB: %v", err)
+	}
+
+	mergedID := newID()
+	cs := store.CommitSet{
+		Action: store.ActionMerge,
+		Memory: store.Memory{
+			ID: mergedID, Kind: "fact", Content: "merged (should not persist)",
+			Status: "active", Confidence: 0.9, TrustSource: "llm_extracted",
+			Stability: 1.0, CreatedAt: nowMs(), UpdatedAt: nowMs(),
+		},
+		Targets:   []store.Memory{srcA, srcB},
+		FaultHook: func() error { return errors.New("injected merge fault") },
+	}
+	if err := s.Memories().Commit(ctx, scope, cs); err == nil {
+		t.Fatal("expected error from FaultHook on merge, got nil")
+	}
+
+	// Source memories must still be active (transaction rolled back).
+	for _, src := range []store.Memory{srcA, srcB} {
+		got, err := s.Memories().Get(ctx, scope, src.ID)
+		if err != nil {
+			t.Fatalf("Get source %q after merge fault: %v", src.ID, err)
+		}
+		if got.Status != "active" {
+			t.Errorf("merge fault: source %q status = %q, want active (rolled back)", src.ID, got.Status)
+		}
+	}
+
+	// Merged memory must not exist.
+	if _, err := s.Memories().Get(ctx, scope, mergedID); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("merge fault: merged memory should not exist; got %v", err)
+	}
+}
+
+// testMemoryCommitUnknownAction verifies that Commit returns an error for an
+// unrecognised action, leaving no memory row behind.
+func testMemoryCommitUnknownAction(t *testing.T, factory Factory) {
+	t.Helper()
+	s, cleanup := factory()
+	defer cleanup()
+	ctx := context.Background()
+	scope := tenantScope("t-" + newID())
+
+	memID := newID()
+	cs := store.CommitSet{
+		Action: store.ReconcileAction("bogus_action"),
+		Memory: store.Memory{
+			ID: memID, Kind: "fact", Content: "should not persist",
+			Status: "active", Confidence: 0.8, TrustSource: "llm_extracted",
+			Stability: 1.0, CreatedAt: nowMs(), UpdatedAt: nowMs(),
+		},
+	}
+	if err := s.Memories().Commit(ctx, scope, cs); err == nil {
+		t.Fatal("expected error for unknown action, got nil")
+	}
+
+	// No row must exist.
+	if _, err := s.Memories().Get(ctx, scope, memID); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("unknown action: memory should not be persisted; got %v", err)
 	}
 }

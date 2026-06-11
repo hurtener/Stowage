@@ -131,7 +131,10 @@ func (r *ReconcileStage) processCandidate(ctx context.Context, scope identity.Sc
 	existing, err := r.mem.GetByContentHash(ctx, scope, hash)
 	if err == nil {
 		// Exact duplicate: bump match_count and emit a dedup event.
-		_ = r.mem.IncrementCounter(ctx, scope, existing.ID, "match")
+		if incErr := r.mem.IncrementCounter(ctx, scope, existing.ID, "match"); incErr != nil {
+			r.log.WarnContext(ctx, "reconcile: IncrementCounter failed",
+				"id", existing.ID, "err", incErr)
+		}
 		r.log.DebugContext(ctx, "reconcile: exact dup discarded",
 			"tenant", scope.Tenant, "hash", hash, "existing_id", existing.ID)
 		return r.commitExactDupDiscard(ctx, scope, existing.ID, "exact duplicate")
@@ -154,7 +157,10 @@ func (r *ReconcileStage) processCandidate(ctx context.Context, scope identity.Sc
 	// the candidate as the same fact: bump match_count and discard.
 	for _, n := range neighbors {
 		if BigramJaccard(normalized, n.Content) >= nearDupThreshold {
-			_ = r.mem.IncrementCounter(ctx, scope, n.ID, "match")
+			if incErr := r.mem.IncrementCounter(ctx, scope, n.ID, "match"); incErr != nil {
+				r.log.WarnContext(ctx, "reconcile: IncrementCounter failed",
+					"id", n.ID, "err", incErr)
+			}
 			r.log.DebugContext(ctx, "reconcile: near dup discarded",
 				"tenant", scope.Tenant, "neighbor_id", n.ID)
 			return r.commitNearDupDiscard(ctx, scope, n.ID, "near-duplicate (bigram-Jaccard ≥ threshold)")
@@ -220,7 +226,7 @@ func (r *ReconcileStage) processCandidate(ctx context.Context, scope identity.Sc
 	return r.commit(ctx, scope, c, normalized, hash, neighbors, decision)
 }
 
-// commit applies the trust gate (for supersede/update) and executes the
+// commit applies the trust gate (for supersede/update/merge) and executes the
 // CommitSet for the reconciliation decision.
 func (r *ReconcileStage) commit(
 	ctx context.Context,
@@ -248,7 +254,13 @@ func (r *ReconcileStage) commit(
 			},
 		}
 		cs.Provenance = buildProvenance(mem.ID, c.Provenance)
-		return r.mem.Commit(ctx, scope, cs)
+		if err := r.mem.Commit(ctx, scope, cs); err != nil {
+			if errors.Is(err, store.ErrDuplicateContent) {
+				return r.handleDuplicateContent(ctx, scope, hash)
+			}
+			return err
+		}
+		return nil
 
 	case store.ActionPark:
 		mem := candidateToMemory(c, normalized, hash, "pending_confirmation")
@@ -263,13 +275,20 @@ func (r *ReconcileStage) commit(
 			},
 		}
 		cs.Provenance = buildProvenance(mem.ID, c.Provenance)
-		return r.mem.Commit(ctx, scope, cs)
+		if err := r.mem.Commit(ctx, scope, cs); err != nil {
+			if errors.Is(err, store.ErrDuplicateContent) {
+				return r.handleDuplicateContent(ctx, scope, hash)
+			}
+			return err
+		}
+		return nil
 
 	case store.ActionDiscard:
 		return r.commitDiscard(ctx, scope, firstTargetID(d.TargetIDs), d.Reason)
 
 	case store.ActionUpdate:
 		target := findNeighborByID(neighbors, d.TargetIDs[0])
+		jt := r.getJunctions(ctx, scope, target.ID) // M6: fetch junctions for prior-state
 
 		// Trust gate: high-trust targets cannot be silently updated (D-044).
 		level := targetTrustLevel(target)
@@ -287,17 +306,38 @@ func (r *ReconcileStage) commit(
 				Events: []store.Event{
 					buildEventWithPayload("memory.parked", mem.ID,
 						"trust gate: target trust ≥ park threshold; pending human review",
-						MarshalPriorState(target), now),
+						MarshalPriorState(target, jt), now),
 				},
 			}
 			cs.Provenance = buildProvenance(mem.ID, c.Provenance)
-			return r.mem.Commit(ctx, scope, cs)
+			if err := r.mem.Commit(ctx, scope, cs); err != nil {
+				if errors.Is(err, store.ErrDuplicateContent) {
+					return r.handleDuplicateContent(ctx, scope, hash)
+				}
+				return err
+			}
+			return nil
 		}
 
-		mem := candidateToMemory(c, normalized, hash, "active")
-		mem.ID = target.ID // reuse existing memory ID
+		// C1/M5: Content comes from the decision; Context comes from the candidate
+		// (or the target's if the candidate has none). All other target fields are
+		// preserved by the targeted SQL UPDATE in the driver (only content, context,
+		// content_hash, updated_at are written).
+		normalizedContent := NormalizeContent(d.Content)
+		updateHash := ContentHash(normalizedContent)
+		updateCtx := c.Context
+		if updateCtx == "" {
+			updateCtx = target.Context
+		}
+		mem := store.Memory{
+			ID:          target.ID,
+			Content:     normalizedContent,
+			Context:     updateCtx,
+			ContentHash: updateHash,
+			// UpdatedAt zero → driver sets to now.
+		}
 		events := []store.Event{
-			buildEventWithPayload("memory.updated", mem.ID, d.Reason, MarshalPriorState(target), now),
+			buildEventWithPayload("memory.updated", mem.ID, d.Reason, MarshalPriorState(target, jt), now),
 		}
 		if level == TrustLevelMedium {
 			events = append(events, buildEvent("reconcile.warned", mem.ID,
@@ -318,6 +358,7 @@ func (r *ReconcileStage) commit(
 
 	case store.ActionSupersede:
 		target := findNeighborByID(neighbors, d.TargetIDs[0])
+		jt := r.getJunctions(ctx, scope, target.ID) // M6: fetch junctions for prior-state
 
 		// Trust gate: high-trust targets cannot be silently superseded (D-044).
 		level := targetTrustLevel(target)
@@ -335,11 +376,17 @@ func (r *ReconcileStage) commit(
 				Events: []store.Event{
 					buildEventWithPayload("memory.parked", mem.ID,
 						"trust gate: target trust ≥ park threshold; pending human review",
-						MarshalPriorState(target), now),
+						MarshalPriorState(target, jt), now),
 				},
 			}
 			cs.Provenance = buildProvenance(mem.ID, c.Provenance)
-			return r.mem.Commit(ctx, scope, cs)
+			if err := r.mem.Commit(ctx, scope, cs); err != nil {
+				if errors.Is(err, store.ErrDuplicateContent) {
+					return r.handleDuplicateContent(ctx, scope, hash)
+				}
+				return err
+			}
+			return nil
 		}
 
 		// Apply contradiction boost: corrections outrank what they correct (D-044).
@@ -363,7 +410,7 @@ func (r *ReconcileStage) commit(
 		links = append(links, decisionLinksToStore(mem.ID, d.Links)...)
 
 		events := []store.Event{
-			buildEventWithPayload("memory.superseded", target.ID, d.Reason, MarshalPriorState(target), now),
+			buildEventWithPayload("memory.superseded", target.ID, d.Reason, MarshalPriorState(target, jt), now),
 			buildEvent("memory.added", mem.ID, "superseding memory added", now),
 		}
 		if level == TrustLevelMedium {
@@ -386,12 +433,67 @@ func (r *ReconcileStage) commit(
 
 	case store.ActionMerge:
 		targets := findNeighborsByIDs(neighbors, d.TargetIDs)
-		mem := candidateToMemory(c, normalized, hash, "active")
+
+		// M3 trust gate: evaluate ALL merge targets.
+		// Any High-trust target → park; any Medium (no High) → apply + warn.
+		var hasHigh bool
+		var hasMedium bool
+		var highestTrustID string
+		var highestScore float64
+		for _, t := range targets {
+			s := targetTrustScore(t.UseCount, t.SaveCount, t.TrustSource, t.Importance)
+			switch {
+			case s >= trustGatePark:
+				hasHigh = true
+				if s > highestScore {
+					highestScore = s
+					highestTrustID = t.ID
+				}
+			case s >= trustGateWarn:
+				hasMedium = true
+			}
+		}
+
+		if hasHigh {
+			// Any High-trust target → park candidate; NO target is touched.
+			mem := candidateToMemory(c, normalized, hash, "pending_confirmation")
+			mem.SupersedesID = highestTrustID
+			cs := store.CommitSet{
+				Action:   store.ActionPark,
+				Memory:   mem,
+				Entities: c.Entities,
+				Keywords: c.Keywords,
+				Queries:  c.AnticipatedQueries,
+				Events: []store.Event{
+					buildEvent("memory.parked", mem.ID,
+						"trust gate: merge target trust ≥ park threshold; pending human review", now),
+				},
+			}
+			cs.Provenance = buildProvenance(mem.ID, c.Provenance)
+			if err := r.mem.Commit(ctx, scope, cs); err != nil {
+				if errors.Is(err, store.ErrDuplicateContent) {
+					return r.handleDuplicateContent(ctx, scope, hash)
+				}
+				return err
+			}
+			return nil
+		}
+
+		// M5: use decision.Content as the merged content.
+		normalizedMerge := NormalizeContent(d.Content)
+		mergeHash := ContentHash(normalizedMerge)
+
+		mem := candidateToMemory(c, normalizedMerge, mergeHash, "active")
 		var events []store.Event
 		for _, t := range targets {
-			events = append(events, buildEventWithPayload("memory.merged", t.ID, d.Reason, MarshalPriorState(t), now))
+			jt := r.getJunctions(ctx, scope, t.ID) // M6: fetch junctions per target
+			events = append(events, buildEventWithPayload("memory.merged", t.ID, d.Reason, MarshalPriorState(t, jt), now))
 		}
 		events = append(events, buildEvent("memory.added", mem.ID, "merged memory added", now))
+		if hasMedium {
+			events = append(events, buildEvent("reconcile.warned", mem.ID,
+				"trust gate: merge includes medium-trust targets; review recommended", now))
+		}
 		cs := store.CommitSet{
 			Action:   store.ActionMerge,
 			Memory:   mem,
@@ -403,7 +505,13 @@ func (r *ReconcileStage) commit(
 			Events:   events,
 		}
 		cs.Provenance = buildProvenance(mem.ID, c.Provenance)
-		return r.mem.Commit(ctx, scope, cs)
+		if err := r.mem.Commit(ctx, scope, cs); err != nil {
+			if errors.Is(err, store.ErrDuplicateContent) {
+				return r.handleDuplicateContent(ctx, scope, mergeHash)
+			}
+			return err
+		}
+		return nil
 
 	default:
 		return fmt.Errorf("reconcile: unhandled action %q", action)
@@ -461,7 +569,40 @@ func (r *ReconcileStage) commitFastAdd(ctx context.Context, scope identity.Scope
 		},
 	}
 	cs.Provenance = buildProvenance(mem.ID, c.Provenance)
-	return r.mem.Commit(ctx, scope, cs)
+	if err := r.mem.Commit(ctx, scope, cs); err != nil {
+		// m7: TOCTOU — another goroutine committed the same hash between our
+		// exact-dedup check and this commit. Treat as exact-dedup hit.
+		if errors.Is(err, store.ErrDuplicateContent) {
+			return r.handleDuplicateContent(ctx, scope, hash)
+		}
+		return err
+	}
+	return nil
+}
+
+// handleDuplicateContent handles a TOCTOU ErrDuplicateContent from Commit (m7).
+// It looks up the existing row by hash, bumps its match counter, and emits a
+// dedup_exact discard — treating the race as an exact-duplicate hit.
+func (r *ReconcileStage) handleDuplicateContent(ctx context.Context, scope identity.Scope, hash string) error {
+	if existing, err := r.mem.GetByContentHash(ctx, scope, hash); err == nil {
+		if incErr := r.mem.IncrementCounter(ctx, scope, existing.ID, "match"); incErr != nil {
+			r.log.WarnContext(ctx, "reconcile: IncrementCounter failed after dedup race",
+				"id", existing.ID, "err", incErr)
+		}
+	}
+	return r.commitExactDupDiscard(ctx, scope, "", "exact duplicate (concurrent race)")
+}
+
+// getJunctions fetches junction rows for a memory for prior-state snapshots (M6).
+// Errors are logged at Warn and an empty MemoryJunctions is returned so the
+// snapshot is still emitted (minus junctions) rather than dropping the event.
+func (r *ReconcileStage) getJunctions(ctx context.Context, scope identity.Scope, id string) store.MemoryJunctions {
+	j, err := r.mem.GetJunctions(ctx, scope, id)
+	if err != nil {
+		r.log.WarnContext(ctx, "reconcile: GetJunctions failed; prior-state junctions omitted",
+			"id", id, "err", err)
+	}
+	return j
 }
 
 // --- helpers ----------------------------------------------------------------
@@ -475,6 +616,7 @@ func candidateToMemory(c pipeline.Candidate, normalized, hash, status string) st
 		ID:          ulid.Make().String(),
 		Kind:        c.Kind,
 		Content:     normalized,
+		Context:     c.Context, // M4: preserve candidate context
 		Status:      status,
 		Importance:  c.Importance,
 		Confidence:  c.Confidence,
@@ -510,9 +652,6 @@ func buildEvent(typ, subjectID, reason string, tsMs int64) store.Event {
 }
 
 func buildEventWithPayload(typ, subjectID, reason, payload string, tsMs int64) store.Event {
-	if payload == "" {
-		payload = "{}"
-	}
 	return store.Event{
 		ID:        ulid.Make().String(),
 		Type:      typ,

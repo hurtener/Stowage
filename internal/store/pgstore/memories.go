@@ -9,11 +9,21 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/oklog/ulid/v2"
 
 	"github.com/hurtener/stowage/internal/identity"
 	"github.com/hurtener/stowage/internal/store"
 )
+
+// pgUniqueViolation is the PostgreSQL SQLSTATE code for unique_violation.
+const pgUniqueViolation = "23505"
+
+// pgIsUnique reports whether err is a PostgreSQL unique constraint violation.
+func pgIsUnique(err error) bool {
+	var pgErr *pgconn.PgError
+	return err != nil && errors.As(err, &pgErr) && pgErr.Code == pgUniqueViolation
+}
 
 type memoryStore struct{ s *pgStore }
 
@@ -273,6 +283,94 @@ func (m *memoryStore) AddProvenance(ctx context.Context, scope identity.Scope, p
 	return tx.Commit(ctx)
 }
 
+// GetJunctions returns the junction rows (entities, keywords, queries, provenance)
+// for a memory within scope. Returns empty slices (not ErrNotFound) when no rows exist.
+func (m *memoryStore) GetJunctions(ctx context.Context, scope identity.Scope, id string) (store.MemoryJunctions, error) {
+	if scope.Tenant == "" {
+		return store.MemoryJunctions{}, store.ErrScopeRequired
+	}
+	var j store.MemoryJunctions
+
+	// Entities.
+	eRows, err := m.s.pool.Query(ctx,
+		`SELECT entity FROM memory_entities WHERE memory_id = $1 AND tenant_id = $2 ORDER BY id`,
+		id, scope.Tenant)
+	if err != nil {
+		return j, fmt.Errorf("pgstore: get entities: %w", err)
+	}
+	for eRows.Next() {
+		var e string
+		if scanErr := eRows.Scan(&e); scanErr != nil {
+			eRows.Close()
+			return j, scanErr
+		}
+		j.Entities = append(j.Entities, e)
+	}
+	eRows.Close()
+	if err = eRows.Err(); err != nil {
+		return j, err
+	}
+
+	// Keywords.
+	kwRows, err := m.s.pool.Query(ctx,
+		`SELECT keyword FROM memory_keywords WHERE memory_id = $1 AND tenant_id = $2 ORDER BY id`,
+		id, scope.Tenant)
+	if err != nil {
+		return j, fmt.Errorf("pgstore: get keywords: %w", err)
+	}
+	for kwRows.Next() {
+		var k string
+		if scanErr := kwRows.Scan(&k); scanErr != nil {
+			kwRows.Close()
+			return j, scanErr
+		}
+		j.Keywords = append(j.Keywords, k)
+	}
+	kwRows.Close()
+	if err = kwRows.Err(); err != nil {
+		return j, err
+	}
+
+	// Anticipated queries.
+	qRows, err := m.s.pool.Query(ctx,
+		`SELECT query FROM memory_queries WHERE memory_id = $1 AND tenant_id = $2 ORDER BY id`,
+		id, scope.Tenant)
+	if err != nil {
+		return j, fmt.Errorf("pgstore: get queries: %w", err)
+	}
+	for qRows.Next() {
+		var q string
+		if scanErr := qRows.Scan(&q); scanErr != nil {
+			qRows.Close()
+			return j, scanErr
+		}
+		j.Queries = append(j.Queries, q)
+	}
+	qRows.Close()
+	if err = qRows.Err(); err != nil {
+		return j, err
+	}
+
+	// Provenance.
+	pRows, err := m.s.pool.Query(ctx,
+		`SELECT id, memory_id, record_id, span_start, span_end, tenant_id, created_at
+		 FROM provenance WHERE memory_id = $1 AND tenant_id = $2 ORDER BY created_at`,
+		id, scope.Tenant)
+	if err != nil {
+		return j, fmt.Errorf("pgstore: get provenance: %w", err)
+	}
+	for pRows.Next() {
+		var p store.Provenance
+		if scanErr := pRows.Scan(&p.ID, &p.MemoryID, &p.RecordID, &p.SpanStart, &p.SpanEnd, &p.TenantID, &p.CreatedAt); scanErr != nil {
+			pRows.Close()
+			return j, scanErr
+		}
+		j.Provenance = append(j.Provenance, p)
+	}
+	pRows.Close()
+	return j, pRows.Err()
+}
+
 // GetByContentHash returns the active memory matching hash within scope (D-044).
 func (m *memoryStore) GetByContentHash(ctx context.Context, scope identity.Scope, hash string) (*store.Memory, error) {
 	whereClause, args, next, err := buildScopeWhere(scope, 1)
@@ -412,6 +510,9 @@ func execCommitPG(ctx context.Context, tx pgx.Tx, scope identity.Scope, cs store
 	switch cs.Action {
 	case store.ActionAdd, store.ActionPark:
 		if err := insertMemoryPG(ctx, tx, scope, cs.Memory, now); err != nil {
+			if pgIsUnique(err) {
+				return store.ErrDuplicateContent
+			}
 			return fmt.Errorf("pgstore: commit %s insert memory: %w", cs.Action, err)
 		}
 		if cs.FaultHook != nil {
@@ -430,7 +531,10 @@ func execCommitPG(ctx context.Context, tx pgx.Tx, scope identity.Scope, cs store
 		}
 
 	case store.ActionUpdate:
-		if err := updateMemoryPG(ctx, tx, scope, cs.Memory, now); err != nil {
+		// C1: targeted update — only content, context, content_hash, updated_at change.
+		// Counters, trust_source, stability, importance, confidence, validity window,
+		// episode_id, and privacy_zone are preserved from the existing row.
+		if err := updateMemoryContentPG(ctx, tx, scope, cs.Memory, now); err != nil {
 			return fmt.Errorf("pgstore: commit update: %w", err)
 		}
 		if cs.FaultHook != nil {
@@ -548,25 +652,20 @@ func insertMemoryPG(ctx context.Context, tx pgx.Tx, scope identity.Scope, mem st
 	return err
 }
 
-func updateMemoryPG(ctx context.Context, tx pgx.Tx, scope identity.Scope, mem store.Memory, now int64) error {
+// updateMemoryContentPG performs a targeted UPDATE that touches ONLY the four
+// mutable content fields (content, context, content_hash, updated_at).
+// All counters, trust_source, stability, importance, confidence, validity window,
+// episode_id, and privacy_zone are left unchanged — implementing the C1 fix.
+func updateMemoryContentPG(ctx context.Context, tx pgx.Tx, scope identity.Scope, mem store.Memory, now int64) error {
 	if mem.UpdatedAt == 0 {
 		mem.UpdatedAt = now
 	}
-	_, err := tx.Exec(ctx, `UPDATE memories SET
-		kind=$1, content=$2, context=$3, status=$4,
-		importance=$5, confidence=$6, trust_source=$7,
-		match_count=$8, inject_count=$9, use_count=$10, save_count=$11, fail_count=$12, noise_count=$13,
-		stability=$14, last_accessed_at=$15, valid_from=$16, valid_until=$17,
-		episode_id=$18, supersedes_id=$19, superseded_by_id=$20, privacy_zone=$21,
-		updated_at=$22, content_hash=$23
-		WHERE tenant_id=$24 AND id=$25`,
-		mem.Kind, mem.Content, mem.Context, mem.Status,
-		mem.Importance, mem.Confidence, mem.TrustSource,
-		mem.MatchCount, mem.InjectCount, mem.UseCount, mem.SaveCount, mem.FailCount, mem.NoiseCount,
-		mem.Stability, mem.LastAccessedAt, mem.ValidFrom, mem.ValidUntil,
-		mem.EpisodeID, mem.SupersedesID, mem.SupersededByID, mem.PrivacyZone,
-		mem.UpdatedAt, nullStr(mem.ContentHash),
-		scope.Tenant, mem.ID,
+	_, err := tx.Exec(ctx, `
+		UPDATE memories SET
+			content = $1, context = $2, content_hash = $3, updated_at = $4
+		WHERE tenant_id = $5 AND id = $6`,
+		mem.Content, mem.Context, nullStr(mem.ContentHash),
+		mem.UpdatedAt, scope.Tenant, mem.ID,
 	)
 	return err
 }

@@ -113,6 +113,13 @@ type MemoryStore interface {
 	// "fail", "noise". Returns an error for unrecognised counter names.
 	IncrementCounter(ctx context.Context, scope identity.Scope, id, counter string) error
 
+	// GetJunctions returns the junction rows (entities, keywords, anticipated
+	// queries) and provenance spans for a memory. Used to build complete
+	// prior-state snapshots (D-017, Phase 15 rollback).
+	// Returns an empty MemoryJunctions (not ErrNotFound) when the memory
+	// exists but has no junction rows.
+	GetJunctions(ctx context.Context, scope identity.Scope, id string) (MemoryJunctions, error)
+
 	// Commit executes one reconciliation outcome as a single atomic transaction:
 	// memory insert/update, junction rows, provenance rows, link rows, status
 	// transitions on targets, and event rows — all in one DB transaction.
@@ -120,6 +127,8 @@ type MemoryStore interface {
 	//   Postgres driver: pool.Begin → pgx.Tx (D-045).
 	// Events are written directly into the transaction; not via EventStore.Emit.
 	// CommitSet.FaultHook is a test-only mid-commit failure injection.
+	// Commit returns ErrDuplicateContent for ActionAdd/ActionPark when the
+	// content_hash unique index fires (m7 TOCTOU guard).
 	Commit(ctx context.Context, scope identity.Scope, cs CommitSet) error
 }
 

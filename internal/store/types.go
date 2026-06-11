@@ -151,6 +151,17 @@ type DeadLetter struct {
 	CreatedAt  int64
 }
 
+// MemoryJunctions holds the junction rows for a memory, used in prior-state
+// snapshots (D-017 reversibility contract, Phase 15 rollback).
+// GetJunctions returns an empty MemoryJunctions (not ErrNotFound) when the
+// memory has no junction rows.
+type MemoryJunctions struct {
+	Entities   []string
+	Keywords   []string
+	Queries    []string
+	Provenance []Provenance
+}
+
 // ReconcileAction is the outcome of a reconciliation decision (Phase 08).
 type ReconcileAction string
 

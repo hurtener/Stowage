@@ -22,6 +22,10 @@ var DecisionSchema = json.RawMessage(`{
       "type": "string",
       "enum": ["add", "update", "merge", "supersede", "discard", "park"]
     },
+    "content": {
+      "type": "string",
+      "description": "Synthesized content for update and merge actions (required for those actions)"
+    },
     "target_ids": {
       "type": "array",
       "items": { "type": "string" },
@@ -60,18 +64,44 @@ type DecisionLink struct {
 // DecisionOutput is the structured output from the LLM reconciliation call.
 type DecisionOutput struct {
 	Action    string         `json:"action"`
+	Content   string         `json:"content"` // M5: synthesized content for update/merge
 	TargetIDs []string       `json:"target_ids"`
 	Links     []DecisionLink `json:"links"`
 	Reason    string         `json:"reason"`
 }
 
-// validateDecision checks that the action is a known ReconcileAction and
-// that target IDs are present for actions that require them.
-func validateDecision(d DecisionOutput) error {
+// validateDecision checks that the action is a known ReconcileAction,
+// that target IDs are present for actions that require them, and that
+// content is non-empty for update and merge actions (M5). It also deduplicates
+// target_ids in place, preserving first-occurrence order (m10).
+func validateDecision(d *DecisionOutput) error {
+	// Deduplicate target_ids preserving first-occurrence order (m10).
+	if len(d.TargetIDs) > 1 {
+		seen := make(map[string]bool, len(d.TargetIDs))
+		deduped := make([]string, 0, len(d.TargetIDs))
+		for _, id := range d.TargetIDs {
+			if !seen[id] {
+				seen[id] = true
+				deduped = append(deduped, id)
+			}
+		}
+		d.TargetIDs = deduped
+	}
+
 	switch store.ReconcileAction(d.Action) {
 	case store.ActionAdd, store.ActionDiscard, store.ActionPark:
-		// no target IDs required
-	case store.ActionUpdate, store.ActionSupersede:
+		// no target IDs or content required
+	case store.ActionUpdate:
+		if len(d.TargetIDs) == 0 {
+			return fmt.Errorf("reconcile: decision action %q requires at least one target_id", d.Action)
+		}
+		if len(d.TargetIDs) != 1 {
+			return fmt.Errorf("reconcile: decision action %q expects exactly one target_id, got %d", d.Action, len(d.TargetIDs))
+		}
+		if d.Content == "" {
+			return fmt.Errorf("reconcile: decision action %q requires non-empty content", d.Action)
+		}
+	case store.ActionSupersede:
 		if len(d.TargetIDs) == 0 {
 			return fmt.Errorf("reconcile: decision action %q requires at least one target_id", d.Action)
 		}
@@ -81,6 +111,9 @@ func validateDecision(d DecisionOutput) error {
 	case store.ActionMerge:
 		if len(d.TargetIDs) < 2 {
 			return fmt.Errorf("reconcile: decision action %q requires at least 2 target_ids, got %d", d.Action, len(d.TargetIDs))
+		}
+		if d.Content == "" {
+			return fmt.Errorf("reconcile: decision action %q requires non-empty content", d.Action)
 		}
 	default:
 		return fmt.Errorf("reconcile: unknown action %q in decision", d.Action)
@@ -94,7 +127,7 @@ func parseDecision(raw json.RawMessage) (DecisionOutput, error) {
 	if err := json.Unmarshal(raw, &d); err != nil {
 		return d, fmt.Errorf("reconcile: parse decision: %w", err)
 	}
-	if err := validateDecision(d); err != nil {
+	if err := validateDecision(&d); err != nil {
 		return d, err
 	}
 	return d, nil

@@ -37,8 +37,9 @@ const ExportContradictionBoostStabilityDelta = contradictionBoostStabilityDelta
 const ExportNearDupThreshold = nearDupThreshold
 
 // ExportValidateDecision exposes validateDecision for external tests.
+// It operates on a copy so callers observe the deduplicated target_ids.
 func ExportValidateDecision(d DecisionOutput) error {
-	return validateDecision(d)
+	return validateDecision(&d)
 }
 
 // ExportParseDecision exposes parseDecision for fuzz testing.

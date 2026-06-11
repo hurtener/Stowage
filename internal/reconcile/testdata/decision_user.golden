@@ -14,6 +14,7 @@
 **Content:** Go has channels for communication
 **Context:** concurrency model
 **Confidence:** 0.80  **Importance:** 3
+**Trust:** use_count=0  save_count=0  trust_source=
 
 
 Decide: should this candidate be added, updated, merged, superseded, discarded, or parked?

@@ -64,7 +64,9 @@ func BuildUserPrompt(c pipeline.Candidate, neighbors []store.Memory) string {
 			if n.Context != "" {
 				fmt.Fprintf(&b, "**Context:** %s\n", n.Context)
 			}
-			fmt.Fprintf(&b, "**Confidence:** %.2f  **Importance:** %d\n\n", n.Confidence, n.Importance)
+			fmt.Fprintf(&b, "**Confidence:** %.2f  **Importance:** %d\n", n.Confidence, n.Importance)
+			fmt.Fprintf(&b, "**Trust:** use_count=%d  save_count=%d  trust_source=%s\n\n",
+				n.UseCount, n.SaveCount, n.TrustSource)
 		}
 	}
 

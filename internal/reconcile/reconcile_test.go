@@ -229,6 +229,13 @@ func TestTrustGateFormula(t *testing.T) {
 			// score = (0.5 + log1p(20)) * 2.0 * (5/3) ≈ 3.545 * 3.333 ≈ 11.8 ≥ 3.0
 			wantLevel: reconcile.ExportTrustLevelHigh,
 		},
+		{
+			// Covers the defaultSourceMultiplier path in targetTrustScore.
+			name: "unknown trust_source uses default multiplier",
+			mem:  store.Memory{UseCount: 0, SaveCount: 0, TrustSource: "unknown_source", Importance: 3},
+			// score = (0.5 + log1p(0)) * 1.0 * 1.0 = 0.5 < 1.0
+			wantLevel: reconcile.ExportTrustLevelLow,
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -250,9 +257,12 @@ func TestValidateDecision(t *testing.T) {
 		{"add", reconcile.DecisionOutput{Action: "add"}},
 		{"discard", reconcile.DecisionOutput{Action: "discard"}},
 		{"park", reconcile.DecisionOutput{Action: "park"}},
-		{"update", reconcile.DecisionOutput{Action: "update", TargetIDs: []string{"id1"}}},
+		// M5: update and merge require non-empty content.
+		{"update", reconcile.DecisionOutput{Action: "update", Content: "refined content", TargetIDs: []string{"id1"}}},
 		{"supersede", reconcile.DecisionOutput{Action: "supersede", TargetIDs: []string{"id1"}}},
-		{"merge", reconcile.DecisionOutput{Action: "merge", TargetIDs: []string{"id1", "id2"}}},
+		{"merge", reconcile.DecisionOutput{Action: "merge", Content: "merged content", TargetIDs: []string{"id1", "id2"}}},
+		// m10: duplicate target_ids are silently deduplicated.
+		{"merge-dedup", reconcile.DecisionOutput{Action: "merge", Content: "merged content", TargetIDs: []string{"id1", "id2", "id1"}}},
 	}
 	for _, tc := range validCases {
 		if err := reconcile.ExportValidateDecision(tc.d); err != nil {
@@ -265,9 +275,11 @@ func TestValidateDecision(t *testing.T) {
 		d    reconcile.DecisionOutput
 	}{
 		{"unknown action", reconcile.DecisionOutput{Action: "explode"}},
-		{"update no target", reconcile.DecisionOutput{Action: "update"}},
+		{"update no target", reconcile.DecisionOutput{Action: "update", Content: "c"}},
+		{"update no content", reconcile.DecisionOutput{Action: "update", TargetIDs: []string{"id1"}}},
 		{"supersede no target", reconcile.DecisionOutput{Action: "supersede"}},
-		{"merge one target", reconcile.DecisionOutput{Action: "merge", TargetIDs: []string{"id1"}}},
+		{"merge one target", reconcile.DecisionOutput{Action: "merge", Content: "c", TargetIDs: []string{"id1"}}},
+		{"merge no content", reconcile.DecisionOutput{Action: "merge", TargetIDs: []string{"id1", "id2"}}},
 	}
 	for _, tc := range errorCases {
 		if err := reconcile.ExportValidateDecision(tc.d); err == nil {
@@ -606,20 +618,30 @@ func TestTrustGateMatrix(t *testing.T) {
 // --- AC-5: Reversibility — prior-state in events -----------------------------
 
 // TestReversibilityPriorState verifies that update/supersede events embed a
-// JSON prior field containing the full pre-mutation memory snapshot.
-// Phase 15 rollback will consume exactly this payload.
+// complete JSON prior-state snapshot in the event Payload.
+// Phase 15 rollback will consume this payload verbatim, so it must contain
+// all scalar fields AND junction rows (M6, m8).
 func TestReversibilityPriorState(t *testing.T) {
 	st, cleanup := newTestStore(t)
 	defer cleanup()
 	scope := tenantScope("t-prior-" + t.Name())
 	entity := "prior-state-entity"
 
+	// m8: pre-load non-zero counters, non-default trust_source, non-default
+	// stability, and a validity window so the snapshot must preserve them.
+	// importance=1, use=7, save=3, user_stated → trust score ≈ 2.09 (MEDIUM);
+	// supersede is still applied (not parked) but a reconcile.warned event fires.
 	targetContent := "Go uses goroutines for concurrency"
+	validFrom := time.Now().Add(-24 * time.Hour).UnixMilli()
+	validUntil := time.Now().Add(30 * 24 * time.Hour).UnixMilli()
 	target := store.Memory{
 		ID: ulid.Make().String(), Kind: "fact", Content: targetContent,
-		Status: "active", Confidence: 0.8, TrustSource: "llm_extracted",
-		Stability: 1.0, ContentHash: reconcile.ContentHash(reconcile.NormalizeContent(targetContent)),
-		CreatedAt: time.Now().UnixMilli(), UpdatedAt: time.Now().UnixMilli(),
+		Status: "active", Confidence: 0.8, TrustSource: "user_stated",
+		Importance: 1, Stability: 2.5,
+		UseCount: 7, SaveCount: 3,
+		ValidFrom: validFrom, ValidUntil: validUntil,
+		ContentHash: reconcile.ContentHash(reconcile.NormalizeContent(targetContent)),
+		CreatedAt:   time.Now().UnixMilli(), UpdatedAt: time.Now().UnixMilli(),
 	}
 	insertTestMemory(t, st, scope, target, []string{entity}, []string{"kw-prior"})
 
@@ -639,7 +661,7 @@ func TestReversibilityPriorState(t *testing.T) {
 	}
 	runStage(t, st.Memories(), st.Ops(), st.Events(), gw, batch)
 
-	// The memory.superseded event must carry the prior content in its Payload.
+	// The memory.superseded event must carry the full prior-state in its Payload.
 	evts := eventsByType(t, st, scope, "memory.superseded")
 	if len(evts) == 0 {
 		t.Fatal("reversibility: no memory.superseded event found")
@@ -649,14 +671,51 @@ func TestReversibilityPriorState(t *testing.T) {
 		t.Errorf("reversibility: prior-state payload does not contain original content %q\npayload: %s",
 			targetContent, payload)
 	}
-	// The payload must be parseable as JSON with a "content" field.
-	var priorMap map[string]interface{}
-	if err := json.Unmarshal([]byte(payload), &priorMap); err != nil {
-		t.Errorf("reversibility: payload is not valid JSON: %v\npayload: %s", err, payload)
+
+	// Parse and verify every significant field of the prior-state snapshot.
+	var prior map[string]interface{}
+	if err := json.Unmarshal([]byte(payload), &prior); err != nil {
+		t.Fatalf("reversibility: payload is not valid JSON: %v\npayload: %s", err, payload)
 	}
-	if _, ok := priorMap["content"]; !ok {
-		t.Errorf("reversibility: prior-state JSON missing 'content' field: %s", payload)
+
+	assertField := func(key string, want interface{}) {
+		t.Helper()
+		v, ok := prior[key]
+		if !ok {
+			t.Errorf("prior-state JSON missing %q field: %s", key, payload)
+			return
+		}
+		// JSON numbers come back as float64.
+		switch w := want.(type) {
+		case int:
+			if v.(float64) != float64(w) {
+				t.Errorf("prior-state[%q] = %v, want %d", key, v, w)
+			}
+		case int64:
+			if v.(float64) != float64(w) {
+				t.Errorf("prior-state[%q] = %v, want %d", key, v, w)
+			}
+		case float64:
+			if v.(float64) != w {
+				t.Errorf("prior-state[%q] = %v, want %g", key, v, w)
+			}
+		case string:
+			if v.(string) != w {
+				t.Errorf("prior-state[%q] = %q, want %q", key, v, w)
+			}
+		}
 	}
+
+	assertField("content", targetContent)
+	assertField("trust_source", "user_stated")
+	assertField("use_count", int64(7))
+	assertField("save_count", int64(3))
+	assertField("stability", 2.5)
+	assertField("valid_from", float64(validFrom))
+	assertField("valid_until", float64(validUntil))
+	assertField("importance", int(1))
+	assertField("confidence", 0.8)
+	assertField("status", "active")
 }
 
 // --- AC-6: Contradiction boost -----------------------------------------------
@@ -716,6 +775,57 @@ func TestContradictionBoost(t *testing.T) {
 	wantStability := 1.0 + reconcile.ExportContradictionBoostStabilityDelta
 	if newMem.Stability != wantStability {
 		t.Errorf("contradiction boost: stability = %g, want %g", newMem.Stability, wantStability)
+	}
+}
+
+// --- AC-6b: Contradiction boost when candidate importance > floor -------------
+
+// TestContradictionBoostHighImportance verifies that when the candidate's
+// importance already exceeds the floor (4), the candidate's own importance is
+// used rather than the floor. Covers the candidateImportance > floor branch.
+func TestContradictionBoostHighImportance(t *testing.T) {
+	st, cleanup := newTestStore(t)
+	defer cleanup()
+	ctx := context.Background()
+	scope := tenantScope("t-boost-hi-" + t.Name())
+	entity := "boost-hi-entity"
+
+	// Low-trust target so the supersede is applied (not parked).
+	targetContent := "Rust is slow"
+	target := store.Memory{
+		ID: ulid.Make().String(), Kind: "fact", Content: targetContent,
+		Status: "active", Confidence: 0.7, TrustSource: "llm_extracted",
+		Importance: 2, Stability: 1.0,
+		ContentHash: reconcile.ContentHash(reconcile.NormalizeContent(targetContent)),
+		CreatedAt:   time.Now().UnixMilli(), UpdatedAt: time.Now().UnixMilli(),
+	}
+	insertTestMemory(t, st, scope, target, []string{entity}, []string{"kw-boost-hi"})
+
+	// Candidate importance=5 > floor(4): new memory keeps importance=5.
+	gw := &stubGateway{
+		responses: []gateway.CompleteResponse{
+			{JSON: json.RawMessage(`{"action":"supersede","target_ids":["` + target.ID + `"],"reason":"correction"}`)},
+		},
+	}
+	batch := pipeline.CandidateBatch{
+		Scope: scope,
+		Candidates: []pipeline.Candidate{
+			{Kind: "fact", Content: "Rust has zero-cost abstractions",
+				Importance: 5, Confidence: 0.95,
+				Entities: []string{entity}, Keywords: []string{"kw-boost-hi"}},
+		},
+	}
+	runStage(t, st.Memories(), st.Ops(), st.Events(), gw, batch)
+
+	active, _, err := st.Memories().ListByStatus(ctx, scope, "active", 10, "")
+	if err != nil {
+		t.Fatalf("ListByStatus: %v", err)
+	}
+	if len(active) != 1 {
+		t.Fatalf("contradiction boost (high): got %d active memories, want 1", len(active))
+	}
+	if active[0].Importance != 5 {
+		t.Errorf("contradiction boost (high): importance = %d, want 5 (candidate's own importance)", active[0].Importance)
 	}
 }
 
@@ -914,21 +1024,23 @@ func TestStageLLMDecidedUpdate(t *testing.T) {
 	scope := tenantScope("t-llmupdate-" + t.Name())
 	entity := "llmupdate-entity"
 
-	// Insert a low-trust target so the trust gate does not park.
-	// (use=0, save=0, llm_extracted, importance=3 → score ≈ 0.35 < 1.0)
+	// m8: Insert a target with non-zero counters and non-default trust_source.
+	// use=1, save=0, user_stated, importance=3 → score ≈ 2.386 (MEDIUM);
+	// update is applied (not parked) + reconcile.warned event fires.
 	targetContent := "Go has one goroutine model"
 	targetMem := store.Memory{
 		ID: ulid.Make().String(), Kind: "fact", Content: targetContent,
-		Status: "active", Confidence: 0.7, TrustSource: "llm_extracted",
-		Importance: 3, Stability: 1.0,
+		Status: "active", Confidence: 0.7, TrustSource: "user_stated",
+		Importance: 3, Stability: 2.5, UseCount: 1,
 		ContentHash: reconcile.ContentHash(reconcile.NormalizeContent(targetContent)),
 		CreatedAt:   time.Now().UnixMilli(), UpdatedAt: time.Now().UnixMilli(),
 	}
 	insertTestMemory(t, st, scope, targetMem, []string{entity}, []string{"kw-update"})
 
+	// M5: decision must include content; otherwise validateDecision fails → degrade to add.
 	gw := &stubGateway{
 		responses: []gateway.CompleteResponse{
-			{JSON: json.RawMessage(`{"action":"update","target_ids":["` + targetMem.ID + `"],"reason":"refinement"}`)},
+			{JSON: json.RawMessage(`{"action":"update","target_ids":["` + targetMem.ID + `"],"content":"Go supports millions of goroutines","reason":"refinement"}`)},
 		},
 	}
 	batch := pipeline.CandidateBatch{
@@ -945,16 +1057,36 @@ func TestStageLLMDecidedUpdate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Get updated: %v", err)
 	}
+	// C1/M5: content must be from decision.Content.
 	if updated.Content != "Go supports millions of goroutines" {
 		t.Errorf("update: content = %q, want updated value", updated.Content)
 	}
+	// m8/C1: counters, trust_source, stability, importance MUST be unchanged.
+	if updated.UseCount != targetMem.UseCount {
+		t.Errorf("update: UseCount = %d, want %d (must not be overwritten)", updated.UseCount, targetMem.UseCount)
+	}
+	if updated.TrustSource != targetMem.TrustSource {
+		t.Errorf("update: TrustSource = %q, want %q (must not be overwritten)", updated.TrustSource, targetMem.TrustSource)
+	}
+	if updated.Stability != targetMem.Stability {
+		t.Errorf("update: Stability = %g, want %g (must not be overwritten)", updated.Stability, targetMem.Stability)
+	}
+	if updated.Importance != targetMem.Importance {
+		t.Errorf("update: Importance = %d, want %d (must not be overwritten)", updated.Importance, targetMem.Importance)
+	}
+
 	evts := eventsByType(t, st, scope, "memory.updated")
 	if len(evts) == 0 {
 		t.Error("update: no memory.updated event found")
 	}
-	// Prior-state payload must contain original content.
-	if !strings.Contains(evts[0].Payload, targetContent) {
+	// Prior-state payload must contain original content (M6).
+	if len(evts) > 0 && !strings.Contains(evts[0].Payload, targetContent) {
 		t.Errorf("update: prior-state payload missing original content %q", targetContent)
+	}
+	// MEDIUM trust → reconcile.warned event must be present.
+	warnEvts := eventsByType(t, st, scope, "reconcile.warned")
+	if len(warnEvts) == 0 {
+		t.Error("update: expected reconcile.warned event for medium-trust target; got none")
 	}
 }
 
@@ -985,9 +1117,10 @@ func TestStageLLMDecidedMerge(t *testing.T) {
 	insertTestMemory(t, st, scope, mem1, []string{entity}, []string{"kw-merge"})
 	insertTestMemory(t, st, scope, mem2, []string{entity}, []string{"kw-merge"})
 
+	// M5: merge decision must include content; otherwise validateDecision fails → degrade to add.
 	gw := &stubGateway{
 		responses: []gateway.CompleteResponse{
-			{JSON: json.RawMessage(`{"action":"merge","target_ids":["` + mem1.ID + `","` + mem2.ID + `"],"reason":"consolidation"}`)},
+			{JSON: json.RawMessage(`{"action":"merge","target_ids":["` + mem1.ID + `","` + mem2.ID + `"],"content":"Go uses goroutines and channels for concurrency","reason":"consolidation"}`)},
 		},
 	}
 	batch := pipeline.CandidateBatch{
@@ -1082,6 +1215,69 @@ func TestStageGatewayError(t *testing.T) {
 	}
 }
 
+// --- Misc: discard with explicit target_id covers firstTargetID non-empty ----
+
+// TestStageLLMDiscardWithTargetID verifies that when the LLM returns a discard
+// decision with an explicit target_id, the committed discard event carries that
+// target_id as its SubjectID. This exercises firstTargetID with a non-empty list.
+func TestStageLLMDiscardWithTargetID(t *testing.T) {
+	st, cleanup := newTestStore(t)
+	defer cleanup()
+	scope := tenantScope("t-llmdiscard-tid-" + t.Name())
+	entity := "discard-tid-entity"
+
+	// Insert a neighbor so FindNeighbors is non-empty and the gateway IS called.
+	neighborContent := "Existing knowledge"
+	neighborMem := store.Memory{
+		ID: ulid.Make().String(), Kind: "fact", Content: neighborContent,
+		Status: "active", Confidence: 0.9, TrustSource: "llm_extracted",
+		Stability: 1.0, ContentHash: reconcile.ContentHash(reconcile.NormalizeContent(neighborContent)),
+		CreatedAt: time.Now().UnixMilli(), UpdatedAt: time.Now().UnixMilli(),
+	}
+	insertTestMemory(t, st, scope, neighborMem, []string{entity}, []string{"kw-discard-tid"})
+
+	// Decision: discard with explicit target_id.
+	gw := &stubGateway{
+		responses: []gateway.CompleteResponse{
+			{JSON: json.RawMessage(`{"action":"discard","target_ids":["` + neighborMem.ID + `"],"reason":"redundant"}`)},
+		},
+	}
+	batch := pipeline.CandidateBatch{
+		Scope: scope,
+		Candidates: []pipeline.Candidate{
+			{Kind: "fact", Content: "Some redundant candidate",
+				Importance: 2, Confidence: 0.7,
+				Entities: []string{entity}, Keywords: []string{"kw-discard-tid"}},
+		},
+	}
+	runStage(t, st.Memories(), st.Ops(), st.Events(), gw, batch)
+
+	// The memory.discarded event must carry the neighbor's ID as SubjectID.
+	evts := eventsByType(t, st, scope, "memory.discarded")
+	if len(evts) == 0 {
+		t.Fatal("discard: no memory.discarded event found")
+	}
+	if evts[0].SubjectID != neighborMem.ID {
+		t.Errorf("discard: event SubjectID = %q, want %q (from target_ids[0])",
+			evts[0].SubjectID, neighborMem.ID)
+	}
+}
+
+// --- Unit: BuildUserPrompt with no neighbors covers the "None found" branch --
+
+func TestBuildUserPromptNoNeighbors(t *testing.T) {
+	c := pipeline.Candidate{
+		Kind:       "fact",
+		Content:    "standalone fact",
+		Importance: 3,
+		Confidence: 0.9,
+	}
+	got := reconcile.BuildUserPrompt(c, nil)
+	if !strings.Contains(got, "None found") {
+		t.Errorf("BuildUserPrompt with no neighbors: expected 'None found', got:\n%s", got)
+	}
+}
+
 // --- Golden prompt tests -----------------------------------------------------
 
 func TestGoldenSystemPrompt(t *testing.T) {
@@ -1150,5 +1346,144 @@ func TestGoldenUserPrompt(t *testing.T) {
 	}
 	if string(want) != got {
 		t.Errorf("user prompt differs from golden\ngot:\n%s\nwant:\n%s", got, want)
+	}
+}
+
+// --- M3: Merge trust gate matrix ---------------------------------------------
+
+// TestMergeTrustGateMatrix verifies that ActionMerge respects the trust gate
+// on every merge target:
+//   - All Low trust  → merge applied (targets superseded, new memory active).
+//   - Any Medium (no High) → merge applied + reconcile.warned event.
+//   - Any High trust → candidate parked; NO target is touched.
+func TestMergeTrustGateMatrix(t *testing.T) {
+	cases := []struct {
+		name       string
+		mem1Trust  store.Memory // first target trust params
+		mem2Trust  store.Memory // second target trust params
+		wantParked bool         // true → candidate pending_confirmation, targets active
+		wantWarn   bool         // true → reconcile.warned event emitted
+	}{
+		{
+			name: "all low: merge applied silently",
+			// Both use=0,save=0,llm_extracted,importance=3 → score≈0.35 < 1.0
+			mem1Trust:  store.Memory{UseCount: 0, SaveCount: 0, TrustSource: "llm_extracted", Importance: 3},
+			mem2Trust:  store.Memory{UseCount: 0, SaveCount: 0, TrustSource: "llm_extracted", Importance: 3},
+			wantParked: false, wantWarn: false,
+		},
+		{
+			name: "one medium: merge applied with warning",
+			// mem1: use=5,save=2,llm_extracted,importance=3 → score≈1.96 (MEDIUM)
+			// mem2: use=0,save=0,llm_extracted,importance=3 → score≈0.35 (LOW)
+			mem1Trust:  store.Memory{UseCount: 5, SaveCount: 2, TrustSource: "llm_extracted", Importance: 3},
+			mem2Trust:  store.Memory{UseCount: 0, SaveCount: 0, TrustSource: "llm_extracted", Importance: 3},
+			wantParked: false, wantWarn: true,
+		},
+		{
+			name: "one high: candidate parked",
+			// mem1: use=10,save=5,user_stated,importance=5 → score≈11.8 (HIGH)
+			// mem2: use=0,save=0,llm_extracted,importance=3 → score≈0.35 (LOW)
+			mem1Trust:  store.Memory{UseCount: 10, SaveCount: 5, TrustSource: "user_stated", Importance: 5},
+			mem2Trust:  store.Memory{UseCount: 0, SaveCount: 0, TrustSource: "llm_extracted", Importance: 3},
+			wantParked: true, wantWarn: false,
+		},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			st, cleanup := newTestStore(t)
+			defer cleanup()
+			ctx := context.Background()
+			scope := tenantScope("t-mtrust-" + t.Name())
+			entity := "merge-trust-entity"
+
+			// Build and insert the two targets.
+			mem1Content := "Go uses goroutines"
+			mem2Content := "Go uses channels"
+
+			mem1 := store.Memory{
+				ID: ulid.Make().String(), Kind: "fact", Content: mem1Content,
+				Status: "active", Confidence: 0.8,
+				TrustSource: tc.mem1Trust.TrustSource,
+				Importance:  tc.mem1Trust.Importance,
+				UseCount:    tc.mem1Trust.UseCount,
+				SaveCount:   tc.mem1Trust.SaveCount,
+				Stability:   1.0,
+				ContentHash: reconcile.ContentHash(reconcile.NormalizeContent(mem1Content)),
+				CreatedAt:   time.Now().UnixMilli(), UpdatedAt: time.Now().UnixMilli(),
+			}
+			mem2 := store.Memory{
+				ID: ulid.Make().String(), Kind: "fact", Content: mem2Content,
+				Status: "active", Confidence: 0.8,
+				TrustSource: tc.mem2Trust.TrustSource,
+				Importance:  tc.mem2Trust.Importance,
+				UseCount:    tc.mem2Trust.UseCount,
+				SaveCount:   tc.mem2Trust.SaveCount,
+				Stability:   1.0,
+				ContentHash: reconcile.ContentHash(reconcile.NormalizeContent(mem2Content)),
+				CreatedAt:   time.Now().UnixMilli(), UpdatedAt: time.Now().UnixMilli(),
+			}
+			insertTestMemory(t, st, scope, mem1, []string{entity}, []string{"kw-mtrust"})
+			insertTestMemory(t, st, scope, mem2, []string{entity}, []string{"kw-mtrust"})
+
+			gw := &stubGateway{
+				responses: []gateway.CompleteResponse{
+					{JSON: json.RawMessage(`{"action":"merge","target_ids":["` + mem1.ID + `","` + mem2.ID + `"],"content":"Go uses goroutines and channels","reason":"consolidation"}`)},
+				},
+			}
+			batch := pipeline.CandidateBatch{
+				Scope: scope,
+				Candidates: []pipeline.Candidate{
+					{Kind: "fact", Content: "Go uses goroutines and channels for concurrency",
+						Importance: 4, Confidence: 0.9,
+						Entities: []string{entity}, Keywords: []string{"kw-mtrust"}},
+				},
+			}
+			runStage(t, st.Memories(), st.Ops(), st.Events(), gw, batch)
+
+			m1After, err := st.Memories().Get(ctx, scope, mem1.ID)
+			if err != nil {
+				t.Fatalf("Get mem1: %v", err)
+			}
+			m2After, err := st.Memories().Get(ctx, scope, mem2.ID)
+			if err != nil {
+				t.Fatalf("Get mem2: %v", err)
+			}
+
+			if tc.wantParked {
+				// High-trust: both targets must remain active; candidate is parked.
+				if m1After.Status != "active" {
+					t.Errorf("high trust: mem1 status = %q, want active", m1After.Status)
+				}
+				if m2After.Status != "active" {
+					t.Errorf("high trust: mem2 status = %q, want active", m2After.Status)
+				}
+				pending, _, _ := st.Memories().ListByStatus(ctx, scope, "pending_confirmation", 10, "")
+				if len(pending) != 1 {
+					t.Errorf("high trust: got %d pending_confirmation, want 1", len(pending))
+				}
+			} else {
+				// Low/medium: both targets superseded; exactly one new active memory.
+				if m1After.Status != "superseded" {
+					t.Errorf("merge: mem1 status = %q, want superseded", m1After.Status)
+				}
+				if m2After.Status != "superseded" {
+					t.Errorf("merge: mem2 status = %q, want superseded", m2After.Status)
+				}
+				active, _, _ := st.Memories().ListByStatus(ctx, scope, "active", 10, "")
+				if len(active) != 1 {
+					t.Errorf("merge: got %d active memories, want 1 (merged)", len(active))
+				}
+			}
+
+			warnEvts := eventsByType(t, st, scope, "reconcile.warned")
+			if tc.wantWarn && len(warnEvts) == 0 {
+				t.Error("merge medium trust: no reconcile.warned event; want one")
+			}
+			if !tc.wantWarn && len(warnEvts) > 0 {
+				t.Errorf("merge low/high trust: unexpected reconcile.warned events (got %d)", len(warnEvts))
+			}
+		})
 	}
 }
