@@ -185,6 +185,49 @@ type NeighborQuery struct {
 	Limit    int      // 0 defaults to 8
 }
 
+// Window is an optional time-range filter for retrieval lanes (Phase 09).
+// Timestamps are unix milliseconds; zero means unbounded.
+type Window struct {
+	From  int64 // inclusive lower bound on created_at; 0 = no lower bound
+	Until int64 // inclusive upper bound on created_at; 0 = no upper bound
+}
+
+// LexicalHit is a single result from a FTS retrieval lane.
+type LexicalHit struct {
+	MemoryID string
+	Rank     float64 // bm25/ts_rank score; higher = more relevant
+}
+
+// StoredVector is a raw vector entry returned by VectorStore.Scan (D-046).
+// Vec is already decoded from float32-LE bytes; Dims is the declared length.
+type StoredVector struct {
+	MemoryID  string
+	TenantID  string
+	ProjectID string
+	UserID    string
+	SessionID string
+	Vec       []float32
+	Dims      int
+	Model     string
+	// Metadata from the memories table — used for window/kind filtering in Scan.
+	Kind      string
+	CreatedAt int64 // unix ms
+}
+
+// MemoryForEmbed is a lightweight memory entry for the backfill embed sweep.
+// It carries the content and junction rows needed to build enriched text (D-047).
+type MemoryForEmbed struct {
+	MemoryID  string
+	TenantID  string
+	ProjectID string
+	UserID    string
+	SessionID string
+	Content   string
+	Entities  []string
+	Keywords  []string
+	Queries   []string
+}
+
 // CommitSet is the transactional unit for one reconciliation outcome.
 // All writes (memory row, junction rows, provenance rows, link rows, event rows)
 // happen in a single DB transaction — the D-017/D-045 reversibility contract.

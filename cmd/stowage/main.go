@@ -23,10 +23,12 @@ import (
 	"github.com/hurtener/stowage/internal/gateway"
 	"github.com/hurtener/stowage/internal/pipeline"
 	"github.com/hurtener/stowage/internal/reconcile"
+	"github.com/hurtener/stowage/internal/retrieval"
 	"github.com/hurtener/stowage/internal/store"
 	"github.com/hurtener/stowage/internal/store/migrations"
 	"github.com/hurtener/stowage/internal/telemetry"
 	"github.com/hurtener/stowage/internal/topics"
+	"github.com/hurtener/stowage/internal/vindex"
 	// register drivers via init()
 	_ "github.com/hurtener/stowage/internal/gateway/bifrost"
 	_ "github.com/hurtener/stowage/internal/gateway/mock"
@@ -364,6 +366,16 @@ func runServe(args []string) {
 	extractStage := pipeline.NewExtractStage(st, gw, topicSvc, log, cfg.Profile, bufStage.Downstream())
 	extractStage.Start(ctx)
 
+	// Phase 09: vindex, embedder, and retriever (D-046, D-047).
+	// EmbedDims defaults to 0 when unconfigured; vindex skips dim checks then.
+	vi := vindex.New(st.Vectors(), cfg.Gateway.EmbedDims, cfg.Gateway.EmbedModel)
+	embedder := reconcile.NewEmbedder(st.Vectors(), vi, gw, log)
+	embedder.Start(ctx)
+	go embedder.BackfillSweep(ctx)
+
+	retriever := retrieval.New(st.Memories(), vi, gw, log)
+	srv.SetRetriever(retriever)
+
 	// Phase 08: reconciliation stage wired to extract stage downstream.
 	reconcileStage := reconcile.New(
 		st.Memories(),
@@ -373,6 +385,7 @@ func runServe(args []string) {
 		log,
 		extractStage.Downstream(),
 	)
+	reconcileStage.SetEmbedder(embedder)
 	reconcileStage.Start(ctx)
 
 	// Start HTTP server in a goroutine.

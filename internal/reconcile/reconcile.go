@@ -38,13 +38,14 @@ const (
 // reconciles each candidate against the memory store using an 8-step flow.
 // It is safe for concurrent use after Start is called.
 type ReconcileStage struct {
-	mem  store.MemoryStore
-	ops  store.OpsStore
-	evts store.EventStore
-	gw   gateway.Gateway
-	log  *slog.Logger
-	in   <-chan pipeline.CandidateBatch
-	wg   sync.WaitGroup
+	mem      store.MemoryStore
+	ops      store.OpsStore
+	evts     store.EventStore
+	gw       gateway.Gateway
+	log      *slog.Logger
+	in       <-chan pipeline.CandidateBatch
+	wg       sync.WaitGroup
+	embedder *Embedder // optional; nil = no embedding (degraded-embed mode)
 }
 
 // New creates a ReconcileStage wired to the given dependencies.
@@ -65,6 +66,13 @@ func New(
 		log:  log.With("stage", "reconcile"),
 		in:   in,
 	}
+}
+
+// SetEmbedder wires an optional Embedder for post-commit vector embedding (D-047).
+// Must be called before Start. If not set, vector embedding is skipped (degraded-
+// embed mode — retrieval still works lexically).
+func (r *ReconcileStage) SetEmbedder(e *Embedder) {
+	r.embedder = e
 }
 
 // Start launches reconcileWorkers goroutines that consume CandidateBatch events.
@@ -260,6 +268,7 @@ func (r *ReconcileStage) commit(
 			}
 			return err
 		}
+		r.enqueueEmbed(scope, c, mem.ID, normalized)
 		return nil
 
 	case store.ActionPark:
@@ -354,7 +363,11 @@ func (r *ReconcileStage) commit(
 			Events:   events,
 		}
 		cs.Provenance = buildProvenance(mem.ID, c.Provenance)
-		return r.mem.Commit(ctx, scope, cs)
+		if err := r.mem.Commit(ctx, scope, cs); err != nil {
+			return err
+		}
+		r.enqueueEmbed(scope, c, mem.ID, normalizedContent)
+		return nil
 
 	case store.ActionSupersede:
 		target := findNeighborByID(neighbors, d.TargetIDs[0])
@@ -429,7 +442,11 @@ func (r *ReconcileStage) commit(
 			Events:   events,
 		}
 		cs.Provenance = buildProvenance(mem.ID, c.Provenance)
-		return r.mem.Commit(ctx, scope, cs)
+		if err := r.mem.Commit(ctx, scope, cs); err != nil {
+			return err
+		}
+		r.enqueueEmbed(scope, c, mem.ID, normalized)
+		return nil
 
 	case store.ActionMerge:
 		targets := findNeighborsByIDs(neighbors, d.TargetIDs)
@@ -511,6 +528,7 @@ func (r *ReconcileStage) commit(
 			}
 			return err
 		}
+		r.enqueueEmbed(scope, c, mem.ID, normalizedMerge)
 		return nil
 
 	default:
@@ -577,6 +595,7 @@ func (r *ReconcileStage) commitFastAdd(ctx context.Context, scope identity.Scope
 		}
 		return err
 	}
+	r.enqueueEmbed(scope, c, mem.ID, normalized)
 	return nil
 }
 
@@ -603,6 +622,28 @@ func (r *ReconcileStage) getJunctions(ctx context.Context, scope identity.Scope,
 			"id", id, "err", err)
 	}
 	return j
+}
+
+// enqueueEmbed non-blockingly enqueues an embed job for a newly committed memory.
+// If no embedder is wired, or if the memory status is not "active", this is a
+// no-op. Enriched text = content + entities + keywords + anticipated queries (D-047).
+func (r *ReconcileStage) enqueueEmbed(scope identity.Scope, c pipeline.Candidate, memID, content string) {
+	if r.embedder == nil {
+		return
+	}
+	m := store.MemoryForEmbed{
+		MemoryID: memID,
+		TenantID: scope.Tenant,
+		Content:  content,
+		Entities: c.Entities,
+		Keywords: c.Keywords,
+		Queries:  c.AnticipatedQueries,
+	}
+	r.embedder.Enqueue(EmbedJob{
+		Scope:        scope,
+		MemoryID:     memID,
+		EnrichedText: buildEnrichedText(m),
+	})
 }
 
 // --- helpers ----------------------------------------------------------------

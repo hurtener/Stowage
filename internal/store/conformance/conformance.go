@@ -36,6 +36,7 @@ func Run(t *testing.T, factory Factory) {
 	t.Helper()
 
 	t.Run("MigrateIdempotent", func(t *testing.T) { testMigrateIdempotent(t, factory) })
+	t.Run("NewMethodGuardBranches", func(t *testing.T) { testNewMethodGuardBranches(t, factory) })
 	t.Run("AppliedMigrationsListing", func(t *testing.T) { testAppliedMigrationsListing(t, factory) })
 	t.Run("RecordAppendGet", func(t *testing.T) { testRecordAppendGet(t, factory) })
 	t.Run("RecordAppendIdempotent", func(t *testing.T) { testRecordAppendIdempotent(t, factory) })
@@ -121,6 +122,24 @@ func Run(t *testing.T, factory Factory) {
 	// execCommit coverage — merge FaultHook + unknown action guard
 	t.Run("MemoryCommitFaultHookMerge", func(t *testing.T) { testMemoryCommitFaultHookMerge(t, factory) })
 	t.Run("MemoryCommitUnknownAction", func(t *testing.T) { testMemoryCommitUnknownAction(t, factory) })
+	// Phase 09 — VectorStore conformance
+	t.Run("VectorUpsertScan", func(t *testing.T) { testVectorUpsertScan(t, factory) })
+	t.Run("VectorUpsertReplace", func(t *testing.T) { testVectorUpsertReplace(t, factory) })
+	t.Run("VectorDelete", func(t *testing.T) { testVectorDelete(t, factory) })
+	t.Run("VectorScopeIsolation", func(t *testing.T) { testVectorScopeIsolation(t, factory) })
+	t.Run("VectorCrossUserIsolation", func(t *testing.T) { testVectorCrossUserIsolation(t, factory) })
+	t.Run("VectorKindFilter", func(t *testing.T) { testVectorKindFilter(t, factory) })
+	t.Run("VectorWindowFilter", func(t *testing.T) { testVectorWindowFilter(t, factory) })
+	t.Run("VectorListWithoutVectors", func(t *testing.T) { testVectorListWithoutVectors(t, factory) })
+	t.Run("VectorScopeRequired", func(t *testing.T) { testVectorScopeRequired(t, factory) })
+	// Phase 09 — MemoryStore lexical + GetMany
+	t.Run("LexicalSearch", func(t *testing.T) { testLexicalSearch(t, factory) })
+	t.Run("LexicalSearchWindow", func(t *testing.T) { testLexicalSearchWindow(t, factory) })
+	t.Run("LexicalSearchScopeIsolation", func(t *testing.T) { testLexicalSearchScopeIsolation(t, factory) })
+	t.Run("QuerySearch", func(t *testing.T) { testQuerySearch(t, factory) })
+	t.Run("QuerySearchScopeIsolation", func(t *testing.T) { testQuerySearchScopeIsolation(t, factory) })
+	t.Run("MemoryGetMany", func(t *testing.T) { testMemoryGetMany(t, factory) })
+	t.Run("MemoryGetManyEmpty", func(t *testing.T) { testMemoryGetManyEmpty(t, factory) })
 }
 
 // --- helpers ----------------------------------------------------------------
@@ -164,6 +183,107 @@ func testAppliedMigrationsListing(t *testing.T, factory Factory) {
 		if applied[i] != known[i] {
 			t.Errorf("migration %d: applied %q != known %q", i, applied[i], known[i])
 		}
+	}
+}
+
+// testNewMethodGuardBranches sweeps the guard/edge branches of the Phase 09
+// methods on every driver: empty-scope rejection, empty/zero inputs, filters.
+func testNewMethodGuardBranches(t *testing.T, factory Factory) {
+	t.Helper()
+	s, cleanup := factory()
+	defer cleanup()
+	ctx := context.Background()
+	scope := tenantScope("guard-branches-" + ulid.Make().String())
+	zero := identity.Scope{}
+
+	// Empty-scope rejection on every new method.
+	if err := s.Vectors().Upsert(ctx, zero, store.StoredVector{MemoryID: "m1", Vec: []float32{1}}); !errors.Is(err, store.ErrScopeRequired) {
+		t.Errorf("Vectors.Upsert zero scope: got %v", err)
+	}
+	if err := s.Vectors().Delete(ctx, zero, "m1"); !errors.Is(err, store.ErrScopeRequired) {
+		t.Errorf("Vectors.Delete zero scope: got %v", err)
+	}
+	if _, err := s.Vectors().Scan(ctx, zero, nil, store.Window{}); !errors.Is(err, store.ErrScopeRequired) {
+		t.Errorf("Vectors.Scan zero scope: got %v", err)
+	}
+	if _, err := s.Memories().LexicalSearch(ctx, zero, "x", 5, store.Window{}, nil); !errors.Is(err, store.ErrScopeRequired) {
+		t.Errorf("LexicalSearch zero scope: got %v", err)
+	}
+	if _, err := s.Memories().QuerySearch(ctx, zero, "x", 5, store.Window{}); !errors.Is(err, store.ErrScopeRequired) {
+		t.Errorf("QuerySearch zero scope: got %v", err)
+	}
+	if _, err := s.Memories().GetMany(ctx, zero, []string{"a"}); !errors.Is(err, store.ErrScopeRequired) {
+		t.Errorf("GetMany zero scope: got %v", err)
+	}
+
+	// Empty/zero inputs return empty, not errors.
+	if hits, err := s.Memories().LexicalSearch(ctx, scope, "", 5, store.Window{}, nil); err != nil || len(hits) != 0 {
+		t.Errorf("LexicalSearch empty query: %v %v", hits, err)
+	}
+	if hits, err := s.Memories().LexicalSearch(ctx, scope, "x", 0, store.Window{}, nil); err != nil || len(hits) != 0 {
+		t.Errorf("LexicalSearch k=0: %v %v", hits, err)
+	}
+	if hits, err := s.Memories().QuerySearch(ctx, scope, "", 5, store.Window{}); err != nil || len(hits) != 0 {
+		t.Errorf("QuerySearch empty query: %v %v", hits, err)
+	}
+	if got, err := s.Memories().GetMany(ctx, scope, nil); err != nil || len(got) != 0 {
+		t.Errorf("GetMany empty ids: %v %v", got, err)
+	}
+
+	// Filtered variants exercise the kinds/window branches.
+	if _, err := s.Memories().LexicalSearch(ctx, scope, "anything", 5, store.Window{From: 1, Until: 2}, []string{"fact"}); err != nil {
+		t.Errorf("LexicalSearch with filters: %v", err)
+	}
+	if _, err := s.Vectors().Scan(ctx, scope, []string{"fact"}, store.Window{From: 1, Until: 2}); err != nil {
+		t.Errorf("Vectors.Scan with filters: %v", err)
+	}
+
+	// Delete of a nonexistent vector is a no-op, not an error.
+	if err := s.Vectors().Delete(ctx, scope, "never-existed"); err != nil {
+		t.Errorf("Vectors.Delete missing: %v", err)
+	}
+
+	// Fully sub-scoped round-trip exercises every scope-column branch.
+	full := identity.Scope{Tenant: scope.Tenant, Project: "p1", User: "u1", Session: "s1"}
+	backing := store.Memory{
+		ID: newID(), Kind: "fact", Content: "guard-branch backing memory",
+		Status: "active", Importance: 3, Confidence: 0.9,
+		TrustSource: "llm_extracted", Stability: 1.0,
+	}
+	if err := s.Memories().Insert(ctx, full, backing); err != nil {
+		t.Fatalf("insert backing memory: %v", err)
+	}
+	sv := store.StoredVector{
+		MemoryID: backing.ID, TenantID: full.Tenant,
+		ProjectID: full.Project, UserID: full.User, SessionID: full.Session,
+		Vec: []float32{0.6, 0.8},
+	}
+	if err := s.Vectors().Upsert(ctx, full, sv); err != nil {
+		t.Fatalf("Upsert full scope: %v", err)
+	}
+	// Upsert-replace branch.
+	sv.Vec = []float32{1, 0}
+	if err := s.Vectors().Upsert(ctx, full, sv); err != nil {
+		t.Fatalf("Upsert replace: %v", err)
+	}
+	got, err := s.Vectors().Scan(ctx, full, nil, store.Window{})
+	if err != nil || len(got) != 1 || got[0].Vec[0] != 1 {
+		t.Fatalf("Scan full scope after replace: %v %v", got, err)
+	}
+	// Sibling session sees nothing (session branch of the WHERE).
+	sib := identity.Scope{Tenant: full.Tenant, Project: "p1", User: "u1", Session: "s2"}
+	if got, err := s.Vectors().Scan(ctx, sib, nil, store.Window{}); err != nil || len(got) != 0 {
+		t.Errorf("sibling session scan: %v %v", got, err)
+	}
+	if err := s.Vectors().Delete(ctx, full, sv.MemoryID); err != nil {
+		t.Errorf("Delete full scope: %v", err)
+	}
+	// GetMany with a mix of present and missing ids (uses an existing memory).
+	if got, err := s.Memories().GetMany(ctx, full, []string{"missing-1", "missing-2"}); err != nil || len(got) != 0 {
+		t.Errorf("GetMany all-missing: %v %v", got, err)
+	}
+	if hits, err := s.Memories().QuerySearch(ctx, scope, "x", 0, store.Window{}); err != nil || len(hits) != 0 {
+		t.Errorf("QuerySearch k=0: %v %v", hits, err)
 	}
 }
 

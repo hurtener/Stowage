@@ -133,3 +133,13 @@ New terms land here in the same PR that introduces them (CLAUDE.md §14).
   Packs are virtual: they are never written to the topics table and appear in
   `GET /v1/topics` with `source: pack`. Any explicit active topic disables the
   pack; the `pack:off` sentinel opts out of packs entirely.
+- **Enriched text** — the string fed to the embedding gateway for a memory,
+  formed by joining `content + entities + keywords + anticipated_queries` with
+  spaces (D-047). Enriching beyond the raw content improves semantic recall
+  for the vector lane without requiring schema changes; the FTS5/tsvector lanes
+  already operate on content+context separately.
+- **Backfill sweep** — a background job that scans for active memories missing
+  a vector entry (`memory_vectors` row) and enqueues them for embedding (D-047).
+  Runs once at serve-boot (immediate pass) then on a jittered 5–7-minute ticker
+  via `Embedder.BackfillSweep`. Provides crash-recovery for embed jobs dropped
+  from the bounded channel or lost to gateway failures. Limit 64 per pass.
