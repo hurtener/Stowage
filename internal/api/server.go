@@ -24,6 +24,7 @@ import (
 
 	"github.com/hurtener/stowage/internal/config"
 	"github.com/hurtener/stowage/internal/pipeline"
+	"github.com/hurtener/stowage/internal/retrieval"
 	"github.com/hurtener/stowage/internal/store"
 	"github.com/hurtener/stowage/internal/topics"
 )
@@ -51,6 +52,10 @@ type Server struct {
 	// topicSvc provides virtual-pack logic for GET /v1/topics (Phase 07).
 	// Set via SetTopicService before calling ListenAndServe.
 	topicSvc *topics.Service
+
+	// retriever is the four-lane retrieval engine (Phase 09).
+	// Set via SetRetriever before calling ListenAndServe.
+	retriever *retrieval.Retriever
 
 	maxBodyB int64 // max request body bytes
 
@@ -104,6 +109,9 @@ func New(cfg *config.Config, st store.Store, log *slog.Logger, reg *prometheus.R
 	mux.HandleFunc("PUT /v1/topics", srv.authMiddleware(srv.handleUpsertTopics, false))
 	mux.HandleFunc("DELETE /v1/topics/{key}", srv.authMiddleware(srv.handleDeleteTopic, false))
 
+	// Retrieval — four-lane RRF retrieval (Phase 09).
+	mux.HandleFunc("POST /v1/retrieve", srv.authMiddleware(srv.handleRetrieve, false))
+
 	// Admin key management — admin role required.
 	// POST /v1/admin/keys is registered without the auth wrapper so that the
 	// handler can implement bootstrap mode (first-key creation when the keyring
@@ -144,6 +152,12 @@ func (s *Server) SetStage(st *pipeline.Stage) {
 // Must be called before ListenAndServe.
 func (s *Server) SetTopicService(svc *topics.Service) {
 	s.topicSvc = svc
+}
+
+// SetRetriever wires the retrieval.Retriever used by POST /v1/retrieve (Phase 09).
+// Must be called before ListenAndServe.
+func (s *Server) SetRetriever(r *retrieval.Retriever) {
+	s.retriever = r
 }
 
 // Pipeline returns the read end of the ingest pipeline channel.

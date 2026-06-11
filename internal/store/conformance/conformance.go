@@ -121,6 +121,24 @@ func Run(t *testing.T, factory Factory) {
 	// execCommit coverage — merge FaultHook + unknown action guard
 	t.Run("MemoryCommitFaultHookMerge", func(t *testing.T) { testMemoryCommitFaultHookMerge(t, factory) })
 	t.Run("MemoryCommitUnknownAction", func(t *testing.T) { testMemoryCommitUnknownAction(t, factory) })
+	// Phase 09 — VectorStore conformance
+	t.Run("VectorUpsertScan", func(t *testing.T) { testVectorUpsertScan(t, factory) })
+	t.Run("VectorUpsertReplace", func(t *testing.T) { testVectorUpsertReplace(t, factory) })
+	t.Run("VectorDelete", func(t *testing.T) { testVectorDelete(t, factory) })
+	t.Run("VectorScopeIsolation", func(t *testing.T) { testVectorScopeIsolation(t, factory) })
+	t.Run("VectorCrossUserIsolation", func(t *testing.T) { testVectorCrossUserIsolation(t, factory) })
+	t.Run("VectorKindFilter", func(t *testing.T) { testVectorKindFilter(t, factory) })
+	t.Run("VectorWindowFilter", func(t *testing.T) { testVectorWindowFilter(t, factory) })
+	t.Run("VectorListWithoutVectors", func(t *testing.T) { testVectorListWithoutVectors(t, factory) })
+	t.Run("VectorScopeRequired", func(t *testing.T) { testVectorScopeRequired(t, factory) })
+	// Phase 09 — MemoryStore lexical + GetMany
+	t.Run("LexicalSearch", func(t *testing.T) { testLexicalSearch(t, factory) })
+	t.Run("LexicalSearchWindow", func(t *testing.T) { testLexicalSearchWindow(t, factory) })
+	t.Run("LexicalSearchScopeIsolation", func(t *testing.T) { testLexicalSearchScopeIsolation(t, factory) })
+	t.Run("QuerySearch", func(t *testing.T) { testQuerySearch(t, factory) })
+	t.Run("QuerySearchScopeIsolation", func(t *testing.T) { testQuerySearchScopeIsolation(t, factory) })
+	t.Run("MemoryGetMany", func(t *testing.T) { testMemoryGetMany(t, factory) })
+	t.Run("MemoryGetManyEmpty", func(t *testing.T) { testMemoryGetManyEmpty(t, factory) })
 }
 
 // --- helpers ----------------------------------------------------------------

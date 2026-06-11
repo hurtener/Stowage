@@ -44,6 +44,11 @@ type Store interface {
 	// Ops returns the dead-letter and job-marker sub-store.
 	Ops() OpsStore
 
+	// Vectors returns the float32-LE BLOB vector sub-store (Phase 09, D-046).
+	// Drivers implement brute-force scope-filtered scan; cosine is computed by
+	// the caller (internal/vindex). No pgvector dependency; CI stays postgres:17.
+	Vectors() VectorStore
+
 	// Close flushes any pending writes and releases resources.
 	Close(ctx context.Context) error
 }
@@ -123,6 +128,20 @@ type MemoryStore interface {
 	// exists but has no junction rows.
 	GetJunctions(ctx context.Context, scope identity.Scope, id string) (MemoryJunctions, error)
 
+	// LexicalSearch returns the top-k memories matching query via full-text
+	// search on content+context (FTS5/tsvector, Phase 09). Results are ordered
+	// by relevance score descending. scope-isolated per P3.
+	LexicalSearch(ctx context.Context, scope identity.Scope, query string, k int, w Window, kinds []string) ([]LexicalHit, error)
+
+	// QuerySearch returns the top-k memories whose anticipated queries match
+	// the given query text (FTS over memory_queries, Phase 09). Results are
+	// ordered by relevance score descending. scope-isolated per P3.
+	QuerySearch(ctx context.Context, scope identity.Scope, query string, k int, w Window) ([]LexicalHit, error)
+
+	// GetMany returns memories for the given IDs within scope. IDs not found
+	// are silently omitted. Order matches the order of ids.
+	GetMany(ctx context.Context, scope identity.Scope, ids []string) ([]Memory, error)
+
 	// Commit executes one reconciliation outcome as a single atomic transaction:
 	// memory insert/update, junction rows, provenance rows, link rows, status
 	// transitions on targets, and event rows — all in one DB transaction.
@@ -193,6 +212,27 @@ type BranchStore interface {
 
 	// ListBySession returns all branches for a session within scope.
 	ListBySession(ctx context.Context, scope identity.Scope, sessionID string) ([]Branch, error)
+}
+
+// VectorStore manages float32-LE BLOB vector embeddings (Phase 09, D-046).
+// All vectors are scope-isolated; brute-force cosine is performed by the
+// caller (internal/vindex) after Scan returns the raw float32 slices.
+// No pgvector extension; CI stays postgres:17 (D-046).
+type VectorStore interface {
+	// Upsert inserts or replaces the vector for v.MemoryID within scope.
+	Upsert(ctx context.Context, scope identity.Scope, v StoredVector) error
+
+	// Delete removes the vector for memoryID. No-op when absent.
+	Delete(ctx context.Context, scope identity.Scope, memoryID string) error
+
+	// Scan returns all vectors for the scope, optionally filtered by kinds and
+	// time window. Used by the brute-force vindex driver to compute cosine.
+	Scan(ctx context.Context, scope identity.Scope, kinds []string, w Window) ([]StoredVector, error)
+
+	// ListWithoutVectors returns at most limit active memories with no vector
+	// entry, including junction rows needed to build enriched embed text (D-047).
+	// Unscoped — scans all tenants like RecordStore.ListUnprocessed.
+	ListWithoutVectors(ctx context.Context, limit int) ([]MemoryForEmbed, error)
 }
 
 // OpsStore manages dead letters and job markers (RFC §11, D-024).

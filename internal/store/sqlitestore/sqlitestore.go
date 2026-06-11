@@ -350,10 +350,79 @@ func (s *sqliteStore) applyMigration(ctx context.Context, version, sqlText strin
 	})
 }
 
-// splitStatements splits a SQL script on semicolons, preserving empty strings
-// so blank lines are skipped by the caller.
-func splitStatements(sql string) []string {
-	return strings.Split(sql, ";")
+// splitStatements splits a SQL script into individual statements.
+//
+// It handles two SQLite-specific complications:
+//   - Single-line comments (-- ...) may contain semicolons that must not be
+//     treated as statement terminators.
+//   - Trigger bodies (BEGIN ... END) contain inner statements separated by
+//     semicolons; those semicolons must be preserved inside the trigger.
+func splitStatements(sqlText string) []string {
+	// Strip single-line comments line by line to avoid ';' inside them
+	// being mistaken for statement terminators.
+	var stripped strings.Builder
+	for _, line := range strings.Split(sqlText, "\n") {
+		if idx := strings.Index(line, "--"); idx >= 0 {
+			line = line[:idx]
+		}
+		stripped.WriteString(line)
+		stripped.WriteByte('\n')
+	}
+
+	// Split on ';', tracking BEGIN/END depth so that semicolons inside
+	// SQLite trigger bodies are preserved rather than treated as terminators.
+	text := stripped.String()
+	var stmts []string
+	var cur strings.Builder
+	depth := 0
+
+	for _, part := range strings.Split(text, ";") {
+		upper := strings.ToUpper(part)
+		depth += sqlWordCount(upper, "BEGIN") - sqlWordCount(upper, "END")
+		if depth < 0 {
+			depth = 0 // safety — shouldn't happen in well-formed SQL
+		}
+		cur.WriteString(part)
+		if depth == 0 {
+			if s := strings.TrimSpace(cur.String()); s != "" {
+				stmts = append(stmts, cur.String())
+			}
+			cur.Reset()
+		} else {
+			cur.WriteByte(';') // preserve inner semicolons inside BEGIN...END
+		}
+	}
+	if s := strings.TrimSpace(cur.String()); s != "" {
+		stmts = append(stmts, cur.String())
+	}
+	return stmts
+}
+
+// sqlWordCount counts whole-word occurrences of word in text.
+// text and word must already be uppercased.
+func sqlWordCount(text, word string) int {
+	count := 0
+	start := 0
+	for {
+		idx := strings.Index(text[start:], word)
+		if idx == -1 {
+			break
+		}
+		abs := start + idx
+		before := abs == 0 || !sqlWordChar(text[abs-1])
+		after := abs+len(word) >= len(text) || !sqlWordChar(text[abs+len(word)])
+		if before && after {
+			count++
+		}
+		start = abs + len(word)
+	}
+	return count
+}
+
+// sqlWordChar reports whether b is an identifier character (letter, digit, _).
+func sqlWordChar(b byte) bool {
+	return (b >= 'A' && b <= 'Z') || (b >= 'a' && b <= 'z') ||
+		(b >= '0' && b <= '9') || b == '_'
 }
 
 // Close signals the store closed, drains in-flight writes, and releases resources.
@@ -391,6 +460,7 @@ func (s *sqliteStore) Keys() auth.Keyring          { return &keyStore{s} }
 func (s *sqliteStore) Events() store.EventStore    { return &eventStore{s} }
 func (s *sqliteStore) Branches() store.BranchStore { return &branchStore{s} }
 func (s *sqliteStore) Ops() store.OpsStore         { return &opsStore{s} }
+func (s *sqliteStore) Vectors() store.VectorStore  { return &vectorStore{s} }
 
 // nullStr converts empty string to nil (for nullable TEXT columns).
 func nullStr(s string) interface{} {

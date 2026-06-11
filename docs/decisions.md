@@ -461,3 +461,39 @@ the `Commit` method is the only place in the codebase that holds an open
 transaction for memory mutations — all other mutation helpers (Insert, Update,
 SetStatus) remain available for non-reconciliation paths (e.g. sweep, API
 admin ops).
+
+## D-046 — Vector storage as float32-LE BLOB/BYTEA; brute-force cosine in Go for v1
+
+2026-06-11. Phase 09 adds a vector retrieval lane. We need embeddings stored
+per-memory and a similarity search mechanism.
+
+**Decision:** store vectors as `BLOB` (SQLite) / `BYTEA` (PostgreSQL) in a
+new `memory_vectors` table using little-endian float32 encoding.
+`internal/vindex` wraps `store.VectorStore` and performs brute-force cosine
+similarity in Go after a scope-filtered `Scan`. No pgvector extension is
+required; CI stays on `postgres:17`. The `Index` seam accepts alternative
+drivers (e.g. gohnsw, pgvector-native) without interface changes.
+`vindex.ErrDimsMismatch` is returned for upserts where `len(vec) != dims`.
+
+**Consequences:** v1 is correct to ~100 k vectors/scope; HNSW and pgvector
+arrive as new drivers behind the same seam. CI remains free of pgvector.
+Float32-LE encoding is deterministic across Go versions and architectures.
+
+## D-047 — Enriched-text embedding; async post-commit; dead-letter + backfill
+
+2026-06-11. We need to populate vectors for memories after they are committed
+and keep them current without blocking the reconcile path.
+
+**Decision:** the embed text for a memory is `content + entities + keywords +
+anticipated_queries` joined with spaces (enriched text). Embedding is async:
+reconcile calls `Embedder.Enqueue` non-blockingly after each successful commit
+of an active memory (add/fast-add/supersede/update/merge). If the channel is
+full the job is dropped with a log warning; the backfill sweep recovers it.
+`Embedder.BackfillSweep` runs at boot (immediate pass) then on a jittered
+5–7-minute ticker, calling `VectorStore.ListWithoutVectors` (limit 64) and
+re-enqueueing. Gateway embed failures are logged at Warn; retrieval still
+serves lexically for that memory (degraded per-memory, not per-system).
+
+**Consequences:** no commit is ever blocked by an embed call (P2 spirit);
+the backfill sweep provides crash-recovery for missed embeds; the enriched
+text improves semantic recall without requiring schema changes.
