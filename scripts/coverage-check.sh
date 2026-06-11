@@ -72,6 +72,13 @@ while IFS=$'\t' read -r pkg stmts covered; do
         continue
     fi
 
+    # pgstore tests require STOWAGE_TEST_PG_DSN; skip the threshold check
+    # when the env var is absent (CI provides a postgres service container).
+    if [[ "$pkg" == *"/store/pgstore"* ]] && [ -z "${STOWAGE_TEST_PG_DSN:-}" ]; then
+        echo "SKIP $pkg: STOWAGE_TEST_PG_DSN not set (CI-only coverage enforcement)"
+        continue
+    fi
+
     pct=$(awk "BEGIN { printf \"%.1f\", ${covered} * 100.0 / ${stmts} }")
     threshold=$(get_threshold "$pkg")
 
