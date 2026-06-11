@@ -279,6 +279,33 @@ func TestExplainGolden(t *testing.T) {
 	}
 }
 
+// TestServerTimeoutEnvOverrides verifies the new server timeout fields can be
+// set via environment variables and are correctly parsed.
+func TestServerTimeoutEnvOverrides(t *testing.T) {
+	clearStowageEnv(t)
+	t.Setenv("STOWAGE_SERVER_READ_TIMEOUT", "30")
+	t.Setenv("STOWAGE_SERVER_WRITE_TIMEOUT", "60")
+	t.Setenv("STOWAGE_SERVER_IDLE_TIMEOUT", "120")
+	t.Setenv("STOWAGE_SERVER_MAX_BODY_BYTES", "2097152")
+
+	cfg, err := config.Load(context.Background(), "")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Server.ReadTimeout != 30 {
+		t.Errorf("ReadTimeout = %d, want 30", cfg.Server.ReadTimeout)
+	}
+	if cfg.Server.WriteTimeout != 60 {
+		t.Errorf("WriteTimeout = %d, want 60", cfg.Server.WriteTimeout)
+	}
+	if cfg.Server.IdleTimeout != 120 {
+		t.Errorf("IdleTimeout = %d, want 120", cfg.Server.IdleTimeout)
+	}
+	if cfg.Server.MaxBodyBytes != 2097152 {
+		t.Errorf("MaxBodyBytes = %d, want 2097152", cfg.Server.MaxBodyBytes)
+	}
+}
+
 // TestLoadMergeOrder verifies the merge priority: env beats file beats profile.
 func TestLoadMergeOrder(t *testing.T) {
 	clearStowageEnv(t)
@@ -314,6 +341,10 @@ func clearStowageEnv(t *testing.T) {
 	vars := []string{
 		"STOWAGE_PROFILE",
 		"STOWAGE_SERVER_LISTEN",
+		"STOWAGE_SERVER_READ_TIMEOUT",
+		"STOWAGE_SERVER_WRITE_TIMEOUT",
+		"STOWAGE_SERVER_IDLE_TIMEOUT",
+		"STOWAGE_SERVER_MAX_BODY_BYTES",
 		"STOWAGE_STORE_DRIVER",
 		"STOWAGE_STORE_DSN",
 		"STOWAGE_GATEWAY_DRIVER",

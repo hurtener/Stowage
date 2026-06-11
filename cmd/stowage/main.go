@@ -7,11 +7,21 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"log/slog"
+	"net/http"
 	"os"
+	"os/signal"
+	"syscall"
+	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
+
+	"github.com/hurtener/stowage/internal/api"
 	"github.com/hurtener/stowage/internal/config"
 	"github.com/hurtener/stowage/internal/store"
+	"github.com/hurtener/stowage/internal/telemetry"
 	// register drivers via init()
 	_ "github.com/hurtener/stowage/internal/store/pgstore"
 	_ "github.com/hurtener/stowage/internal/store/sqlitestore"
@@ -67,7 +77,10 @@ func main() {
 	case "migrate":
 		runMigrate(os.Args[2:])
 
-	case "serve", "mcp", "eval":
+	case "serve":
+		runServe(os.Args[2:])
+
+	case "mcp", "eval":
 		fmt.Fprintf(os.Stderr, "stowage %s: not implemented yet — see docs/plans/README.md\n", os.Args[1])
 		os.Exit(1)
 
@@ -200,4 +213,132 @@ func runMigrate(args []string) {
 		os.Exit(1)
 	}
 	fmt.Println("stowage migrate: applied all pending migrations")
+}
+
+const serveUsage = `stowage serve — run the HTTP memory service
+
+Usage:
+  stowage serve [--config path]
+
+Flags:
+  --config path   path to config file (default: auto-discover)
+`
+
+// runServe implements `stowage serve [--config path]`.
+//
+// Boot sequence (Phase 05):
+//  1. config.Load   — typed config, fail-loud validation
+//  2. telemetry.New — slog + Prometheus registry
+//  3. store.Open    — open store driver
+//  4. Migrate       — apply pending migrations (if auto-migrate is default)
+//  5. api.New       — build HTTP server with all routes
+//  6. ListenAndServe — start accepting connections
+//
+// Graceful shutdown on SIGTERM/SIGINT:
+//  1. Stop accepting new connections (http.Shutdown with 30s timeout)
+//  2. Drain the pipeline channel (Close sends the stop signal)
+//  3. Close the store
+func runServe(args []string) {
+	var configPath string
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--config":
+			if i+1 >= len(args) {
+				fmt.Fprintln(os.Stderr, "stowage serve: --config requires a path argument")
+				os.Exit(2)
+			}
+			configPath = args[i+1]
+			i++
+		case "--help", "-h":
+			_, _ = fmt.Fprint(os.Stdout, serveUsage)
+			os.Exit(0)
+		default:
+			fmt.Fprintf(os.Stderr, "stowage serve: unknown flag %q\n\n%s", args[i], serveUsage)
+			os.Exit(2)
+		}
+	}
+
+	ctx := context.Background()
+
+	cfg, err := config.Load(ctx, configPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "stowage serve: load config: %v\n", err)
+		os.Exit(1)
+	}
+	if err := cfg.Validate(); err != nil {
+		fmt.Fprintf(os.Stderr, "stowage serve: invalid config: %v\n", err)
+		os.Exit(1)
+	}
+
+	log, reg, err := telemetry.New(telemetry.Config{
+		LogLevel:  cfg.Telemetry.LogLevel,
+		LogFormat: cfg.Telemetry.LogFormat,
+	})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "stowage serve: telemetry: %v\n", err)
+		os.Exit(1)
+	}
+	slog.SetDefault(log)
+
+	// Prometheus registry: register default metrics.
+	_ = reg // passed to api.New below; also used for metrics endpoint
+
+	st, err := store.Open(ctx, cfg.Store)
+	if err != nil {
+		log.Error("stowage serve: open store", "err", err)
+		os.Exit(1)
+	}
+	// Ensure clean close on exit.
+	defer func() {
+		closeCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if closeErr := st.Close(closeCtx); closeErr != nil {
+			log.Error("stowage serve: close store", "err", closeErr)
+		}
+	}()
+
+	// Auto-migrate (idempotent — safe to always run on boot).
+	if err := st.Migrate(ctx); err != nil {
+		log.Error("stowage serve: migrate", "err", err)
+		os.Exit(1)
+	}
+
+	// Expose additional metrics.
+	_ = prometheus.NewRegistry() // reg passed from telemetry
+
+	srv, err := api.New(cfg, st, log, reg)
+	if err != nil {
+		log.Error("stowage serve: api.New", "err", err)
+		os.Exit(1)
+	}
+
+	// Start HTTP server in a goroutine.
+	servErr := make(chan error, 1)
+	go func() {
+		if listenErr := srv.ListenAndServe(); listenErr != nil && !errors.Is(listenErr, http.ErrServerClosed) {
+			servErr <- listenErr
+		}
+	}()
+
+	log.Info("stowage serve: ready", "addr", cfg.Server.Listen)
+
+	// Wait for termination signal or server error.
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT)
+
+	select {
+	case sig := <-sigCh:
+		log.Info("stowage serve: shutting down", "signal", sig)
+	case err := <-servErr:
+		log.Error("stowage serve: server error", "err", err)
+		os.Exit(1)
+	}
+
+	// Graceful shutdown: stop accepting → drain pipeline → close store.
+	shutdownCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	if err := srv.Shutdown(shutdownCtx); err != nil {
+		log.Error("stowage serve: shutdown", "err", err)
+	}
+	log.Info("stowage serve: stopped")
 }

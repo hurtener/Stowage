@@ -50,6 +50,34 @@ func (k *keyStore) Revoke(id string, at time.Time) error {
 	return nil
 }
 
+// List returns all keys, optionally filtered by tenantID.
+func (k *keyStore) List(tenantID string) ([]auth.Key, error) {
+	var (
+		q    string
+		args []interface{}
+	)
+	if tenantID != "" {
+		q = `SELECT id, tenant_id, role, hash, created_at, revoked_at FROM api_keys WHERE tenant_id = $1`
+		args = []interface{}{tenantID}
+	} else {
+		q = `SELECT id, tenant_id, role, hash, created_at, revoked_at FROM api_keys`
+	}
+	rows, err := k.s.pool.Query(context.Background(), q, args...)
+	if err != nil {
+		return nil, fmt.Errorf("pgstore: list keys: %w", err)
+	}
+	defer rows.Close()
+	var out []auth.Key
+	for rows.Next() {
+		key, scanErr := scanKey(rows)
+		if scanErr != nil {
+			return nil, scanErr
+		}
+		out = append(out, *key)
+	}
+	return out, rows.Err()
+}
+
 func scanKey(row rowScanner) (*auth.Key, error) {
 	var (
 		id, tenantID, role string

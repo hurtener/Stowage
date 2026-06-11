@@ -65,6 +65,14 @@ func Run(t *testing.T, factory Factory) {
 	t.Run("OpsDeadLetterAllStages", func(t *testing.T) { testOpsDeadLetterAllStages(t, factory) })
 	t.Run("OpsJobMarker", func(t *testing.T) { testOpsJobMarker(t, factory) })
 	t.Run("OpsAdvisoryLock", func(t *testing.T) { testOpsAdvisoryLock(t, factory) })
+	// BranchStore
+	t.Run("BranchCreateGet", func(t *testing.T) { testBranchCreateGet(t, factory) })
+	t.Run("BranchSetStatus", func(t *testing.T) { testBranchSetStatus(t, factory) })
+	t.Run("BranchListBySession", func(t *testing.T) { testBranchListBySession(t, factory) })
+	t.Run("BranchScopeIsolation", func(t *testing.T) { testBranchScopeIsolation(t, factory) })
+	t.Run("BranchGetNotFound", func(t *testing.T) { testBranchGetNotFound(t, factory) })
+	// Keyring.List
+	t.Run("KeyringList", func(t *testing.T) { testKeyringList(t, factory) })
 	// S1 — empty-tenant guard (P3: store layer fails closed)
 	t.Run("EmptyScopeRejected", func(t *testing.T) { testEmptyScopeRejected(t, factory) })
 	// S2 — cross-user / cross-project / cross-session isolation
@@ -1062,6 +1070,16 @@ func testEmptyScopeRejected(t *testing.T, factory Factory) {
 		s.Events().Emit(ctx, zero, store.Event{ID: newID(), Type: "t", CreatedAt: nowMs()}))
 	_, _, err = s.Events().List(ctx, zero, 1, "")
 	assertScopeRequired(t, "Events.List", err)
+
+	// BranchStore
+	assertScopeRequired(t, "Branches.Create",
+		s.Branches().Create(ctx, zero, store.Branch{ID: newID(), SessionID: "s", Status: "open", CreatedAt: nowMs(), UpdatedAt: nowMs()}))
+	_, err = s.Branches().Get(ctx, zero, "any")
+	assertScopeRequired(t, "Branches.Get", err)
+	assertScopeRequired(t, "Branches.SetStatus",
+		s.Branches().SetStatus(ctx, zero, "any", "merged", nowMs()))
+	_, err = s.Branches().ListBySession(ctx, zero, "s")
+	assertScopeRequired(t, "Branches.ListBySession", err)
 }
 
 // =============================================================================
@@ -1412,5 +1430,228 @@ func testOpsJobMarkerConcurrent(t *testing.T, factory Factory) {
 
 	if winners.Load() != 1 {
 		t.Errorf("concurrent job marker: %d goroutines won, want exactly 1", winners.Load())
+	}
+}
+
+// =============================================================================
+// BranchStore — lifecycle (RFC §5.5, D-029)
+// =============================================================================
+
+func testBranchCreateGet(t *testing.T, factory Factory) {
+	t.Helper()
+	s, cleanup := factory()
+	defer cleanup()
+	ctx := context.Background()
+	scope := mustScope("t-"+newID(), "proj", "user", "sess")
+
+	br := store.Branch{
+		ID:             newID(),
+		SessionID:      "sess",
+		ParentBranchID: "",
+		Status:         "open",
+		CreatedAt:      nowMs(),
+		UpdatedAt:      nowMs(),
+	}
+	if err := s.Branches().Create(ctx, scope, br); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	got, err := s.Branches().Get(ctx, scope, br.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.Status != "open" {
+		t.Errorf("status: got %q want open", got.Status)
+	}
+	if got.TenantID != scope.Tenant {
+		t.Errorf("tenantID: got %q want %q", got.TenantID, scope.Tenant)
+	}
+}
+
+func testBranchSetStatus(t *testing.T, factory Factory) {
+	t.Helper()
+	s, cleanup := factory()
+	defer cleanup()
+	ctx := context.Background()
+	scope := tenantScope("t-" + newID())
+
+	br := store.Branch{
+		ID:        newID(),
+		SessionID: "sess",
+		Status:    "open",
+		CreatedAt: nowMs(),
+		UpdatedAt: nowMs(),
+	}
+	if err := s.Branches().Create(ctx, scope, br); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	now := nowMs()
+	if err := s.Branches().SetStatus(ctx, scope, br.ID, "merged", now); err != nil {
+		t.Fatalf("SetStatus: %v", err)
+	}
+	got, err := s.Branches().Get(ctx, scope, br.ID)
+	if err != nil {
+		t.Fatalf("Get after SetStatus: %v", err)
+	}
+	if got.Status != "merged" {
+		t.Errorf("status after SetStatus: got %q want merged", got.Status)
+	}
+
+	// SetStatus on non-existent branch → ErrNotFound.
+	if err := s.Branches().SetStatus(ctx, scope, "no-such-id", "discarded", now); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("SetStatus missing: got %v want ErrNotFound", err)
+	}
+}
+
+func testBranchListBySession(t *testing.T, factory Factory) {
+	t.Helper()
+	s, cleanup := factory()
+	defer cleanup()
+	ctx := context.Background()
+	scope := tenantScope("t-" + newID())
+
+	sessA := "sess-A-" + newID()
+	sessB := "sess-B-" + newID()
+
+	for i := 0; i < 3; i++ {
+		br := store.Branch{
+			ID:        newID(),
+			SessionID: sessA,
+			Status:    "open",
+			CreatedAt: nowMs() + int64(i),
+			UpdatedAt: nowMs(),
+		}
+		if err := s.Branches().Create(ctx, scope, br); err != nil {
+			t.Fatalf("Create %d: %v", i, err)
+		}
+	}
+	// One branch for a different session — must not appear in sessA list.
+	brB := store.Branch{
+		ID:        newID(),
+		SessionID: sessB,
+		Status:    "open",
+		CreatedAt: nowMs(),
+		UpdatedAt: nowMs(),
+	}
+	if err := s.Branches().Create(ctx, scope, brB); err != nil {
+		t.Fatalf("Create sessB: %v", err)
+	}
+
+	got, err := s.Branches().ListBySession(ctx, scope, sessA)
+	if err != nil {
+		t.Fatalf("ListBySession: %v", err)
+	}
+	if len(got) != 3 {
+		t.Errorf("got %d branches want 3", len(got))
+	}
+	for _, b := range got {
+		if b.SessionID != sessA {
+			t.Errorf("unexpected session %q in result", b.SessionID)
+		}
+	}
+}
+
+func testBranchScopeIsolation(t *testing.T, factory Factory) {
+	t.Helper()
+	s, cleanup := factory()
+	defer cleanup()
+	ctx := context.Background()
+	scopeA := tenantScope("tenant-A-" + newID())
+	scopeB := tenantScope("tenant-B-" + newID())
+
+	br := store.Branch{
+		ID:        newID(),
+		SessionID: "sess",
+		Status:    "open",
+		CreatedAt: nowMs(),
+		UpdatedAt: nowMs(),
+	}
+	if err := s.Branches().Create(ctx, scopeA, br); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	// Tenant B must not see tenant A's branch.
+	if _, err := s.Branches().Get(ctx, scopeB, br.ID); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("cross-tenant Get: got %v want ErrNotFound", err)
+	}
+	list, _ := s.Branches().ListBySession(ctx, scopeB, "sess")
+	for _, b := range list {
+		if b.ID == br.ID {
+			t.Error("cross-tenant isolation violated: branch visible in wrong tenant")
+		}
+	}
+}
+
+func testBranchGetNotFound(t *testing.T, factory Factory) {
+	t.Helper()
+	s, cleanup := factory()
+	defer cleanup()
+	ctx := context.Background()
+	scope := tenantScope("t-" + newID())
+
+	if _, err := s.Branches().Get(ctx, scope, "no-such-id"); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("Get missing: got %v want ErrNotFound", err)
+	}
+}
+
+// =============================================================================
+// Keyring.List
+// =============================================================================
+
+func testKeyringList(t *testing.T, factory Factory) {
+	t.Helper()
+	s, cleanup := factory()
+	defer cleanup()
+
+	tenantA := "tenant-list-A-" + newID()
+	tenantB := "tenant-list-B-" + newID()
+
+	keyA, _, err := auth.Generate(tenantA, auth.RoleAgent)
+	if err != nil {
+		t.Fatalf("Generate A: %v", err)
+	}
+	keyB, _, err := auth.Generate(tenantB, auth.RoleAdmin)
+	if err != nil {
+		t.Fatalf("Generate B: %v", err)
+	}
+	kr := s.Keys()
+	if err := kr.Insert(keyA); err != nil {
+		t.Fatalf("Insert A: %v", err)
+	}
+	if err := kr.Insert(keyB); err != nil {
+		t.Fatalf("Insert B: %v", err)
+	}
+
+	// List all: should include both.
+	all, err := kr.List("")
+	if err != nil {
+		t.Fatalf("List all: %v", err)
+	}
+	found := 0
+	for _, k := range all {
+		if k.ID == keyA.ID || k.ID == keyB.ID {
+			found++
+		}
+	}
+	if found != 2 {
+		t.Errorf("List all: found %d of 2 expected keys", found)
+	}
+
+	// List for tenantA only: should include keyA, not keyB.
+	listA, err := kr.List(tenantA)
+	if err != nil {
+		t.Fatalf("List tenantA: %v", err)
+	}
+	for _, k := range listA {
+		if k.ID == keyB.ID {
+			t.Error("List tenantA returned keyB")
+		}
+	}
+	foundA := false
+	for _, k := range listA {
+		if k.ID == keyA.ID {
+			foundA = true
+		}
+	}
+	if !foundA {
+		t.Error("List tenantA did not return keyA")
 	}
 }
