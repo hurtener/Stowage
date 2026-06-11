@@ -102,5 +102,8 @@ func runConfigExplain(args []string) {
 		fmt.Fprintf(os.Stderr, "stowage config explain: %v\n", err)
 		os.Exit(1)
 	}
-	cfg.Explain(os.Stdout)
+	if err := cfg.Explain(os.Stdout); err != nil {
+		fmt.Fprintf(os.Stderr, "stowage config explain: %v\n", err)
+		os.Exit(1)
+	}
 }

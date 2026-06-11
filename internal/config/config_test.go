@@ -64,7 +64,6 @@ func TestSecretLiteralFails(t *testing.T) {
 // TestSecretLiteralFailsValidation uses Defaults() with manual override.
 func TestSecretLiteralFailsValidation(t *testing.T) {
 	clearStowageEnv(t)
-	cfg := config.Defaults()
 	// Manually inject a literal (not env.VAR) into APIKey
 	yaml := []byte("gateway:\n  api_key: not-env-ref\n")
 	tmp := writeTmpFile(t, yaml)
@@ -85,8 +84,8 @@ func TestSecretLiteralFailsValidation(t *testing.T) {
 // in the error when the env var is unset.
 func TestResolveEnvRefUnset(t *testing.T) {
 	const varName = "STOWAGE_TEST_SECRET_XXXX"
-	os.Unsetenv(varName)
-	t.Cleanup(func() { os.Unsetenv(varName) })
+	_ = os.Unsetenv(varName)
+	t.Cleanup(func() { _ = os.Unsetenv(varName) })
 
 	_, err := config.ResolveEnvRef("env." + varName)
 	if err == nil {
@@ -230,7 +229,9 @@ func TestExplainSecretsNotPrinted(t *testing.T) {
 		t.Fatalf("Load: %v", err)
 	}
 	var buf bytes.Buffer
-	cfg.Explain(&buf)
+	if err := cfg.Explain(&buf); err != nil {
+		t.Fatalf("explain: %v", err)
+	}
 	out := buf.String()
 	if strings.Contains(out, "supersecret-value") {
 		t.Error("Explain output must not contain secret value")
@@ -248,19 +249,21 @@ func TestExplainSecretsNotPrinted(t *testing.T) {
 func TestExplainGolden(t *testing.T) {
 	clearStowageEnv(t)
 	// Ensure the gateway api_key env var is unset for stable output.
-	os.Unsetenv("STOWAGE_GATEWAY_API_KEY")
+	_ = os.Unsetenv("STOWAGE_GATEWAY_API_KEY")
 
 	cfg := config.Defaults()
 	var buf bytes.Buffer
-	cfg.Explain(&buf)
+	if err := cfg.Explain(&buf); err != nil {
+		t.Fatalf("explain: %v", err)
+	}
 	got := buf.String()
 
 	goldenPath := filepath.Join("testdata", "explain_default.golden")
 	if os.Getenv("UPDATE_GOLDEN") == "1" {
-		if err := os.MkdirAll("testdata", 0o755); err != nil {
+		if err := os.MkdirAll("testdata", 0o750); err != nil {
 			t.Fatalf("mkdir testdata: %v", err)
 		}
-		if err := os.WriteFile(goldenPath, []byte(got), 0o644); err != nil {
+		if err := os.WriteFile(goldenPath, []byte(got), 0o600); err != nil {
 			t.Fatalf("write golden: %v", err)
 		}
 		t.Logf("updated %s", goldenPath)
@@ -325,10 +328,10 @@ func clearStowageEnv(t *testing.T) {
 	}
 	for _, v := range vars {
 		prev, had := os.LookupEnv(v)
-		os.Unsetenv(v)
+		_ = os.Unsetenv(v)
 		if had {
 			v, prev := v, prev
-			t.Cleanup(func() { os.Setenv(v, prev) })
+			t.Cleanup(func() { _ = os.Setenv(v, prev) })
 		}
 	}
 }
@@ -342,6 +345,8 @@ func writeTmpFile(t *testing.T, data []byte) string {
 	if _, err := f.Write(data); err != nil {
 		t.Fatalf("write temp file: %v", err)
 	}
-	f.Close()
+	if err := f.Close(); err != nil {
+		t.Fatalf("close temp file: %v", err)
+	}
 	return f.Name()
 }

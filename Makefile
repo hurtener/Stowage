@@ -24,7 +24,7 @@ vet:
 	go vet $(PKG)
 
 lint:
-	@command -v golangci-lint >/dev/null 2>&1 && golangci-lint run || echo "golangci-lint not installed — skipping (CI runs it)"
+	@if command -v golangci-lint >/dev/null 2>&1; then golangci-lint run; else echo "golangci-lint not installed — skipping (CI runs it)"; fi
 
 drift-audit:
 	scripts/drift-audit.sh

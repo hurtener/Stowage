@@ -139,7 +139,7 @@ func parseKey(plaintext string) (id string, secretBytes []byte, err error) {
 
 	secretBytes, err = base64.RawURLEncoding.DecodeString(secretPart)
 	if err != nil {
-		return "", nil, fmt.Errorf("%w: decode secret: %v", ErrInvalidKey, err)
+		return "", nil, fmt.Errorf("%w: decode secret: %w", ErrInvalidKey, err)
 	}
 	if len(secretBytes) != 32 {
 		return "", nil, ErrInvalidKey

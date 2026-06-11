@@ -11,14 +11,14 @@ import (
 // Explain writes every effective configuration value, its origin, and — for
 // secret fields — the env-var status (set|UNSET) without printing the value.
 // (AC-4; secrets are never printed per CLAUDE.md §7.)
-func (c *Config) Explain(w io.Writer) {
+func (c *Config) Explain(w io.Writer) error {
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
 	for _, key := range allKeys {
 		val := c.displayValue(key)
 		origin := string(c.prov[key])
-		fmt.Fprintf(tw, "%s\t= %s\t[%s]\n", key, val, origin)
+		_, _ = fmt.Fprintf(tw, "%s\t= %s\t[%s]\n", key, val, origin)
 	}
-	tw.Flush()
+	return tw.Flush()
 }
 
 // displayValue returns the value to show in Explain output.

@@ -128,7 +128,7 @@ func Defaults() *Config {
 			Driver: "sqlite",
 			DSN:    "./data/stowage.db",
 		},
-		Gateway: GatewayConfig{
+		Gateway: GatewayConfig{ //nolint:gosec // G101: api_key holds an env-var *name* (reference), not a credential
 			Driver:     "mock",
 			BaseURL:    "",
 			APIKey:     "env.STOWAGE_GATEWAY_API_KEY",
@@ -158,7 +158,7 @@ func Load(_ context.Context, path string) (*Config, error) {
 	// Read file data once for reuse.
 	var fileData []byte
 	if path != "" {
-		data, err := os.ReadFile(path)
+		data, err := os.ReadFile(path) //nolint:gosec // G304: path is the operator-supplied --config flag
 		if err != nil {
 			return nil, fmt.Errorf("config: read file %q: %w", path, err)
 		}
