@@ -242,6 +242,41 @@ func testNewMethodGuardBranches(t *testing.T, factory Factory) {
 	if err := s.Vectors().Delete(ctx, scope, "never-existed"); err != nil {
 		t.Errorf("Vectors.Delete missing: %v", err)
 	}
+
+	// Fully sub-scoped round-trip exercises every scope-column branch.
+	full := identity.Scope{Tenant: scope.Tenant, Project: "p1", User: "u1", Session: "s1"}
+	sv := store.StoredVector{
+		MemoryID: "gv-" + ulid.Make().String(), TenantID: full.Tenant,
+		ProjectID: full.Project, UserID: full.User, SessionID: full.Session,
+		Vec: []float32{0.6, 0.8},
+	}
+	if err := s.Vectors().Upsert(ctx, full, sv); err != nil {
+		t.Fatalf("Upsert full scope: %v", err)
+	}
+	// Upsert-replace branch.
+	sv.Vec = []float32{1, 0}
+	if err := s.Vectors().Upsert(ctx, full, sv); err != nil {
+		t.Fatalf("Upsert replace: %v", err)
+	}
+	got, err := s.Vectors().Scan(ctx, full, nil, store.Window{})
+	if err != nil || len(got) != 1 || got[0].Vec[0] != 1 {
+		t.Fatalf("Scan full scope after replace: %v %v", got, err)
+	}
+	// Sibling session sees nothing (session branch of the WHERE).
+	sib := identity.Scope{Tenant: full.Tenant, Project: "p1", User: "u1", Session: "s2"}
+	if got, err := s.Vectors().Scan(ctx, sib, nil, store.Window{}); err != nil || len(got) != 0 {
+		t.Errorf("sibling session scan: %v %v", got, err)
+	}
+	if err := s.Vectors().Delete(ctx, full, sv.MemoryID); err != nil {
+		t.Errorf("Delete full scope: %v", err)
+	}
+	// GetMany with a mix of present and missing ids (uses an existing memory).
+	if got, err := s.Memories().GetMany(ctx, full, []string{"missing-1", "missing-2"}); err != nil || len(got) != 0 {
+		t.Errorf("GetMany all-missing: %v %v", got, err)
+	}
+	if hits, err := s.Memories().QuerySearch(ctx, scope, "x", 0, store.Window{}); err != nil || len(hits) != 0 {
+		t.Errorf("QuerySearch k=0: %v %v", hits, err)
+	}
 }
 
 func testMigrateIdempotent(t *testing.T, factory Factory) {
