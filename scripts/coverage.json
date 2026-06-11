@@ -11,6 +11,7 @@
   "github.com/hurtener/stowage/internal/records": 85,
   "github.com/hurtener/stowage/internal/store": 85,
   "github.com/hurtener/stowage/internal/store/conformance": 0,
+  "github.com/hurtener/stowage/internal/store/migrations": 80,
   "github.com/hurtener/stowage/internal/store/pgstore": 81,
   "github.com/hurtener/stowage/internal/store/sqlitestore": 85,
   "github.com/hurtener/stowage/internal/telemetry": 80,

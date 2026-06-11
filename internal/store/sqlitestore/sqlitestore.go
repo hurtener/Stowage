@@ -399,3 +399,26 @@ func nullStr(s string) interface{} {
 	}
 	return s
 }
+
+// AppliedMigrations returns versions from schema_migrations ascending; empty
+// (no error) when the table does not exist yet.
+func (s *sqliteStore) AppliedMigrations(ctx context.Context) ([]string, error) {
+	rows, err := s.rdb.QueryContext(ctx,
+		`SELECT version FROM schema_migrations ORDER BY version ASC`)
+	if err != nil {
+		if strings.Contains(err.Error(), "no such table") {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("sqlitestore: applied migrations: %w", err)
+	}
+	defer rows.Close() //nolint:errcheck
+	var out []string
+	for rows.Next() {
+		var v string
+		if err := rows.Scan(&v); err != nil {
+			return nil, fmt.Errorf("sqlitestore: scan migration: %w", err)
+		}
+		out = append(out, v)
+	}
+	return out, rows.Err()
+}

@@ -562,3 +562,32 @@ func TestMarkProcessedEmpty(t *testing.T) {
 func TestMain(m *testing.M) {
 	os.Exit(m.Run())
 }
+
+// TestAppliedMigrationsBeforeMigrate covers the bootstrap branch: a store
+// opened without Migrate has no schema_migrations table and must return
+// (nil, nil), not an error — `migrate --status` relies on this.
+func TestAppliedMigrationsBeforeMigrate(t *testing.T) {
+	dir := t.TempDir()
+	cfg := config.StoreConfig{Driver: "sqlite", DSN: dir + "/fresh.db"}
+	s, err := store.Open(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer s.Close(context.Background()) //nolint:errcheck
+
+	applied, err := s.AppliedMigrations(context.Background())
+	if err != nil {
+		t.Fatalf("AppliedMigrations on fresh db: %v", err)
+	}
+	if len(applied) != 0 {
+		t.Fatalf("expected no applied migrations, got %v", applied)
+	}
+
+	if err := s.Migrate(context.Background()); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	applied, err = s.AppliedMigrations(context.Background())
+	if err != nil || len(applied) == 0 {
+		t.Fatalf("after migrate: %v %v", applied, err)
+	}
+}

@@ -40,6 +40,7 @@ YAML
 
 # ── Start server ──────────────────────────────────────────────────────────────
 
+export STOWAGE_MOCK_SCRIPT="${TMPDIR_SMOKE}/mockscript.json"
 "$BIN" serve --config "$CFG_PATH" >"${TMPDIR_SMOKE}/serve.log" 2>&1 &
 SERVER_PID=$!
 trap 'kill "$SERVER_PID" 2>/dev/null; rm -f "$BIN"; rm -rf "$TMPDIR_SMOKE"' EXIT
@@ -106,9 +107,17 @@ STATUS=$(api_call POST /v1/records -d "$BATCH" "$AGENT_KEY")
   && ok "ingest 2 records → 202" \
   || failc "ingest 2 records → 202 (got $STATUS)"
 
-# ── Explicit flush ────────────────────────────────────────────────────────────
+# ── Script the mock gateway with real record IDs (lazy file, entry 0) ────────
 
 sleep 0.5
+IDS=$(sqlite3 "$DB_PATH" "SELECT id FROM records WHERE tenant_id='smoke08' ORDER BY created_at, id;")
+ID1=$(echo "$IDS" | sed -n 1p); ID2=$(echo "$IDS" | sed -n 2p)
+cat > "${TMPDIR_SMOKE}/mockscript.json" <<MOCKEOF
+[{"candidates":[{"kind":"fact","content":"Go uses goroutines and channels for concurrency.","context":"smoke08 concurrency discussion","entities":["go","goroutines"],"keywords":["concurrency","channels"],"anticipated_queries":["how does go handle concurrency","what are goroutines","go concurrency primitives"],"importance":3,"confidence":0.9,"provenance":[{"record_id":"${ID1}","span_start":0,"span_end":10},{"record_id":"${ID2}","span_start":0,"span_end":20}]}]}]
+MOCKEOF
+ok "scripted mock gateway with runtime record ids"
+
+# ── Explicit flush ────────────────────────────────────────────────────────────
 
 STATUS=$(api_call POST /v1/buffers/smoke08-sess%2Fsmoke08-br/flush \
   -d '{"trigger":"explicit"}' "$AGENT_KEY")
@@ -125,27 +134,27 @@ ADDED_COUNT=$(sqlite3 "$DB_PATH" \
 EXTRACT_COUNT=$(sqlite3 "$DB_PATH" \
   "SELECT COUNT(*) FROM events WHERE type='extraction.completed';" 2>/dev/null || echo 0)
 
-if [ "$ADDED_COUNT" -ge 1 ]; then
-  ok "memory.added event in SQLite (count=$ADDED_COUNT) — write path end-to-end"
-elif [ "$EXTRACT_COUNT" -ge 1 ]; then
-  ok "extraction.completed event in SQLite (extraction ran; reconcile may be pending)"
+if [ "$ADDED_COUNT" -ge 1 ] && [ "$EXTRACT_COUNT" -ge 1 ]; then
+  ok "extraction.completed + memory.added events — write path end-to-end"
 else
-  EXTRACT_SKIP=$(sqlite3 "$DB_PATH" \
-    "SELECT COUNT(*) FROM events WHERE type='extraction.skipped' OR type='extraction.failed';" 2>/dev/null || echo 0)
-  if [ "$EXTRACT_SKIP" -ge 1 ]; then
-    ok "extraction event in SQLite (skipped/failed — mock gateway path)"
-  else
-    failc "no extraction or memory.added event in SQLite after explicit flush"
-    cat "${TMPDIR_SMOKE}/serve.log"
-  fi
+  failc "write path incomplete (extraction=$EXTRACT_COUNT, added=$ADDED_COUNT)"
+  cat "${TMPDIR_SMOKE}/serve.log"
 fi
 
 # ── Assert memory row + junctions in SQLite ───────────────────────────────────
 
 MEM_COUNT=$(sqlite3 "$DB_PATH" \
   "SELECT COUNT(*) FROM memories WHERE tenant_id='smoke08' AND status='active';" 2>/dev/null || echo 0)
-if [ "$MEM_COUNT" -ge 0 ]; then
-  ok "memories table accessible (active count=$MEM_COUNT)"
+if [ "$MEM_COUNT" = "1" ]; then
+  ok "exactly one active memory committed (junction-checked next)"
+else
+  failc "expected 1 active memory, got $MEM_COUNT"
+fi
+JCT=$(sqlite3 "$DB_PATH" "SELECT (SELECT COUNT(*) FROM memory_entities)+(SELECT COUNT(*) FROM memory_keywords)+(SELECT COUNT(*) FROM memory_queries)+(SELECT COUNT(*) FROM provenance);" 2>/dev/null || echo 0)
+if [ "$JCT" -ge 7 ]; then
+  ok "junctions + provenance persisted (rows=$JCT)"
+else
+  failc "junctions/provenance missing (rows=$JCT)"
 fi
 
 # ── Replay the same conversation — assert dedup_exact or no second memory ────
@@ -156,6 +165,11 @@ STATUS=$(api_call POST /v1/records -d "$BATCH" "$AGENT_KEY")
   || failc "replay ingest 2 records → 202 (got $STATUS)"
 
 sleep 0.5
+RIDS=$(sqlite3 "$DB_PATH" "SELECT id FROM records WHERE tenant_id='smoke08' ORDER BY created_at, id;")
+RID1=$(echo "$RIDS" | sed -n 3p); RID2=$(echo "$RIDS" | sed -n 4p)
+cat > "${TMPDIR_SMOKE}/mockscript.json" <<MOCKEOF
+[{"used":"entry0 consumed"},{"candidates":[{"kind":"fact","content":"Go uses goroutines and channels for concurrency.","context":"smoke08 concurrency discussion","entities":["go","goroutines"],"keywords":["concurrency","channels"],"anticipated_queries":["how does go handle concurrency","what are goroutines","go concurrency primitives"],"importance":3,"confidence":0.9,"provenance":[{"record_id":"${RID1}","span_start":0,"span_end":10},{"record_id":"${RID2}","span_start":0,"span_end":20}]}]}]
+MOCKEOF
 
 STATUS=$(api_call POST /v1/buffers/smoke08-sess%2Fsmoke08-br/flush \
   -d '{"trigger":"explicit"}' "$AGENT_KEY")
@@ -170,22 +184,20 @@ DEDUP_COUNT=$(sqlite3 "$DB_PATH" \
 MEM_COUNT2=$(sqlite3 "$DB_PATH" \
   "SELECT COUNT(*) FROM memories WHERE tenant_id='smoke08' AND status='active';" 2>/dev/null || echo 0)
 
-if [ "$DEDUP_COUNT" -ge 1 ]; then
-  ok "reconcile.dedup_exact event on replay (count=$DEDUP_COUNT) — exact-dedup working"
-elif [ "$MEM_COUNT2" -eq "$MEM_COUNT" ] || [ "$MEM_COUNT" -eq 0 ]; then
-  ok "no second memory created on replay (memory count unchanged)"
+if [ "$DEDUP_COUNT" -ge 1 ] && [ "$MEM_COUNT2" = "1" ]; then
+  ok "replay → reconcile.dedup_exact (count=$DEDUP_COUNT), still exactly 1 memory"
 else
-  failc "replay created additional memories: was $MEM_COUNT now $MEM_COUNT2 (expected dedup)"
+  failc "dedup replay failed (dedup=$DEDUP_COUNT, memories=$MEM_COUNT2; want >=1 and 1)"
+  cat "${TMPDIR_SMOKE}/serve.log"
 fi
 
 # ── migrate --status shows 0002 ───────────────────────────────────────────────
 
 MIGRATE_OUT=$("$BIN" migrate --config "$CFG_PATH" --status 2>&1 || true)
-if echo "$MIGRATE_OUT" | grep -q "0002"; then
-  ok "migrate --status shows migration 0002"
+if echo "$MIGRATE_OUT" | grep -q "0002_content_hash.*applied"; then
+  ok "migrate --status lists 0002_content_hash as applied"
 else
-  # Some builds may not expose --status; skip rather than fail.
-  skip "migrate --status did not show 0002 (output: ${MIGRATE_OUT:0:80})"
+  failc "migrate --status missing 0002_content_hash applied (output: $MIGRATE_OUT)"
 fi
 
 # ── Graceful shutdown via SIGTERM ─────────────────────────────────────────────

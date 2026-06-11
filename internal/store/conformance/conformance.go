@@ -24,6 +24,7 @@ import (
 	"github.com/hurtener/stowage/internal/auth"
 	"github.com/hurtener/stowage/internal/identity"
 	"github.com/hurtener/stowage/internal/store"
+	"github.com/hurtener/stowage/internal/store/migrations"
 	"github.com/oklog/ulid/v2"
 )
 
@@ -35,6 +36,7 @@ func Run(t *testing.T, factory Factory) {
 	t.Helper()
 
 	t.Run("MigrateIdempotent", func(t *testing.T) { testMigrateIdempotent(t, factory) })
+	t.Run("AppliedMigrationsListing", func(t *testing.T) { testAppliedMigrationsListing(t, factory) })
 	t.Run("RecordAppendGet", func(t *testing.T) { testRecordAppendGet(t, factory) })
 	t.Run("RecordAppendIdempotent", func(t *testing.T) { testRecordAppendIdempotent(t, factory) })
 	t.Run("RecordListBySession", func(t *testing.T) { testRecordListBySession(t, factory) })
@@ -141,6 +143,29 @@ func tenantScope(tenant string) identity.Scope {
 }
 
 // --- MigrateIdempotent ------------------------------------------------------
+
+// testAppliedMigrationsListing asserts AppliedMigrations matches the embedded
+// migration set after Migrate (drives `stowage migrate --status`). Migration
+// names are identical across drivers by construction, so the sqlite list is
+// the canonical expectation.
+func testAppliedMigrationsListing(t *testing.T, factory Factory) {
+	t.Helper()
+	s, cleanup := factory()
+	defer cleanup()
+	applied, err := s.AppliedMigrations(context.Background())
+	if err != nil {
+		t.Fatalf("AppliedMigrations: %v", err)
+	}
+	known := migrations.Known("sqlite")
+	if len(applied) != len(known) {
+		t.Fatalf("applied %v != known %v", applied, known)
+	}
+	for i := range known {
+		if applied[i] != known[i] {
+			t.Errorf("migration %d: applied %q != known %q", i, applied[i], known[i])
+		}
+	}
+}
 
 func testMigrateIdempotent(t *testing.T, factory Factory) {
 	t.Helper()

@@ -16,6 +16,9 @@ import (
 type Store interface {
 	// Migrate applies pending migrations idempotently.
 	Migrate(ctx context.Context) error
+	// AppliedMigrations returns the versions recorded in schema_migrations,
+	// ascending. Empty (not an error) before the first Migrate.
+	AppliedMigrations(ctx context.Context) ([]string, error)
 
 	// Records returns the verbatim fidelity sub-store.
 	Records() RecordStore

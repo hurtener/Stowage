@@ -24,6 +24,7 @@ import (
 	"github.com/hurtener/stowage/internal/pipeline"
 	"github.com/hurtener/stowage/internal/reconcile"
 	"github.com/hurtener/stowage/internal/store"
+	"github.com/hurtener/stowage/internal/store/migrations"
 	"github.com/hurtener/stowage/internal/telemetry"
 	"github.com/hurtener/stowage/internal/topics"
 	// register drivers via init()
@@ -204,13 +205,24 @@ func runMigrate(args []string) {
 	}()
 
 	if statusOnly {
-		// Show status: run migrate (idempotent) then report.
-		// If migrations haven't been applied yet we just show "pending".
 		fmt.Printf("driver: %s\n", storeCfg.Driver)
 		fmt.Printf("dsn:    %s\n", storeCfg.DSN)
 		fmt.Println()
 		fmt.Println("known migrations:")
-		fmt.Println("  0001_init  (run 'stowage migrate' to apply)")
+		applied, aerr := s.AppliedMigrations(ctx)
+		appliedSet := map[string]bool{}
+		if aerr == nil {
+			for _, v := range applied {
+				appliedSet[v] = true
+			}
+		}
+		for _, name := range migrations.Known(storeCfg.Driver) {
+			status := "pending (run 'stowage migrate' to apply)"
+			if appliedSet[name] {
+				status = "applied"
+			}
+			fmt.Printf("  %-22s %s\n", name, status)
+		}
 		return
 	}
 
