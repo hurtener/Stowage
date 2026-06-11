@@ -44,6 +44,9 @@ type Store interface {
 	// Ops returns the dead-letter and job-marker sub-store.
 	Ops() OpsStore
 
+	// Injections returns the injection (attribution) sub-store (Phase 11, D-051).
+	Injections() InjectionStore
+
 	// Vectors returns the float32-LE BLOB vector sub-store (Phase 09, D-046).
 	// Drivers implement brute-force scope-filtered scan; cosine is computed by
 	// the caller (internal/vindex). No pgvector dependency; CI stays postgres:17.
@@ -79,6 +82,11 @@ type RecordStore interface {
 	// layer to compute ActivityTurns for the scoring decay function (Phase 10).
 	// The count is scope-indexed for efficiency; see D-008 on decay computation.
 	CountRecordsSince(ctx context.Context, scope identity.Scope, sinceMs int64) (int64, error)
+
+	// GetMany returns records for the given IDs within scope. IDs not found are
+	// silently omitted. Order matches the order of ids. Used by the drill-down
+	// path to batch-fetch verbatim records for provenance spans (Phase 11).
+	GetMany(ctx context.Context, scope identity.Scope, ids []string) ([]Record, error)
 }
 
 // MemoryStore is the abstraction layer (RFC §5, D-006, D-008, D-024).
@@ -126,6 +134,12 @@ type MemoryStore interface {
 	// on a memory. counter must be one of: "match", "inject", "use", "save",
 	// "fail", "noise". Returns an error for unrecognised counter names.
 	IncrementCounter(ctx context.Context, scope identity.Scope, id, counter string) error
+
+	// ApplyFeedback atomically increments the counter named by signal and touches
+	// last_accessed_at. signal must be one of: "use", "save", "fail", "noise".
+	// Returns an error for unrecognised signals. No-op (not ErrNotFound) when the
+	// memory does not exist in scope (feedback is best-effort).
+	ApplyFeedback(ctx context.Context, scope identity.Scope, memoryID, signal string) error
 
 	// GetJunctions returns the junction rows (entities, keywords, anticipated
 	// queries) and provenance spans for a memory. Used to build complete
@@ -239,6 +253,28 @@ type VectorStore interface {
 	// entry, including junction rows needed to build enriched embed text (D-047).
 	// Unscoped — scans all tenants like RecordStore.ListUnprocessed.
 	ListWithoutVectors(ctx context.Context, limit int) ([]MemoryForEmbed, error)
+}
+
+// InjectionStore records retrieval injections for attribution (Phase 11, D-025, D-051).
+// Every retrieved memory is persisted here; the row ID is the citation handle.
+type InjectionStore interface {
+	// Append batch-inserts injection rows. Duplicate IDs are silently ignored.
+	// Called asynchronously from the injection writer goroutine.
+	Append(ctx context.Context, scope identity.Scope, rows []Injection) error
+
+	// ListByResponse returns all injections for responseID within scope,
+	// ordered by rank ascending.
+	ListByResponse(ctx context.Context, scope identity.Scope, responseID string) ([]Injection, error)
+
+	// Get returns a single injection by ID within scope.
+	// Returns ErrNotFound when absent or owned by a different tenant.
+	Get(ctx context.Context, scope identity.Scope, id string) (*Injection, error)
+
+	// MarkWrongCitation atomically marks the injection as wrong_citation AND
+	// increments noise_count + fail_count on the associated memory AND touches
+	// last_accessed_at — all in a single transaction (D-027 groundwork).
+	// Returns ErrNotFound if the injection does not exist within scope.
+	MarkWrongCitation(ctx context.Context, scope identity.Scope, injectionID string) error
 }
 
 // OpsStore manages dead letters and job markers (RFC §11, D-024).

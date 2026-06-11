@@ -171,10 +171,10 @@ else
   cat "${TMPDIR_SMOKE}/resp"
 fi
 
-if resp_contains '"api":"v0"'; then
-  ok "retrieve: api:v0 envelope"
+if resp_contains '"api":"v1"'; then
+  ok "retrieve: api:v1 envelope"
 else
-  failc "retrieve: missing api:v0 in response"
+  failc "retrieve: missing api:v1 in response (Phase 11 upgraded envelope)"
 fi
 
 # ── AC2: Retrieve by anticipated-query phrasing ───────────────────────────────

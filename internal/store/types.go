@@ -228,6 +228,27 @@ type MemoryForEmbed struct {
 	Queries   []string
 }
 
+// Injection records one retrieved memory that was injected into a response
+// (D-025, D-051). The ID is the citation handle exposed in the v1 envelope.
+// Lane is a CSV of contributing lane names (e.g. "lexical,vector").
+// Feedback holds any wrong-citation signal; "" means no feedback yet.
+// All timestamps are unix milliseconds (D-037).
+type Injection struct {
+	ID         string // ULID = citation handle (D-051)
+	TenantID   string
+	ProjectID  string
+	UserID     string
+	SessionID  string
+	ResponseID string
+	MemoryID   string
+	Rank       int
+	Score      float64
+	Lane       string // CSV of lane names
+	WasCited   bool
+	Feedback   string // "" | "wrong_citation"
+	CreatedAt  int64  // unix millis
+}
+
 // CommitSet is the transactional unit for one reconciliation outcome.
 // All writes (memory row, junction rows, provenance rows, link rows, event rows)
 // happen in a single DB transaction — the D-017/D-045 reversibility contract.

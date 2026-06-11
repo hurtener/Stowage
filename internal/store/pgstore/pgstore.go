@@ -183,15 +183,16 @@ func (s *pgStore) Close(_ context.Context) error {
 
 // Sub-store accessors.
 
-func (s *pgStore) Records() store.RecordStore  { return &recordStore{s} }
-func (s *pgStore) Memories() store.MemoryStore { return &memoryStore{s} }
-func (s *pgStore) Topics() store.TopicStore    { return &topicStore{s} }
-func (s *pgStore) Buffers() store.BufferStore  { return &bufferStore{s} }
-func (s *pgStore) Keys() auth.Keyring          { return &keyStore{s} }
-func (s *pgStore) Events() store.EventStore    { return &eventStore{s} }
-func (s *pgStore) Branches() store.BranchStore { return &branchStore{s} }
-func (s *pgStore) Ops() store.OpsStore         { return &opsStore{s} }
-func (s *pgStore) Vectors() store.VectorStore  { return &vectorStore{s} }
+func (s *pgStore) Records() store.RecordStore       { return &recordStore{s} }
+func (s *pgStore) Memories() store.MemoryStore      { return &memoryStore{s} }
+func (s *pgStore) Topics() store.TopicStore         { return &topicStore{s} }
+func (s *pgStore) Buffers() store.BufferStore       { return &bufferStore{s} }
+func (s *pgStore) Keys() auth.Keyring               { return &keyStore{s} }
+func (s *pgStore) Events() store.EventStore         { return &eventStore{s} }
+func (s *pgStore) Branches() store.BranchStore      { return &branchStore{s} }
+func (s *pgStore) Ops() store.OpsStore              { return &opsStore{s} }
+func (s *pgStore) Vectors() store.VectorStore       { return &vectorStore{s} }
+func (s *pgStore) Injections() store.InjectionStore { return &injectionStore{s} }
 
 // nullStr converts empty string to nil.
 func nullStr(s string) interface{} {

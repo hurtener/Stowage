@@ -125,8 +125,8 @@ func TestRetrieve_Success(t *testing.T) {
 	if err := json.NewDecoder(resp.Body).Decode(&res); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
-	if res.API != "v0" {
-		t.Errorf("api field: got %q want v0", res.API)
+	if res.API != "v1" {
+		t.Errorf("api field: got %q want v1", res.API)
 	}
 	if !res.Degraded {
 		t.Error("expected degraded:true when gateway is nil")

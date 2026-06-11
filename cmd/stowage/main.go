@@ -380,7 +380,9 @@ func runServe(args []string) {
 	embedder.Start(ctx)
 	go embedder.BackfillSweep(ctx)
 
-	retriever := retrieval.New(st.Memories(), st.Records(), vi, gw, log)
+	// Phase 11: wire InjectionStore so every retrieve call records injection rows
+	// (async, zero added latency — P2 fire-and-forget via InjectionWriter, D-051).
+	retriever := retrieval.NewWithInjections(st.Memories(), st.Records(), vi, gw, st.Injections(), log)
 	srv.SetRetriever(retriever)
 
 	// Phase 08: reconciliation stage wired to extract stage downstream.

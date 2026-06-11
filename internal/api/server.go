@@ -112,6 +112,11 @@ func New(cfg *config.Config, st store.Store, log *slog.Logger, reg *prometheus.R
 	// Retrieval — four-lane RRF retrieval (Phase 09).
 	mux.HandleFunc("POST /v1/retrieve", srv.authMiddleware(srv.handleRetrieve, false))
 
+	// Phase 11: drill-down, feedback, and citation resolution.
+	mux.HandleFunc("POST /v1/drilldown", srv.authMiddleware(srv.handleDrilldown, false))
+	mux.HandleFunc("POST /v1/feedback", srv.authMiddleware(srv.handleFeedback, false))
+	mux.HandleFunc("POST /v1/citations/resolve", srv.authMiddleware(srv.handleCitationsResolve, false))
+
 	// Admin key management — admin role required.
 	// POST /v1/admin/keys is registered without the auth wrapper so that the
 	// handler can implement bootstrap mode (first-key creation when the keyring
@@ -186,11 +191,17 @@ func (s *Server) ListenAndServe() error {
 // Shutdown gracefully stops the HTTP server then closes the pipeline channel,
 // signalling the buffer stage to drain. The caller is responsible for waiting
 // on the stage drain (cmd/stowage does this after Shutdown returns).
+// If a retriever with an injection writer is wired, it is closed after all
+// HTTP handlers have exited to drain any pending injection batches.
 func (s *Server) Shutdown(ctx context.Context) error {
 	if err := s.httpSrv.Shutdown(ctx); err != nil {
 		return fmt.Errorf("api: shutdown: %w", err)
 	}
 	// All HTTP handlers have exited — no more pipeline sends possible.
 	close(s.pipeline)
+	// Drain the injection writer goroutine (Phase 11, P2 graceful drain).
+	if s.retriever != nil {
+		s.retriever.Close()
+	}
 	return nil
 }

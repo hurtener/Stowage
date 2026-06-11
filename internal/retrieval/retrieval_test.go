@@ -471,8 +471,8 @@ func TestDegradedModeResponseStatus200(t *testing.T) {
 	if !resp.Degraded {
 		t.Error("expected degraded:true")
 	}
-	if resp.API != "v0" {
-		t.Errorf("expected api:v0, got %q", resp.API)
+	if resp.API != "v1" {
+		t.Errorf("expected api:v1, got %q", resp.API)
 	}
 }
 
@@ -850,6 +850,188 @@ func TestSupportAlwaysPresent(t *testing.T) {
 	}
 	if resp.Support.Strength == "" {
 		t.Error("support.strength should not be empty")
+	}
+}
+
+// --- Phase 11: injection recording + fault hook (AC-1) ----------------------
+
+// TestInjectionRowsCreated asserts that a retrieval with injections wired
+// persists injection rows for every returned memory (AC-1 basic contract).
+func TestInjectionRowsCreated(t *testing.T) {
+	t.Parallel()
+	st := openStore(t)
+	gw := openMockGateway(t, 4)
+	vi := vindex.New(st.Vectors(), 4, "test")
+	log := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	r := retrieval.NewWithInjections(st.Memories(), st.Records(), vi, gw, st.Injections(), log)
+	t.Cleanup(func() { r.Close() })
+
+	scope := identity.Scope{Tenant: "tenant-injrows-" + newID()}
+	_ = insertMemory(t, st, scope, "PostgreSQL is a relational database system", "fact",
+		[]string{"PostgreSQL"}, []string{"database"}, []string{"what is PostgreSQL"}, 0)
+	_ = insertMemory(t, st, scope, "Redis is an in-memory data store", "fact",
+		[]string{"Redis"}, []string{"cache"}, []string{"what is Redis"}, 0)
+
+	resp, err := r.Retrieve(context.Background(), scope, retrieval.Request{
+		Query: "PostgreSQL database",
+		Limit: 10,
+	})
+	if err != nil {
+		t.Fatalf("Retrieve: %v", err)
+	}
+	if len(resp.Items) == 0 {
+		t.Fatal("expected at least one result")
+	}
+	// Envelope must be v1 with a response_id.
+	if resp.API != "v1" {
+		t.Errorf("API: got %q want v1", resp.API)
+	}
+	if resp.ResponseID == "" {
+		t.Error("response_id must be set")
+	}
+	// Each item must have a citation handle.
+	for i, item := range resp.Items {
+		if item.Citation == "" {
+			t.Errorf("item[%d] has empty citation handle", i)
+		}
+	}
+
+	// Give the async writer time to flush.
+	time.Sleep(100 * time.Millisecond)
+	r.Close() // drain remaining
+
+	// Verify injection rows were written.
+	rows, err := st.Injections().ListByResponse(context.Background(), scope, resp.ResponseID)
+	if err != nil {
+		t.Fatalf("ListByResponse: %v", err)
+	}
+	if len(rows) != len(resp.Items) {
+		t.Errorf("injection rows: got %d want %d", len(rows), len(resp.Items))
+	}
+	// Citation handles must match.
+	citSet := make(map[string]bool, len(resp.Items))
+	for _, item := range resp.Items {
+		citSet[item.Citation] = true
+	}
+	for _, row := range rows {
+		if !citSet[row.ID] {
+			t.Errorf("injection row ID %q not in citation set", row.ID)
+		}
+	}
+}
+
+// TestInjectionWriterNonBlocking asserts that a stalled injection store
+// never blocks Retrieve (AC-1 fault hook test).
+func TestInjectionWriterNonBlocking(t *testing.T) {
+	t.Parallel()
+	st := openStore(t)
+	gw := openMockGateway(t, 4)
+	vi := vindex.New(st.Vectors(), 4, "test")
+	log := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	r := retrieval.NewWithInjections(st.Memories(), st.Records(), vi, gw, st.Injections(), log)
+
+	// Install fault hook that stalls indefinitely — Retrieve must not block.
+	stalled := make(chan struct{})
+	r.InjWr().FaultHook = func() error {
+		<-stalled // block until test unblocks it
+		return nil
+	}
+
+	scope := identity.Scope{Tenant: "tenant-nonblock-" + newID()}
+	_ = insertMemory(t, st, scope, "injection writer test memory", "fact",
+		[]string{"injection"}, []string{"writer"}, []string{"injection writer"}, 0)
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_, err := r.Retrieve(context.Background(), scope, retrieval.Request{
+			Query: "injection writer",
+			Limit: 10,
+		})
+		if err != nil {
+			t.Errorf("Retrieve: %v", err)
+		}
+	}()
+
+	// Retrieve must complete well within 2 seconds even with stalled writer.
+	select {
+	case <-done:
+		// Pass: retrieve returned without blocking on the stalled writer.
+	case <-time.After(2 * time.Second):
+		t.Error("Retrieve blocked: injection writer stall should not block the response")
+	}
+
+	// Unblock and drain cleanly.
+	close(stalled)
+	r.Close()
+}
+
+// TestInjectionWriterDropsCountered verifies that the Drops() counter increments
+// when the channel is full (fill to capacity, then one more Enqueue should drop).
+func TestInjectionWriterDropsCountered(t *testing.T) {
+	t.Parallel()
+	st := openStore(t)
+	log := slog.New(slog.NewTextHandler(os.Stderr, nil))
+
+	// Use a tiny-capacity writer via NewInjectionWriter — we can't easily change
+	// the cap in tests, but we can stall the goroutine and fill the channel.
+	// Here we use the FaultHook to stall + fill approach.
+	w := retrieval.NewInjectionWriterForTest(st.Injections(), log, 2)
+
+	// Stall the writer goroutine.
+	stalled := make(chan struct{})
+	w.FaultHook = func() error {
+		<-stalled
+		return nil
+	}
+
+	scope := identity.Scope{Tenant: "tenant-drops"}
+	batch := []store.Injection{{ID: newID(), ResponseID: newID(), MemoryID: newID(), CreatedAt: 1}}
+
+	// Enqueueing beyond capacity (2 slots) should drop.
+	w.Enqueue(scope, batch) // slot 1
+	w.Enqueue(scope, batch) // slot 2
+	w.Enqueue(scope, batch) // should drop
+
+	if w.Drops() == 0 {
+		t.Error("expected Drops() > 0 after overfilling channel")
+	}
+
+	// Unblock and close.
+	close(stalled)
+	w.Close()
+}
+
+// TestProfileByName verifies all preset names resolve correctly.
+func TestProfileByName(t *testing.T) {
+	t.Parallel()
+	st := openStore(t)
+	gw := openMockGateway(t, 4)
+	vi := vindex.New(st.Vectors(), 4, "test")
+	log := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	r := retrieval.New(st.Memories(), st.Records(), vi, gw, log)
+
+	scope := identity.Scope{Tenant: "tenant-profiles-" + newID()}
+	// Insert one memory so results aren't empty.
+	_ = insertMemory(t, st, scope, "profile test memory for indexing", "fact",
+		[]string{"profile"}, []string{"preset"}, []string{"profile preset"}, 0)
+
+	for _, profile := range []string{"", "balanced", "precise", "broad"} {
+		profile := profile
+		t.Run("profile="+profile, func(t *testing.T) {
+			t.Parallel()
+			resp, err := r.Retrieve(context.Background(), scope, retrieval.Request{
+				Query:   "profile preset",
+				Limit:   5,
+				Profile: profile,
+			})
+			if err != nil {
+				t.Fatalf("Retrieve profile=%q: %v", profile, err)
+			}
+			if resp.API != "v1" {
+				t.Errorf("profile=%q: API got %q want v1", profile, resp.API)
+			}
+		})
 	}
 }
 

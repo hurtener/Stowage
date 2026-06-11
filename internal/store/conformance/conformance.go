@@ -143,6 +143,20 @@ func Run(t *testing.T, factory Factory) {
 	// Phase 10 — RecordStore.CountRecordsSince
 	t.Run("RecordCountRecordsSince", func(t *testing.T) { testRecordCountRecordsSince(t, factory) })
 	t.Run("RecordCountRecordsSinceScopeIsolation", func(t *testing.T) { testRecordCountRecordsSinceScopeIsolation(t, factory) })
+	// Phase 11 — InjectionStore + MemoryStore.ApplyFeedback + RecordStore.GetMany
+	t.Run("InjectionAppendGet", func(t *testing.T) { testInjectionAppendGet(t, factory) })
+	t.Run("InjectionAppendIdempotent", func(t *testing.T) { testInjectionAppendIdempotent(t, factory) })
+	t.Run("InjectionGetNotFound", func(t *testing.T) { testInjectionGetNotFound(t, factory) })
+	t.Run("InjectionListByResponse", func(t *testing.T) { testInjectionListByResponse(t, factory) })
+	t.Run("InjectionScopeIsolation", func(t *testing.T) { testInjectionScopeIsolation(t, factory) })
+	t.Run("MarkWrongCitation", func(t *testing.T) { testMarkWrongCitation(t, factory) })
+	t.Run("MarkWrongCitationNotFound", func(t *testing.T) { testMarkWrongCitationNotFound(t, factory) })
+	t.Run("ApplyFeedback", func(t *testing.T) { testApplyFeedback(t, factory) })
+	t.Run("ApplyFeedbackNoopMissing", func(t *testing.T) { testApplyFeedbackNoopMissing(t, factory) })
+	t.Run("ApplyFeedbackUnknownSignal", func(t *testing.T) { testApplyFeedbackUnknownSignal(t, factory) })
+	t.Run("RecordGetMany", func(t *testing.T) { testRecordGetMany(t, factory) })
+	t.Run("RecordGetManyMissingOmitted", func(t *testing.T) { testRecordGetManyMissingOmitted(t, factory) })
+	t.Run("RecordGetManyScopeIsolation", func(t *testing.T) { testRecordGetManyScopeIsolation(t, factory) })
 }
 
 // --- helpers ----------------------------------------------------------------
@@ -1344,6 +1358,22 @@ func testEmptyScopeRejected(t *testing.T, factory Factory) {
 		s.Branches().SetStatus(ctx, zero, "any", "merged", nowMs()))
 	_, err = s.Branches().ListBySession(ctx, zero, "s")
 	assertScopeRequired(t, "Branches.ListBySession", err)
+
+	// Phase 11 — InjectionStore empty-scope rejection
+	assertScopeRequired(t, "Injections.Append",
+		s.Injections().Append(ctx, zero, []store.Injection{{ID: newID(), ResponseID: newID(), MemoryID: newID(), CreatedAt: nowMs()}}))
+	_, err = s.Injections().Get(ctx, zero, "any")
+	assertScopeRequired(t, "Injections.Get", err)
+	_, err = s.Injections().ListByResponse(ctx, zero, "any")
+	assertScopeRequired(t, "Injections.ListByResponse", err)
+	assertScopeRequired(t, "Injections.MarkWrongCitation",
+		s.Injections().MarkWrongCitation(ctx, zero, "any"))
+
+	// Phase 11 — MemoryStore.ApplyFeedback + Records.GetMany empty-scope rejection
+	assertScopeRequired(t, "Memories.ApplyFeedback",
+		s.Memories().ApplyFeedback(ctx, zero, "any", "use"))
+	_, err = s.Records().GetMany(ctx, zero, []string{"a"})
+	assertScopeRequired(t, "Records.GetMany", err)
 }
 
 // =============================================================================
