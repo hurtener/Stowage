@@ -312,3 +312,13 @@ caches, not signals — so deferral is not a D-024 violation. This keeps the
 pgvector extension and Phase 03's CI dependency-free. The RFC §8.1 table
 inventory is otherwise complete. (Deliberate deviation from the full §8.1
 inventory; footnote added to docs/plans/phase-03-store-schema.md.)
+
+## D-039 — Coverage override: pgstore band 81 (temporary, tracked)
+
+2026-06-11. CLAUDE.md §11 sets store drivers at 85. pgstore conformance +
+EXPLAIN tests reach 81.4 %; the remainder is pgx error branches not reachable
+against a healthy service-container database (connection/Exec failures mid-
+transaction). Per the documented-override rule (class: hermetic-unreachable;
+reason above) the band is set to 81 in `scripts/coverage.json` — to be raised
+back toward 85 in Phase 09 when the vindex work adds pg error-path tests.
+sqlitestore remains at 85 (achieved).
