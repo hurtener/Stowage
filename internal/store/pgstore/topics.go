@@ -126,7 +126,7 @@ func (t *topicStore) Delete(ctx context.Context, scope identity.Scope, key strin
 	args = append(args, whereArgs...)
 	args = append(args, key)
 	tag, err := t.s.pool.Exec(ctx,
-		fmt.Sprintf(`UPDATE topics SET status=$1, updated_at=$2 WHERE %s AND key=$%d`, whereClause, next),
+		fmt.Sprintf(`UPDATE topics SET status=$1, updated_at=$2 WHERE %s AND key=$%d AND status != 'deleted'`, whereClause, next),
 		args...,
 	)
 	if err != nil {
