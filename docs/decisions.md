@@ -323,6 +323,15 @@ reason above) the band is set to 81 in `scripts/coverage.json` — to be raised
 back toward 85 in Phase 09 when the vindex work adds pg error-path tests.
 sqlitestore remains at 85 (achieved).
 
+## D-041 — stdlib http.ServeMux only — no router dependency (Phase 05)
+
+2026-06-11. The Phase 05 HTTP surface (`internal/api`) uses Go 1.22+
+`net/http.ServeMux` patterns exclusively (method+path routing, `{id}` path
+values). No third-party router is introduced. The API surface is small by
+design (D-015); stdlib patterns suffice and keep the binary CGo-free. This
+settles the provisional D-040 number noted in the phase-05 plan
+(`docs/plans/phase-05-records-ingest.md`), which has been updated to D-041.
+
 ## D-040 — Bifrost driver speaks OpenAI-compatible wire format (base_url-agnostic)
 
 2026-06-11. The bifrost gateway driver uses the OpenAI-compatible wire format

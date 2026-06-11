@@ -35,6 +35,9 @@ type Store interface {
 	// Events returns the audit-trail sub-store.
 	Events() EventStore
 
+	// Branches returns the branch-lifecycle sub-store.
+	Branches() BranchStore
+
 	// Ops returns the dead-letter and job-marker sub-store.
 	Ops() OpsStore
 
@@ -130,6 +133,22 @@ type EventStore interface {
 	// List returns events ordered by created_at ascending.
 	// cursor is an opaque pagination token; pass "" for first page.
 	List(ctx context.Context, scope identity.Scope, limit int, cursor string) ([]Event, string, error)
+}
+
+// BranchStore manages branch lifecycle (RFC §5.5, D-029).
+type BranchStore interface {
+	// Create inserts a new branch record.
+	Create(ctx context.Context, scope identity.Scope, b Branch) error
+
+	// Get returns a single branch by ID within scope.
+	// Returns ErrNotFound when absent.
+	Get(ctx context.Context, scope identity.Scope, id string) (*Branch, error)
+
+	// SetStatus updates the status and updated_at fields of a branch.
+	SetStatus(ctx context.Context, scope identity.Scope, id string, status string, updatedAt int64) error
+
+	// ListBySession returns all branches for a session within scope.
+	ListBySession(ctx context.Context, scope identity.Scope, sessionID string) ([]Branch, error)
 }
 
 // OpsStore manages dead letters and job markers (RFC §11, D-024).

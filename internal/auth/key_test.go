@@ -59,11 +59,24 @@ func TestVerifyWrongSecret(t *testing.T) {
 		t.Fatalf("Insert: %v", err)
 	}
 
-	// Corrupt the secret part (last char).
-	bad := plaintext[:len(plaintext)-1] + "X"
-	if bad[len(bad)-1] == plaintext[len(plaintext)-1] {
-		bad = plaintext[:len(plaintext)-1] + "Y"
+	// Corrupt a character in the MIDDLE of the 43-char secret part so that the
+	// decoded bytes definitely differ. The last base64url character carries only
+	// 4 bits of payload (the lower 2 are padding zeros), so corrupting it can be
+	// a no-op for certain original values.
+	secretStart := keySepPos + 1   // first char of the secret segment
+	corruptIdx := secretStart + 20 // well within the middle; all 6 bits count
+	orig := plaintext[corruptIdx]
+	// Pick any valid base64url character that differs from orig.
+	const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
+	var corruptChar byte
+	for i := 0; i < len(alphabet); i++ {
+		if alphabet[i] != orig {
+			corruptChar = alphabet[i]
+			break
+		}
 	}
+	bad := plaintext[:corruptIdx] + string(corruptChar) + plaintext[corruptIdx+1:]
+
 	_, err = Verify(kr, bad)
 	if !errors.Is(err, ErrBadCredential) && !errors.Is(err, ErrInvalidKey) {
 		t.Errorf("Verify(bad secret) = %v, want ErrBadCredential or ErrInvalidKey", err)
@@ -180,6 +193,45 @@ func TestMemKeyringConcurrent(t *testing.T) {
 		}()
 	}
 	wg.Wait()
+}
+
+// TestMemKeyringList verifies MemKeyring.List returns keys filtered by tenant.
+func TestMemKeyringList(t *testing.T) {
+	kr := NewMemKeyring()
+
+	k1, _, _ := Generate("tenant-a", RoleAgent)
+	k2, _, _ := Generate("tenant-a", RoleAdmin)
+	k3, _, _ := Generate("tenant-b", RoleAgent)
+	_ = kr.Insert(k1)
+	_ = kr.Insert(k2)
+	_ = kr.Insert(k3)
+
+	// Filter by tenant-a: should return k1 and k2.
+	got, err := kr.List("tenant-a")
+	if err != nil {
+		t.Fatalf("List(tenant-a): %v", err)
+	}
+	if len(got) != 2 {
+		t.Errorf("List(tenant-a) = %d keys, want 2", len(got))
+	}
+
+	// Filter by tenant-b: should return k3.
+	got, err = kr.List("tenant-b")
+	if err != nil {
+		t.Fatalf("List(tenant-b): %v", err)
+	}
+	if len(got) != 1 {
+		t.Errorf("List(tenant-b) = %d keys, want 1", len(got))
+	}
+
+	// List all (empty string): should return all 3.
+	got, err = kr.List("")
+	if err != nil {
+		t.Fatalf("List(): %v", err)
+	}
+	if len(got) != 3 {
+		t.Errorf("List() = %d keys, want 3", len(got))
+	}
 }
 
 // TestParseKeyRoundTrip verifies generate → parseKey round-trip.

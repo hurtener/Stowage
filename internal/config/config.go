@@ -44,7 +44,11 @@ type Config struct {
 
 // ServerConfig holds HTTP server tuning.
 type ServerConfig struct {
-	Listen string `yaml:"listen"`
+	Listen       string `yaml:"listen"`
+	ReadTimeout  int    `yaml:"read_timeout"`   // seconds; default 10
+	WriteTimeout int    `yaml:"write_timeout"`  // seconds; default 20
+	IdleTimeout  int    `yaml:"idle_timeout"`   // seconds; default 60
+	MaxBodyBytes int64  `yaml:"max_body_bytes"` // default 1 MiB
 }
 
 // StoreConfig selects the persistence driver.
@@ -76,6 +80,10 @@ type TelemetryConfig struct {
 var allKeys = []string{
 	"profile",
 	"server.listen",
+	"server.read_timeout",
+	"server.write_timeout",
+	"server.idle_timeout",
+	"server.max_body_bytes",
 	"store.driver",
 	"store.dsn",
 	"gateway.driver",
@@ -105,6 +113,10 @@ var envKeys = []struct {
 }{
 	{"STOWAGE_PROFILE", "profile"},
 	{"STOWAGE_SERVER_LISTEN", "server.listen"},
+	{"STOWAGE_SERVER_READ_TIMEOUT", "server.read_timeout"},
+	{"STOWAGE_SERVER_WRITE_TIMEOUT", "server.write_timeout"},
+	{"STOWAGE_SERVER_IDLE_TIMEOUT", "server.idle_timeout"},
+	{"STOWAGE_SERVER_MAX_BODY_BYTES", "server.max_body_bytes"},
 	{"STOWAGE_STORE_DRIVER", "store.driver"},
 	{"STOWAGE_STORE_DSN", "store.dsn"},
 	{"STOWAGE_GATEWAY_DRIVER", "gateway.driver"},
@@ -122,7 +134,11 @@ func Defaults() *Config {
 	c := &Config{
 		Profile: "assistant",
 		Server: ServerConfig{
-			Listen: ":7160",
+			Listen:       ":7160",
+			ReadTimeout:  10,
+			WriteTimeout: 20,
+			IdleTimeout:  60,
+			MaxBodyBytes: 1 << 20, // 1 MiB
 		},
 		Store: StoreConfig{
 			Driver: "sqlite",
@@ -344,6 +360,14 @@ func (c *Config) getByPath(path string) string {
 		return c.Profile
 	case "server.listen":
 		return c.Server.Listen
+	case "server.read_timeout":
+		return strconv.Itoa(c.Server.ReadTimeout)
+	case "server.write_timeout":
+		return strconv.Itoa(c.Server.WriteTimeout)
+	case "server.idle_timeout":
+		return strconv.Itoa(c.Server.IdleTimeout)
+	case "server.max_body_bytes":
+		return strconv.FormatInt(c.Server.MaxBodyBytes, 10)
 	case "store.driver":
 		return c.Store.Driver
 	case "store.dsn":
@@ -378,6 +402,30 @@ func (c *Config) setByPath(path, value string) error {
 		c.Profile = value
 	case "server.listen":
 		c.Server.Listen = value
+	case "server.read_timeout":
+		n, err := strconv.Atoi(value)
+		if err != nil {
+			return fmt.Errorf("config.%s: %w", path, err)
+		}
+		c.Server.ReadTimeout = n
+	case "server.write_timeout":
+		n, err := strconv.Atoi(value)
+		if err != nil {
+			return fmt.Errorf("config.%s: %w", path, err)
+		}
+		c.Server.WriteTimeout = n
+	case "server.idle_timeout":
+		n, err := strconv.Atoi(value)
+		if err != nil {
+			return fmt.Errorf("config.%s: %w", path, err)
+		}
+		c.Server.IdleTimeout = n
+	case "server.max_body_bytes":
+		n, err := strconv.ParseInt(value, 10, 64)
+		if err != nil {
+			return fmt.Errorf("config.%s: %w", path, err)
+		}
+		c.Server.MaxBodyBytes = n
 	case "store.driver":
 		c.Store.Driver = value
 	case "store.dsn":

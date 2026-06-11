@@ -122,6 +122,21 @@ type Event struct {
 	CreatedAt int64
 }
 
+// Branch is a session fork for exploration (RFC §5.5, D-029).
+// Records on a discarded branch remain readable; status reflects lifecycle.
+// All timestamps are unix milliseconds (D-037).
+type Branch struct {
+	ID             string
+	TenantID       string
+	ProjectID      string
+	UserID         string
+	SessionID      string
+	ParentBranchID string
+	Status         string // "open"|"merged"|"discarded"
+	CreatedAt      int64  // unix millis
+	UpdatedAt      int64  // unix millis
+}
+
 // DeadLetter is a failed pipeline item that requires operator attention.
 type DeadLetter struct {
 	ID         string

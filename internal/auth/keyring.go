@@ -16,6 +16,9 @@ type Keyring interface {
 	Insert(key Key) error
 	// Revoke marks a key as revoked at the given time.
 	Revoke(id string, at time.Time) error
+	// List returns all keys for the given tenantID. Pass "" to list all keys.
+	// Returned keys never contain plaintext secrets.
+	List(tenantID string) ([]Key, error)
 }
 
 // MemKeyring is an in-memory Keyring. Safe for concurrent use.
@@ -64,4 +67,20 @@ func (k *MemKeyring) Revoke(id string, at time.Time) error {
 	key.RevokedAt = &at
 	k.keys[id] = key
 	return nil
+}
+
+// List returns all keys, optionally filtered by tenantID.
+// Pass "" to list all keys regardless of tenant.
+func (k *MemKeyring) List(tenantID string) ([]Key, error) {
+	k.mu.RLock()
+	defer k.mu.RUnlock()
+	var out []Key
+	for _, key := range k.keys {
+		if tenantID != "" && key.TenantID != tenantID {
+			continue
+		}
+		c := key
+		out = append(out, c)
+	}
+	return out, nil
 }

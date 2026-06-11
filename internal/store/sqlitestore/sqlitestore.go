@@ -389,6 +389,7 @@ func (s *sqliteStore) Topics() store.TopicStore    { return &topicStore{s} }
 func (s *sqliteStore) Buffers() store.BufferStore  { return &bufferStore{s} }
 func (s *sqliteStore) Keys() auth.Keyring          { return &keyStore{s} }
 func (s *sqliteStore) Events() store.EventStore    { return &eventStore{s} }
+func (s *sqliteStore) Branches() store.BranchStore { return &branchStore{s} }
 func (s *sqliteStore) Ops() store.OpsStore         { return &opsStore{s} }
 
 // nullStr converts empty string to nil (for nullable TEXT columns).
