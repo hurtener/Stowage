@@ -988,10 +988,14 @@ func TestInjectionWriterDropsCountered(t *testing.T) {
 	scope := identity.Scope{Tenant: "tenant-drops"}
 	batch := []store.Injection{{ID: newID(), ResponseID: newID(), MemoryID: newID(), CreatedAt: 1}}
 
-	// Enqueueing beyond capacity (2 slots) should drop.
-	w.Enqueue(scope, batch) // slot 1
-	w.Enqueue(scope, batch) // slot 2
-	w.Enqueue(scope, batch) // should drop
+	// Max absorbable = 3: one batch parked inside the stalled FaultHook plus
+	// the 2 channel slots. A 4th enqueue therefore MUST drop in every
+	// interleaving (CI flake: with only 3, the writer could park batch 1 and
+	// free a slot before the enqueues, absorbing all three).
+	w.Enqueue(scope, batch) // absorbed (slot or parked)
+	w.Enqueue(scope, batch) // absorbed
+	w.Enqueue(scope, batch) // absorbed (worst case)
+	w.Enqueue(scope, batch) // guaranteed drop
 
 	if w.Drops() == 0 {
 		t.Error("expected Drops() > 0 after overfilling channel")
