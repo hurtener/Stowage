@@ -117,3 +117,11 @@ New terms land here in the same PR that introduces them (CLAUDE.md §14).
   redesigns (its project name is not used in this repository; see D-001/D-003).
 - **The CC-memory predecessor** — the internal Go memory system for coding
   agents whose lifecycle model Stowage adopts (brief 02).
+- **Pack** (default topic pack) — a compiled-in set of topic entries applied
+  at extraction prompt-build time when a scope has no explicit active topics
+  (D-043). Two packs ship: `pack:preferences` (assistant profile —
+  personalisation, communication style, durable personal facts) and
+  `pack:agent-learnings` (coding-agent/fleet — gotchas, patterns, decisions).
+  Packs are virtual: they are never written to the topics table and appear in
+  `GET /v1/topics` with `source: pack`. Any explicit active topic disables the
+  pack; the `pack:off` sentinel opts out of packs entirely.

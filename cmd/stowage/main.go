@@ -20,10 +20,14 @@ import (
 
 	"github.com/hurtener/stowage/internal/api"
 	"github.com/hurtener/stowage/internal/config"
+	"github.com/hurtener/stowage/internal/gateway"
 	"github.com/hurtener/stowage/internal/pipeline"
 	"github.com/hurtener/stowage/internal/store"
 	"github.com/hurtener/stowage/internal/telemetry"
+	"github.com/hurtener/stowage/internal/topics"
 	// register drivers via init()
+	_ "github.com/hurtener/stowage/internal/gateway/bifrost"
+	_ "github.com/hurtener/stowage/internal/gateway/mock"
 	_ "github.com/hurtener/stowage/internal/store/pgstore"
 	_ "github.com/hurtener/stowage/internal/store/sqlitestore"
 	"github.com/hurtener/stowage/internal/version"
@@ -227,20 +231,27 @@ Flags:
 
 // runServe implements `stowage serve [--config path]`.
 //
-// Boot sequence (Phase 06):
-//  1. config.Load   — typed config, fail-loud validation
-//  2. telemetry.New — slog + Prometheus registry
-//  3. store.Open    — open store driver
-//  4. Migrate       — apply pending migrations (idempotent)
-//  5. api.New       — build HTTP server with all routes
-//  6. pipeline.New  — construct buffer stage between store and api
-//  7. Start stage + no-op downstream consumer
-//  8. ListenAndServe — start accepting connections
+// Boot sequence (Phase 07):
+//  1. config.Load      — typed config, fail-loud validation
+//  2. telemetry.New    — slog + Prometheus registry
+//  3. store.Open       — open store driver
+//  4. Migrate          — apply pending migrations (idempotent)
+//  5. gateway.Open     — open intelligence gateway (mock default; D-036)
+//  6. gateway.Probe    — probe; failure = warn + degraded (D-036), never fatal
+//  7. api.New          — build HTTP server with all routes
+//  8. pipeline.New     — construct buffer stage between store and api
+//  9. topics.New       — construct topics service
 //
-// Graceful shutdown on SIGTERM/SIGINT:
-//  1. api.Shutdown  — stop accepting; closes pipeline ingest channel
-//  2. stage.Drain   — wait for workers + ticker to finish
-//  3. store.Close   — via defer (happens after runServe returns)
+// 10. pipeline.NewExtractStage — extraction stage wired to buffer downstream
+// 11. Start stages + no-op Phase 08 placeholder consumer
+// 12. ListenAndServe   — start accepting connections
+//
+// Graceful shutdown on SIGTERM/SIGINT (Phase 07 order):
+//  1. api.Shutdown       — stop accepting; closes pipeline ingest channel
+//  2. bufStage.Drain     — workers + ticker finish
+//  3. extractStage.Drain — extraction workers finish
+//  4. gw.Close           — gateway flush + release
+//  5. store.Close        — via defer (happens after runServe returns)
 func runServe(args []string) {
 	var configPath string
 	for i := 0; i < len(args); i++ {
@@ -306,6 +317,19 @@ func runServe(args []string) {
 		os.Exit(1)
 	}
 
+	// Open the intelligence gateway (Phase 07). Default driver: "mock".
+	// gateway.Open failure is a configuration error → fatal.
+	// gateway.Probe failure is degraded (D-036) → warn + continue.
+	gw, err := gateway.Open(ctx, cfg.Gateway, log, reg)
+	if err != nil {
+		log.Error("stowage serve: gateway open failed", "err", err)
+		os.Exit(1)
+	}
+	if probeErr := gw.Probe(ctx); probeErr != nil {
+		log.Warn("stowage serve: gateway probe failed (degraded mode — extraction will dead-letter until provider recovers)",
+			"err", probeErr)
+	}
+
 	// Expose additional metrics.
 	_ = prometheus.NewRegistry() // reg passed from telemetry
 
@@ -321,11 +345,17 @@ func runServe(args []string) {
 	srv.SetStage(bufStage)
 	bufStage.Start(ctx)
 
-	// No-op downstream consumer — drains FlushedBuffer events until Phase 07
-	// replaces it with the extraction stage.
+	// Topics service + extract stage (Phase 07).
+	topicSvc := topics.New(st.Topics(), log, cfg.Profile)
+	srv.SetTopicService(topicSvc)
+	extractStage := pipeline.NewExtractStage(st, gw, topicSvc, log, cfg.Profile, bufStage.Downstream())
+	extractStage.Start(ctx)
+
+	// No-op Phase 08 placeholder consumer — drains CandidateBatch events until
+	// Phase 08 replaces it with reconciliation dispatch.
 	go func() {
-		for range bufStage.Downstream() {
-			// Phase 07: replace with extraction dispatch.
+		for range extractStage.Downstream() {
+			// Phase 08: replace with reconciliation dispatch.
 		}
 	}()
 
@@ -351,15 +381,21 @@ func runServe(args []string) {
 		os.Exit(1)
 	}
 
-	// Graceful shutdown (Phase 06 order):
-	//  1. api.Shutdown — stop accepting; closes the ingest pipeline channel.
-	//  2. stage.Drain  — workers process remaining items; ticker stops.
-	//  3. store.Close  — happens in the deferred close above.
+	// Graceful shutdown (Phase 07 order):
+	//  1. api.Shutdown       — stop accepting; closes the ingest pipeline channel.
+	//  2. bufStage.Drain     — buffer workers + ticker finish; closes FlushedBuffer ch.
+	//  3. extractStage.Drain — extract workers finish; closes CandidateBatch ch.
+	//  4. gw.Close           — gateway flush + release.
+	//  5. store.Close        — happens in the deferred close above.
 	shutdownCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	if err := srv.Shutdown(shutdownCtx); err != nil {
 		log.Error("stowage serve: shutdown", "err", err)
 	}
 	bufStage.Drain(shutdownCtx)
+	extractStage.Drain(shutdownCtx)
+	if gwErr := gw.Close(shutdownCtx); gwErr != nil {
+		log.Warn("stowage serve: gateway close", "err", gwErr)
+	}
 	log.Info("stowage serve: stopped")
 }

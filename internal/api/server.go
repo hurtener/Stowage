@@ -25,6 +25,7 @@ import (
 	"github.com/hurtener/stowage/internal/config"
 	"github.com/hurtener/stowage/internal/pipeline"
 	"github.com/hurtener/stowage/internal/store"
+	"github.com/hurtener/stowage/internal/topics"
 )
 
 // pipelineCap is the bounded pipeline channel capacity.
@@ -46,6 +47,10 @@ type Server struct {
 	// stage is the buffer pipeline stage (may be nil — tests don't wire it).
 	// Set via SetStage before calling ListenAndServe.
 	stage *pipeline.Stage
+
+	// topicSvc provides virtual-pack logic for GET /v1/topics (Phase 07).
+	// Set via SetTopicService before calling ListenAndServe.
+	topicSvc *topics.Service
 
 	maxBodyB int64 // max request body bytes
 
@@ -94,6 +99,11 @@ func New(cfg *config.Config, st store.Store, log *slog.Logger, reg *prometheus.R
 	// Buffers — explicit flush endpoint (Phase 06).
 	mux.HandleFunc("POST /v1/buffers/{key}/flush", srv.authMiddleware(srv.handleFlushBuffer, false))
 
+	// Topics — extraction magnet management (Phase 07).
+	mux.HandleFunc("GET /v1/topics", srv.authMiddleware(srv.handleListTopics, false))
+	mux.HandleFunc("PUT /v1/topics", srv.authMiddleware(srv.handleUpsertTopics, false))
+	mux.HandleFunc("DELETE /v1/topics/{key}", srv.authMiddleware(srv.handleDeleteTopic, false))
+
 	// Admin key management — admin role required.
 	// POST /v1/admin/keys is registered without the auth wrapper so that the
 	// handler can implement bootstrap mode (first-key creation when the keyring
@@ -128,6 +138,12 @@ func New(cfg *config.Config, st store.Store, log *slog.Logger, reg *prometheus.R
 // channel; the server closes the channel on Shutdown to signal the stage.
 func (s *Server) SetStage(st *pipeline.Stage) {
 	s.stage = st
+}
+
+// SetTopicService wires the topics.Service used by GET /v1/topics (Phase 07).
+// Must be called before ListenAndServe.
+func (s *Server) SetTopicService(svc *topics.Service) {
+	s.topicSvc = svc
 }
 
 // Pipeline returns the read end of the ingest pipeline channel.
