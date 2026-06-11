@@ -143,3 +143,35 @@ New terms land here in the same PR that introduces them (CLAUDE.md §14).
   Runs once at serve-boot (immediate pass) then on a jittered 5–7-minute ticker
   via `Embedder.BackfillSweep`. Provides crash-recovery for embed jobs dropped
   from the bounded channel or lost to gateway failures. Limit 64 per pass.
+- **ActivityTurns** — the approximate count of records written to a tenant scope
+  since the oldest `last_accessed_at` across the current retrieve result set
+  (Phase 10). Used by the decay factor to normalise recency: a memory idle for
+  5 turns in a quiet scope is less stale than one idle for 5 turns in a busy
+  scope. Computed as a single `COUNT` query per retrieve call (not per item).
+- **HubSignals** — the number of distinct query clusters (query signatures) that
+  have returned a given memory in the current process lifetime, tracked by the
+  in-memory LRU Hub (Phase 10, `internal/retrieval.Hub`). Memories with ≥ 4
+  distinct signals receive a 0.80× hub-dampening multiplier in the utility score
+  to counteract generic "hub" content dominating results across unrelated queries.
+- **SameSession** — true when the retrieve request's `session_id` matches the
+  `session_id` of the memory's origin (the scope.Session value at INSERT time).
+  Used by the write-echo cooldown: memories created in the current session within
+  the last 30 minutes are suppressed (×0.1) to prevent the agent from immediately
+  retrieving its own just-written output.
+- **Write-echo cooldown** — a scoring factor (×0.1) applied to memories whose
+  `created_at` is within the last 30 minutes AND whose origin session matches the
+  current retrieve session (`SameSession=true`). Prevents the retrieval pipeline
+  from surfacing a memory the agent just wrote, breaking short-term feedback loops
+  (Phase 10).
+- **Support summary** — a per-response block (`strength`, `top_score`,
+  `conflicts`) that characterises the evidence quality of the retrieved set
+  (Phase 10, RFC §4.2.5). `strength` is `"weak"`, `"moderate"`, or `"strong"`
+  based on the top-3 score mass (thresholds 1.5 and 5.0). `conflicts` lists
+  pairs of memory IDs connected by a `contradicts` link within the result set.
+- **Utility score** — the final score assigned to a memory after RRF fusion is
+  re-weighted by all 11 scoring factors (Phase 10). Replaces the raw RRF score as
+  the sort key returned to callers. Computed by `scoring.Score(Inputs)`, which
+  is a pure function with no side effects.
+- **Trust multiplier** — the read-side scoring factor applied per `trust_source`
+  at retrieve time (Phase 10, D-050). Distinct from the supersede-gate trust
+  threshold (write-side). See D-050 for the full multiplier table and rationale.

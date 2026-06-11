@@ -568,3 +568,40 @@ HTTP client — useful, but not the intended direct SDK integration. Owner direc
 **Consequences:** zero call-site changes outside `internal/gateway` and config wiring
 (P5 preserved); `make build` stays CGo-free; Harbor parity for the SDK driver path;
 `openaicompat` remains the live-validated OpenRouter path (live tests unchanged).
+
+## D-050 — Scoring trust: rank multiplier vs supersede-gate (distinct concerns)
+
+2026-06-11. Two unrelated systems both use the word "trust" in Stowage; conflating
+them causes design confusion.
+
+**Supersede-gate trust (Phases 08–09):** `memory.trust_source` is a write-time
+quality signal that guards supersede eligibility. An `llm_extracted` memory may not
+supersede a `user_stated` memory because the higher-trust source is assumed to be
+more reliable for long-lived facts. This is a _write-side_ concern (D-025, D-044
+fast-add path, D-045 Commit transaction).
+
+**Rank-multiplier trust (Phase 10):** `scoring.TrustMultiplier` re-weights the
+retrieval score of a memory at _read time_. The multipliers are:
+
+| trust_source     | multiplier |
+|------------------|------------|
+| user_stated      | 1.25       |
+| agreed_upon      | 1.15       |
+| agent_suggested  | 1.00       |
+| llm_extracted    | 0.95       |
+| (unknown/other)  | 1.00       |
+
+The values reinforce the same ordering as the supersede-gate but operate on a
+different axis — they boost retrieval relevance, not data lineage. A `user_stated`
+memory is more likely to surface in top results because users have higher intent
+signal, not merely because it cannot be overwritten.
+
+**Decision:** keep the two systems separate. `memory.trust_source` is never changed
+by the scoring layer. Score multipliers are defined as pure constants in
+`internal/scoring` (P5 no-side-effect guarantee); the supersede-gate remains in
+`internal/reconcile`. Documentation (glossary, plans) uses "trust multiplier" for
+the read-side factor and "trust source" for the write-side lineage field.
+
+**Consequences:** clean separation of read and write concerns; scoring remains a
+pure function (no store access); future calibration of read-side multipliers does
+not risk breaking the supersede-gate invariant.

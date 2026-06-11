@@ -6,10 +6,12 @@ import (
 
 	"github.com/hurtener/stowage/internal/identity"
 	"github.com/hurtener/stowage/internal/retrieval"
+	"github.com/hurtener/stowage/internal/scoring"
 	"github.com/hurtener/stowage/internal/store"
 )
 
 // retrieveRequest is the wire format for POST /v1/retrieve.
+// Envelope is marked api:"v0" (unstable until Phase 11).
 type retrieveRequest struct {
 	Query        string   `json:"query"`
 	Limit        int      `json:"limit"`
@@ -17,21 +19,55 @@ type retrieveRequest struct {
 	Until        int64    `json:"until"` // unix millis; 0 = unbounded
 	Kinds        []string `json:"kinds"`
 	IncludeLanes bool     `json:"include_lanes"`
+	SessionID    string   `json:"session_id"` // used for cooldown + scope affinity (Phase 10)
+	Debug        bool     `json:"debug"`      // if true, include per-item scoring breakdowns (Phase 10)
+}
+
+// retrieveBreakdown is the wire format for a per-item scoring breakdown.
+type retrieveBreakdown struct {
+	UseBoost         float64 `json:"use_boost"`
+	NoisePenalty     float64 `json:"noise_penalty"`
+	PrecisionFactor  float64 `json:"precision_factor"`
+	ExplorationBonus float64 `json:"exploration_bonus"`
+	DecayFactor      float64 `json:"decay_factor"`
+	TrustMultiplier  float64 `json:"trust_multiplier"`
+	ScopeAffinity    float64 `json:"scope_affinity"`
+	TemporalBoost    float64 `json:"temporal_boost"`
+	HubDampening     float64 `json:"hub_dampening"`
+	Cooldown         float64 `json:"cooldown"`
+	ImportanceMult   float64 `json:"importance_mult"`
+	FinalScore       float64 `json:"final_score"`
+}
+
+// retrieveConflict is a pair of memory IDs connected by a contradicts link.
+type retrieveConflict struct {
+	A string `json:"a"`
+	B string `json:"b"`
+}
+
+// retrieveSupport is the per-response evidence summary (RFC §4.2.5).
+type retrieveSupport struct {
+	Strength  string             `json:"strength"`
+	TopScore  float64            `json:"top_score"`
+	Conflicts []retrieveConflict `json:"conflicts,omitempty"`
 }
 
 // retrieveMemoryItem is the wire format for one retrieval result.
 type retrieveMemoryItem struct {
-	ID      string   `json:"id"`
-	Kind    string   `json:"kind"`
-	Content string   `json:"content"`
-	Context string   `json:"context,omitempty"`
-	Score   float64  `json:"score"`
-	Lanes   []string `json:"lanes,omitempty"`
+	ID        string             `json:"id"`
+	Kind      string             `json:"kind"`
+	Content   string             `json:"content"`
+	Context   string             `json:"context,omitempty"`
+	Score     float64            `json:"score"`
+	Lanes     []string           `json:"lanes,omitempty"`
+	Breakdown *retrieveBreakdown `json:"breakdown,omitempty"` // present when debug:true
 }
 
 // retrieveResponse is the wire format for POST /v1/retrieve.
+// api:"v0" — unstable until Phase 11 finalises the envelope.
 type retrieveResponse struct {
 	Items    []retrieveMemoryItem `json:"items"`
+	Support  retrieveSupport      `json:"support"`
 	Degraded bool                 `json:"degraded"`
 	API      string               `json:"api"`
 }
@@ -39,9 +75,14 @@ type retrieveResponse struct {
 // handleRetrieve implements POST /v1/retrieve.
 //
 // The handler authenticates the caller (any valid key), extracts the tenant
-// scope, calls retrieval.Retriever.Retrieve, and returns the fused results.
-// When the vector lane is unavailable the response still returns 200 with
-// degraded:true (D-036).
+// scope, calls retrieval.Retriever.Retrieve, and returns the fused + scored
+// results. When the vector lane is unavailable the response still returns 200
+// with degraded:true (D-036).
+//
+// Phase 10 additions:
+//   - session_id in request enables write-echo cooldown detection.
+//   - debug:true in request adds per-item scoring breakdowns.
+//   - support block (strength, top_score, conflicts) is always present.
 func (s *Server) handleRetrieve(w http.ResponseWriter, r *http.Request) {
 	if !requireJSON(w, r) {
 		return
@@ -74,6 +115,8 @@ func (s *Server) handleRetrieve(w http.ResponseWriter, r *http.Request) {
 		Window:       store.Window{From: req.From, Until: req.Until},
 		Kinds:        req.Kinds,
 		IncludeLanes: req.IncludeLanes,
+		SessionID:    req.SessionID,
+		Debug:        req.Debug,
 	})
 	if err != nil {
 		s.log.ErrorContext(r.Context(), "api: retrieve failed", "err", err)
@@ -93,12 +136,46 @@ func (s *Server) handleRetrieve(w http.ResponseWriter, r *http.Request) {
 		if req.IncludeLanes {
 			ri.Lanes = item.Lanes
 		}
+		if req.Debug && item.Breakdown != nil {
+			ri.Breakdown = breakdownToWire(item.Breakdown)
+		}
 		items = append(items, ri)
+	}
+
+	// Map support summary to wire format.
+	sup := retrieveSupport{
+		Strength: resp.Support.Strength,
+		TopScore: resp.Support.TopScore,
+	}
+	for _, c := range resp.Support.Conflicts {
+		sup.Conflicts = append(sup.Conflicts, retrieveConflict{A: c.A, B: c.B})
 	}
 
 	respondJSON(w, http.StatusOK, retrieveResponse{
 		Items:    items,
+		Support:  sup,
 		Degraded: resp.Degraded,
 		API:      resp.API,
 	})
+}
+
+// breakdownToWire converts a scoring.Breakdown to the API wire format.
+func breakdownToWire(bd *scoring.Breakdown) *retrieveBreakdown {
+	if bd == nil {
+		return nil
+	}
+	return &retrieveBreakdown{
+		UseBoost:         bd.UseBoost,
+		NoisePenalty:     bd.NoisePenalty,
+		PrecisionFactor:  bd.PrecisionFactor,
+		ExplorationBonus: bd.ExplorationBonus,
+		DecayFactor:      bd.DecayFactor,
+		TrustMultiplier:  bd.TrustMultiplier,
+		ScopeAffinity:    bd.ScopeAffinity,
+		TemporalBoost:    bd.TemporalBoost,
+		HubDampening:     bd.HubDampening,
+		Cooldown:         bd.Cooldown,
+		ImportanceMult:   bd.ImportanceMult,
+		FinalScore:       bd.FinalScore,
+	}
 }

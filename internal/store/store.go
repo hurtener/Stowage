@@ -73,6 +73,12 @@ type RecordStore interface {
 
 	// MarkProcessed sets processed_at for the given record IDs.
 	MarkProcessed(ctx context.Context, ids []string) error
+
+	// CountRecordsSince returns the number of records in scope whose created_at
+	// is strictly greater than sinceMs (unix milliseconds). Used by the retrieval
+	// layer to compute ActivityTurns for the scoring decay function (Phase 10).
+	// The count is scope-indexed for efficiency; see D-008 on decay computation.
+	CountRecordsSince(ctx context.Context, scope identity.Scope, sinceMs int64) (int64, error)
 }
 
 // MemoryStore is the abstraction layer (RFC §5, D-006, D-008, D-024).

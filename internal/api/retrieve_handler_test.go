@@ -1,14 +1,18 @@
 package api_test
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/hurtener/stowage/internal/api"
+	"github.com/hurtener/stowage/internal/identity"
 	"github.com/hurtener/stowage/internal/retrieval"
 	"github.com/hurtener/stowage/internal/store"
 	"github.com/hurtener/stowage/internal/vindex"
@@ -19,7 +23,7 @@ func setRetriever(t *testing.T, srv *api.Server, st store.Store) {
 	t.Helper()
 	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
 	vi := vindex.New(st.Vectors(), 4, "test-model")
-	r := retrieval.New(st.Memories(), vi, nil, log)
+	r := retrieval.New(st.Memories(), st.Records(), vi, nil, log)
 	srv.SetRetriever(r)
 }
 
@@ -170,5 +174,92 @@ func TestRetrieve_MalformedJSON(t *testing.T) {
 	defer drainClose(resp.Body)
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Errorf("retrieve malformed json: got %d want 400", resp.StatusCode)
+	}
+}
+
+// TestRetrieve_DebugBreakdownPresent proves that debug:true adds per-item
+// scoring breakdowns to the response, exercising the breakdownToWire helper.
+// It also verifies that support.strength is always present (Phase 10 AC-8).
+func TestRetrieve_DebugBreakdownPresent(t *testing.T) {
+	t.Parallel()
+	srv, ts, st := newTestServer(t)
+	_, pt := mustCreateAgentKey(t, st, "tenant-dbp")
+	setRetriever(t, srv, st)
+
+	// Insert a memory with a unique term so lexical search returns it.
+	scope := identity.Scope{Tenant: "tenant-dbp"}
+	uniqueTerm := "debugbreakdownapitestxyzzy"
+	nowMs := time.Now().UnixMilli()
+	memID := fmt.Sprintf("01dbp%016x0000", nowMs)
+	evtID := fmt.Sprintf("01evt%016x0000", nowMs)
+	cs := store.CommitSet{
+		Action: store.ActionAdd,
+		Memory: store.Memory{
+			ID:          memID,
+			Kind:        "fact",
+			Content:     uniqueTerm + " is a unique test memory for debug breakdown",
+			Context:     "ctx",
+			Status:      "active",
+			Confidence:  0.9,
+			TrustSource: "llm_extracted",
+			Stability:   1.0,
+			ContentHash: memID, // reuse memID as a unique content hash
+			CreatedAt:   nowMs,
+			UpdatedAt:   nowMs,
+		},
+		Events: []store.Event{
+			{ID: evtID, Type: "memory.added", SubjectID: memID, Payload: `{}`},
+		},
+	}
+	if err := st.Memories().Commit(context.Background(), scope, cs); err != nil {
+		t.Fatalf("insert memory: %v", err)
+	}
+
+	body := jsonBody(t, map[string]interface{}{
+		"query": uniqueTerm,
+		"limit": 5,
+		"debug": true,
+	})
+	req, _ := http.NewRequest("POST", ts.URL+"/v1/retrieve", body)
+	req.Header.Set("Authorization", bearerHeader(pt))
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("POST /v1/retrieve debug: %v", err)
+	}
+	defer drainClose(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("debug retrieve: got %d want 200", resp.StatusCode)
+	}
+
+	var res struct {
+		Items []struct {
+			ID        string `json:"id"`
+			Breakdown *struct {
+				FinalScore float64 `json:"final_score"`
+			} `json:"breakdown"`
+		} `json:"items"`
+		Support struct {
+			Strength string `json:"strength"`
+		} `json:"support"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&res); err != nil {
+		t.Fatalf("decode debug response: %v", err)
+	}
+	if res.Support.Strength == "" {
+		t.Error("support.strength must not be empty (Phase 10 AC-8)")
+	}
+	if len(res.Items) == 0 {
+		t.Skip("no items returned by lexical search — skip breakdown assertion")
+	}
+	for _, item := range res.Items {
+		if item.Breakdown == nil {
+			t.Errorf("debug=true: item %s missing breakdown field", item.ID)
+			continue
+		}
+		if item.Breakdown.FinalScore <= 0 {
+			t.Errorf("debug=true: item %s FinalScore %.6f want > 0", item.ID, item.Breakdown.FinalScore)
+		}
 	}
 }

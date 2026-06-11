@@ -160,6 +160,26 @@ func (r *recordStore) MarkProcessed(ctx context.Context, ids []string) error {
 	return tx.Commit(ctx)
 }
 
+// CountRecordsSince returns the count of records in scope with created_at >
+// sinceMs. Scope-indexed by tenant/project/user; used for ActivityTurns
+// approximation in the Phase 10 scoring decay function.
+func (r *recordStore) CountRecordsSince(ctx context.Context, scope identity.Scope, sinceMs int64) (int64, error) {
+	whereClause, args, next, err := buildScopeWhere(scope, 1)
+	if err != nil {
+		return 0, err
+	}
+	args = append(args, sinceMs)
+	row := r.s.pool.QueryRow(ctx,
+		`SELECT COUNT(*) FROM records WHERE `+whereClause+fmt.Sprintf(` AND created_at > $%d`, next),
+		args...,
+	)
+	var count int64
+	if err := row.Scan(&count); err != nil {
+		return 0, fmt.Errorf("pgstore: count records since: %w", err)
+	}
+	return count, nil
+}
+
 type rowScanner interface {
 	Scan(dest ...interface{}) error
 }

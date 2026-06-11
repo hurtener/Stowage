@@ -1,5 +1,6 @@
 // Package retrieval implements the four-lane retrieval read path (Phase 09,
-// RFC §4.2). Lanes run concurrently via errgroup; results are fused by RRF.
+// RFC §4.2). Lanes run concurrently via errgroup; results are fused by RRF
+// then re-ranked by the utility scoring function (Phase 10, RFC §5.2).
 //
 // Lanes:
 //   - lexical:    FTS5/tsvector over content+context (always)
@@ -14,6 +15,15 @@
 // match_count is incremented asynchronously for every returned memory;
 // failures are logged but never returned to the caller.
 //
+// ActivityTurns approximation (Phase 10): for the scoring decay function, we
+// compute a single COUNT of records in scope created after the minimum
+// last_accessed_at across all result memories. This count is shared across all
+// scored items in one retrieve call to avoid per-item queries. Documented as an
+// approximation: a memory whose last_accessed_at is much older than others
+// may receive fewer ActivityTurns than it would in a perfect per-item query.
+// This is acceptable for Phase 10; a per-item query would be accurate but
+// costly.
+//
 // The response envelope is marked api:"v0" (unstable until Phase 11).
 package retrieval
 
@@ -21,11 +31,14 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"sort"
+	"time"
 
 	"golang.org/x/sync/errgroup"
 
 	"github.com/hurtener/stowage/internal/gateway"
 	"github.com/hurtener/stowage/internal/identity"
+	"github.com/hurtener/stowage/internal/scoring"
 	"github.com/hurtener/stowage/internal/store"
 	"github.com/hurtener/stowage/internal/vindex"
 )
@@ -46,43 +59,58 @@ type Request struct {
 	Window       store.Window // optional time window on created_at
 	Kinds        []string     // optional kind filter; empty = all
 	IncludeLanes bool         // include per-item lane provenance in response
+	Debug        bool         // include per-item Breakdown in response (Phase 10)
+
+	// SessionID identifies the caller's current session. Used for:
+	//   1. Write-echo cooldown: memories extracted in this session are
+	//      suppressed for 30 min (Phase 10, see scoring package).
+	//   2. Future: project-affinity scoring (Phase 11).
+	SessionID string
 }
 
 // MemoryItem is one retrieval result.
 type MemoryItem struct {
-	Memory store.Memory
-	Score  float64  // RRF fused score
-	Lanes  []string // populated when Request.IncludeLanes is true
+	Memory    store.Memory
+	Score     float64            // utility-adjusted score (Phase 10; RRF score before Phase 10)
+	Lanes     []string           // populated when Request.IncludeLanes is true
+	Breakdown *scoring.Breakdown // populated when Request.Debug is true
 }
 
 // Response is the retrieve response payload.
 type Response struct {
 	Items    []MemoryItem
-	Degraded bool   // true when the vector lane was skipped (D-036)
-	API      string // "v0" until Phase 11 finalises the envelope
+	Support  Support // per-response evidence summary (Phase 10, RFC §4.2.5)
+	Degraded bool    // true when the vector lane was skipped (D-036)
+	API      string  // "v0" until Phase 11 finalises the envelope
 }
 
-// Retriever executes the four-lane retrieval and returns fused results.
+// Retriever executes the four-lane retrieval and returns fused + scored results.
 // It is safe for concurrent use after New returns.
 type Retriever struct {
-	mem store.MemoryStore
-	vi  vindex.Index
-	gw  gateway.Gateway
-	log *slog.Logger
+	mem  store.MemoryStore
+	recs store.RecordStore
+	vi   vindex.Index
+	gw   gateway.Gateway
+	hub  *Hub
+	log  *slog.Logger
 }
 
 // New creates a Retriever wired to the given dependencies.
-func New(mem store.MemoryStore, vi vindex.Index, gw gateway.Gateway, log *slog.Logger) *Retriever {
+// recs is used to compute ActivityTurns for the scoring decay function.
+func New(mem store.MemoryStore, recs store.RecordStore, vi vindex.Index, gw gateway.Gateway, log *slog.Logger) *Retriever {
 	return &Retriever{
-		mem: mem,
-		vi:  vi,
-		gw:  gw,
-		log: log.With("subsystem", "retrieval"),
+		mem:  mem,
+		recs: recs,
+		vi:   vi,
+		gw:   gw,
+		hub:  NewHub(hubMaxSize),
+		log:  log.With("subsystem", "retrieval"),
 	}
 }
 
-// Retrieve runs the four lanes, fuses with RRF, and returns the top-limit
-// memories. The scope is enforced in every lane's store call.
+// Retrieve runs the four lanes, fuses with RRF, applies utility scoring, and
+// returns the top-limit memories. The scope is enforced in every lane's store
+// call.
 func (r *Retriever) Retrieve(ctx context.Context, scope identity.Scope, req Request) (*Response, error) {
 	limit := req.Limit
 	if limit <= 0 {
@@ -111,8 +139,9 @@ func (r *Retriever) Retrieve(ctx context.Context, scope identity.Scope, req Requ
 		degraded = true
 	}
 
-	// Build the query tokens for the structured lane.
+	// Build the query tokens for the structured lane and hub LRU.
 	tokens := Tokenize(req.Query)
+	querySig := QuerySig(tokens)
 
 	// Run all non-vector lanes concurrently plus the vector lane.
 	eg, egCtx := errgroup.WithContext(ctx)
@@ -208,23 +237,30 @@ func (r *Retriever) Retrieve(ctx context.Context, scope identity.Scope, req Requ
 		lanes["vector"] = vectorIDs
 	}
 
-	// Fuse and trim.
+	// Fuse — use a wider window before scoring to give scoring room to rerank.
 	fused := rrf(lanes)
-	if len(fused) > limit {
-		fused = fused[:limit]
+
+	// Trim to laneK before scoring to bound the GetMany call; scoring may
+	// reorder items but we only expose at most limit results.
+	scoringK := limit * 2
+	if scoringK > laneK {
+		scoringK = laneK
+	}
+	if len(fused) > scoringK {
+		fused = fused[:scoringK]
 	}
 
 	if len(fused) == 0 {
-		return &Response{Degraded: degraded, API: "v0"}, nil
+		return &Response{Support: Support{Strength: "weak"}, Degraded: degraded, API: "v0"}, nil
 	}
 
 	// Bulk-fetch the top memories.
 	topIDs := make([]string, len(fused))
-	scoreByID := make(map[string]float64, len(fused))
+	rrfScoreByID := make(map[string]float64, len(fused))
 	lanesByID := make(map[string][]string, len(fused))
 	for i, h := range fused {
 		topIDs[i] = h.MemoryID
-		scoreByID[h.MemoryID] = h.Score
+		rrfScoreByID[h.MemoryID] = h.Score
 		lanesByID[h.MemoryID] = h.Lanes
 	}
 
@@ -233,26 +269,130 @@ func (r *Retriever) Retrieve(ctx context.Context, scope identity.Scope, req Requ
 		return nil, err
 	}
 
-	// Build response items in fused order.
+	// Compute ActivityTurns approximation:
+	// Use the minimum last_accessed_at across all results as the sinceMs bound.
+	// This is an approximation: all items receive the same ActivityTurns count.
+	// A memory accessed more recently will have its decay underestimated (fewer
+	// turns counted), and one accessed less recently will be overestimated.
+	// Documented per the phase-10 plan; the trade-off is one query vs N queries.
+	var activityTurns int64
+	if r.recs != nil && len(mems) > 0 {
+		minLastAccessed := mems[0].LastAccessedAt
+		for _, m := range mems[1:] {
+			if m.LastAccessedAt < minLastAccessed {
+				minLastAccessed = m.LastAccessedAt
+			}
+		}
+		if minLastAccessed > 0 {
+			activityTurns, err = r.recs.CountRecordsSince(ctx, scope, minLastAccessed)
+			if err != nil {
+				r.log.WarnContext(ctx, "retrieval: CountRecordsSince failed — using 0 turns", "err", err)
+				activityTurns = 0
+			}
+		}
+	}
+
+	nowMs := time.Now().UnixMilli()
+
+	// Record hub signals for all returned memories BEFORE scoring (uses the
+	// query signature derived from this retrieve call's tokens).
+	for _, m := range mems {
+		r.hub.Record(m.ID, querySig)
+	}
+
+	// Score each memory and build the response items.
 	memByID := make(map[string]store.Memory, len(mems))
 	for _, m := range mems {
 		memByID[m.ID] = m
 	}
 
-	items := make([]MemoryItem, 0, len(fused))
+	// Convert query window for scoring.
+	var scoringWindow *scoring.Window
+	if req.Window.From != 0 || req.Window.Until != 0 {
+		scoringWindow = &scoring.Window{From: req.Window.From, Until: req.Window.Until}
+	}
+
+	type scoredItem struct {
+		item  MemoryItem
+		score float64
+	}
+	scored := make([]scoredItem, 0, len(fused))
 	for _, h := range fused {
 		m, ok := memByID[h.MemoryID]
 		if !ok {
 			continue // memory disappeared between lane query and bulk fetch
 		}
+
+		sameSession := req.SessionID != "" && req.SessionID == m.SessionID
+
+		in := scoring.Inputs{
+			Memory: scoring.MemoryFacts{
+				MatchCount:     m.MatchCount,
+				InjectCount:    m.InjectCount,
+				UseCount:       m.UseCount,
+				SaveCount:      m.SaveCount,
+				FailCount:      m.FailCount,
+				NoiseCount:     m.NoiseCount,
+				Importance:     m.Importance,
+				Confidence:     m.Confidence,
+				TrustSource:    m.TrustSource,
+				Stability:      m.Stability,
+				CreatedAt:      m.CreatedAt,
+				LastAccessedAt: m.LastAccessedAt,
+				SessionID:      m.SessionID,
+			},
+			FusedScore:    rrfScoreByID[h.MemoryID],
+			Now:           nowMs,
+			ActivityTurns: activityTurns,
+			QueryWindow:   scoringWindow,
+			SameSession:   sameSession,
+			HubSignals:    r.hub.Signals(m.ID),
+		}
+
+		finalScore, bd := scoring.Score(in)
+
 		item := MemoryItem{
 			Memory: m,
-			Score:  scoreByID[h.MemoryID],
+			Score:  finalScore,
+			Lanes:  nil,
 		}
 		if req.IncludeLanes {
 			item.Lanes = lanesByID[h.MemoryID]
 		}
-		items = append(items, item)
+		if req.Debug {
+			bdCopy := bd
+			item.Breakdown = &bdCopy
+		}
+		scored = append(scored, scoredItem{item: item, score: finalScore})
+	}
+
+	// Sort by utility score descending, then by MemoryID for determinism.
+	sort.Slice(scored, func(i, j int) bool {
+		if scored[i].score != scored[j].score {
+			return scored[i].score > scored[j].score
+		}
+		return scored[i].item.Memory.ID < scored[j].item.Memory.ID
+	})
+
+	// Trim to requested limit.
+	if len(scored) > limit {
+		scored = scored[:limit]
+	}
+
+	items := make([]MemoryItem, len(scored))
+	for i, s := range scored {
+		items[i] = s.item
+	}
+
+	// Build support summary.
+	sup, supErr := buildSupport(ctx, r.mem, scope, items)
+	if supErr != nil {
+		r.log.WarnContext(ctx, "retrieval: support summary failed", "err", supErr)
+		// Non-fatal: return items without conflict detection.
+		sup = Support{Strength: "weak", TopScore: 0}
+		if len(items) > 0 {
+			sup.TopScore = items[0].Score
+		}
 	}
 
 	// Async match_count bumps — non-blocking, errors logged only (P2 spirit).
@@ -268,5 +408,5 @@ func (r *Retriever) Retrieve(ctx context.Context, scope identity.Scope, req Requ
 		}
 	}()
 
-	return &Response{Items: items, Degraded: degraded, API: "v0"}, nil
+	return &Response{Items: items, Support: sup, Degraded: degraded, API: "v0"}, nil
 }
