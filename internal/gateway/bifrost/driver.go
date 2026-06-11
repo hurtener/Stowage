@@ -136,6 +136,10 @@ func (d *Driver) embedBatch(ctx context.Context, inputs []string) ([][]float32, 
 		return nil, gateway.Usage{}, err
 	}
 
+	if resp.Error != nil {
+		return nil, gateway.Usage{}, fmt.Errorf("bifrost: embed: provider error envelope (code %v): %s", resp.Error.Code, resp.Error.Message)
+	}
+
 	vecs := make([][]float32, len(resp.Data))
 	for _, item := range resp.Data {
 		if item.Index < 0 || item.Index >= len(vecs) {
@@ -235,6 +239,10 @@ func (d *Driver) doComplete(ctx context.Context, req gateway.CompleteRequest) (g
 	var resp chatResponse
 	if err := d.doWithRetry(ctx, "complete", d.baseURL+"/chat/completions", b, &resp); err != nil {
 		return gateway.CompleteResponse{}, gateway.Usage{}, err
+	}
+
+	if resp.Error != nil {
+		return gateway.CompleteResponse{}, gateway.Usage{}, fmt.Errorf("bifrost: complete: provider error envelope (code %v): %s", resp.Error.Code, resp.Error.Message)
 	}
 
 	if len(resp.Choices) == 0 {

@@ -36,6 +36,7 @@ type chatResponse struct {
 	Object  string       `json:"object"`
 	Choices []chatChoice `json:"choices"`
 	Usage   wireUsage    `json:"usage"`
+	Error   *wireError   `json:"error,omitempty"`
 }
 
 type chatChoice struct {
@@ -50,12 +51,21 @@ type embedRequest struct {
 	Input []string `json:"input"`
 }
 
+// wireError is the error envelope some OpenAI-compatible providers (e.g.
+// OpenRouter) return INSIDE an HTTP 200 body when an upstream call fails.
+// Detected post-decode; never silently treated as an empty result.
+type wireError struct {
+	Code    any    `json:"code"` // number or string depending on provider
+	Message string `json:"message"`
+}
+
 // embedResponse is the wire body for the /embeddings response.
 type embedResponse struct {
 	Object string      `json:"object"`
 	Data   []embedData `json:"data"`
 	Model  string      `json:"model"`
 	Usage  wireUsage   `json:"usage"`
+	Error  *wireError  `json:"error,omitempty"`
 }
 
 type embedData struct {

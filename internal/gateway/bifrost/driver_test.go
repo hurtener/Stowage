@@ -439,3 +439,41 @@ func TestBifrost_TruncatedResponse(t *testing.T) {
 		t.Fatalf("truncation must not be reported as schema validation: %v", err)
 	}
 }
+
+// ── Provider error envelope (HTTP 200 + {"error":...}) ───────────────────────
+
+// Some OpenAI-compatible providers (OpenRouter) wrap upstream failures in an
+// HTTP 200 body. Found by live validation: a capped upstream returned
+// 200+{"error":{"code":429,...}} and the driver reported "0 vectors".
+func TestBifrost_EmbedErrorEnvelope(t *testing.T) {
+	t.Parallel()
+	svr := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		io.WriteString(w, `{"error":{"code":429,"message":"spending cap exceeded"}}`) //nolint:errcheck
+	}))
+	defer svr.Close()
+
+	gw := newDriver(t, svr, 4)
+	_, err := gw.Embed(context.Background(), gateway.EmbedRequest{Inputs: []string{"x"}})
+	if err == nil || !strings.Contains(err.Error(), "error envelope") || !strings.Contains(err.Error(), "spending cap") {
+		t.Fatalf("want envelope error with provider message, got %v", err)
+	}
+}
+
+func TestBifrost_CompleteErrorEnvelope(t *testing.T) {
+	t.Parallel()
+	svr := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		io.WriteString(w, `{"error":{"code":"rate_limited","message":"upstream unavailable"}}`) //nolint:errcheck
+	}))
+	defer svr.Close()
+
+	gw := newDriver(t, svr, 4)
+	_, err := gw.Complete(context.Background(), gateway.CompleteRequest{
+		Messages: []gateway.Message{{Role: "user", Content: "hi"}},
+		Schema:   json.RawMessage(`{"type":"object"}`),
+	})
+	if err == nil || !strings.Contains(err.Error(), "error envelope") {
+		t.Fatalf("want envelope error, got %v", err)
+	}
+}
