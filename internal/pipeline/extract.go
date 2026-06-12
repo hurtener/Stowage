@@ -120,6 +120,7 @@ func (e *ExtractStage) processFlush(ctx context.Context, fb FlushedBuffer) {
 	if fb.SkipPromotion {
 		e.emitEvent(ctx, fb.Scope, "extraction.skipped", fb.Key, "skip_promotion",
 			map[string]interface{}{"reason": "skip_promotion", "buffer_key": fb.Key})
+		e.markProcessed(ctx, fb)
 		return
 	}
 
@@ -143,6 +144,7 @@ func (e *ExtractStage) processFlush(ctx context.Context, fb FlushedBuffer) {
 	if len(activeTopics) == 0 {
 		e.emitEvent(ctx, fb.Scope, "extraction.skipped", fb.Key, "no_topics",
 			map[string]interface{}{"reason": "no_topics", "buffer_key": fb.Key})
+		e.markProcessed(ctx, fb)
 		return
 	}
 
@@ -208,11 +210,19 @@ func (e *ExtractStage) processFlush(ctx context.Context, fb FlushedBuffer) {
 	}
 
 	// Step 7a: Emit CandidateBatch on downstream (non-blocking; drop if full).
+	// Records are marked processed ONLY on successful delivery: a dropped
+	// batch leaves them unprocessed so the re-enqueue sweep retries the
+	// extraction instead of losing the candidates (crash-recovery contract).
+	delivered := true
 	select {
 	case e.out <- batch:
 	default:
+		delivered = false
 		e.log.WarnContext(ctx, "extract: downstream full; dropping batch",
 			"buffer_key", fb.Key)
+	}
+	if delivered {
+		e.markProcessed(ctx, fb)
 	}
 
 	// Step 7b: Emit extraction.completed event with counts (AC-8).
@@ -227,6 +237,22 @@ func (e *ExtractStage) processFlush(ctx context.Context, fb FlushedBuffer) {
 			"truncated":  truncatedFlag,
 			"buffer_key": fb.Key,
 		})
+}
+
+// markProcessed stamps processed_at on the flush's records. Extraction is
+// complete for them: either candidates were delivered downstream or the flush
+// was deliberately skipped. Without this stamp the Phase 14 re-enqueue sweep
+// re-offers every record forever — an unbounded re-extraction loop found by
+// the 2026-06-12 eval sanity check (MarkProcessed existed on both drivers but
+// had no production caller).
+func (e *ExtractStage) markProcessed(ctx context.Context, fb FlushedBuffer) {
+	if len(fb.RecordIDs) == 0 {
+		return
+	}
+	if err := e.st.Records().MarkProcessed(ctx, fb.RecordIDs); err != nil {
+		e.log.WarnContext(ctx, "extract: mark processed failed",
+			"buffer_key", fb.Key, "err", err)
+	}
 }
 
 // ----------------------------------------------------------------------------

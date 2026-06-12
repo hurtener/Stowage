@@ -77,6 +77,12 @@ func TestFullMode(t *testing.T) {
 		if _, err := ingestFlushFull(ctx, runner, &fix); err != nil {
 			t.Fatalf("ingest %s: %v", id, err)
 		}
+		// Pace ingestion: settle each conversation before the next so the
+		// bounded pipeline channel never sees a burst (real deployments see
+		// conversations over time, not the whole haystack in one second).
+		if err := srv.WaitForQuiescence(ctx, 5*time.Minute); err != nil {
+			t.Logf("conversation %s slow to settle (re-enqueue sweep will recover): %v", id, err)
+		}
 	}
 	// Real extraction is async: hard settle barrier — scoring against a
 	// partially-ingested store invalidates the run (2026-06-12 lesson).
