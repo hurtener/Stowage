@@ -172,6 +172,19 @@ const (
 	ActionSupersede ReconcileAction = "supersede"
 	ActionDiscard   ReconcileAction = "discard"
 	ActionPark      ReconcileAction = "park" // pending_confirmation; target stays active
+
+	// ActionRollback restores a memory from a D-017 prior-state snapshot
+	// (Phase 18, D-064). The driver performs a full-row UPDATE of CommitSet.Memory
+	// (all scalar fields including status/superseded_by_id), replaces junctions
+	// (delete + insert) and provenance (delete + insert), and tombstones any
+	// Targets to status 'deleted'. All writes occur in a single transaction.
+	ActionRollback ReconcileAction = "rollback"
+
+	// ActionConfirm promotes a pending_confirmation memory to active via the
+	// supersede path (Phase 18, D-065). The driver sets CommitSet.Memory to
+	// the given status and marks each Target as 'superseded' with
+	// superseded_by_id = Memory.ID. Used by the confirm sweep and PATCH confirm.
+	ActionConfirm ReconcileAction = "confirm"
 )
 
 // NeighborQuery specifies structural overlap parameters for FindNeighbors.
@@ -305,6 +318,16 @@ type Grant struct {
 	UpdatedAt        int64
 }
 
+// RollbackMemory is a single memory + its junction rows for ActionRollback.
+// Used by ExtraMemories in CommitSet for merge-rollback (multiple siblings).
+type RollbackMemory struct {
+	Memory     Memory
+	Entities   []string
+	Keywords   []string
+	Queries    []string
+	Provenance []Provenance
+}
+
 // CommitSet is the transactional unit for one reconciliation outcome.
 // All writes (memory row, junction rows, provenance rows, link rows, event rows)
 // happen in a single DB transaction — the D-017/D-045 reversibility contract.
@@ -339,7 +362,15 @@ type CommitSet struct {
 	//   merge:     all source memories before supersede
 	//   supersede: the superseded memory before status change
 	//   park:      the target memory (target stays active; snapshot for audit)
+	//   rollback:  result rows to tombstone (status → 'deleted')
+	//   confirm:   target memories to supersede (status → 'superseded')
 	Targets []Memory
+
+	// ExtraMemories carries additional memory+junction+provenance rows for
+	// ActionRollback (merge siblings). All rows are restored atomically in
+	// the same transaction with the same replace-junction/provenance semantics
+	// as the primary Memory row.
+	ExtraMemories []RollbackMemory
 
 	// Events to write within the same transaction. The reconcile package
 	// builds these (with prior-state JSON payloads) before calling Commit.

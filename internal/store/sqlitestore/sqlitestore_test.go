@@ -591,3 +591,51 @@ func TestAppliedMigrationsBeforeMigrate(t *testing.T) {
 		t.Fatalf("after migrate: %v %v", applied, err)
 	}
 }
+
+// TestBadCursorListByStatus verifies that malformed cursors passed to
+// ListByStatus return ErrBadCursor. Tests three bad-cursor shapes to cover
+// all three error paths in the internal parseCursor helper.
+func TestBadCursorListByStatus(t *testing.T) {
+	s, cleanup := newTestStore(t)
+	defer cleanup()
+	ctx := context.Background()
+	scope := identity.Scope{Tenant: "t-bad-cursor"}
+
+	cases := []struct {
+		name   string
+		cursor string
+	}{
+		{"missing_colon", "nocursor"},
+		{"non_numeric_ts", "abc:someid"},
+		{"empty_id", "123:"},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			_, _, err := s.Memories().ListByStatus(ctx, scope, "active", 10, tc.cursor)
+			if err == nil {
+				t.Fatalf("ListByStatus(%q): expected error, got nil", tc.cursor)
+			}
+			if !errors.Is(err, store.ErrBadCursor) {
+				t.Errorf("ListByStatus(%q): got %v, want ErrBadCursor", tc.cursor, err)
+			}
+		})
+	}
+}
+
+// TestListBySubjectZeroLimit verifies that ListBySubject with limit=0 returns
+// an empty result without an error. Covers the limit<=0 guard.
+func TestListBySubjectZeroLimit(t *testing.T) {
+	s, cleanup := newTestStore(t)
+	defer cleanup()
+	ctx := context.Background()
+	scope := identity.Scope{Tenant: "t-zero-limit"}
+
+	evts, err := s.Events().ListBySubject(ctx, scope, "any-subject", 0)
+	if err != nil {
+		t.Fatalf("ListBySubject(limit=0): got error %v, want nil", err)
+	}
+	if len(evts) != 0 {
+		t.Errorf("ListBySubject(limit=0): got %d events, want 0", len(evts))
+	}
+}

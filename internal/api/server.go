@@ -146,6 +146,11 @@ func New(cfg *config.Config, st store.Store, log *slog.Logger, reg *prometheus.R
 	mux.HandleFunc("PUT /v1/scopes/grants", srv.authMiddleware(srv.handleCreateGrant, false))
 	mux.HandleFunc("POST /v1/grants/{id}/revoke", srv.authMiddleware(srv.handleRevokeGrant, false))
 
+	// Memory management — Phase 18 (D-064, D-065).
+	mux.HandleFunc("GET /v1/memories/{id}", srv.authMiddleware(srv.handleGetMemory, false))
+	mux.HandleFunc("POST /v1/memories/{id}/rollback", srv.authMiddleware(srv.handleRollbackMemory, false))
+	mux.HandleFunc("PATCH /v1/memories/{id}", srv.authMiddleware(srv.handlePatchMemory, false))
+
 	readTimeout := time.Duration(cfg.Server.ReadTimeout) * time.Second
 	writeTimeout := time.Duration(cfg.Server.WriteTimeout) * time.Second
 	idleTimeout := time.Duration(cfg.Server.IdleTimeout) * time.Second

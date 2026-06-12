@@ -963,6 +963,21 @@ func (e *mockEventStore) List(_ context.Context, _ identity.Scope, limit int, _ 
 	return e.events, "", nil
 }
 
+func (e *mockEventStore) ListBySubject(_ context.Context, _ identity.Scope, subjectID string, limit int) ([]store.Event, error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	var out []store.Event
+	for _, ev := range e.events {
+		if ev.SubjectID == subjectID {
+			out = append(out, ev)
+		}
+	}
+	if limit > 0 && len(out) > limit {
+		out = out[:limit]
+	}
+	return out, nil
+}
+
 func (e *mockEventStore) hasType(typ string) bool {
 	e.mu.Lock()
 	defer e.mu.Unlock()

@@ -106,6 +106,28 @@ func runStage(t *testing.T, mem store.MemoryStore, ops store.OpsStore, evts stor
 	stage.Drain(ctx)
 }
 
+// stubScopeInvalidator is a minimal ScopeInvalidator for tests.
+type stubScopeInvalidator struct {
+	count int
+}
+
+func (s *stubScopeInvalidator) InvalidateScope(_ identity.Scope) {
+	s.count++
+}
+
+func runStageWithInvalidator(t *testing.T, mem store.MemoryStore, ops store.OpsStore, evts store.EventStore, gw gateway.Gateway, inv reconcile.ScopeInvalidator, batch pipeline.CandidateBatch) {
+	t.Helper()
+	ch := make(chan pipeline.CandidateBatch, 1)
+	ch <- batch
+	close(ch)
+	stage := reconcile.New(mem, ops, evts, gw, discardLogger(), ch)
+	stage.SetScopeInvalidator(inv)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	stage.Start(ctx)
+	stage.Drain(ctx)
+}
+
 // insertTestMemory inserts a memory with junction rows via Commit.
 // The memory ID must be pre-set in mem.ID.
 func insertTestMemory(t *testing.T, st store.Store, scope identity.Scope, mem store.Memory, entities, keywords []string) {
@@ -1488,5 +1510,114 @@ func TestMergeTrustGateMatrix(t *testing.T) {
 				t.Errorf("merge low/high trust: unexpected reconcile.warned events (got %d)", len(warnEvts))
 			}
 		})
+	}
+}
+
+// TestCheckParkedDuplicate verifies AC-6: when a candidate's content hash
+// matches a pending_confirmation memory, the reconcile stage discards the
+// incoming candidate (no second parked row), bumps the parked memory's
+// match_count, and emits a memory.reconfirmed event.
+func TestCheckParkedDuplicate(t *testing.T) {
+	st, cleanup := newTestStore(t)
+	defer cleanup()
+	ctx := context.Background()
+	scope := tenantScope("t-parked-dup-" + t.Name())
+
+	// Insert a pending_confirmation memory directly with the right content hash.
+	content := "parked duplicate test content"
+	normalized := reconcile.NormalizeContent(content)
+	hash := reconcile.ContentHash(normalized)
+	parkedMem := store.Memory{
+		ID:          ulid.Make().String(),
+		TenantID:    scope.Tenant,
+		Kind:        "fact",
+		Content:     normalized,
+		Status:      "pending_confirmation",
+		Importance:  3,
+		Confidence:  0.7,
+		TrustSource: "llm_extracted",
+		Stability:   1.0,
+		ContentHash: hash,
+		CreatedAt:   time.Now().UnixMilli(),
+		UpdatedAt:   time.Now().UnixMilli(),
+	}
+	if err := st.Memories().Insert(ctx, scope, parkedMem); err != nil {
+		t.Fatalf("Insert parked memory: %v", err)
+	}
+	initialMatchCount := parkedMem.MatchCount
+
+	// Run reconcile with the same candidate content (no neighbors so no LLM call).
+	gw := &stubGateway{}
+	batch := pipeline.CandidateBatch{
+		Scope: scope,
+		Candidates: []pipeline.Candidate{
+			newCandidate("fact", content, 3, 0.7),
+		},
+	}
+	runStage(t, st.Memories(), st.Ops(), st.Events(), gw, batch)
+
+	// The parked memory should still be pending_confirmation (not promoted).
+	pending, _, err := st.Memories().ListByStatus(ctx, scope, "pending_confirmation", 10, "")
+	if err != nil {
+		t.Fatalf("ListByStatus: %v", err)
+	}
+	if len(pending) != 1 {
+		t.Errorf("pending_confirmation count: got %d want 1 (no second parked row)", len(pending))
+	}
+
+	// No new active memory should have been added.
+	active, _, err := st.Memories().ListByStatus(ctx, scope, "active", 10, "")
+	if err != nil {
+		t.Fatalf("ListByStatus active: %v", err)
+	}
+	if len(active) != 0 {
+		t.Errorf("active count: got %d want 0 (candidate should be discarded)", len(active))
+	}
+
+	// The parked memory's match_count should be incremented.
+	updated, getErr := st.Memories().Get(ctx, scope, parkedMem.ID)
+	if getErr != nil {
+		t.Fatalf("Get parked: %v", getErr)
+	}
+	if updated.MatchCount <= initialMatchCount {
+		t.Errorf("match_count: got %d want > %d (should be bumped)", updated.MatchCount, initialMatchCount)
+	}
+
+	// A memory.reconfirmed event should have been emitted.
+	reconfirmedEvts := eventsByType(t, st, scope, "memory.reconfirmed")
+	if len(reconfirmedEvts) == 0 {
+		t.Error("memory.reconfirmed event: got 0 want >= 1")
+	}
+
+	// The gateway should NOT have been called (parked-dup check short-circuits before FindNeighbors).
+	if gw.calls != 0 {
+		t.Errorf("gateway calls: got %d want 0 (parked-dup check should short-circuit)", gw.calls)
+	}
+}
+
+// TestSetScopeInvalidator verifies that wiring a ScopeInvalidator causes it
+// to be called after a content-adding commit (fast-add path, D-053).
+func TestSetScopeInvalidator(t *testing.T) {
+	st, cleanup := newTestStore(t)
+	defer cleanup()
+	scope := tenantScope("t-inv-" + t.Name())
+
+	// Fast-add: no neighbors, gateway returns "add".
+	gw := &stubGateway{
+		responses: []gateway.CompleteResponse{
+			{JSON: json.RawMessage(`{"action":"add","reason":"new fact"}`)},
+		},
+	}
+	batch := pipeline.CandidateBatch{
+		Scope: scope,
+		Candidates: []pipeline.Candidate{
+			newCandidate("fact", "scope invalidator test", 3, 0.8),
+		},
+	}
+	inv := &stubScopeInvalidator{}
+	runStageWithInvalidator(t, st.Memories(), st.Ops(), st.Events(), gw, inv, batch)
+
+	if inv.count == 0 {
+		t.Error("ScopeInvalidator.InvalidateScope: not called after fast-add; want >= 1 call")
 	}
 }

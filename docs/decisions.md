@@ -987,3 +987,69 @@ Consumers of just the memory server never download Harbor's dependency tree.
 The adapter module has its own test suite and coverage threshold (≥80%). New
 adapter versions can lag the core module by one release without breaking
 consumers of either.
+
+## D-064 — Rollback contract: newest-event-only, atomic, tombstone = deleted
+
+2026-06-12. `POST /v1/memories/{id}/rollback` (D-017's consumer, executing the
+master plan's skipped slot 15) inverts the NEWEST reconciliation event
+(`memory.updated`/`memory.merged`/`memory.superseded`) for the target memory.
+Older events are unreachable until newer ones are unwound — chains unwind one
+step at a time, newest-first, which also bounds cycles. The inverse runs as a
+single atomic `ActionRollback` commit: full row restore (scalars +
+entity/keyword/query junctions + provenance, replace semantics) from the
+prior-state snapshot, result rows located via `superseded_by_id` and
+tombstoned with status `deleted`. Merge rollback is all-or-nothing across all
+sources (every sibling must carry its snapshot or the call 409s). Every
+restored row emits `memory.rolled_back` carrying the PRE-rollback state, so
+rollbacks are themselves auditable. Conflict guards return 409: double
+rollback, downstream supersede of the result row, missing/unparseable
+snapshot.
+
+**Consequences:** the P4 reversibility promise is mechanically closed; the
+reconciler (and the new confirm sweep) can be wrong recoverably. Requires
+`EventStore.ListBySubject` + migration 0006 (subject index) on both drivers.
+
+## D-065 — OQ-4 resolved: pending_confirmation auto-resolves via the supersede path
+
+2026-06-12. Parked (`pending_confirmation`) memories resolve three ways: (1)
+TTL — after `confirmTTL` (default 72 h, profile knob) the NEWER memory wins
+(OQ-4's lean-yes); (2) repeated independent extraction — identical-content
+re-extractions increment the parked row's match counter (new pre-commit
+parked-duplicate lookup; the active-only hash index never fires for parked
+rows, so today re-extractions silently create duplicate parked rows — fixed
+here) and `confirmRepeats` (default 2) promotes early; (3) explicit `PATCH
+/v1/memories/{id}` with `confirm`/`reject` (reject → `expired`). All
+promotions ride the SUPERSEDE path against the parked row's `supersedes_id`
+target — full prior-state event on the target — so every auto-resolution is
+itself reversible via D-064's rollback. Trust gates are not re-applied at
+promotion: TTL/threshold/human action IS the gate's resolution. The RFC's
+assert/correct PATCH actions stay in v1.2 trust extensions.
+
+**Consequences:** parked memories stop being a roach motel; a fifth sweep
+(confirm) joins the lifecycle manager under the Phase 14 idempotency/
+singleflight contract.
+
+## D-066 — vindex/hnsw: graph.Delete is forbidden; invalidate-and-rebuild instead
+
+2026-06-12. CI (and local repro at -count=40) hit SIGSEGVs inside coder/hnsw
+v0.6.1 `Graph.Add`: upstream `Delete` removes a node from `layer.nodes` and
+calls `isolate()`, but HNSW adjacency is asymmetric — inbound edges from nodes
+the deleted node doesn't list survive as dangling references. A later Add can
+traverse to the deleted node, adopt its key as the inter-layer elevator, and
+dereference `layer.nodes[*elevator]` == nil. v0.6.1 is the latest upstream;
+no fixed release exists. The driver previously did Delete-then-Add for
+duplicate-key upserts (working around a separate upstream duplicate-key Add
+bug) and hard Deletes for removals — both paths could corrupt the graph and
+crash a production server.
+
+**Decision:** the in-memory graph is append-only. Duplicate-key upserts and
+deletes invalidate the tenant graph (`built=false`, fresh graph) and the next
+Search lazy-rebuilds from the vector store, which is already the boot path.
+Amends D-048's hard-delete finding. Cost: one rebuild per tenant after a
+replace/delete burst, amortized by the existing lazy-build; vector-store rows
+remain the source of truth either way.
+
+**Consequences:** no upstream graph mutation bug is reachable; rebuild
+correctness is covered by the existing recall-floor and conformance tests;
+re-embedded memories become searchable on the next query rather than
+immediately (cache-rebuild semantics, identical content).
