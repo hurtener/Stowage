@@ -132,6 +132,14 @@ type MemoryStore interface {
 	// Used by the exact-dedup pre-filter (D-044).
 	GetByContentHash(ctx context.Context, scope identity.Scope, hash string) (*Memory, error)
 
+	// GetByContentHashStatus returns the memory with the given content hash AND
+	// status within scope. Returns ErrNotFound when absent. Unlike
+	// GetByContentHash (which is active-only), this method accepts any status
+	// value — it is used by the parked-duplicate pre-commit check (D-065):
+	// the active-only unique index never fires for pending_confirmation rows,
+	// so re-extracted parked content is caught here instead.
+	GetByContentHashStatus(ctx context.Context, scope identity.Scope, hash, status string) (*Memory, error)
+
 	// FindNeighbors returns active memories that share entities or keywords
 	// with the candidate, ranked by overlap count descending then recency.
 	// The search is bounded by q.Limit (default 8 when 0). Scope-parameterized
@@ -236,6 +244,12 @@ type EventStore interface {
 	// List returns events ordered by created_at ascending.
 	// cursor is an opaque pagination token; pass "" for first page.
 	List(ctx context.Context, scope identity.Scope, limit int, cursor string) ([]Event, string, error)
+
+	// ListBySubject returns at most limit events whose subject_id matches
+	// subjectID within scope, ordered by created_at DESCENDING (newest first).
+	// Used by the rollback endpoint to find the invertible reconcile event
+	// (D-064, Phase 18). Migration 0006 adds idx_events_subject for efficiency.
+	ListBySubject(ctx context.Context, scope identity.Scope, subjectID string, limit int) ([]Event, error)
 }
 
 // BranchStore manages branch lifecycle (RFC §5.5, D-029).

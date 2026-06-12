@@ -365,6 +365,23 @@ func (m *memoryStore) GetJunctions(ctx context.Context, scope identity.Scope, id
 	return j, pRows.Err()
 }
 
+// GetByContentHashStatus returns the memory matching hash AND status within scope.
+// Returns ErrNotFound when absent (D-065, Phase 18 parked-duplicate check).
+func (m *memoryStore) GetByContentHashStatus(ctx context.Context, scope identity.Scope, hash, status string) (*store.Memory, error) {
+	whereClause, args, err := buildScopeWhere(scope)
+	if err != nil {
+		return nil, err
+	}
+	args = append(args, status, hash)
+	q := `SELECT ` + memorySelectCols + ` FROM memories WHERE ` + whereClause + ` AND status = ? AND content_hash = ? LIMIT 1` //nolint:gosec
+	row := m.s.rdb.QueryRowContext(ctx, q, args...)
+	mem, err := scanMemory(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, store.ErrNotFound
+	}
+	return mem, err
+}
+
 // GetByContentHash returns the active memory matching hash within scope.
 // Returns ErrNotFound when absent (D-044).
 func (m *memoryStore) GetByContentHash(ctx context.Context, scope identity.Scope, hash string) (*store.Memory, error) {
@@ -598,6 +615,86 @@ func execCommitSQLite(tx *sql.Tx, scope identity.Scope, cs store.CommitSet) erro
 	case store.ActionDiscard:
 		// Nothing to persist; events carry the reason.
 
+	case store.ActionRollback:
+		// Full-row restore from a D-017 prior-state snapshot (Phase 18, D-064).
+		// One or more Memory rows are fully replaced (all scalar fields including
+		// status/superseded_by_id), their junctions and provenance are replaced
+		// (delete + insert), and Targets are tombstoned to status 'deleted'.
+		//
+		// CommitSet layout for rollback:
+		//   Memory      — the primary restored row (from priorStateJSON)
+		//   Entities/Keywords/Queries — replacement junctions for Memory
+		//   Provenance  — replacement provenance for Memory
+		//   Targets     — rows to tombstone (status='deleted')
+		//   ExtraMemories — additional restored rows (merge siblings; same semantics)
+		if err := restoreMemoryFullSQLite(tx, scope, cs.Memory, now); err != nil {
+			return fmt.Errorf("sqlitestore: commit rollback restore: %w", err)
+		}
+		if cs.FaultHook != nil {
+			if err := cs.FaultHook(); err != nil {
+				return err
+			}
+		}
+		if err := deleteJunctionsSQLite(tx, cs.Memory.ID); err != nil {
+			return err
+		}
+		if err := insertJunctionsSQLite(tx, scope, cs.Memory.ID, cs.Entities, cs.Keywords, cs.Queries); err != nil {
+			return err
+		}
+		if err := deleteProvenanceSQLite(tx, cs.Memory.ID); err != nil {
+			return err
+		}
+		if err := insertProvenanceSQLite(tx, scope, cs.Provenance, now); err != nil {
+			return err
+		}
+		// Restore extra memories (merge siblings).
+		for _, xm := range cs.ExtraMemories {
+			if err := restoreMemoryFullSQLite(tx, scope, xm.Memory, now); err != nil {
+				return fmt.Errorf("sqlitestore: commit rollback restore extra: %w", err)
+			}
+			if err := deleteJunctionsSQLite(tx, xm.Memory.ID); err != nil {
+				return err
+			}
+			if err := insertJunctionsSQLite(tx, scope, xm.Memory.ID, xm.Entities, xm.Keywords, xm.Queries); err != nil {
+				return err
+			}
+			if err := deleteProvenanceSQLite(tx, xm.Memory.ID); err != nil {
+				return err
+			}
+			if err := insertProvenanceSQLite(tx, scope, xm.Provenance, now); err != nil {
+				return err
+			}
+		}
+		// Tombstone result rows.
+		for _, t := range cs.Targets {
+			if _, err := tx.Exec(
+				`UPDATE memories SET status='deleted', updated_at=? WHERE tenant_id=? AND id=?`,
+				now, scope.Tenant, t.ID,
+			); err != nil {
+				return fmt.Errorf("sqlitestore: commit rollback tombstone %q: %w", t.ID, err)
+			}
+		}
+
+	case store.ActionConfirm:
+		// Promote a pending_confirmation row to the given status (D-065, Phase 18).
+		// CommitSet.Memory carries the new status; Targets are superseded.
+		if err := confirmMemoryStatusSQLite(tx, scope, cs.Memory, now); err != nil {
+			return fmt.Errorf("sqlitestore: commit confirm: %w", err)
+		}
+		if cs.FaultHook != nil {
+			if err := cs.FaultHook(); err != nil {
+				return err
+			}
+		}
+		for _, t := range cs.Targets {
+			if _, err := tx.Exec(
+				`UPDATE memories SET status='superseded', superseded_by_id=?, updated_at=? WHERE tenant_id=? AND id=?`,
+				cs.Memory.ID, now, scope.Tenant, t.ID,
+			); err != nil {
+				return fmt.Errorf("sqlitestore: commit confirm supersede %q: %w", t.ID, err)
+			}
+		}
+
 	default:
 		return fmt.Errorf("sqlitestore: commit: unknown action %q", cs.Action)
 	}
@@ -733,6 +830,51 @@ func insertLinksSQLite(tx *sql.Tx, scope identity.Scope, links []store.Link, now
 		}
 	}
 	return nil
+}
+
+// restoreMemoryFullSQLite performs a full-row UPDATE of ALL memory scalar fields
+// (including status, superseded_by_id) for ActionRollback (Phase 18, D-064).
+func restoreMemoryFullSQLite(tx *sql.Tx, scope identity.Scope, mem store.Memory, now int64) error {
+	if mem.UpdatedAt == 0 {
+		mem.UpdatedAt = now
+	}
+	_, err := tx.Exec(`
+		UPDATE memories SET
+			kind=?, content=?, context=?, status=?,
+			importance=?, confidence=?, trust_source=?,
+			match_count=?, inject_count=?, use_count=?, save_count=?, fail_count=?, noise_count=?,
+			stability=?, last_accessed_at=?, valid_from=?, valid_until=?,
+			episode_id=?, supersedes_id=?, superseded_by_id=?, privacy_zone=?,
+			updated_at=?, content_hash=?
+		WHERE tenant_id=? AND id=?`,
+		mem.Kind, mem.Content, mem.Context, mem.Status,
+		mem.Importance, mem.Confidence, mem.TrustSource,
+		mem.MatchCount, mem.InjectCount, mem.UseCount, mem.SaveCount, mem.FailCount, mem.NoiseCount,
+		mem.Stability, mem.LastAccessedAt, mem.ValidFrom, mem.ValidUntil,
+		mem.EpisodeID, mem.SupersedesID, mem.SupersededByID, mem.PrivacyZone,
+		mem.UpdatedAt, nullStr(mem.ContentHash),
+		scope.Tenant, mem.ID,
+	)
+	return err
+}
+
+// deleteProvenanceSQLite removes all provenance rows for a memory (used on rollback).
+func deleteProvenanceSQLite(tx *sql.Tx, memID string) error {
+	_, err := tx.Exec(`DELETE FROM provenance WHERE memory_id = ?`, memID)
+	return err
+}
+
+// confirmMemoryStatusSQLite sets status (and updated_at) for ActionConfirm (Phase 18, D-065).
+// superseded_by_id uses the raw string value (empty string) because the column is NOT NULL DEFAULT ”.
+func confirmMemoryStatusSQLite(tx *sql.Tx, scope identity.Scope, mem store.Memory, now int64) error {
+	if mem.UpdatedAt == 0 {
+		mem.UpdatedAt = now
+	}
+	_, err := tx.Exec(
+		`UPDATE memories SET status=?, superseded_by_id=?, updated_at=? WHERE tenant_id=? AND id=?`,
+		mem.Status, mem.SupersededByID, mem.UpdatedAt, scope.Tenant, mem.ID,
+	)
+	return err
 }
 
 // insertEventSQLite writes one event row within an existing tx (D-045).

@@ -36,6 +36,44 @@ func (e *eventStore) Emit(ctx context.Context, scope identity.Scope, ev store.Ev
 	})
 }
 
+// ListBySubject returns at most limit events for subjectID within scope,
+// ordered by created_at DESCENDING (newest first). Used by the rollback
+// endpoint (D-064, Phase 18). idx_events_subject (migration 0006) covers this.
+func (e *eventStore) ListBySubject(ctx context.Context, scope identity.Scope, subjectID string, limit int) ([]store.Event, error) {
+	if scope.Tenant == "" {
+		return nil, store.ErrScopeRequired
+	}
+	if limit <= 0 {
+		return nil, nil
+	}
+	rows, err := e.s.rdb.QueryContext(ctx,
+		`SELECT id, tenant_id, COALESCE(project_id,''), COALESCE(user_id,''), COALESCE(session_id,''),
+		        type, subject_id, reason, payload, created_at
+		 FROM events
+		 WHERE tenant_id = ? AND subject_id = ?
+		 ORDER BY created_at DESC, id DESC
+		 LIMIT ?`,
+		scope.Tenant, subjectID, limit,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("sqlitestore: list events by subject: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var out []store.Event
+	for rows.Next() {
+		var ev store.Event
+		if err := rows.Scan(
+			&ev.ID, &ev.TenantID, &ev.ProjectID, &ev.UserID, &ev.SessionID,
+			&ev.Type, &ev.SubjectID, &ev.Reason, &ev.Payload, &ev.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		out = append(out, ev)
+	}
+	return out, rows.Err()
+}
+
 // List returns events ordered by (created_at, id) ASC.
 // cursor is an opaque "<millis>:<id>" pagination token (Q1 composite cursor).
 func (e *eventStore) List(ctx context.Context, scope identity.Scope, limit int, cursor string) ([]store.Event, string, error) {
