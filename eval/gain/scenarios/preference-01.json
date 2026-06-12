@@ -1,0 +1,13 @@
+{
+  "id": "gain-pref-01",
+  "description": "Preference recall: user states coding language preference; eval checks if assistant can recall it later.",
+  "category": "preference",
+  "turns": [
+    {"role": "user", "content": "Just so you know, I strongly prefer TypeScript over JavaScript for all my projects."},
+    {"role": "assistant", "content": "Noted! TypeScript's type safety is a big advantage."},
+    {"role": "user", "content": "Yes, I find it catches so many bugs before runtime."},
+    {"role": "assistant", "content": "Absolutely. I'll keep that in mind for any code suggestions."}
+  ],
+  "eval_question": "What programming language does this user prefer?",
+  "expected_answer": "TypeScript"
+}

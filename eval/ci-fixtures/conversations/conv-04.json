@@ -1,0 +1,42 @@
+{
+  "id": "ci-conv-04",
+  "category": "multi_session_aggregation",
+  "sessions": [
+    {
+      "id": "ci-conv-04-s0",
+      "turns": [
+        {"role": "user", "content": "I just finished Gone Girl. Crime fiction is my absolute favorite genre."},
+        {"role": "assistant", "content": "Gone Girl is a great read! The twists are relentless."},
+        {"role": "user", "content": "I am already looking for my next crime fiction book. Any suggestions?"},
+        {"role": "assistant", "content": "Try The Girl with the Dragon Tattoo if you have not read it yet."}
+      ]
+    },
+    {
+      "id": "ci-conv-04-s1",
+      "turns": [
+        {"role": "user", "content": "I picked up a mystery novel called The Thursday Murder Club. Loving it so far."},
+        {"role": "assistant", "content": "That one is charming and funny! Richard Osman is a great writer."},
+        {"role": "user", "content": "I had not read much mystery before but now I am hooked. Very different from crime fiction."},
+        {"role": "assistant", "content": "Mystery and crime fiction do overlap a lot but mystery tends to be cozier."}
+      ]
+    },
+    {
+      "id": "ci-conv-04-s2",
+      "turns": [
+        {"role": "user", "content": "My book club assigned Dune this month. I had never read science fiction before."},
+        {"role": "assistant", "content": "Dune is a classic! It is quite dense but deeply rewarding."},
+        {"role": "user", "content": "I am really enjoying it. Might read more science fiction after this."},
+        {"role": "assistant", "content": "The Foundation series by Asimov is a great follow-up if you enjoy Dune."}
+      ]
+    },
+    {
+      "id": "ci-conv-04-s3",
+      "turns": [
+        {"role": "user", "content": "I just started Wolf Hall. Historical fiction is surprisingly gripping."},
+        {"role": "assistant", "content": "Hilary Mantel is extraordinary. Wolf Hall won the Booker Prize for good reason."},
+        {"role": "user", "content": "I love how it brings Tudor England to life. So immersive."},
+        {"role": "assistant", "content": "It is a masterpiece. You have now read across four very different fiction genres!"}
+      ]
+    }
+  ]
+}

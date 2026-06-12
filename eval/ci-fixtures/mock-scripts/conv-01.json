@@ -1,0 +1,81 @@
+[
+  {
+    "candidates": [
+      {
+        "kind": "fact",
+        "content": "Marcus is a software engineer with eight years of experience.",
+        "context": "User introduction and professional background",
+        "entities": ["Marcus"],
+        "keywords": ["software engineer", "eight years", "experience"],
+        "anticipated_queries": [
+          "how long has Marcus been an engineer",
+          "what is Marcus's profession",
+          "How many years of engineering experience does Marcus have?"
+        ],
+        "importance": 3,
+        "confidence": 0.95,
+        "provenance": [{"record_id": "{{.R1}}", "span_start": 0, "span_end": 50}]
+      },
+      {
+        "kind": "fact",
+        "content": "Marcus's primary programming language is Python, which he uses for almost everything.",
+        "context": "Programming language preference",
+        "entities": ["Marcus", "Python"],
+        "keywords": ["Python", "programming language", "backend", "programming"],
+        "anticipated_queries": [
+          "what language does Marcus use",
+          "what is Marcus's main language",
+          "What programming language does Marcus primarily use?"
+        ],
+        "importance": 4,
+        "confidence": 0.97,
+        "provenance": [{"record_id": "{{.R3}}", "span_start": 0, "span_end": 60}]
+      },
+      {
+        "kind": "fact",
+        "content": "Marcus works at a healthcare startup building data pipelines for patient records.",
+        "context": "Employer and domain",
+        "entities": ["Marcus"],
+        "keywords": ["healthcare", "startup", "data pipelines", "patient records", "industry"],
+        "anticipated_queries": [
+          "what industry does Marcus work in",
+          "where does Marcus work",
+          "What industry does Marcus work in?"
+        ],
+        "importance": 4,
+        "confidence": 0.96,
+        "provenance": [{"record_id": "{{.R5}}", "span_start": 0, "span_end": 80}]
+      },
+      {
+        "kind": "preference",
+        "content": "Marcus uses Neovim as his code editor.",
+        "context": "Developer tooling preference",
+        "entities": ["Marcus", "Neovim"],
+        "keywords": ["Neovim", "editor", "code editor"],
+        "anticipated_queries": [
+          "what editor does Marcus use",
+          "what is Marcus's preferred IDE",
+          "What text editor does Marcus use?"
+        ],
+        "importance": 3,
+        "confidence": 0.95,
+        "provenance": [{"record_id": "{{.R7}}", "span_start": 0, "span_end": 40}]
+      },
+      {
+        "kind": "fact",
+        "content": "Marcus uses PostgreSQL for database storage and Kafka for streaming.",
+        "context": "Technical stack details",
+        "entities": ["Marcus", "PostgreSQL", "Kafka"],
+        "keywords": ["PostgreSQL", "Kafka", "database", "streaming"],
+        "anticipated_queries": [
+          "what database does Marcus use",
+          "what is in Marcus's tech stack",
+          "What database does Marcus use for storage?"
+        ],
+        "importance": 3,
+        "confidence": 0.94,
+        "provenance": [{"record_id": "{{.R7}}", "span_start": 40, "span_end": 100}]
+      }
+    ]
+  }
+]

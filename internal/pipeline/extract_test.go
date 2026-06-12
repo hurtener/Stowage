@@ -856,3 +856,31 @@ func TestExtractStage_Race(t *testing.T) {
 	defer cancel()
 	stage.Drain(drainCtx)
 }
+
+// TestValidateCandidatesNormalizesKeywordCase pins the lowercase contract
+// between extraction junctions and the structured lane's lowercase tokens
+// (the Phase 13 eval gate caught capitalized keywords never matching).
+func TestValidateCandidatesNormalizesKeywordCase(t *testing.T) {
+	t.Parallel()
+	recordSet := map[string]bool{"r1": true}
+	contents := map[string]string{"r1": "some content here"}
+	in := []pipeline.Candidate{{
+		Kind: "fact", Content: "user codes in Python", Context: "x",
+		Entities: []string{"Python", " VS Code "}, Keywords: []string{"Programming", "favorite Language"},
+		AnticipatedQueries: []string{"a", "b", "c"}, Importance: 3, Confidence: 0.9,
+		Provenance: []pipeline.ProvSpan{{RecordID: "r1", SpanStart: 0, SpanEnd: 4}},
+	}}
+	valid, dropped := pipeline.ValidateCandidates(in, recordSet, contents)
+	if dropped != 0 || len(valid) != 1 {
+		t.Fatalf("unexpected drop: %d valid=%d", dropped, len(valid))
+	}
+	wantKw := []string{"programming", "favorite language"}
+	for i, k := range valid[0].Keywords {
+		if k != wantKw[i] {
+			t.Errorf("keyword %d: got %q want %q", i, k, wantKw[i])
+		}
+	}
+	if valid[0].Entities[0] != "python" || valid[0].Entities[1] != "vs code" {
+		t.Errorf("entities not normalized: %v", valid[0].Entities)
+	}
+}

@@ -40,6 +40,8 @@ jobs:
         run: make test
       - name: Coverage
         run: make coverage
+      - name: Eval CI gate (Phase 13)
+        run: make eval-ci
 
   hygiene:
     runs-on: ubuntu-latest

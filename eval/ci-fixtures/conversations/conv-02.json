@@ -1,0 +1,19 @@
+{
+  "id": "ci-conv-02",
+  "category": "single_session_recall",
+  "sessions": [
+    {
+      "id": "ci-conv-02-s0",
+      "turns": [
+        {"role": "user", "content": "Hi! I am Sarah and I just relocated to Vancouver from Toronto."},
+        {"role": "assistant", "content": "Welcome to Vancouver, Sarah! That is quite a move. What brought you there?"},
+        {"role": "user", "content": "A new job — I am a graphic designer at a branding agency downtown."},
+        {"role": "assistant", "content": "That sounds exciting! Vancouver has a great creative scene."},
+        {"role": "user", "content": "I know! I love it already. I drove my Toyota Prius across the country to get here."},
+        {"role": "assistant", "content": "That must have been quite a road trip! How long did it take?"},
+        {"role": "user", "content": "About five days. My golden retriever Biscuit came along for the ride."},
+        {"role": "assistant", "content": "Biscuit sounds like a great road trip companion! Does he like the new city?"}
+      ]
+    }
+  ]
+}

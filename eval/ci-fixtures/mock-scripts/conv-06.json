@@ -1,0 +1,81 @@
+[
+  {
+    "candidates": [
+      {
+        "kind": "preference",
+        "content": "Radiohead is the user's favorite band; they have seen them live six times.",
+        "context": "Music preference — favorite band",
+        "entities": ["Radiohead"],
+        "keywords": ["Radiohead", "favorite band", "live", "six times", "band"],
+        "anticipated_queries": [
+          "what is the user's favorite band",
+          "how many times has the user seen Radiohead live",
+          "What is the user's favorite band?"
+        ],
+        "importance": 4,
+        "confidence": 0.97,
+        "provenance": [{"record_id": "{{.R1}}", "span_start": 0, "span_end": 60}]
+      },
+      {
+        "kind": "preference",
+        "content": "The user's favorite album is OK Computer by Radiohead, which they consider a perfect album.",
+        "context": "Music preference — favorite album",
+        "entities": ["OK Computer", "Radiohead"],
+        "keywords": ["OK Computer", "favorite album", "Radiohead", "album"],
+        "anticipated_queries": [
+          "what is the user's favorite album",
+          "which Radiohead album does the user love most",
+          "What is the user's favorite album?"
+        ],
+        "importance": 4,
+        "confidence": 0.97,
+        "provenance": [{"record_id": "{{.R3}}", "span_start": 0, "span_end": 55}]
+      },
+      {
+        "kind": "fact",
+        "content": "The user plays guitar and has been playing for about ten years, currently learning Jonny Greenwood parts.",
+        "context": "Musical instrument and skill level",
+        "entities": ["Jonny Greenwood"],
+        "keywords": ["guitar", "ten years", "Jonny Greenwood", "instrument"],
+        "anticipated_queries": [
+          "what instrument does the user play",
+          "how long has the user played guitar",
+          "What instrument does the user play?"
+        ],
+        "importance": 3,
+        "confidence": 0.95,
+        "provenance": [{"record_id": "{{.R5}}", "span_start": 0, "span_end": 75}]
+      },
+      {
+        "kind": "preference",
+        "content": "The user strongly prefers live music over studio recordings, attending as many concerts as possible.",
+        "context": "Live vs recorded music preference",
+        "entities": [],
+        "keywords": ["live music", "concerts", "recordings", "prefers live"],
+        "anticipated_queries": [
+          "does the user prefer live music or recordings",
+          "how does the user feel about concerts",
+          "Does the user prefer live music or studio recordings?"
+        ],
+        "importance": 3,
+        "confidence": 0.95,
+        "provenance": [{"record_id": "{{.R9}}", "span_start": 0, "span_end": 70}]
+      },
+      {
+        "kind": "preference",
+        "content": "The user dislikes country music and considers it the one genre they truly cannot stand.",
+        "context": "Music genre dislike",
+        "entities": [],
+        "keywords": ["country music", "dislikes", "cannot stand", "dislike"],
+        "anticipated_queries": [
+          "what music genre does the user dislike",
+          "what genre does the user hate",
+          "What music genre does the user dislike?"
+        ],
+        "importance": 3,
+        "confidence": 0.94,
+        "provenance": [{"record_id": "{{.R9}}", "span_start": 70, "span_end": 140}]
+      }
+    ]
+  }
+]

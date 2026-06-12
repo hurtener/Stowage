@@ -336,6 +336,13 @@ func ValidateCandidates(
 			}
 		}
 		c.Provenance = clampedProv
+		// Normalize keywords and entities to lowercase: the structured
+		// retrieval lane lowercases query tokens, and FindNeighbors matches
+		// exactly — mixed-case junction rows would silently never match
+		// (found by the Phase 13 eval gate: capitalized extraction keywords
+		// made the structured lane miss in production-shaped fixtures).
+		c.Keywords = lowerAll(c.Keywords)
+		c.Entities = lowerAll(c.Entities)
 		valid = append(valid, c)
 	}
 	return valid, dropped
@@ -375,4 +382,16 @@ func clampInt(v, lo, hi int) int {
 		return hi
 	}
 	return v
+}
+
+// lowerAll lowercases every string in s, dropping empties after trim.
+func lowerAll(in []string) []string {
+	out := make([]string, 0, len(in))
+	for _, v := range in {
+		v = strings.ToLower(strings.TrimSpace(v))
+		if v != "" {
+			out = append(out, v)
+		}
+	}
+	return out
 }

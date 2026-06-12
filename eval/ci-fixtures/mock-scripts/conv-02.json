@@ -1,0 +1,67 @@
+[
+  {
+    "candidates": [
+      {
+        "kind": "fact",
+        "content": "Sarah relocated to Vancouver from Toronto for a new job.",
+        "context": "User relocation details",
+        "entities": ["Sarah", "Vancouver", "Toronto"],
+        "keywords": ["Vancouver", "relocated", "Toronto", "city"],
+        "anticipated_queries": [
+          "where does Sarah live",
+          "where did Sarah move to",
+          "What city does Sarah live in?"
+        ],
+        "importance": 4,
+        "confidence": 0.97,
+        "provenance": [{"record_id": "{{.R1}}", "span_start": 0, "span_end": 60}]
+      },
+      {
+        "kind": "fact",
+        "content": "Sarah works as a graphic designer at a branding agency in downtown Vancouver.",
+        "context": "Occupation and employer",
+        "entities": ["Sarah"],
+        "keywords": ["graphic designer", "branding agency", "downtown", "sarah"],
+        "anticipated_queries": [
+          "what does Sarah do for work",
+          "what is Sarah's job",
+          "What is Sarah's job?"
+        ],
+        "importance": 4,
+        "confidence": 0.96,
+        "provenance": [{"record_id": "{{.R3}}", "span_start": 0, "span_end": 70}]
+      },
+      {
+        "kind": "fact",
+        "content": "Sarah drives a Toyota Prius, which she drove across the country during her move.",
+        "context": "Vehicle ownership",
+        "entities": ["Sarah", "Toyota Prius"],
+        "keywords": ["Toyota Prius", "car", "drove"],
+        "anticipated_queries": [
+          "what car does Sarah drive",
+          "what vehicle does Sarah own",
+          "What kind of car does Sarah drive?"
+        ],
+        "importance": 3,
+        "confidence": 0.95,
+        "provenance": [{"record_id": "{{.R5}}", "span_start": 0, "span_end": 55}]
+      },
+      {
+        "kind": "fact",
+        "content": "Sarah's dog is a golden retriever named Biscuit who accompanied her on the cross-country road trip.",
+        "context": "Pet details",
+        "entities": ["Sarah", "Biscuit"],
+        "keywords": ["golden retriever", "Biscuit", "dog", "road trip"],
+        "anticipated_queries": [
+          "what is Sarah's dog's name",
+          "what breed is Sarah's dog",
+          "What is the name of Sarah's dog?",
+          "What breed is Sarah's dog?"
+        ],
+        "importance": 3,
+        "confidence": 0.97,
+        "provenance": [{"record_id": "{{.R7}}", "span_start": 0, "span_end": 80}]
+      }
+    ]
+  }
+]

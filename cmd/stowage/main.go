@@ -18,6 +18,8 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 
+	"github.com/hurtener/stowage/eval/datasets/locomo"
+	"github.com/hurtener/stowage/eval/datasets/longmemeval"
 	"github.com/hurtener/stowage/internal/api"
 	"github.com/hurtener/stowage/internal/config"
 	"github.com/hurtener/stowage/internal/gateway"
@@ -91,9 +93,12 @@ func main() {
 	case "serve":
 		runServe(os.Args[2:])
 
-	case "mcp", "eval":
-		fmt.Fprintf(os.Stderr, "stowage %s: not implemented yet — see docs/plans/README.md\n", os.Args[1])
+	case "mcp":
+		fmt.Fprintf(os.Stderr, "stowage mcp: not implemented yet — lands in Phase 17\n")
 		os.Exit(1)
+
+	case "eval":
+		runEval(os.Args[2:])
 
 	default:
 		fmt.Fprintf(os.Stderr, "stowage: unknown command %q\n\n%s", os.Args[1], usage)
@@ -235,6 +240,110 @@ func runMigrate(args []string) {
 		os.Exit(1)
 	}
 	fmt.Println("stowage migrate: applied all pending migrations")
+}
+
+const evalUsage = `stowage eval — evaluation harness for the Stowage memory pipeline (Phase 13)
+
+Usage:
+  stowage eval <subcommand> [flags]
+
+Subcommands:
+  fetch --dataset <name>   download a dataset into eval/data/
+                           known datasets: longmemeval, locomo
+  ci                       print instructions for running the CI eval gate
+`
+
+const evalFetchUsage = `stowage eval fetch — download an eval dataset into eval/data/
+
+Usage:
+  stowage eval fetch --dataset <name> [--data-dir path]
+
+Flags:
+  --dataset name    dataset to fetch (longmemeval | locomo)
+  --data-dir path   root directory for downloaded data (default: eval/data)
+`
+
+// runEval dispatches eval subcommands (Phase 13).
+func runEval(args []string) {
+	if len(args) == 0 {
+		fmt.Fprint(os.Stderr, evalUsage)
+		os.Exit(2)
+	}
+	switch args[0] {
+	case "fetch":
+		runEvalFetch(args[1:])
+	case "ci":
+		fmt.Println("Run the CI eval gate with:")
+		fmt.Println("  make eval-ci")
+		fmt.Println("or:")
+		fmt.Println("  CGO_ENABLED=1 go test -race -v -timeout=5m -run 'TestEvalCI|TestEvalCIGateBites' ./eval/harness/")
+	case "--help", "-h", "help":
+		_, _ = fmt.Fprint(os.Stdout, evalUsage)
+	default:
+		fmt.Fprintf(os.Stderr, "stowage eval: unknown subcommand %q\n\n%s", args[0], evalUsage)
+		os.Exit(2)
+	}
+}
+
+// runEvalFetch implements `stowage eval fetch --dataset <name>`.
+func runEvalFetch(args []string) {
+	var (
+		dataset string
+		dataDir string
+	)
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--dataset":
+			if i+1 >= len(args) {
+				fmt.Fprintln(os.Stderr, "stowage eval fetch: --dataset requires a name argument")
+				os.Exit(2)
+			}
+			dataset = args[i+1]
+			i++
+		case "--data-dir":
+			if i+1 >= len(args) {
+				fmt.Fprintln(os.Stderr, "stowage eval fetch: --data-dir requires a path argument")
+				os.Exit(2)
+			}
+			dataDir = args[i+1]
+			i++
+		case "--help", "-h":
+			_, _ = fmt.Fprint(os.Stdout, evalFetchUsage)
+			os.Exit(0)
+		default:
+			fmt.Fprintf(os.Stderr, "stowage eval fetch: unknown flag %q\n\n%s", args[i], evalFetchUsage)
+			os.Exit(2)
+		}
+	}
+
+	if dataset == "" {
+		fmt.Fprintln(os.Stderr, "stowage eval fetch: --dataset is required")
+		os.Exit(2)
+	}
+	if dataDir == "" {
+		dataDir = "eval/data"
+	}
+
+	ctx := context.Background()
+	switch dataset {
+	case "longmemeval":
+		dest, err := longmemeval.Fetch(ctx, dataDir)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "stowage eval fetch: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Printf("stowage eval fetch: longmemeval saved to %s\n", dest)
+	case "locomo":
+		dest, err := locomo.Fetch(ctx, dataDir)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "stowage eval fetch: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Printf("stowage eval fetch: locomo saved to %s\n", dest)
+	default:
+		fmt.Fprintf(os.Stderr, "stowage eval fetch: unknown dataset %q (known: longmemeval, locomo)\n", dataset)
+		os.Exit(2)
+	}
 }
 
 const serveUsage = `stowage serve — run the HTTP memory service

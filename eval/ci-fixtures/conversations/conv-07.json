@@ -1,0 +1,19 @@
+{
+  "id": "ci-conv-07",
+  "category": "preference_recall",
+  "sessions": [
+    {
+      "id": "ci-conv-07-s0",
+      "turns": [
+        {"role": "user", "content": "I have to be careful when ordering at restaurants — I am allergic to shellfish. Even a small amount sends me to the ER."},
+        {"role": "assistant", "content": "That is a serious allergy. Do you always check menus in advance?"},
+        {"role": "user", "content": "Always. My favorite cuisine is Thai food, which can be tricky because of shrimp paste in some dishes."},
+        {"role": "assistant", "content": "Thai food has wonderful alternatives though — lots of dishes can be made shellfish-free."},
+        {"role": "user", "content": "Exactly, and I love spicy food so Thai hits all the right notes. My go-to order is green curry with tofu."},
+        {"role": "assistant", "content": "Green curry is rich and fragrant. Do you make it at home too?"},
+        {"role": "user", "content": "I do! One thing I always leave out is cilantro — I am one of those people who tastes soap when they eat it."},
+        {"role": "assistant", "content": "The cilantro-soap phenomenon is a real genetic trait. It is more common than people realize."}
+      ]
+    }
+  ]
+}

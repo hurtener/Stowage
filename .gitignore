@@ -31,3 +31,7 @@ coverage.json.tmp
 
 # Node (docs site / future UI)
 node_modules/
+
+# Eval runtime artifacts (fetched datasets, run results)
+/eval/data/
+/eval/results/*.json

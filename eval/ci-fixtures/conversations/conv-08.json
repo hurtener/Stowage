@@ -1,0 +1,51 @@
+{
+  "id": "ci-conv-08",
+  "category": "update_supersede",
+  "sessions": [
+    {
+      "id": "ci-conv-08-s0",
+      "turns": [
+        {"role": "user", "content": "I have been living in Chicago for the past four years. Love the city but the winters are brutal."},
+        {"role": "assistant", "content": "Chicago winters are legendary! Are you planning to stay long-term?"},
+        {"role": "user", "content": "Not sure. I keep thinking about moving somewhere warmer."},
+        {"role": "assistant", "content": "What cities are you considering?"}
+      ]
+    },
+    {
+      "id": "ci-conv-08-s1",
+      "turns": [
+        {"role": "user", "content": "Big news — I accepted a job offer in Austin and I am moving there next month. Leaving Chicago behind!"},
+        {"role": "assistant", "content": "Austin is a great city! Tech scene, great food, and much warmer winters."},
+        {"role": "user", "content": "Exactly why I chose it. I am really excited about the change."},
+        {"role": "assistant", "content": "What is the new role?"}
+      ]
+    },
+    {
+      "id": "ci-conv-08-s2",
+      "turns": [
+        {"role": "user", "content": "Settled in Austin now. I started at Apex Technologies — a Series B startup doing supply chain software."},
+        {"role": "assistant", "content": "Series B is an exciting stage. What will you be working on?"},
+        {"role": "user", "content": "Leading the platform engineering team. Lots of interesting challenges ahead."},
+        {"role": "assistant", "content": "That sounds like a great opportunity."}
+      ]
+    },
+    {
+      "id": "ci-conv-08-s3",
+      "turns": [
+        {"role": "user", "content": "I left Apex after eight months — the culture was not a good fit. I just joined BigCorp as a principal engineer."},
+        {"role": "assistant", "content": "Making a change is brave. What drew you to BigCorp?"},
+        {"role": "user", "content": "Stability, compensation, and a genuinely interesting infrastructure problem to solve."},
+        {"role": "assistant", "content": "That sounds like a well-considered move."}
+      ]
+    },
+    {
+      "id": "ci-conv-08-s4",
+      "turns": [
+        {"role": "user", "content": "Just bought a Honda Civic — first car I have owned in years. Austin really requires one."},
+        {"role": "assistant", "content": "The Civic is a reliable choice. Manual or automatic?"},
+        {"role": "user", "content": "Automatic. I am a city driver, no need to make things harder."},
+        {"role": "assistant", "content": "Practical thinking. Enjoy the new wheels!"}
+      ]
+    }
+  ]
+}

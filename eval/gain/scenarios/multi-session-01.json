@@ -1,0 +1,15 @@
+{
+  "id": "gain-multi-01",
+  "description": "Multi-session aggregation: user mentions project details across one session; eval checks aggregation.",
+  "category": "multi_session",
+  "turns": [
+    {"role": "user", "content": "I am building a real-time dashboard for logistics data using React on the frontend."},
+    {"role": "assistant", "content": "React is a great choice for dashboards. What data are you visualizing?"},
+    {"role": "user", "content": "Shipment tracking and warehouse inventory levels."},
+    {"role": "assistant", "content": "That sounds complex. Are you using any specific charting library?"},
+    {"role": "user", "content": "For the backend API I decided to use FastAPI with PostgreSQL for storage."},
+    {"role": "assistant", "content": "Good combination. FastAPI's async support will help with real-time data."}
+  ],
+  "eval_question": "What tech stack is the user building their logistics dashboard with?",
+  "expected_answer": "React"
+}

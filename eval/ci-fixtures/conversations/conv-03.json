@@ -1,0 +1,42 @@
+{
+  "id": "ci-conv-03",
+  "category": "multi_session_aggregation",
+  "sessions": [
+    {
+      "id": "ci-conv-03-s0",
+      "turns": [
+        {"role": "user", "content": "I just got back from two weeks in Japan. The food and culture were incredible."},
+        {"role": "assistant", "content": "Japan is amazing! What was your favorite part?"},
+        {"role": "user", "content": "Kyoto was breathtaking. I want to go back someday."},
+        {"role": "assistant", "content": "Kyoto in cherry blossom season is unforgettable. Where are you thinking of going next?"}
+      ]
+    },
+    {
+      "id": "ci-conv-03-s1",
+      "turns": [
+        {"role": "user", "content": "I booked my next trip! Spending three weeks in Italy visiting Rome, Florence, and the Amalfi Coast."},
+        {"role": "assistant", "content": "Italy is a dream destination! Are you going for food, art, or both?"},
+        {"role": "user", "content": "Definitely both. I want to take a pasta-making class in Bologna too."},
+        {"role": "assistant", "content": "That sounds like a perfect itinerary."}
+      ]
+    },
+    {
+      "id": "ci-conv-03-s2",
+      "turns": [
+        {"role": "user", "content": "Back from Italy — it was even better than expected. Now I am planning a trip to Australia."},
+        {"role": "assistant", "content": "Incredible! What parts of Australia are on your list?"},
+        {"role": "user", "content": "Sydney, the Great Barrier Reef, and hopefully Uluru."},
+        {"role": "assistant", "content": "That is quite an ambitious itinerary — Australia is huge."}
+      ]
+    },
+    {
+      "id": "ci-conv-03-s3",
+      "turns": [
+        {"role": "user", "content": "Just landed in Morocco for my latest adventure. Marrakech is absolutely mesmerizing."},
+        {"role": "assistant", "content": "Morocco is so vivid and atmospheric. Have you visited the medina yet?"},
+        {"role": "user", "content": "Yes! I got happily lost in the souks for hours. The spice market was overwhelming in the best way."},
+        {"role": "assistant", "content": "That sounds wonderful. Is this your fourth international trip this year?"}
+      ]
+    }
+  ]
+}

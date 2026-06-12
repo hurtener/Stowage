@@ -1,0 +1,50 @@
+{
+  "conv_mini_01": {
+    "conversation": [
+      {"speaker": "User", "text": "Hello! I am working on a machine learning project in Python.", "timestamp": "2024-01-15T10:00:00"},
+      {"speaker": "Assistant", "text": "That sounds exciting! What kind of ML project?", "timestamp": "2024-01-15T10:01:00"},
+      {"speaker": "User", "text": "I am building a sentiment analysis classifier.", "timestamp": "2024-01-15T10:02:00"},
+      {"speaker": "Assistant", "text": "What framework are you using?", "timestamp": "2024-01-15T10:03:00"},
+      {"speaker": "User", "text": "I prefer PyTorch over TensorFlow.", "timestamp": "2024-01-15T10:04:00"},
+      {"speaker": "Assistant", "text": "PyTorch is very popular for research!", "timestamp": "2024-01-15T10:05:00"}
+    ],
+    "question_answer_pairs": {
+      "q1": {
+        "question": "What programming language does the user work with?",
+        "answer": "Python",
+        "category": "single_hop",
+        "evidence": ["0:0"]
+      },
+      "q2": {
+        "question": "What ML framework does the user prefer?",
+        "answer": "PyTorch",
+        "category": "single_hop",
+        "evidence": ["0:4"]
+      }
+    }
+  },
+  "conv_mini_02": {
+    "conversation": [
+      {"speaker": "User", "text": "I run five kilometers every morning before work.", "timestamp": "2024-02-10T07:00:00"},
+      {"speaker": "Assistant", "text": "That is a great fitness routine!", "timestamp": "2024-02-10T07:01:00"},
+      {"speaker": "User", "text": "I started running three months ago.", "timestamp": "2024-02-10T07:02:00"},
+      {"speaker": "Assistant", "text": "Have you signed up for any races?", "timestamp": "2024-02-10T07:03:00"},
+      {"speaker": "User", "text": "Yes, I am training for a half marathon in April.", "timestamp": "2024-02-10T07:04:00"},
+      {"speaker": "Assistant", "text": "Exciting! What is your target finish time?", "timestamp": "2024-02-10T07:05:00"}
+    ],
+    "question_answer_pairs": {
+      "q1": {
+        "question": "How far does the user run each morning?",
+        "answer": "five kilometers",
+        "category": "single_hop",
+        "evidence": ["0:0"]
+      },
+      "q2": {
+        "question": "What race is the user training for?",
+        "answer": "half marathon",
+        "category": "single_hop",
+        "evidence": ["0:4"]
+      }
+    }
+  }
+}
