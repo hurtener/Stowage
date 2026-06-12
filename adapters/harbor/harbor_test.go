@@ -414,7 +414,7 @@ func TestIdentityLift(t *testing.T) {
 		t.Fatalf("explicit session must win, got %q", rec.SessionID)
 	}
 
-	if _, err := invokers["stowage_retrieve"](ctx, json.RawMessage(`{"query":"q"}`)); err != nil {
+	if _, err := invokers["stowage_retrieve"](ctx, json.RawMessage(`{"query":"q","limit":5}`)); err != nil {
 		t.Fatalf("retrieve: %v", err)
 	}
 	client.mu.Lock()
