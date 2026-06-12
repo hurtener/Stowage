@@ -84,6 +84,22 @@ by the day-one schema — deferring the feature costs nothing structurally.
 | 20 | Eval finalization + competitor report | full gain harness on a Harbor fleet, online-adaptation scenarios, comparison table vs published competitor numbers, `eval/REPORT.md` | §12 | 13, 18, 19 |
 | 21 | Hardening & launch | security pass, docs, release matrix, public-repo audit, license (OQ-5), five-minute-rule smoke | §13, §9.4 | all |
 
+### Numbering reconciliation (executed vs planned)
+
+The executed track diverged from the tables above when eval was pulled
+forward and Wave 5/6 phases landed in dependency order. Mapping (table № →
+executed plan file): 13 → `phase-13-eval.md`, 14 → `phase-14-sweeps.md`,
+16 → `phase-15-grants.md`, 17 → `phase-16-mcp.md`, 18 → `phase-17-sdks.md`.
+Table slot **15 (supersede chains, confirmation & rollback) was skipped in
+that shuffle** — discovered at Phase 17 gate review; it executes as
+`phase-18-rollback-confirmation.md` (rollback API per D-017, OQ-4
+confirmation resolution, depth-capped chain exposure on
+`GET /v1/memories/{id}`). Two slot-15 line items are deferred with intent:
+*contradiction boost* is §6c-adjacent retrieval tuning → v1.2 trust
+extensions; *chain cycle caps* reduce to the depth cap above because
+rollback unwinds newest-first one step at a time. Executed phases 19–21
+match table slots 19–21.
+
 ## Post-launch tracks
 
 ### v1.1 — Episodic & temporal

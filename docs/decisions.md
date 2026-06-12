@@ -987,3 +987,44 @@ Consumers of just the memory server never download Harbor's dependency tree.
 The adapter module has its own test suite and coverage threshold (≥80%). New
 adapter versions can lag the core module by one release without breaking
 consumers of either.
+
+## D-064 — Rollback contract: newest-event-only, atomic, tombstone = deleted
+
+2026-06-12. `POST /v1/memories/{id}/rollback` (D-017's consumer, executing the
+master plan's skipped slot 15) inverts the NEWEST reconciliation event
+(`memory.updated`/`memory.merged`/`memory.superseded`) for the target memory.
+Older events are unreachable until newer ones are unwound — chains unwind one
+step at a time, newest-first, which also bounds cycles. The inverse runs as a
+single atomic `ActionRollback` commit: full row restore (scalars +
+entity/keyword/query junctions + provenance, replace semantics) from the
+prior-state snapshot, result rows located via `superseded_by_id` and
+tombstoned with status `deleted`. Merge rollback is all-or-nothing across all
+sources (every sibling must carry its snapshot or the call 409s). Every
+restored row emits `memory.rolled_back` carrying the PRE-rollback state, so
+rollbacks are themselves auditable. Conflict guards return 409: double
+rollback, downstream supersede of the result row, missing/unparseable
+snapshot.
+
+**Consequences:** the P4 reversibility promise is mechanically closed; the
+reconciler (and the new confirm sweep) can be wrong recoverably. Requires
+`EventStore.ListBySubject` + migration 0006 (subject index) on both drivers.
+
+## D-065 — OQ-4 resolved: pending_confirmation auto-resolves via the supersede path
+
+2026-06-12. Parked (`pending_confirmation`) memories resolve three ways: (1)
+TTL — after `confirmTTL` (default 72 h, profile knob) the NEWER memory wins
+(OQ-4's lean-yes); (2) repeated independent extraction — identical-content
+re-extractions increment the parked row's match counter (new pre-commit
+parked-duplicate lookup; the active-only hash index never fires for parked
+rows, so today re-extractions silently create duplicate parked rows — fixed
+here) and `confirmRepeats` (default 2) promotes early; (3) explicit `PATCH
+/v1/memories/{id}` with `confirm`/`reject` (reject → `expired`). All
+promotions ride the SUPERSEDE path against the parked row's `supersedes_id`
+target — full prior-state event on the target — so every auto-resolution is
+itself reversible via D-064's rollback. Trust gates are not re-applied at
+promotion: TTL/threshold/human action IS the gate's resolution. The RFC's
+assert/correct PATCH actions stay in v1.2 trust extensions.
+
+**Consequences:** parked memories stop being a roach motel; a fifth sweep
+(confirm) joins the lifecycle manager under the Phase 14 idempotency/
+singleflight contract.
