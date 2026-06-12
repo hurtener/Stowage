@@ -716,6 +716,11 @@ func deleteJunctionsPG(ctx context.Context, tx pgx.Tx, memID string) error {
 
 func insertProvenancePG(ctx context.Context, tx pgx.Tx, scope identity.Scope, rows []store.Provenance, now int64) error {
 	for _, p := range rows {
+		if p.ID == "" {
+			// Defensive: an empty PK would collide on the second row and be
+			// silently dropped by the conflict-ignoring insert.
+			p.ID = ulid.Make().String()
+		}
 		if p.CreatedAt == 0 {
 			p.CreatedAt = now
 		}

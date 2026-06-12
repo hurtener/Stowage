@@ -45,6 +45,7 @@ func (m *Manager) dedupeTenant(ctx context.Context, tenant string) {
 	scope := identity.Scope{Tenant: tenant}
 	comparisons := 0
 	cursor := ""
+	mergedThisPass := map[string]bool{}
 	pageSize := dedupeBatchPageSize
 	for comparisons < m.profile.DedupeBatchSize {
 		remaining := m.profile.DedupeBatchSize - comparisons
@@ -60,6 +61,9 @@ func (m *Manager) dedupeTenant(ctx context.Context, tenant string) {
 			if comparisons >= m.profile.DedupeBatchSize {
 				break
 			}
+			if mergedThisPass[mem.ID] {
+				continue // superseded by an earlier merge in this pass
+			}
 			// Find structural neighbors.
 			jt, _ := m.st.Memories().GetJunctions(ctx, scope, mem.ID)
 			neighbors, err := m.st.Memories().FindNeighbors(ctx, scope, store.NeighborQuery{
@@ -73,15 +77,20 @@ func (m *Manager) dedupeTenant(ctx context.Context, tenant string) {
 			}
 
 			for _, n := range neighbors {
-				if n.ID == mem.ID {
-					continue // skip self
+				if n.ID == mem.ID || mergedThisPass[n.ID] {
+					continue // skip self and rows already consumed this pass
 				}
 				sim := reconcile.BigramJaccard(mem.Content, n.Content)
 				if sim < nearDupThreshold {
 					continue
 				}
 				// Near-duplicate found: merge mem into n (keep the older one).
+				// Mark both consumed: the batch snapshot is stale after a
+				// merge, and re-merging this pass's own output cascades
+				// (observed: second-generation merges losing provenance).
 				m.mergeNearDup(ctx, scope, mem, n, sim)
+				mergedThisPass[mem.ID] = true
+				mergedThisPass[n.ID] = true
 				break // one merge per memory per pass
 			}
 		}
@@ -125,6 +134,11 @@ func (m *Manager) mergeNearDup(ctx context.Context, scope identity.Scope, src, t
 
 	// Merged counters (target absorbs source).
 	merged := target
+	// The merged row is a NEW memory: fresh ID (reusing target.ID collided
+	// with the unique PK — every sweep merge silently failed before this),
+	// fresh supersedes link; counters/provenance/junctions are unions.
+	merged.ID = ulid.Make().String()
+	merged.SupersedesID = target.ID
 	merged.MatchCount += src.MatchCount
 	merged.UseCount += src.UseCount
 	merged.SaveCount += src.SaveCount
@@ -174,6 +188,13 @@ func (m *Manager) mergeNearDup(ctx context.Context, scope identity.Scope, src, t
 	// Build provenance rows for the commit.
 	storeProvenance := make([]store.Provenance, len(provUnion))
 	copy(storeProvenance, provUnion)
+	for i := range storeProvenance {
+		// Fresh row IDs: these are COPIES of existing provenance rows; the
+		// originals stay attached to the superseded sources (D-017 history),
+		// and reusing their PKs makes the insert silently no-op.
+		storeProvenance[i].ID = ulid.Make().String()
+		storeProvenance[i].MemoryID = merged.ID
+	}
 
 	cs := store.CommitSet{
 		Action:     store.ActionMerge,
