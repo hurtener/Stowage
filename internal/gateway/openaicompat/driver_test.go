@@ -477,3 +477,133 @@ func TestOpenAICompat_CompleteErrorEnvelope(t *testing.T) {
 		t.Fatalf("want envelope error, got %v", err)
 	}
 }
+
+// ── Rerank ────────────────────────────────────────────────────────────────────
+
+// goldenRerankRequestBody is the Cohere-shape wire body the driver must send.
+const goldenRerankRequestBody = `{"model":"cohere/rerank-4-fast","query":"what is Go","documents":["Go is fast","Python is slow"],"top_n":2}`
+
+func TestOpenAICompat_GoldenRerankRequest(t *testing.T) {
+	t.Parallel()
+
+	var gotBody []byte
+	svr := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/rerank" {
+			gotBody, _ = io.ReadAll(r.Body)
+			resp := `{"results":[{"index":0,"relevance_score":0.9},{"index":1,"relevance_score":0.3}],"usage":{"search_units":1}}`
+			w.Header().Set("Content-Type", "application/json")
+			w.Write([]byte(resp)) //nolint:errcheck
+		}
+	}))
+	defer svr.Close()
+
+	cfg := config.GatewayConfig{
+		Driver:      "openaicompat",
+		BaseURL:     svr.URL,
+		APIKey:      "env.STOWAGE_TEST_OPENAICOMPAT_KEY",
+		Model:       "gpt-4o",
+		EmbedModel:  "text-embedding-3-small",
+		EmbedDims:   4,
+		RerankModel: "cohere/rerank-4-fast",
+	}
+	gw, err := gateway.Open(context.Background(), cfg, discardLog(), prometheus.NewRegistry())
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	t.Cleanup(func() { gw.Close(context.Background()) }) //nolint:errcheck
+
+	resp, err := gw.Rerank(context.Background(), gateway.RerankRequest{
+		Query:     "what is Go",
+		Documents: []string{"Go is fast", "Python is slow"},
+		TopN:      2,
+	})
+	if err != nil {
+		t.Fatalf("Rerank: %v", err)
+	}
+	if len(resp.Results) != 2 {
+		t.Fatalf("want 2 results, got %d", len(resp.Results))
+	}
+
+	// Verify wire body matches golden shape.
+	var wantObj, gotObj any
+	if err := json.Unmarshal([]byte(goldenRerankRequestBody), &wantObj); err != nil {
+		t.Fatalf("parse golden: %v", err)
+	}
+	if err := json.Unmarshal(gotBody, &gotObj); err != nil {
+		t.Fatalf("parse captured body: %v", err)
+	}
+	wantNorm, _ := json.Marshal(wantObj)
+	gotNorm, _ := json.Marshal(gotObj)
+	if string(wantNorm) != string(gotNorm) {
+		t.Errorf("rerank request body mismatch:\nwant: %s\n got: %s", wantNorm, gotNorm)
+	}
+}
+
+func TestOpenAICompat_RerankUsageMetered(t *testing.T) {
+	t.Parallel()
+
+	svr := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		io.WriteString(w, `{"results":[{"index":0,"relevance_score":0.8}],"usage":{"search_units":3}}`) //nolint:errcheck
+	}))
+	defer svr.Close()
+
+	cfg := config.GatewayConfig{
+		Driver:      "openaicompat",
+		BaseURL:     svr.URL,
+		APIKey:      "env.STOWAGE_TEST_OPENAICOMPAT_KEY",
+		Model:       "gpt-4o",
+		EmbedModel:  "e",
+		EmbedDims:   4,
+		RerankModel: "cohere/rerank-4-fast",
+	}
+	gw, err := gateway.Open(context.Background(), cfg, discardLog(), prometheus.NewRegistry())
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	t.Cleanup(func() { gw.Close(context.Background()) }) //nolint:errcheck
+
+	resp, err := gw.Rerank(context.Background(), gateway.RerankRequest{
+		Query:     "hello",
+		Documents: []string{"world"},
+	})
+	if err != nil {
+		t.Fatalf("Rerank: %v", err)
+	}
+	if resp.Usage.SearchUnits != 3 {
+		t.Errorf("want search_units=3, got %d", resp.Usage.SearchUnits)
+	}
+}
+
+func TestOpenAICompat_RerankErrorEnvelope(t *testing.T) {
+	t.Parallel()
+
+	svr := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		io.WriteString(w, `{"error":{"code":429,"message":"rate limit"}}`) //nolint:errcheck
+	}))
+	defer svr.Close()
+
+	cfg := config.GatewayConfig{
+		Driver:      "openaicompat",
+		BaseURL:     svr.URL,
+		APIKey:      "env.STOWAGE_TEST_OPENAICOMPAT_KEY",
+		Model:       "m",
+		EmbedModel:  "e",
+		EmbedDims:   4,
+		RerankModel: "rerank-model",
+	}
+	gw, err := gateway.Open(context.Background(), cfg, discardLog(), prometheus.NewRegistry())
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	t.Cleanup(func() { gw.Close(context.Background()) }) //nolint:errcheck
+
+	_, err = gw.Rerank(context.Background(), gateway.RerankRequest{
+		Query:     "q",
+		Documents: []string{"d1"},
+	})
+	if err == nil || !strings.Contains(err.Error(), "error envelope") {
+		t.Fatalf("want rerank envelope error, got %v", err)
+	}
+}

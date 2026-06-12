@@ -12,6 +12,7 @@ import (
 // Phase 05 wires the Meter to the event store; this phase ships PromMeter.
 type Meter interface {
 	Record(ctx context.Context, op, model string, usage Usage)
+	RecordRerank(ctx context.Context, model string, usage RerankUsage)
 }
 
 // PromMeter records usage as Prometheus counters and slog debug lines.
@@ -22,6 +23,8 @@ type PromMeter struct {
 	outputTokens *prometheus.CounterVec
 	costUSD      *prometheus.CounterVec
 	calls        *prometheus.CounterVec
+	searchUnits  *prometheus.CounterVec
+	rerankCalls  *prometheus.CounterVec
 }
 
 // NewPromMeter returns a Meter backed by a scoped Prometheus registry and slog.
@@ -45,7 +48,29 @@ func NewPromMeter(log *slog.Logger, prom *prometheus.Registry) *PromMeter {
 			Name: "gateway_calls_total",
 			Help: "Total number of gateway provider round-trips.",
 		}, []string{"op", "model"}),
+		searchUnits: f.NewCounterVec(prometheus.CounterOpts{
+			Name: "gateway_rerank_search_units_total",
+			Help: "Total rerank search units consumed (Cohere billing unit).",
+		}, []string{"model"}),
+		rerankCalls: f.NewCounterVec(prometheus.CounterOpts{
+			Name: "gateway_rerank_calls_total",
+			Help: "Total number of rerank provider round-trips.",
+		}, []string{"model"}),
 	}
+}
+
+// RecordRerank increments rerank Prometheus counters and emits a debug log line.
+func (m *PromMeter) RecordRerank(ctx context.Context, model string, usage RerankUsage) {
+	m.rerankCalls.WithLabelValues(model).Inc()
+	m.searchUnits.WithLabelValues(model).Add(float64(usage.SearchUnits))
+	if usage.CostUSD > 0 {
+		m.costUSD.WithLabelValues("rerank", model).Add(usage.CostUSD)
+	}
+	m.log.LogAttrs(ctx, slog.LevelDebug, "gateway.rerank",
+		slog.String("model", model),
+		slog.Int("search_units", usage.SearchUnits),
+		slog.Float64("cost_usd", usage.CostUSD),
+	)
 }
 
 // Record increments Prometheus counters and emits a debug log line.

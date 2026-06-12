@@ -34,18 +34,27 @@ const (
 	neighborLimit = 8
 )
 
+// ScopeInvalidator invalidates cached retrieval results after a content-changing
+// commit. Defined here so the reconcile package does not need to import the
+// retrieval package (duck-typed — retrieval.ResultCache satisfies this
+// interface automatically, D-053).
+type ScopeInvalidator interface {
+	InvalidateScope(scope identity.Scope)
+}
+
 // ReconcileStage consumes CandidateBatch events from the extract stage and
 // reconciles each candidate against the memory store using an 8-step flow.
 // It is safe for concurrent use after Start is called.
 type ReconcileStage struct {
-	mem      store.MemoryStore
-	ops      store.OpsStore
-	evts     store.EventStore
-	gw       gateway.Gateway
-	log      *slog.Logger
-	in       <-chan pipeline.CandidateBatch
-	wg       sync.WaitGroup
-	embedder *Embedder // optional; nil = no embedding (degraded-embed mode)
+	mem         store.MemoryStore
+	ops         store.OpsStore
+	evts        store.EventStore
+	gw          gateway.Gateway
+	log         *slog.Logger
+	in          <-chan pipeline.CandidateBatch
+	wg          sync.WaitGroup
+	embedder    *Embedder        // optional; nil = no embedding (degraded-embed mode)
+	invalidator ScopeInvalidator // optional; nil = cache invalidation disabled (Phase 12, D-053)
 }
 
 // New creates a ReconcileStage wired to the given dependencies.
@@ -73,6 +82,13 @@ func New(
 // embed mode — retrieval still works lexically).
 func (r *ReconcileStage) SetEmbedder(e *Embedder) {
 	r.embedder = e
+}
+
+// SetScopeInvalidator wires an optional ScopeInvalidator for cache invalidation
+// after every content-changing commit (D-053). Must be called before Start.
+// If not set, cache invalidation is skipped (safe — cache entries expire via TTL).
+func (r *ReconcileStage) SetScopeInvalidator(inv ScopeInvalidator) {
+	r.invalidator = inv
 }
 
 // Start launches reconcileWorkers goroutines that consume CandidateBatch events.
@@ -268,6 +284,7 @@ func (r *ReconcileStage) commit(
 			}
 			return err
 		}
+		r.invalidateScope(scope) // new content added — invalidate result cache (D-053)
 		r.enqueueEmbed(scope, c, mem.ID, normalized)
 		return nil
 
@@ -366,6 +383,7 @@ func (r *ReconcileStage) commit(
 		if err := r.mem.Commit(ctx, scope, cs); err != nil {
 			return err
 		}
+		r.invalidateScope(scope) // content updated — invalidate result cache (D-053)
 		r.enqueueEmbed(scope, c, mem.ID, normalizedContent)
 		return nil
 
@@ -445,6 +463,7 @@ func (r *ReconcileStage) commit(
 		if err := r.mem.Commit(ctx, scope, cs); err != nil {
 			return err
 		}
+		r.invalidateScope(scope) // new superseding memory added — invalidate result cache (D-053)
 		r.enqueueEmbed(scope, c, mem.ID, normalized)
 		return nil
 
@@ -528,11 +547,20 @@ func (r *ReconcileStage) commit(
 			}
 			return err
 		}
+		r.invalidateScope(scope) // merged memory added — invalidate result cache (D-053)
 		r.enqueueEmbed(scope, c, mem.ID, normalizedMerge)
 		return nil
 
 	default:
 		return fmt.Errorf("reconcile: unhandled action %q", action)
+	}
+}
+
+// invalidateScope bumps the scope's result-cache generation counter (D-053).
+// No-op when no invalidator is wired.
+func (r *ReconcileStage) invalidateScope(scope identity.Scope) {
+	if r.invalidator != nil {
+		r.invalidator.InvalidateScope(scope)
 	}
 }
 
@@ -595,6 +623,7 @@ func (r *ReconcileStage) commitFastAdd(ctx context.Context, scope identity.Scope
 		}
 		return err
 	}
+	r.invalidateScope(scope) // new memory added (fast-add) — invalidate result cache (D-053)
 	r.enqueueEmbed(scope, c, mem.ID, normalized)
 	return nil
 }

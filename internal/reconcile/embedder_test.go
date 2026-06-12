@@ -44,6 +44,9 @@ func (g *embedGW) Embed(_ context.Context, req gateway.EmbedRequest) (gateway.Em
 	return gateway.EmbedResponse{Vectors: vecs}, nil
 }
 
+func (g *embedGW) Rerank(_ context.Context, _ gateway.RerankRequest) (gateway.RerankResponse, error) {
+	return gateway.RerankResponse{}, errors.New("not implemented")
+}
 func (g *embedGW) Probe(_ context.Context) error { return nil }
 func (g *embedGW) Close(_ context.Context) error { return nil }
 

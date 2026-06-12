@@ -68,11 +68,13 @@ type retrieveMemoryItem struct {
 
 // retrieveResponse is the wire format for POST /v1/retrieve (envelope v1).
 type retrieveResponse struct {
-	ResponseID string               `json:"response_id"` // echoed or generated ULID (D-051)
-	Items      []retrieveMemoryItem `json:"items"`
-	Support    retrieveSupport      `json:"support"`
-	Degraded   bool                 `json:"degraded"`
-	API        string               `json:"api"` // "v1"
+	ResponseID     string               `json:"response_id"` // echoed or generated ULID (D-051)
+	Items          []retrieveMemoryItem `json:"items"`
+	Support        retrieveSupport      `json:"support"`
+	Degraded       bool                 `json:"degraded"`
+	DegradedRerank bool                 `json:"degraded_rerank,omitempty"` // true when rerank failed; Phase-10 order preserved (Phase 12)
+	CacheHit       bool                 `json:"cache_hit,omitempty"`       // true when served from the hot–warm cache (Phase 12)
+	API            string               `json:"api"`                       // "v1"
 }
 
 // handleRetrieve implements POST /v1/retrieve.
@@ -165,11 +167,13 @@ func (s *Server) handleRetrieve(w http.ResponseWriter, r *http.Request) {
 	}
 
 	respondJSON(w, http.StatusOK, retrieveResponse{
-		ResponseID: resp.ResponseID,
-		Items:      items,
-		Support:    sup,
-		Degraded:   resp.Degraded,
-		API:        resp.API,
+		ResponseID:     resp.ResponseID,
+		Items:          items,
+		Support:        sup,
+		Degraded:       resp.Degraded,
+		DegradedRerank: resp.DegradedRerank,
+		CacheHit:       resp.CacheHit,
+		API:            resp.API,
 	})
 }
 

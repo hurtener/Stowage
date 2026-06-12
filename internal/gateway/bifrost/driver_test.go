@@ -23,6 +23,7 @@ import (
 type fakeClient struct {
 	chatFn   func(ctx *bfschemas.BifrostContext, req *bfschemas.BifrostChatRequest) (*bfschemas.BifrostChatResponse, *bfschemas.BifrostError)
 	embedFn  func(ctx *bfschemas.BifrostContext, req *bfschemas.BifrostEmbeddingRequest) (*bfschemas.BifrostEmbeddingResponse, *bfschemas.BifrostError)
+	rerankFn func(ctx *bfschemas.BifrostContext, req *bfschemas.BifrostRerankRequest) (*bfschemas.BifrostRerankResponse, *bfschemas.BifrostError)
 	shutdown bool
 }
 
@@ -36,6 +37,13 @@ func (f *fakeClient) ChatCompletionRequest(ctx *bfschemas.BifrostContext, req *b
 func (f *fakeClient) EmbeddingRequest(ctx *bfschemas.BifrostContext, req *bfschemas.BifrostEmbeddingRequest) (*bfschemas.BifrostEmbeddingResponse, *bfschemas.BifrostError) {
 	if f.embedFn != nil {
 		return f.embedFn(ctx, req)
+	}
+	return nil, &bfschemas.BifrostError{Error: &bfschemas.ErrorField{Message: "not configured"}}
+}
+
+func (f *fakeClient) RerankRequest(ctx *bfschemas.BifrostContext, req *bfschemas.BifrostRerankRequest) (*bfschemas.BifrostRerankResponse, *bfschemas.BifrostError) {
+	if f.rerankFn != nil {
+		return f.rerankFn(ctx, req)
 	}
 	return nil, &bfschemas.BifrostError{Error: &bfschemas.ErrorField{Message: "not configured"}}
 }
@@ -804,6 +812,116 @@ func TestBifrostSDK_ExtractUsageWithCost(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("Complete: %v", err)
+	}
+}
+
+// ─── Rerank ───────────────────────────────────────────────────────────────────
+
+func TestBifrost_RerankClientFake(t *testing.T) {
+	t.Parallel()
+
+	fake := &fakeClient{
+		rerankFn: func(_ *bfschemas.BifrostContext, req *bfschemas.BifrostRerankRequest) (*bfschemas.BifrostRerankResponse, *bfschemas.BifrostError) {
+			// Echo back relevance scores: doc 0 = high, doc 1 = low.
+			return &bfschemas.BifrostRerankResponse{
+				Results: []bfschemas.RerankResult{
+					{Index: 0, RelevanceScore: 0.9},
+					{Index: 1, RelevanceScore: 0.2},
+				},
+				Usage: &bfschemas.BifrostLLMUsage{PromptTokens: 2},
+			}, nil
+		},
+	}
+
+	cfg := config.GatewayConfig{
+		Driver:      "bifrost",
+		Provider:    "openai",
+		APIKey:      "env.STOWAGE_TEST_BIFROST_SDK_KEY",
+		Model:       "gpt-4o",
+		EmbedModel:  "text-embedding-3-small",
+		EmbedDims:   4,
+		RerankModel: "cohere/rerank-4-fast",
+	}
+	d := NewDriverWithClient(fake, bfschemas.OpenAI, cfg, discardLog(), prometheus.NewRegistry())
+	t.Cleanup(func() { d.Close(context.Background()) }) //nolint:errcheck
+
+	resp, err := d.Rerank(context.Background(), gateway.RerankRequest{
+		Query:     "golang concurrency",
+		Documents: []string{"goroutines are great", "python has the GIL"},
+	})
+	if err != nil {
+		t.Fatalf("Rerank: %v", err)
+	}
+	if len(resp.Results) != 2 {
+		t.Fatalf("want 2 results, got %d", len(resp.Results))
+	}
+	if resp.Results[0].Score != 0.9 {
+		t.Errorf("want first result score=0.9, got %v", resp.Results[0].Score)
+	}
+	if resp.Results[0].Index != 0 {
+		t.Errorf("want first result index=0, got %d", resp.Results[0].Index)
+	}
+	// Usage: search_units = PromptTokens from bifrost response.
+	if resp.Usage.SearchUnits != 2 {
+		t.Errorf("want search_units=2, got %d", resp.Usage.SearchUnits)
+	}
+}
+
+func TestBifrost_RerankAfterClosedReturnsUnavailable(t *testing.T) {
+	t.Parallel()
+
+	fake := &fakeClient{}
+	cfg := config.GatewayConfig{
+		Driver:      "bifrost",
+		Provider:    "openai",
+		APIKey:      "env.STOWAGE_TEST_BIFROST_SDK_KEY",
+		Model:       "m",
+		EmbedModel:  "e",
+		EmbedDims:   4,
+		RerankModel: "rerank-model",
+	}
+	d := NewDriverWithClient(fake, bfschemas.OpenAI, cfg, discardLog(), prometheus.NewRegistry())
+	_ = d.Close(context.Background())
+
+	_, err := d.Rerank(context.Background(), gateway.RerankRequest{
+		Query:     "q",
+		Documents: []string{"d"},
+	})
+	if !errors.Is(err, gateway.ErrGatewayUnavailable) {
+		t.Errorf("want ErrGatewayUnavailable after close, got %v", err)
+	}
+}
+
+func TestBifrost_RerankBifrostError(t *testing.T) {
+	t.Parallel()
+
+	statusCode := 500
+	fake := &fakeClient{
+		rerankFn: func(_ *bfschemas.BifrostContext, _ *bfschemas.BifrostRerankRequest) (*bfschemas.BifrostRerankResponse, *bfschemas.BifrostError) {
+			return nil, &bfschemas.BifrostError{
+				StatusCode: &statusCode,
+				Error:      &bfschemas.ErrorField{Message: "internal error"},
+			}
+		},
+	}
+	cfg := config.GatewayConfig{
+		Driver:      "bifrost",
+		Provider:    "openai",
+		APIKey:      "env.STOWAGE_TEST_BIFROST_SDK_KEY",
+		Model:       "m",
+		EmbedModel:  "e",
+		EmbedDims:   4,
+		RerankModel: "rerank-model",
+	}
+	d := NewDriverWithClient(fake, bfschemas.OpenAI, cfg, discardLog(), prometheus.NewRegistry())
+	t.Cleanup(func() { d.Close(context.Background()) }) //nolint:errcheck
+
+	_, err := d.Rerank(context.Background(), gateway.RerankRequest{
+		Query:     "q",
+		Documents: []string{"d"},
+	})
+	if err == nil {
+		t.Fatal("expected error, got nil")
 	}
 }
 

@@ -30,6 +30,7 @@ const canaryInput = "stowage-probe-canary"
 type bifrostClient interface {
 	ChatCompletionRequest(ctx *bfschemas.BifrostContext, req *bfschemas.BifrostChatRequest) (*bfschemas.BifrostChatResponse, *bfschemas.BifrostError)
 	EmbeddingRequest(ctx *bfschemas.BifrostContext, req *bfschemas.BifrostEmbeddingRequest) (*bfschemas.BifrostEmbeddingResponse, *bfschemas.BifrostError)
+	RerankRequest(ctx *bfschemas.BifrostContext, req *bfschemas.BifrostRerankRequest) (*bfschemas.BifrostRerankResponse, *bfschemas.BifrostError)
 }
 
 // Driver is the Bifrost-SDK-backed gateway.Gateway implementation (D-049).
@@ -246,6 +247,57 @@ func (d *Driver) doComplete(ctx context.Context, req gateway.CompleteRequest) (g
 		return gateway.CompleteResponse{}, gateway.Usage{}, fmt.Errorf("bifrost: complete: %w", err)
 	}
 	return out, usage, nil
+}
+
+// Rerank reorders documents by relevance to the query using the configured
+// rerank model. Uses the circuit breaker for resilience. On error the caller
+// is expected to degrade gracefully (never fatal to retrieval).
+func (d *Driver) Rerank(ctx context.Context, req gateway.RerankRequest) (gateway.RerankResponse, error) {
+	if d.closed.Load() {
+		return gateway.RerankResponse{}, gateway.ErrGatewayUnavailable
+	}
+	if err := d.breaker.Allow(); err != nil {
+		return gateway.RerankResponse{}, err
+	}
+
+	docs := make([]bfschemas.RerankDocument, len(req.Documents))
+	for i, doc := range req.Documents {
+		docs[i] = bfschemas.RerankDocument{Text: doc}
+	}
+
+	bfReq := &bfschemas.BifrostRerankRequest{
+		Provider:  d.provider,
+		Model:     d.cfg.RerankModel,
+		Query:     req.Query,
+		Documents: docs,
+	}
+	if req.TopN > 0 {
+		topN := req.TopN
+		bfReq.Params = &bfschemas.RerankParameters{TopN: &topN}
+	}
+
+	bctx := bfschemas.NewBifrostContext(ctx, bfschemas.NoDeadline)
+	resp, berr := d.client.RerankRequest(bctx, bfReq)
+	if berr != nil {
+		d.breaker.Failure()
+		return gateway.RerankResponse{}, translateBifrostError(berr, "RerankRequest")
+	}
+	d.breaker.Success()
+
+	results := make([]gateway.RerankResult, len(resp.Results))
+	for i, r := range resp.Results {
+		results[i] = gateway.RerankResult{Index: r.Index, Score: r.RelevanceScore}
+	}
+
+	// Bifrost maps search_units to PromptTokens for rerank providers.
+	var searchUnits int
+	if resp.Usage != nil {
+		searchUnits = resp.Usage.PromptTokens
+	}
+
+	usage := gateway.RerankUsage{SearchUnits: searchUnits}
+	d.meter.RecordRerank(ctx, d.cfg.RerankModel, usage)
+	return gateway.RerankResponse{Results: results, Usage: usage}, nil
 }
 
 // Probe validates the provider is reachable and the embedding model returns

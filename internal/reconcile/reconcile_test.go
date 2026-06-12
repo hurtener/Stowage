@@ -66,6 +66,9 @@ func (g *stubGateway) Complete(_ context.Context, _ gateway.CompleteRequest) (ga
 func (g *stubGateway) Embed(_ context.Context, _ gateway.EmbedRequest) (gateway.EmbedResponse, error) {
 	return gateway.EmbedResponse{}, nil
 }
+func (g *stubGateway) Rerank(_ context.Context, _ gateway.RerankRequest) (gateway.RerankResponse, error) {
+	return gateway.RerankResponse{}, nil
+}
 func (g *stubGateway) Probe(_ context.Context) error { return nil }
 func (g *stubGateway) Close(_ context.Context) error { return nil }
 

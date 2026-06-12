@@ -175,3 +175,26 @@ New terms land here in the same PR that introduces them (CLAUDE.md §14).
 - **Trust multiplier** — the read-side scoring factor applied per `trust_source`
   at retrieve time (Phase 10, D-050). Distinct from the supersede-gate trust
   threshold (write-side). See D-050 for the full multiplier table and rationale.
+- **Rerank** — a cross-encoder pass applied (precise profile only) to the top
+  `rerankSlice` (24) Phase-10 candidates; scores are blended
+  `0.6 × rerankNorm + 0.4 × phase10Norm` before final sort (D-052).
+- **Rerank blend** — the weighted combination of cross-encoder relevance score
+  and Phase-10 utility score: `rerankBlendRerank=0.6`, `rerankBlendScore=0.4`.
+  Both are named constants in `internal/retrieval/rerank.go` (D-052).
+- **degraded_rerank** — flag set to `true` in the retrieve response envelope when
+  the rerank pass failed (network error, breaker open, etc.) and Phase-10 ordering
+  was preserved instead (D-052 graceful degradation contract).
+- **Generation counter** — a per-scope monotonic uint64 in the result cache;
+  bumped O(1) by `InvalidateScope` on any content-changing reconcile commit.
+  A cache entry is stale when its stored generation differs from the current
+  scope counter (D-053).
+- **ScopeInvalidator** — the narrow interface (`InvalidateScope(scope)`) defined
+  in `internal/retrieval` that decouples the result cache from the reconcile
+  stage without a circular import (D-053).
+- **Hot set** — a per-scope LRU of memory IDs ranked by injection frequency
+  (how many times a memory was returned in a retrieve response). v1: metrics-only;
+  the retrieval fast-path pre-warm is deferred to Phase 13 (D-053).
+- **SLO rig** — the standalone measurement harness in `internal/bench/slo/`
+  (build tag `slo`) that seeds memories into postgres, fires 1 000 concurrent
+  sessions, and reports p50/p95/p99 + cache hit rate. Results are recorded in
+  `eval/SLO.md` (D-031, Phase 12).

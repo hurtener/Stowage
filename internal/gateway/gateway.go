@@ -24,6 +24,12 @@ type Gateway interface {
 	// model and dims match. Called once at boot; fails closed on mismatch.
 	Probe(ctx context.Context) error
 
+	// Rerank reorders documents by relevance to the query using a cross-encoder
+	// model. TopN=0 returns all documents. Only called when the profile enables
+	// rerank. Failures must be handled gracefully by callers (never fatal to
+	// retrieval).
+	Rerank(ctx context.Context, req RerankRequest) (RerankResponse, error)
+
 	// Close flushes pending batches and releases all resources.
 	Close(ctx context.Context) error
 }

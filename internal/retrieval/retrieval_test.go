@@ -2,6 +2,7 @@ package retrieval_test
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -417,6 +418,9 @@ func (b *brokenGateway) Embed(_ context.Context, _ gateway.EmbedRequest) (gatewa
 }
 func (b *brokenGateway) Complete(_ context.Context, _ gateway.CompleteRequest) (gateway.CompleteResponse, error) {
 	return gateway.CompleteResponse{}, gateway.ErrGatewayUnavailable
+}
+func (b *brokenGateway) Rerank(_ context.Context, _ gateway.RerankRequest) (gateway.RerankResponse, error) {
+	return gateway.RerankResponse{}, gateway.ErrGatewayUnavailable
 }
 func (b *brokenGateway) Probe(_ context.Context) error { return gateway.ErrGatewayUnavailable }
 func (b *brokenGateway) Close(_ context.Context) error { return nil }
@@ -1088,4 +1092,440 @@ func itoa(n int) string {
 	pos--
 	buf[pos] = byte('0' + n)
 	return string(buf[pos:])
+}
+
+// ── Phase 12: result cache ─────────────────────────────────────────────────────
+
+// TestResultCache_HitOnSecondRetrieve verifies that a second identical retrieve
+// returns CacheHit:true and skips the full pipeline.
+func TestResultCache_HitOnSecondRetrieve(t *testing.T) {
+	t.Parallel()
+	st := openStore(t)
+	gw := openMockGateway(t, 4)
+	vi := vindex.New(st.Vectors(), 4, "test")
+	log := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	r := retrieval.New(st.Memories(), st.Records(), vi, gw, log)
+
+	scope := identity.Scope{Tenant: "tenant-cache-hit-" + newID()}
+	_ = insertMemory(t, st, scope, "cacheable content xyzzy unique", "fact", nil, nil, nil, 0)
+
+	ctx := context.Background()
+	req := retrieval.Request{Query: "cacheable content xyzzy", Limit: 5}
+
+	resp1, err := r.Retrieve(ctx, scope, req)
+	if err != nil {
+		t.Fatalf("first retrieve: %v", err)
+	}
+	if resp1.CacheHit {
+		t.Error("first retrieve should NOT be a cache hit")
+	}
+
+	resp2, err := r.Retrieve(ctx, scope, req)
+	if err != nil {
+		t.Fatalf("second retrieve: %v", err)
+	}
+	if !resp2.CacheHit {
+		t.Error("second retrieve SHOULD be a cache hit")
+	}
+	if len(resp2.Items) != len(resp1.Items) {
+		t.Errorf("cached items count mismatch: got %d want %d", len(resp2.Items), len(resp1.Items))
+	}
+}
+
+// TestResultCache_MissOnDifferentScope verifies that caches are per-scope
+// and a query on scope B does not hit a cached entry for scope A.
+func TestResultCache_MissOnDifferentScope(t *testing.T) {
+	t.Parallel()
+	st := openStore(t)
+	gw := openMockGateway(t, 4)
+	vi := vindex.New(st.Vectors(), 4, "test")
+	log := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	r := retrieval.New(st.Memories(), st.Records(), vi, gw, log)
+
+	scopeA := identity.Scope{Tenant: "tenant-cache-scope-a-" + newID()}
+	scopeB := identity.Scope{Tenant: "tenant-cache-scope-b-" + newID()}
+
+	ctx := context.Background()
+	req := retrieval.Request{Query: "cross scope test", Limit: 5}
+
+	// Prime cache for scope A.
+	_, err := r.Retrieve(ctx, scopeA, req)
+	if err != nil {
+		t.Fatalf("scopeA retrieve: %v", err)
+	}
+
+	// Scope B must not get a hit.
+	respB, err := r.Retrieve(ctx, scopeB, req)
+	if err != nil {
+		t.Fatalf("scopeB retrieve: %v", err)
+	}
+	if respB.CacheHit {
+		t.Error("scope B retrieve should NOT hit scope A's cache entry")
+	}
+}
+
+// TestResultCache_InvalidationBumpsGeneration verifies that InvalidateScope
+// causes the next retrieve to be a cache miss.
+func TestResultCache_InvalidationBumpsGeneration(t *testing.T) {
+	t.Parallel()
+	st := openStore(t)
+	gw := openMockGateway(t, 4)
+	vi := vindex.New(st.Vectors(), 4, "test")
+	log := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	r := retrieval.New(st.Memories(), st.Records(), vi, gw, log)
+
+	scope := identity.Scope{Tenant: "tenant-cache-inval-" + newID()}
+	ctx := context.Background()
+	req := retrieval.Request{Query: "invalidation test", Limit: 5}
+
+	// Prime cache.
+	_, err := r.Retrieve(ctx, scope, req)
+	if err != nil {
+		t.Fatalf("prime retrieve: %v", err)
+	}
+
+	// Invalidate the scope.
+	r.CacheOf().InvalidateScope(scope)
+
+	// Next retrieve must miss.
+	resp, err := r.Retrieve(ctx, scope, req)
+	if err != nil {
+		t.Fatalf("post-invalidation retrieve: %v", err)
+	}
+	if resp.CacheHit {
+		t.Error("retrieve after InvalidateScope should be a cache MISS")
+	}
+}
+
+// TestResultCache_TTLExpiry verifies that entries expire after cacheTTL using
+// an injected clock.
+func TestResultCache_TTLExpiry(t *testing.T) {
+	t.Parallel()
+
+	c := retrieval.ExportNewResultCache(16)
+	scope := identity.Scope{Tenant: "ttl-test"}
+
+	now := time.Now()
+	c.SetTestNow(func() time.Time { return now })
+
+	// Put an entry.
+	c.Put(scope, "sig", "balanced", "", 0, 0, nil, retrieval.Support{Strength: "weak"})
+
+	// Should hit before TTL.
+	_, _, ok := c.Get(scope, "sig", "balanced", "", 0, 0)
+	if !ok {
+		t.Fatal("expected cache hit before TTL")
+	}
+
+	// Advance clock past TTL (60s + 1ms).
+	now = now.Add(61 * time.Second)
+	c.SetTestNow(func() time.Time { return now })
+
+	_, _, ok = c.Get(scope, "sig", "balanced", "", 0, 0)
+	if ok {
+		t.Error("expected cache miss after TTL expiry")
+	}
+}
+
+// TestResultCache_Stats tracks hits and misses.
+func TestResultCache_Stats(t *testing.T) {
+	t.Parallel()
+
+	c := retrieval.ExportNewResultCache(16)
+	scope := identity.Scope{Tenant: "stats-test"}
+
+	c.Get(scope, "sig", "balanced", "", 0, 0) // miss
+	c.Put(scope, "sig", "balanced", "", 0, 0, nil, retrieval.Support{})
+	c.Get(scope, "sig", "balanced", "", 0, 0) // hit
+
+	hits, misses := c.Stats()
+	if hits != 1 {
+		t.Errorf("want 1 hit, got %d", hits)
+	}
+	if misses != 1 {
+		t.Errorf("want 1 miss, got %d", misses)
+	}
+}
+
+// TestResultCache_LRUEviction verifies cap-based eviction.
+func TestResultCache_LRUEviction(t *testing.T) {
+	t.Parallel()
+
+	cap := 4
+	c := retrieval.ExportNewResultCache(cap)
+
+	// Fill to cap.
+	for i := range cap {
+		scope := identity.Scope{Tenant: "evict-test"}
+		c.Put(scope, itoa(i), "balanced", "", 0, 0, nil, retrieval.Support{})
+	}
+
+	// Add one more — should evict LRU (entry 0).
+	scope := identity.Scope{Tenant: "evict-test"}
+	c.Put(scope, "overflow", "balanced", "", 0, 0, nil, retrieval.Support{})
+
+	// The oldest entry (sig "0") should be evicted.
+	_, _, ok := c.Get(scope, "0", "balanced", "", 0, 0)
+	if ok {
+		t.Error("expected LRU entry to be evicted")
+	}
+}
+
+// ── Phase 12: hot set ─────────────────────────────────────────────────────────
+
+func TestHotSet_RecordAndTopN(t *testing.T) {
+	t.Parallel()
+
+	h := retrieval.ExportNewHotSet(32)
+	scope := identity.Scope{Tenant: "hotset-test"}
+
+	// Record mem-A 5 times, mem-B 2 times, mem-C 1 time.
+	for range 5 {
+		h.Record(scope, "mem-A")
+	}
+	for range 2 {
+		h.Record(scope, "mem-B")
+	}
+	h.Record(scope, "mem-C")
+
+	top := h.TopN(scope, 2)
+	if len(top) != 2 {
+		t.Fatalf("want 2 top entries, got %d", len(top))
+	}
+	if top[0] != "mem-A" {
+		t.Errorf("want top[0]=mem-A, got %q", top[0])
+	}
+	if top[1] != "mem-B" {
+		t.Errorf("want top[1]=mem-B, got %q", top[1])
+	}
+
+	if h.TotalInjections() != 8 {
+		t.Errorf("want 8 total injections, got %d", h.TotalInjections())
+	}
+}
+
+func TestHotSet_ScopeIsolation(t *testing.T) {
+	t.Parallel()
+
+	h := retrieval.ExportNewHotSet(32)
+	scopeA := identity.Scope{Tenant: "hs-scope-a"}
+	scopeB := identity.Scope{Tenant: "hs-scope-b"}
+
+	h.Record(scopeA, "mem-X")
+	h.Record(scopeA, "mem-X")
+
+	// scopeB has no records — TopN should return nil.
+	top := h.TopN(scopeB, 5)
+	if len(top) != 0 {
+		t.Errorf("scope B should have no entries, got %v", top)
+	}
+
+	if h.ScopeCount() != 1 {
+		t.Errorf("want 1 scope, got %d", h.ScopeCount())
+	}
+}
+
+// TestHotSetFeedFromRetriever verifies that after a retrieve call, the hot set
+// has recorded the returned memory IDs.
+func TestHotSetFeedFromRetriever(t *testing.T) {
+	t.Parallel()
+	st := openStore(t)
+	gw := openMockGateway(t, 4)
+	vi := vindex.New(st.Vectors(), 4, "test")
+	log := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	r := retrieval.New(st.Memories(), st.Records(), vi, gw, log)
+
+	scope := identity.Scope{Tenant: "tenant-hotset-feed-" + newID()}
+	memID := insertMemory(t, st, scope, "hotset feed test unique xyzzy", "fact", nil, nil, nil, 0)
+
+	resp, err := r.Retrieve(context.Background(), scope, retrieval.Request{
+		Query: "hotset feed unique xyzzy",
+		Limit: 5,
+	})
+	if err != nil {
+		t.Fatalf("Retrieve: %v", err)
+	}
+
+	// If the memory was returned, it should be recorded in the hot set.
+	found := false
+	for _, item := range resp.Items {
+		if item.Memory.ID == memID {
+			found = true
+		}
+	}
+	if !found {
+		t.Skip("memory not returned — skip hot set check")
+	}
+
+	top := r.HotSetOf().TopN(scope, 10)
+	inTop := false
+	for _, id := range top {
+		if id == memID {
+			inTop = true
+		}
+	}
+	if !inTop {
+		t.Errorf("memID %s not in hot set after retrieve; top=%v", memID, top)
+	}
+}
+
+// ── Phase 12: rerank profile gating ──────────────────────────────────────────
+
+// rerankTrackingGateway wraps a real gateway and counts Rerank calls.
+type rerankTrackingGateway struct {
+	inner       gateway.Gateway
+	rerankCalls int
+}
+
+func (g *rerankTrackingGateway) Embed(ctx context.Context, req gateway.EmbedRequest) (gateway.EmbedResponse, error) {
+	return g.inner.Embed(ctx, req)
+}
+func (g *rerankTrackingGateway) Complete(ctx context.Context, req gateway.CompleteRequest) (gateway.CompleteResponse, error) {
+	return g.inner.Complete(ctx, req)
+}
+func (g *rerankTrackingGateway) Rerank(ctx context.Context, req gateway.RerankRequest) (gateway.RerankResponse, error) {
+	g.rerankCalls++
+	return g.inner.Rerank(ctx, req)
+}
+func (g *rerankTrackingGateway) Probe(ctx context.Context) error { return g.inner.Probe(ctx) }
+func (g *rerankTrackingGateway) Close(ctx context.Context) error { return g.inner.Close(ctx) }
+
+// TestRerankOnlyForPreciseProfile verifies that the rerank pass runs for
+// "precise" profile but not for "balanced" or "broad".
+func TestRerankOnlyForPreciseProfile(t *testing.T) {
+	t.Parallel()
+	st := openStore(t)
+	innerGW := openMockGateway(t, 4)
+	tracking := &rerankTrackingGateway{inner: innerGW}
+	vi := vindex.New(st.Vectors(), 4, "test")
+	log := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	r := retrieval.New(st.Memories(), st.Records(), vi, tracking, log)
+
+	scope := identity.Scope{Tenant: "tenant-rerank-gate-" + newID()}
+	_ = insertMemory(t, st, scope, "rerank gating test content unique xyzzy", "fact", nil, nil, nil, 0)
+
+	ctx := context.Background()
+
+	// Balanced — no rerank.
+	tracking.rerankCalls = 0
+	_, err := r.Retrieve(ctx, scope, retrieval.Request{Query: "rerank gating xyzzy", Profile: "balanced"})
+	if err != nil {
+		t.Fatalf("balanced retrieve: %v", err)
+	}
+	if tracking.rerankCalls != 0 {
+		t.Errorf("balanced: want 0 rerank calls, got %d", tracking.rerankCalls)
+	}
+
+	// Broad — no rerank.
+	tracking.rerankCalls = 0
+	// Invalidate cache so we don't get a cached result.
+	r.CacheOf().InvalidateScope(scope)
+	_, err = r.Retrieve(ctx, scope, retrieval.Request{Query: "rerank gating xyzzy", Profile: "broad"})
+	if err != nil {
+		t.Fatalf("broad retrieve: %v", err)
+	}
+	if tracking.rerankCalls != 0 {
+		t.Errorf("broad: want 0 rerank calls, got %d", tracking.rerankCalls)
+	}
+
+	// Precise — rerank runs (but only if items are returned).
+	tracking.rerankCalls = 0
+	r.CacheOf().InvalidateScope(scope)
+	resp, err := r.Retrieve(ctx, scope, retrieval.Request{Query: "rerank gating xyzzy", Profile: "precise"})
+	if err != nil {
+		t.Fatalf("precise retrieve: %v", err)
+	}
+	if len(resp.Items) > 0 && tracking.rerankCalls != 1 {
+		t.Errorf("precise with results: want 1 rerank call, got %d", tracking.rerankCalls)
+	}
+}
+
+// TestRerankDegradedOnFailure verifies that when the gateway Rerank returns an
+// error, the response carries DegradedRerank:true and Phase-10 order is preserved.
+func TestRerankDegradedOnFailure(t *testing.T) {
+	t.Parallel()
+
+	st := openStore(t)
+	innerGW := openMockGateway(t, 4)
+	vi := vindex.New(st.Vectors(), 4, "test")
+	log := slog.New(slog.NewTextHandler(os.Stderr, nil))
+
+	// Gateway that fails Rerank but succeeds on Embed.
+	failRerankGW := &rerankFailGateway{inner: innerGW}
+	r := retrieval.New(st.Memories(), st.Records(), vi, failRerankGW, log)
+
+	scope := identity.Scope{Tenant: "tenant-rerank-degrade-" + newID()}
+	_ = insertMemory(t, st, scope, "degraded rerank test unique xyzzy", "fact", nil, nil, nil, 0)
+
+	resp, err := r.Retrieve(context.Background(), scope, retrieval.Request{
+		Query:   "degraded rerank xyzzy",
+		Profile: "precise",
+	})
+	if err != nil {
+		t.Fatalf("Retrieve: %v", err)
+	}
+	// DegradedRerank should be true when rerank fails AND items were returned.
+	if len(resp.Items) > 0 && !resp.DegradedRerank {
+		t.Error("expected DegradedRerank:true when rerank call fails")
+	}
+}
+
+// rerankFailGateway wraps a gateway and injects a Rerank error.
+type rerankFailGateway struct{ inner gateway.Gateway }
+
+func (g *rerankFailGateway) Embed(ctx context.Context, req gateway.EmbedRequest) (gateway.EmbedResponse, error) {
+	return g.inner.Embed(ctx, req)
+}
+func (g *rerankFailGateway) Complete(ctx context.Context, req gateway.CompleteRequest) (gateway.CompleteResponse, error) {
+	return g.inner.Complete(ctx, req)
+}
+func (g *rerankFailGateway) Rerank(_ context.Context, _ gateway.RerankRequest) (gateway.RerankResponse, error) {
+	return gateway.RerankResponse{}, fmt.Errorf("rerank: injected failure")
+}
+func (g *rerankFailGateway) Probe(ctx context.Context) error { return g.inner.Probe(ctx) }
+func (g *rerankFailGateway) Close(ctx context.Context) error { return g.inner.Close(ctx) }
+
+// TestAdversarialCrossScopeCache verifies that a cache hit for scope A is never
+// served for scope B even when both queries are identical (AC-5 style).
+func TestAdversarialCrossScopeCache(t *testing.T) {
+	t.Parallel()
+	st := openStore(t)
+	gw := openMockGateway(t, 4)
+	vi := vindex.New(st.Vectors(), 4, "test")
+	log := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	r := retrieval.New(st.Memories(), st.Records(), vi, gw, log)
+
+	base := newID()
+	scopeA := identity.Scope{Tenant: "adversarial-a-" + base}
+	scopeB := identity.Scope{Tenant: "adversarial-b-" + base}
+
+	// Insert distinct memories in each scope.
+	idA := insertMemory(t, st, scopeA, "adversarial scope A content unique xyzzy", "fact", nil, nil, nil, 0)
+	idB := insertMemory(t, st, scopeB, "adversarial scope B content unique xyzzy", "fact", nil, nil, nil, 0)
+
+	ctx := context.Background()
+	req := retrieval.Request{Query: "adversarial scope content xyzzy", Limit: 10}
+
+	// Prime scope A cache.
+	respA, err := r.Retrieve(ctx, scopeA, req)
+	if err != nil {
+		t.Fatalf("scopeA retrieve: %v", err)
+	}
+
+	// Scope B must NOT see scope A's memory.
+	respB, err := r.Retrieve(ctx, scopeB, req)
+	if err != nil {
+		t.Fatalf("scopeB retrieve: %v", err)
+	}
+
+	for _, item := range respB.Items {
+		if item.Memory.ID == idA {
+			t.Errorf("scope B response contains scope A's memory (cross-scope leak)")
+		}
+	}
+	for _, item := range respA.Items {
+		if item.Memory.ID == idB {
+			t.Errorf("scope A response contains scope B's memory (cross-scope leak)")
+		}
+	}
 }

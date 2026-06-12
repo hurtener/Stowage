@@ -185,3 +185,93 @@ func TestMock_ConcurrentEmbedRaceSafe(t *testing.T) {
 		}
 	}
 }
+
+// ── Rerank ─────────────────────────────────────────────────────────────────────
+
+func TestMock_RerankDeterministic(t *testing.T) {
+	t.Parallel()
+
+	gw := newMock(t, 4)
+
+	// The query "go language fast" shares tokens with doc[0] and doc[1] but not doc[2].
+	req := gateway.RerankRequest{
+		Query: "go language fast",
+		Documents: []string{
+			"go is a fast language", // high overlap
+			"go language features",  // medium overlap
+			"python has no types",   // low overlap
+		},
+	}
+
+	resp1, err := gw.Rerank(context.Background(), req)
+	if err != nil {
+		t.Fatalf("Rerank: %v", err)
+	}
+	resp2, err := gw.Rerank(context.Background(), req)
+	if err != nil {
+		t.Fatalf("Rerank second call: %v", err)
+	}
+
+	if len(resp1.Results) != 3 {
+		t.Fatalf("want 3 results, got %d", len(resp1.Results))
+	}
+
+	// Results must be deterministic.
+	for i, r := range resp1.Results {
+		if r.Index != resp2.Results[i].Index || r.Score != resp2.Results[i].Score {
+			t.Errorf("result[%d] non-deterministic: %+v vs %+v", i, r, resp2.Results[i])
+		}
+	}
+
+	// Results must be sorted by score descending.
+	for i := 1; i < len(resp1.Results); i++ {
+		if resp1.Results[i].Score > resp1.Results[i-1].Score {
+			t.Errorf("results not sorted at index %d: score %v > %v",
+				i, resp1.Results[i].Score, resp1.Results[i-1].Score)
+		}
+	}
+
+	// The highest-overlap doc should be ranked first.
+	if resp1.Results[0].Index != 0 {
+		t.Errorf("expected doc 0 (highest overlap) to rank first, got index %d", resp1.Results[0].Index)
+	}
+
+	// Usage should record the doc count.
+	if resp1.Usage.SearchUnits != 3 {
+		t.Errorf("want search_units=3, got %d", resp1.Usage.SearchUnits)
+	}
+}
+
+func TestMock_RerankTopN(t *testing.T) {
+	t.Parallel()
+
+	gw := newMock(t, 4)
+	resp, err := gw.Rerank(context.Background(), gateway.RerankRequest{
+		Query:     "hello world",
+		Documents: []string{"hello", "world", "foo", "bar"},
+		TopN:      2,
+	})
+	if err != nil {
+		t.Fatalf("Rerank: %v", err)
+	}
+	if len(resp.Results) != 2 {
+		t.Fatalf("want 2 results (TopN=2), got %d", len(resp.Results))
+	}
+}
+
+func TestMock_RerankEmptyQuery(t *testing.T) {
+	t.Parallel()
+
+	gw := newMock(t, 4)
+	resp, err := gw.Rerank(context.Background(), gateway.RerankRequest{
+		Query:     "",
+		Documents: []string{"a doc", "another doc"},
+	})
+	if err != nil {
+		t.Fatalf("Rerank: %v", err)
+	}
+	// Both docs have same Jaccard score against empty query; order stable by original index.
+	if len(resp.Results) != 2 {
+		t.Fatalf("want 2 results, got %d", len(resp.Results))
+	}
+}
