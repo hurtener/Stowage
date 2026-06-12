@@ -23,26 +23,21 @@ import (
 	"github.com/hurtener/stowage/eval/datasets/locomo"
 	"github.com/hurtener/stowage/eval/datasets/longmemeval"
 	"github.com/hurtener/stowage/internal/api"
+	"github.com/hurtener/stowage/internal/boot"
 	"github.com/hurtener/stowage/internal/config"
-	"github.com/hurtener/stowage/internal/gateway"
-	"github.com/hurtener/stowage/internal/grants"
 	"github.com/hurtener/stowage/internal/lifecycle"
 	"github.com/hurtener/stowage/internal/mcpserver"
 	"github.com/hurtener/stowage/internal/pipeline"
 	"github.com/hurtener/stowage/internal/reconcile"
-	"github.com/hurtener/stowage/internal/retrieval"
 	"github.com/hurtener/stowage/internal/store"
 	"github.com/hurtener/stowage/internal/store/migrations"
-	"github.com/hurtener/stowage/internal/telemetry"
-	"github.com/hurtener/stowage/internal/topics"
-	"github.com/hurtener/stowage/internal/vindex"
+	"github.com/hurtener/stowage/internal/version"
 	// register drivers via init()
 	_ "github.com/hurtener/stowage/internal/gateway/bifrost" // SDK driver: all providers in-process (D-049)
 	_ "github.com/hurtener/stowage/internal/gateway/mock"
 	_ "github.com/hurtener/stowage/internal/gateway/openaicompat" // OpenAI-compatible HTTP client (D-040)
 	_ "github.com/hurtener/stowage/internal/store/pgstore"
 	_ "github.com/hurtener/stowage/internal/store/sqlitestore"
-	"github.com/hurtener/stowage/internal/version"
 	_ "github.com/hurtener/stowage/internal/vindex/hnsw" // register "hnsw" vindex driver (D-048)
 )
 
@@ -412,58 +407,19 @@ func runMCP(args []string) {
 		os.Exit(1)
 	}
 
-	log, reg, err := telemetry.New(telemetry.Config{
-		LogLevel:  cfg.Telemetry.LogLevel,
-		LogFormat: cfg.Telemetry.LogFormat,
-	})
+	// Boot the core stack (telemetry, store, gateway, vindex, embedder, retriever,
+	// topics, grants). ctx controls the embedder goroutine lifetime.
+	stk, err := boot.Open(ctx, cfg)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "stowage mcp: telemetry: %v\n", err)
-		os.Exit(1)
-	}
-	slog.SetDefault(log)
-	_ = reg
-
-	st, err := store.Open(ctx, cfg.Store)
-	if err != nil {
-		log.Error("stowage mcp: open store", "err", err)
+		fmt.Fprintf(os.Stderr, "stowage mcp: boot: %v\n", err)
 		os.Exit(1)
 	}
 	defer func() {
-		closeCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		if closeErr := st.Close(closeCtx); closeErr != nil {
-			log.Error("stowage mcp: close store", "err", closeErr)
+		if closeErr := stk.Close(context.Background()); closeErr != nil {
+			stk.Log.Error("stowage mcp: close stack", "err", closeErr)
 		}
 	}()
-
-	if err := st.Migrate(ctx); err != nil {
-		log.Error("stowage mcp: migrate", "err", err)
-		os.Exit(1)
-	}
-
-	gw, err := gateway.Open(ctx, cfg.Gateway, log, reg)
-	if err != nil {
-		log.Error("stowage mcp: gateway open", "err", err)
-		os.Exit(1)
-	}
-	if probeErr := gw.Probe(ctx); probeErr != nil {
-		log.Warn("stowage mcp: gateway probe failed (degraded)", "err", probeErr)
-	}
-
-	vi, err := vindex.Open(cfg.VIndex, st.Vectors(), cfg.Gateway.EmbedDims, cfg.Gateway.EmbedModel)
-	if err != nil {
-		log.Error("stowage mcp: vindex open", "err", err)
-		os.Exit(1)
-	}
-
-	embedder := reconcile.NewEmbedder(st.Vectors(), vi, gw, log)
-	embedder.Start(ctx)
-
-	retriever := retrieval.NewWithInjections(st.Memories(), st.Records(), vi, gw, st.Injections(), log)
-	retriever.WithRerankModel(cfg.Gateway.RerankModel)
-	retriever.SetGrants(st.Grants())
-
-	topicSvc := topics.New(st.Topics(), log, cfg.Profile)
+	slog.SetDefault(stk.Log)
 
 	// Pipeline channel for ingest (non-blocking, fire-and-forget).
 	pipelineCh := make(chan pipeline.Item, 4096)
@@ -477,11 +433,11 @@ func runMCP(args []string) {
 	}
 
 	svc := &mcpserver.Services{
-		Store:      st,
-		Retriever:  retriever,
-		TopicSvc:   topicSvc,
+		Store:      stk.Store,
+		Retriever:  stk.Retriever,
+		TopicSvc:   stk.TopicSvc,
 		PipelineIn: pipelineCh,
-		Log:        log,
+		Log:        stk.Log,
 		ScopeFn:    scopeFn,
 	}
 
@@ -491,21 +447,21 @@ func runMCP(args []string) {
 		Version: version.Version,
 	}, svc)
 	if err != nil {
-		log.Error("stowage mcp: create server", "err", err)
+		stk.Log.Error("stowage mcp: create server", "err", err)
 		os.Exit(1)
 	}
 
-	log.Info("stowage mcp: ready", "tools", len(srv.Tools()), "transport", map[bool]string{true: "http:" + httpAddr, false: "stdio"}[httpAddr != ""])
+	stk.Log.Info("stowage mcp: ready", "tools", len(srv.Tools()), "transport", map[bool]string{true: "http:" + httpAddr, false: "stdio"}[httpAddr != ""])
 
 	if httpAddr != "" {
 		handler, hErr := srv.HTTPHandler(nil)
 		if hErr != nil {
-			log.Error("stowage mcp: http handler", "err", hErr)
+			stk.Log.Error("stowage mcp: http handler", "err", hErr)
 			os.Exit(1)
 		}
 		httpSrv := &http.Server{
 			Addr:              httpAddr,
-			Handler:           mcpserver.KeyringMiddleware(st.Keys(), handler),
+			Handler:           mcpserver.KeyringMiddleware(stk.Store.Keys(), handler),
 			ReadHeaderTimeout: 10 * time.Second,
 		}
 		go func() {
@@ -517,17 +473,17 @@ func runMCP(args []string) {
 			_ = httpSrv.Shutdown(shutCtx) //nolint:contextcheck
 		}()
 		if listenErr := httpSrv.ListenAndServe(); listenErr != nil && !errors.Is(listenErr, http.ErrServerClosed) {
-			log.Error("stowage mcp: http serve", "err", listenErr)
+			stk.Log.Error("stowage mcp: http serve", "err", listenErr)
 			os.Exit(1)
 		}
 	} else {
 		if serveErr := srv.ServeStdio(ctx); serveErr != nil && !isCleanMCPExit(serveErr) {
-			log.Error("stowage mcp: stdio serve", "err", serveErr)
+			stk.Log.Error("stowage mcp: stdio serve", "err", serveErr)
 			os.Exit(1)
 		}
 	}
 
-	log.Info("stowage mcp: stopped")
+	stk.Log.Info("stowage mcp: stopped")
 }
 
 // isCleanMCPExit reports whether err represents a normal MCP server exit that
@@ -616,114 +572,66 @@ func runServe(args []string) {
 		os.Exit(1)
 	}
 
-	log, reg, err := telemetry.New(telemetry.Config{
-		LogLevel:  cfg.Telemetry.LogLevel,
-		LogFormat: cfg.Telemetry.LogFormat,
-	})
+	// Boot the core stack (telemetry, store, gateway, vindex, embedder, retriever,
+	// topics, grants). ctx is context.Background() so the embedder runs for the
+	// process lifetime; shutdown is handled by the graceful drain below.
+	stk, err := boot.Open(ctx, cfg)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "stowage serve: telemetry: %v\n", err)
+		fmt.Fprintf(os.Stderr, "stowage serve: boot: %v\n", err)
 		os.Exit(1)
 	}
-	slog.SetDefault(log)
-
-	// Prometheus registry: register default metrics.
-	_ = reg // passed to api.New below; also used for metrics endpoint
-
-	st, err := store.Open(ctx, cfg.Store)
-	if err != nil {
-		log.Error("stowage serve: open store", "err", err)
-		os.Exit(1)
-	}
-	// Ensure clean close on exit.
+	// Store close happens inside stk.Close (last in reverse order); keep the
+	// existing defer pattern for serve by deferring stk.Close.
 	defer func() {
-		closeCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		if closeErr := st.Close(closeCtx); closeErr != nil {
-			log.Error("stowage serve: close store", "err", closeErr)
+		if closeErr := stk.Close(context.Background()); closeErr != nil {
+			stk.Log.Error("stowage serve: close stack", "err", closeErr)
 		}
 	}()
+	slog.SetDefault(stk.Log)
 
-	// Auto-migrate (idempotent — safe to always run on boot).
-	if err := st.Migrate(ctx); err != nil {
-		log.Error("stowage serve: migrate", "err", err)
-		os.Exit(1)
-	}
+	// Expose additional metrics (reg is returned by boot for API server wiring).
+	_ = prometheus.NewRegistry() // noop: reg already registered inside boot
 
-	// Open the intelligence gateway (Phase 07). Default driver: "mock".
-	// gateway.Open failure is a configuration error → fatal.
-	// gateway.Probe failure is degraded (D-036) → warn + continue.
-	gw, err := gateway.Open(ctx, cfg.Gateway, log, reg)
+	srv, err := api.New(cfg, stk.Store, stk.Log, stk.Metrics)
 	if err != nil {
-		log.Error("stowage serve: gateway open failed", "err", err)
-		os.Exit(1)
-	}
-	if probeErr := gw.Probe(ctx); probeErr != nil {
-		log.Warn("stowage serve: gateway probe failed (degraded mode — extraction will dead-letter until provider recovers)",
-			"err", probeErr)
-	}
-
-	// Expose additional metrics.
-	_ = prometheus.NewRegistry() // reg passed from telemetry
-
-	srv, err := api.New(cfg, st, log, reg)
-	if err != nil {
-		log.Error("stowage serve: api.New", "err", err)
+		stk.Log.Error("stowage serve: api.New", "err", err)
 		os.Exit(1)
 	}
 
 	// Construct buffer stage (Phase 06). Stage sits between store and api.
 	trig := pipeline.TriggersFromConfig(cfg.Profile)
-	bufStage := pipeline.New(st, log, trig, srv.Pipeline())
+	bufStage := pipeline.New(stk.Store, stk.Log, trig, srv.Pipeline())
 	srv.SetStage(bufStage)
 	bufStage.Start(ctx)
 
-	// Topics service + extract stage (Phase 07).
-	topicSvc := topics.New(st.Topics(), log, cfg.Profile)
-	srv.SetTopicService(topicSvc)
-	extractStage := pipeline.NewExtractStage(st, gw, topicSvc, log, cfg.Profile, bufStage.Downstream())
+	// Topics + extract stage (Phase 07).
+	srv.SetTopicService(stk.TopicSvc)
+	extractStage := pipeline.NewExtractStage(stk.Store, stk.Gateway, stk.TopicSvc, stk.Log, cfg.Profile, bufStage.Downstream())
 	extractStage.Start(ctx)
 
-	// Phase 09: vindex, embedder, and retriever (D-046, D-047, D-048).
-	// EmbedDims defaults to 0 when unconfigured; vindex skips dim checks then.
-	// Driver selected by cfg.VIndex.Driver (default "hnsw" per D-048).
-	vi, err := vindex.Open(cfg.VIndex, st.Vectors(), cfg.Gateway.EmbedDims, cfg.Gateway.EmbedModel)
-	if err != nil {
-		log.Error("stowage serve: vindex open failed", "err", err)
-		os.Exit(1)
-	}
-	embedder := reconcile.NewEmbedder(st.Vectors(), vi, gw, log)
-	embedder.Start(ctx)
-	go embedder.BackfillSweep(ctx)
-
-	// Phase 11: wire InjectionStore so every retrieve call records injection rows
-	// (async, zero added latency — P2 fire-and-forget via InjectionWriter, D-051).
-	retriever := retrieval.NewWithInjections(st.Memories(), st.Records(), vi, gw, st.Injections(), log)
-	retriever.WithRerankModel(cfg.Gateway.RerankModel) // Phase 12: rerank lane (D-052)
-	retriever.SetGrants(st.Grants())                   // Phase 15: grant-aware effective scopes (D-060)
-	srv.SetRetriever(retriever)
-
-	// Phase 15: grants service — group/grant management and zone-ceiling enforcement.
-	grantsSvc := grants.New(st.Grants(), st.Events(), log)
-	srv.SetGrantsService(grantsSvc)
+	// Phase 09/11: serve-only backfill sweep + retriever + grants wiring.
+	go stk.Embedder.BackfillSweep(ctx)
+	srv.SetRetriever(stk.Retriever)
+	srv.SetGrantsService(stk.GrantsSvc)
 
 	// Phase 08: reconciliation stage wired to extract stage downstream.
 	reconcileStage := reconcile.New(
-		st.Memories(),
-		st.Ops(),
-		st.Events(),
-		gw,
-		log,
+		stk.Store.Memories(),
+		stk.Store.Ops(),
+		stk.Store.Events(),
+		stk.Gateway,
+		stk.Log,
 		extractStage.Downstream(),
 	)
-	reconcileStage.SetEmbedder(embedder)
-	reconcileStage.SetScopeInvalidator(retriever.Cache()) // Phase 12: cache invalidation on commit (D-053)
+	reconcileStage.SetEmbedder(stk.Embedder)
+	reconcileStage.SetScopeInvalidator(stk.Retriever.Cache()) // Phase 12: cache invalidation (D-053)
 	reconcileStage.Start(ctx)
 
 	// Phase 14: lifecycle sweeps (decay, dedupe, rollup, re-enqueue).
 	// STOWAGE_SWEEP_FORCE=1 runs all sweeps once synchronously before serve (for smoke testing).
-	lcMgr := lifecycle.New(st, log, lifecycle.DefaultProfile(), srv.PipelineIn())
+	lcMgr := lifecycle.New(stk.Store, stk.Log, lifecycle.DefaultProfile(), srv.PipelineIn())
 	if os.Getenv("STOWAGE_SWEEP_FORCE") != "" {
-		log.Info("stowage serve: STOWAGE_SWEEP_FORCE set — running all sweeps once")
+		stk.Log.Info("stowage serve: STOWAGE_SWEEP_FORCE set — running all sweeps once")
 		lcMgr.RunForce(ctx)
 	}
 	lcMgr.Start(ctx)
@@ -736,7 +644,7 @@ func runServe(args []string) {
 		}
 	}()
 
-	log.Info("stowage serve: ready", "addr", cfg.Server.Listen)
+	stk.Log.Info("stowage serve: ready", "addr", cfg.Server.Listen)
 
 	// Wait for termination signal or server error.
 	sigCh := make(chan os.Signal, 1)
@@ -744,9 +652,9 @@ func runServe(args []string) {
 
 	select {
 	case sig := <-sigCh:
-		log.Info("stowage serve: shutting down", "signal", sig)
+		stk.Log.Info("stowage serve: shutting down", "signal", sig)
 	case err := <-servErr:
-		log.Error("stowage serve: server error", "err", err)
+		stk.Log.Error("stowage serve: server error", "err", err)
 		os.Exit(1)
 	}
 
@@ -754,19 +662,18 @@ func runServe(args []string) {
 	//  1. api.Shutdown       — stop accepting; closes the ingest pipeline channel.
 	//  2. bufStage.Drain     — buffer workers + ticker finish; closes FlushedBuffer ch.
 	//  3. extractStage.Drain — extract workers finish; closes CandidateBatch ch.
-	//  4. gw.Close           — gateway flush + release.
-	//  5. store.Close        — happens in the deferred close above.
+	//  4. reconcileStage.Drain
+	//  5. lcMgr.Stop
+	//  6. stk.Close (deferred above) — retriever.Close, gateway.Close, store.Close
 	shutdownCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	if err := srv.Shutdown(shutdownCtx); err != nil {
-		log.Error("stowage serve: shutdown", "err", err)
+		stk.Log.Error("stowage serve: shutdown", "err", err)
 	}
 	bufStage.Drain(shutdownCtx)
 	extractStage.Drain(shutdownCtx)
 	reconcileStage.Drain(shutdownCtx)
 	lcMgr.Stop()
-	if gwErr := gw.Close(shutdownCtx); gwErr != nil {
-		log.Warn("stowage serve: gateway close", "err", gwErr)
-	}
-	log.Info("stowage serve: stopped")
+	stk.Log.Info("stowage serve: stopped")
+	// stk.Close runs via defer above (gateway.Close, store.Close included).
 }

@@ -26,7 +26,11 @@ type Config struct {
 // New builds a configured *slog.Logger and *prometheus.Registry.
 // The logger is wrapped in a RedactingHandler (AC-7).
 // The registry includes Go runtime and process metrics.
+// An empty LogLevel defaults to "info".
 func New(cfg Config) (*slog.Logger, *prometheus.Registry, error) {
+	if cfg.LogLevel == "" {
+		cfg.LogLevel = "info"
+	}
 	var level slog.Level
 	if err := level.UnmarshalText([]byte(cfg.LogLevel)); err != nil {
 		return nil, nil, fmt.Errorf("telemetry: invalid log level %q: %w", cfg.LogLevel, err)
