@@ -153,6 +153,48 @@ docs/plans/README.md (numbering-reconciliation note)
 scripts/{coverage.json, smoke/phase-18.sh}
 ```
 
+## Implementation notes
+
+### Vector restore behavior (AC-4 finding)
+
+The HNSW driver does NOT perform status-based filtering; it loads all tenant
+vectors into the in-memory graph regardless of memory status. The sidecar
+retrieval filter only excludes by project/user/session scope, not by status.
+Vectors are NOT hard-deleted on supersede: the `StoredVector` row is retained
+with the same `memory_id`. Consequently, after an ActionRollback that restores
+a previously superseded memory to `status='active'`, the vector entry already
+exists and no re-embedding is required. Lexical/structured/query lane
+retrievability is restored immediately by the status change back to `active`.
+The existing `ScopeInvalidator.InvalidateScope` call after every rollback/confirm
+commit ensures the result cache does not serve stale superseded results.
+
+### Parked-duplicate dedup (Step 2b)
+
+The reconcile pipeline now performs a "Step 2b" check after the exact-dedup
+check (Step 2): `GetByContentHashStatus(ctx, scope, hash, "pending_confirmation")`.
+If a `pending_confirmation` row with the same content hash already exists, the
+incoming candidate is discarded without creating a second parked row. Instead,
+the existing row's `match_count` is bumped and a `memory.reconfirmed` event is
+emitted. This prevents duplicate park accumulation when the same unconfirmed
+content is submitted multiple times.
+
+### ActionConfirm for reject
+
+The `PATCH /v1/memories/{id}` reject path uses `ActionConfirm` with
+`Memory.Status='deleted'` rather than introducing a new action. This is valid
+because `confirmMemoryStatusSQLite/PG` performs a plain status+superseded_by_id
+UPDATE, and `status='deleted'` is a valid terminal state. The driver's
+`superseded_by_id` column is `NOT NULL DEFAULT ''`, so the raw string value
+(empty string, not SQL NULL) must be passed; `nullStr()` is intentionally not
+used there.
+
+### superseded_by_id NOT NULL constraint
+
+Both the SQLite and Postgres schemas define `superseded_by_id TEXT NOT NULL DEFAULT ''`.
+The `confirmMemoryStatusSQLite/PG` helpers were initially written using `nullStr()`
+which sends SQL NULL, violating the NOT NULL constraint. Fixed to pass the raw
+string value directly (empty string is the valid sentinel).
+
 ## Decisions filed
 
 - D-064: rollback contract — newest-event-only inversion, atomic
