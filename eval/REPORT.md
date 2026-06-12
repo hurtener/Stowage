@@ -54,6 +54,32 @@ A reader+judge over this run's retrieved context would plausibly score
 
 Results: `eval/results/longmemeval-n10-20260612T180501Z.jsonl`
 
+## n=50 confirmation (2026-06-12, run #7)
+
+| Dataset | n | answer_context_hit | p50 | p95 | Gateway |
+|---|---|---|---|---|---|
+| LongMemEval oracle (cleaned) | 50 | **0.20** (10/50) | 517 ms | 1025 ms | same as run #6 |
+
+Validity: 299 active memories from 50 conversations, zero unprocessed
+records at scoring, 160 distinct retrieved memories across 250 slots.
+15 dead letters, all transient upstream 504s (OpenRouter "operation was
+aborted") — extraction-side ones were retried by the re-enqueue sweep;
+reconcile-side ones lost their candidate batches because dead-lettered
+batches are not auto-replayed once records are marked processed
+(follow-up for Phase 20/21: replay dead letters, or defer marking to
+reconcile commit).
+
+Miss classes (40 misses): 19 are sentence-gold metric artifacts
+(preference/abstention/temporal classes — gold answers are full sentences
+that cannot substring-match on any system), 15 are on-topic
+extraction-granularity gaps (the right memories retrieved, the numeric or
+fine-grained detail abstracted away — the P1 drill-down scorer's case),
+4 weak-topical, 2 off-topic. **On the 31 substring-scoreable questions the
+hit rate is 0.32**, consistent with run #6's 0.30 — the headline 0.20 is
+diluted by question classes the metric cannot score.
+
+Results: `eval/results/longmemeval-n50-20260612T184318Z.jsonl`
+
 Caveats: the fetched dataset is the cleaned ORACLE variant (each question's
 haystack contains only its evidence sessions, ~3 per question). Published
 competitor numbers use the `longmemeval_s` haystack (~40–50 sessions of
