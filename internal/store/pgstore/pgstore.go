@@ -193,6 +193,7 @@ func (s *pgStore) Branches() store.BranchStore      { return &branchStore{s} }
 func (s *pgStore) Ops() store.OpsStore              { return &opsStore{s} }
 func (s *pgStore) Vectors() store.VectorStore       { return &vectorStore{s} }
 func (s *pgStore) Injections() store.InjectionStore { return &injectionStore{s} }
+func (s *pgStore) Grants() store.GrantStore         { return &grantStore{s} }
 
 // nullStr converts empty string to nil.
 func nullStr(s string) interface{} {

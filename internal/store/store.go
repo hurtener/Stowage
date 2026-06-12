@@ -47,6 +47,9 @@ type Store interface {
 	// Injections returns the injection (attribution) sub-store (Phase 11, D-051).
 	Injections() InjectionStore
 
+	// Grants returns the team-sharing sub-store (Phase 15, RFC §5.3, D-016).
+	Grants() GrantStore
+
 	// Vectors returns the float32-LE BLOB vector sub-store (Phase 09, D-046).
 	// Drivers implement brute-force scope-filtered scan; cosine is computed by
 	// the caller (internal/vindex). No pgvector dependency; CI stays postgres:17.
@@ -292,6 +295,68 @@ type InjectionStore interface {
 	// last_accessed_at — all in a single transaction (D-027 groundwork).
 	// Returns ErrNotFound if the injection does not exist within scope.
 	MarkWrongCitation(ctx context.Context, scope identity.Scope, injectionID string) error
+}
+
+// GrantStore manages groups, group membership, and grants (Phase 15, RFC §5.3, D-016).
+// All writes are tenant-scoped (P3); cross-tenant grants are unconstructible.
+type GrantStore interface {
+	// --- Groups ---
+
+	// CreateGroup inserts a new group. Returns ErrConflict on duplicate ID.
+	CreateGroup(ctx context.Context, scope identity.Scope, g Group) error
+
+	// GetGroup returns a group by ID within the tenant.
+	// Returns ErrNotFound when absent.
+	GetGroup(ctx context.Context, scope identity.Scope, id string) (*Group, error)
+
+	// ListGroups returns all groups for the tenant, ordered by created_at ascending.
+	ListGroups(ctx context.Context, scope identity.Scope) ([]Group, error)
+
+	// DeleteGroup removes a group and its membership rows (cascade).
+	// Returns ErrNotFound when absent.
+	DeleteGroup(ctx context.Context, scope identity.Scope, id string) error
+
+	// --- Members ---
+
+	// AddMember adds a user to a group. Duplicate inserts are silently ignored.
+	AddMember(ctx context.Context, scope identity.Scope, m GroupMember) error
+
+	// RemoveMember removes a user from a group.
+	// Returns ErrNotFound when the membership does not exist.
+	RemoveMember(ctx context.Context, scope identity.Scope, groupID, userID string) error
+
+	// ListMembers returns all members of a group, ordered by created_at ascending.
+	ListMembers(ctx context.Context, scope identity.Scope, groupID string) ([]GroupMember, error)
+
+	// --- Grants ---
+
+	// CreateGrant inserts a new grant. The TenantID on g must match scope.Tenant
+	// (cross-tenant grants are unconstructible — driver enforces via FK + check).
+	CreateGrant(ctx context.Context, scope identity.Scope, g Grant) error
+
+	// GetGrant returns a grant by ID within the tenant.
+	// Returns ErrNotFound when absent.
+	GetGrant(ctx context.Context, scope identity.Scope, id string) (*Grant, error)
+
+	// ListGrants returns all grants for the tenant (including revoked), ordered
+	// by created_at ascending.
+	ListGrants(ctx context.Context, scope identity.Scope) ([]Grant, error)
+
+	// RevokeGrant sets revoked_at on the grant; effective immediately.
+	// Returns ErrNotFound when absent.
+	RevokeGrant(ctx context.Context, scope identity.Scope, id string, revokedAt int64) error
+
+	// --- Resolution ---
+
+	// EffectiveScopes resolves the set of scopes the caller may read.
+	// The first element is always the caller's own scope (ZoneCeiling="").
+	// Subsequent elements are scopes granted via active (non-revoked) grants where
+	// the caller's user_id appears in the grant's group, capped by zone_ceiling.
+	// If callerScope.User is empty (no user in scope), only the caller's own scope
+	// is returned (no group memberships can exist without a user).
+	// The query is a single SQL join (≤1 extra query per retrieve, D-060).
+	// Cross-tenant isolation: only grants in callerScope.Tenant are considered.
+	EffectiveScopes(ctx context.Context, callerScope identity.Scope) ([]ScopedQuery, error)
 }
 
 // OpsStore manages dead letters and job markers (RFC §11, D-024).

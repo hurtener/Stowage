@@ -831,3 +831,68 @@ Memories that are genuinely stale expire within `grace + 1 sweep interval` of
 the second below-floor observation. The `valid_until` field is reused without
 schema changes. The `idx_memories_valid_until` partial index (migration 0004)
 makes expiry-candidate scans efficient.
+
+## D-059 — Contribute-mode trust: pool owner's gates; contributor ≤ agent_suggested (OQ-7)
+
+2026-06-12. When an agent holds a `contribute` grant targeting another user's
+memory pool, the contributed content commits into the pool owner's scope. The
+question (OQ-7) was how to prevent contributors from elevating trust beyond
+what the pool owner has implicitly authorised.
+
+**Options considered:**
+1. **Block all trust propagation:** contributor memories are always quarantined
+   until pool owner confirms. Correct but poor UX — every contribution requires
+   manual review.
+2. **Mirror pool-owner's trust gates:** new contributed memories enter as
+   `llm_extracted` (the pipeline default). The pool owner's existing memories
+   already have accumulated UseCount/SaveCount/TrustSource. The trust-gate
+   supersession logic (`trustGatePark = 3.0`) naturally parks any contributed
+   memory that would supersede a high-trust pool memory, requiring pool-owner
+   confirmation.
+3. **Introduce a separate TrustSource cap per record:** would require a new
+   column on the `records` table and pipeline changes.
+
+**Decision:** option 2 (pool owner's trust gates govern; contributor content
+enters as `llm_extracted`, satisfying ≤ `agent_suggested`). Contributed records
+are written into the pool owner's scope (project/user/session overridden by
+`target_scope`); the reconcile stage processes them as normal pipeline output
+with `TrustSource: "llm_extracted"`. The pool owner's accumulated trust scores
+mean any supersession of a high-trust memory is parked automatically.
+Cross-tenant contribute is unconstructible (same-tenant validation in
+`grants.Service.CheckContributeGrant`).
+
+**Consequences:** No schema changes required. Contribute mode 403s for
+uncovered callers (no active contribute grant). Covered contributors write
+into the pool; pool owner's trust gates handle the rest. Pool owner never loses
+high-trust memories to a contributor without explicit confirmation (park path).
+
+## D-060 — Granted reads resolve effective scopes per-request; zone ceilings at creation and read
+
+2026-06-12. Team sharing requires granting a group read/contribute access to a
+slice of an owner's memory pool. Two enforcement points were needed: (1) which
+scopes a caller may read, (2) which memories within those scopes are visible.
+
+**Options considered for scope resolution:**
+1. **Materialise grant membership into a flat lookup table on change:** avoids
+   per-request JOIN but adds a write path and invalidation logic.
+2. **Per-request EffectiveScopes query:** a single SQL JOIN over
+   `grants ⋈ group_members` filtered by caller's user_id and tenant. Slightly
+   more expensive than a materialized table but always live (revocation takes
+   effect on the next request without a separate invalidation step).
+
+**Decision:** option 2 (per-request, single JOIN). `GrantStore.EffectiveScopes`
+issues exactly one extra SQL query per retrieve call (measured: ≤1 extra query).
+The result cache is bypassed for multi-scope requests so revocations are always
+live. Zone ceiling is validated at grant creation (AC-2: personal/intimate
+rejected; only public/work allowed) AND enforced in Go at read time as a
+defense-in-depth predicate (`grants.ApplyCeiling`), which hard-caps at `work`
+even if a mis-stored ceiling appears in the DB (AC-1).
+
+**Zone ordering (canonical):** `public(0) < work(1) < personal(2) < intimate(3)`,
+stored in `store.ZoneOrder` (single definition, D-060).
+
+**Consequences:** Revocation is live on the very next retrieve (no stale cache
+window). EffectiveScopes resolution is a single extra JOIN per request — bench
+shows no regression on the hot path (no-grants common case fast-path: single
+element slice, identical code to pre-Phase-15). Personal/intimate memories
+never cross a grant even if mis-stored (AC-1 defense test in conformance suite).

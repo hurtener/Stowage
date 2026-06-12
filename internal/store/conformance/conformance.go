@@ -161,6 +161,8 @@ func Run(t *testing.T, factory Factory) {
 	t.Run("TenantsListing", func(t *testing.T) { testTenantsListing(t, factory) })
 	t.Run("MemoryListActiveForDecay", func(t *testing.T) { testMemoryListActiveForDecay(t, factory) })
 	t.Run("MemorySetValidUntil", func(t *testing.T) { testMemorySetValidUntil(t, factory) })
+	// Phase 15 — grants: groups, membership, grants, EffectiveScopes
+	RunGrants(t, factory)
 }
 
 // --- helpers ----------------------------------------------------------------

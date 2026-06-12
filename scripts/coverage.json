@@ -7,6 +7,7 @@
   "github.com/hurtener/stowage/internal/auth": 80,
   "github.com/hurtener/stowage/internal/bench/slo": 0,
   "github.com/hurtener/stowage/internal/config": 80,
+  "github.com/hurtener/stowage/internal/grants": 85,
   "github.com/hurtener/stowage/internal/gateway": 80,
   "github.com/hurtener/stowage/internal/gateway/bifrost": 80,
   "github.com/hurtener/stowage/internal/gateway/mock": 80,
