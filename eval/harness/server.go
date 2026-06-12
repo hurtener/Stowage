@@ -146,6 +146,19 @@ func NewTestServer(t testing.TB, tenantID string) *TestServer {
 		MaxAge:   10 * time.Minute,
 		TickBase: 10 * time.Minute,
 	}
+	// Full mode has no mock script to protect — and re-enqueued records (the
+	// recovery path for items dropped off the bounded ingest channel) only
+	// extract on a flush trigger. CI-sized 10m ticks throttled full-mode runs
+	// to ~one extraction per tick (2026-06-12 run #5); production-like ticks
+	// let the re-enqueue → re-buffer → flush cycle converge in seconds.
+	if os.Getenv("STOWAGE_EVAL_GATEWAY") != "" {
+		trig = pipeline.Triggers{
+			Count:    40,
+			Tokens:   100_000,
+			MaxAge:   15 * time.Second,
+			TickBase: 5 * time.Second,
+		}
+	}
 	bufStage := pipeline.New(st, log, trig, srv.Pipeline())
 	srv.SetStage(bufStage)
 	bufStage.Start(ctx)
