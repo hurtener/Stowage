@@ -36,7 +36,7 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("mktemp: %w", err)
 	}
-	defer os.RemoveAll(dir)
+	defer os.RemoveAll(dir) //nolint:errcheck
 
 	dbPath := dir + "/stowage.db"
 
@@ -83,7 +83,7 @@ func run() error {
 		},
 	})
 	if err != nil {
-		return fmt.Errorf("Ingest: %w", err)
+		return fmt.Errorf("ingest: %w", err)
 	}
 	fmt.Printf("ingested %d record(s): %v\n", len(ingestResp.IDs), ingestResp.IDs)
 
@@ -102,7 +102,7 @@ func run() error {
 		ResponseID: "example-response-001",
 	})
 	if err != nil {
-		return fmt.Errorf("Retrieve: %w", err)
+		return fmt.Errorf("retrieve: %w", err)
 	}
 
 	fmt.Printf("retrieve: response_id=%s items=%d degraded=%v\n",

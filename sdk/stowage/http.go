@@ -98,7 +98,7 @@ func (c *httpClient) do(ctx context.Context, method, path string, body, out any)
 	if err != nil {
 		return fmt.Errorf("sdk: %s %s: %w", method, path, err)
 	}
-	defer resp.Body.Close()
+	defer resp.Body.Close() //nolint:errcheck
 
 	if resp.StatusCode >= 400 {
 		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
@@ -135,13 +135,7 @@ func (c *httpClient) Ingest(ctx context.Context, req IngestRequest) (IngestRespo
 	}
 	apiRecords := make([]apiRecord, len(req.Records))
 	for i, r := range req.Records {
-		apiRecords[i] = apiRecord{
-			ProjectID: r.ProjectID, UserID: r.UserID, SessionID: r.SessionID,
-			BranchID: r.BranchID, Role: r.Role, Content: r.Content,
-			SourceAgent: r.SourceAgent, ResponseID: r.ResponseID,
-			Outcome: r.Outcome, OutcomeDetail: r.OutcomeDetail,
-			OccurredAt: r.OccurredAt, BufferKey: r.BufferKey,
-		}
+		apiRecords[i] = apiRecord(r)
 	}
 
 	var resp IngestResponse

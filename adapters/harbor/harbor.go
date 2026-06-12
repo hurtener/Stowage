@@ -41,6 +41,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	harborid "github.com/hurtener/Harbor/sdk/identity"
 	"log/slog"
 	"sync"
 
@@ -148,14 +149,15 @@ type ingestOut struct {
 }
 
 type retrieveIn struct {
-	Query   string `json:"query"  jsonschema:"description=Free-text memory query"`
-	Limit   int    `json:"limit"  jsonschema:"description=Max results (default 10)"`
-	Profile string `json:"profile,omitempty" jsonschema:"description=Retrieval preset: precise|balanced|broad"`
+	Query     string `json:"query"  jsonschema:"description=Free-text memory query"`
+	Limit     int    `json:"limit"  jsonschema:"description=Max results (default 10)"`
+	Profile   string `json:"profile,omitempty" jsonschema:"description=Retrieval preset: precise|balanced|broad"`
+	SessionID string `json:"session_id,omitempty" jsonschema:"description=Override the session scope (defaults to the Harbor caller's session)"`
 }
 type retrieveOut struct {
-	ResponseID string              `json:"response_id"`
+	ResponseID string               `json:"response_id"`
 	Items      []stowage.MemoryItem `json:"items"`
-	Degraded   bool                `json:"degraded"`
+	Degraded   bool                 `json:"degraded"`
 }
 
 type feedbackIn struct {
@@ -174,7 +176,7 @@ type drilldownIn struct {
 	Citation string `json:"citation,omitempty"  jsonschema:"description=Citation handle to resolve"`
 }
 type drilldownOut struct {
-	MemoryID string               `json:"memory_id"`
+	MemoryID string                  `json:"memory_id"`
 	Spans    []stowage.DrilldownSpan `json:"spans"`
 }
 
@@ -201,8 +203,36 @@ type playbookOut struct {
 
 // ---- Tool handler factories -------------------------------------------------
 
+// liftIdentity merges the Harbor request identity into per-call user/session
+// fields. Input-provided values win; otherwise the Harbor caller's identity
+// flows through so a multi-user Harbor app never collapses into one scope.
+// The Harbor runtime stamps the QUADRUPLE context key (WithRun); With stamps
+// a separate Identity key — they don't satisfy each other, so read the
+// quadruple first. Tenant comes from the SDK client's API key server-side.
+func liftIdentity(ctx context.Context, user, session string) (string, string) {
+	id, ok := func() (harborid.Identity, bool) {
+		if q, qok := harborid.QuadrupleFrom(ctx); qok {
+			return q.Identity, true
+		}
+		return harborid.From(ctx)
+	}()
+	if ok {
+		if user == "" {
+			user = id.UserID
+		}
+		if session == "" {
+			session = id.SessionID
+		}
+	}
+	return user, session
+}
+
 func ingestFn(client stowage.Client) func(context.Context, ingestIn) (ingestOut, error) {
 	return func(ctx context.Context, in ingestIn) (ingestOut, error) {
+		for i := range in.Records {
+			in.Records[i].UserID, in.Records[i].SessionID =
+				liftIdentity(ctx, in.Records[i].UserID, in.Records[i].SessionID)
+		}
 		resp, err := client.Ingest(ctx, stowage.IngestRequest{Records: in.Records})
 		if err != nil {
 			return ingestOut{}, err
@@ -217,8 +247,12 @@ func retrieveFn(client stowage.Client) func(context.Context, retrieveIn) (retrie
 		if limit == 0 {
 			limit = 10
 		}
+		// Session lifts from Harbor identity (cooldown correctness); user-level
+		// READ scoping is server-side (key tenant + grants), never client-asserted.
+		_, session := liftIdentity(ctx, "", in.SessionID)
 		resp, err := client.Retrieve(ctx, stowage.RetrieveRequest{
 			Query: in.Query, Limit: limit, Profile: in.Profile,
+			SessionID: session,
 		})
 		if err != nil {
 			return retrieveOut{}, err

@@ -13,8 +13,8 @@ package harbor_test
 
 import (
 	"context"
-	"errors"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"os"
 	"sync"
@@ -24,8 +24,8 @@ import (
 	harborevents "github.com/hurtener/Harbor/sdk/events"
 	harboridentity "github.com/hurtener/Harbor/sdk/identity"
 
-	stowage "github.com/hurtener/stowage/sdk/stowage"
 	. "github.com/hurtener/stowage/adapters/harbor"
+	stowage "github.com/hurtener/stowage/sdk/stowage"
 )
 
 // ── Fake Stowage Client ──────────────────────────────────────────────────────
@@ -35,6 +35,7 @@ type fakeClient struct {
 	mu        sync.Mutex
 	feedbacks []stowage.FeedbackRequest
 	ingests   []stowage.IngestRequest
+	retrieves []stowage.RetrieveRequest
 }
 
 func (f *fakeClient) Ingest(ctx context.Context, req stowage.IngestRequest) (stowage.IngestResponse, error) {
@@ -48,7 +49,10 @@ func (f *fakeClient) Ingest(ctx context.Context, req stowage.IngestRequest) (sto
 	return stowage.IngestResponse{IDs: ids, Enqueued: true}, nil
 }
 
-func (f *fakeClient) Retrieve(_ context.Context, _ stowage.RetrieveRequest) (stowage.RetrieveResponse, error) {
+func (f *fakeClient) Retrieve(_ context.Context, req stowage.RetrieveRequest) (stowage.RetrieveResponse, error) {
+	f.mu.Lock()
+	f.retrieves = append(f.retrieves, req)
+	f.mu.Unlock()
 	return stowage.RetrieveResponse{API: "v1", ResponseID: "fake-resp"}, nil
 }
 
@@ -188,11 +192,11 @@ func TestTools_IngestRoundTrip(t *testing.T) {
 	// Find the stowage_ingest descriptor.
 	var ingestDesc *harborevents.Event // reuse type placeholder
 	_ = ingestDesc
-	var ingestInvoke func(ctx context.Context, args json.RawMessage) (interface{ }, error)
+	var ingestInvoke func(ctx context.Context, args json.RawMessage) (interface{}, error)
 	for _, d := range descs {
 		if d.Tool.Name == "stowage_ingest" {
 			invoke := d.Invoke // copy for closure
-			ingestInvoke = func(ctx context.Context, args json.RawMessage) (interface{ }, error) {
+			ingestInvoke = func(ctx context.Context, args json.RawMessage) (interface{}, error) {
 				return invoke(ctx, args)
 			}
 			break
@@ -366,5 +370,57 @@ func TestWireOutcomes_NoResponseID(t *testing.T) {
 
 	if n != 0 {
 		t.Errorf("WireOutcomes: expected 0 Feedback calls for unregistered run, got %d", n)
+	}
+}
+
+// TestIdentityLift pins the identity-lift contract: Harbor ctx identity
+// flows into ingest records (user+session) and retrieve (session), with
+// explicit input overrides winning. Gate review found the original adapter
+// only DOCUMENTED lifting — no identity.From call existed in code.
+func TestIdentityLift(t *testing.T) {
+	client := &fakeClient{}
+	descs := Tools(client)
+	invokers := map[string]func(context.Context, json.RawMessage) (interface{}, error){}
+	for _, d := range descs {
+		invoke := d.Invoke
+		invokers[d.Tool.Name] = func(ctx context.Context, args json.RawMessage) (interface{}, error) {
+			return invoke(ctx, args)
+		}
+	}
+
+	id := harboridentity.Identity{TenantID: "t1", UserID: "u-lift", SessionID: "s-lift"}
+	ctx, err := harboridentity.WithRun(context.Background(), id, "run-lift")
+	if err != nil {
+		t.Fatalf("WithRun: %v", err)
+	}
+
+	if _, err := invokers["stowage_ingest"](ctx, json.RawMessage(`{"records":[{"role":"user","content":"x"}]}`)); err != nil {
+		t.Fatalf("ingest: %v", err)
+	}
+	client.mu.Lock()
+	rec := client.ingests[len(client.ingests)-1].Records[0]
+	client.mu.Unlock()
+	if rec.UserID != "u-lift" || rec.SessionID != "s-lift" {
+		t.Fatalf("identity not lifted into records: user=%q session=%q", rec.UserID, rec.SessionID)
+	}
+
+	if _, err := invokers["stowage_ingest"](ctx, json.RawMessage(`{"records":[{"role":"user","content":"x","session_id":"explicit"}]}`)); err != nil {
+		t.Fatalf("ingest override: %v", err)
+	}
+	client.mu.Lock()
+	rec = client.ingests[len(client.ingests)-1].Records[0]
+	client.mu.Unlock()
+	if rec.SessionID != "explicit" {
+		t.Fatalf("explicit session must win, got %q", rec.SessionID)
+	}
+
+	if _, err := invokers["stowage_retrieve"](ctx, json.RawMessage(`{"query":"q"}`)); err != nil {
+		t.Fatalf("retrieve: %v", err)
+	}
+	client.mu.Lock()
+	lastRet := client.retrieves[len(client.retrieves)-1]
+	client.mu.Unlock()
+	if lastRet.SessionID != "s-lift" {
+		t.Fatalf("retrieve session not lifted, got %q", lastRet.SessionID)
 	}
 }

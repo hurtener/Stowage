@@ -141,7 +141,7 @@ func Open(ctx context.Context, cfg *config.Config) (*Stack, error) {
 	s.Embedder.Start(ctx)
 
 	// 6. Retriever — four-lane fusion + injection recording + rerank + grants.
-	s.Retriever = retrieval.NewWithInjections(
+	s.Retriever = retrieval.NewWithInjections( //nolint:contextcheck // writer goroutine owns its lifecycle ctx (Phase 11 pattern)
 		s.Store.Memories(), s.Store.Records(), s.VIndex, s.Gateway,
 		s.Store.Injections(), s.Log,
 	)
