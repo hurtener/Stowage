@@ -78,10 +78,18 @@ func TestFullMode(t *testing.T) {
 			t.Fatalf("ingest %s: %v", id, err)
 		}
 	}
-	// Real extraction is async: wait for the pipeline to settle.
-	if err := srv.WaitForMemories(ctx, len(need)); err != nil {
-		t.Logf("warning: %v (continuing — some conversations may have yielded no memories)", err)
+	// Real extraction is async: hard settle barrier — scoring against a
+	// partially-ingested store invalidates the run (2026-06-12 lesson).
+	settle := 20 * time.Minute
+	if v := os.Getenv("STOWAGE_EVAL_SETTLE_TIMEOUT"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil && d > 0 {
+			settle = d
+		}
 	}
+	if err := srv.WaitForQuiescence(ctx, settle); err != nil {
+		t.Fatalf("pipeline did not settle — run would be invalid: %v", err)
+	}
+	t.Logf("pipeline quiescent: %d active memories from %d conversations", srv.ActiveMemoryCount(ctx), len(need))
 	time.Sleep(10 * time.Second) // embed backfill settle
 
 	results := make([]QuestionResult, 0, len(questions))

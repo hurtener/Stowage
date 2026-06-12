@@ -256,11 +256,20 @@ func (s *TestServer) PushExtractionScript(entry json.RawMessage) {
 // the eval tenant scope. Used by the runner's per-conversation fixture integrity
 // check to detect when a conversation produced zero committed memories.
 func (s *TestServer) ActiveMemoryCount(ctx context.Context) int {
-	mems, _, err := s.Store.Memories().ListByStatus(ctx, s.Scope(), "active", 500, "")
-	if err != nil {
-		return 0
+	scope := s.Scope()
+	total := 0
+	cursor := ""
+	for {
+		mems, next, err := s.Store.Memories().ListByStatus(ctx, scope, "active", 500, cursor)
+		if err != nil {
+			return total
+		}
+		total += len(mems)
+		if next == "" || len(mems) == 0 {
+			return total
+		}
+		cursor = next
 	}
-	return len(mems)
 }
 
 // WaitForMemories polls until at least minCount active memories exist in scope,
@@ -281,6 +290,50 @@ func (s *TestServer) WaitForMemories(ctx context.Context, minCount int) error {
 	}
 	mems, _, _ := s.Store.Memories().ListByStatus(ctx, scope, "active", 200, "")
 	return fmt.Errorf("timeout waiting for %d memories: have %d", minCount, len(mems))
+}
+
+// WaitForQuiescence polls until the ingest pipeline has settled: zero
+// unprocessed records AND a stable active-memory count across stablePolls
+// consecutive polls (pollInterval apart), or until the deadline elapses.
+//
+// This is the full-mode settle barrier. WaitForMemories(minCount) is NOT
+// sufficient for full mode: real extraction is async and a too-small minCount
+// lets scoring start against a near-empty store (the 2026-06-12 n=10 baseline
+// scored against ~10 memories because the harness waited for len(conversations)
+// memories and then warned-and-continued — see eval/REPORT.md).
+func (s *TestServer) WaitForQuiescence(ctx context.Context, timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	const (
+		pollInterval = 2 * time.Second
+		stablePolls  = 3
+	)
+	lastCount := -1
+	stable := 0
+	for time.Now().Before(deadline) {
+		unprocessed, err := s.Store.Records().ListUnprocessed(ctx, time.Now().UnixMilli(), 1)
+		if err == nil && len(unprocessed) == 0 {
+			n := s.ActiveMemoryCount(ctx)
+			if n == lastCount {
+				stable++
+				if stable >= stablePolls {
+					return nil
+				}
+			} else {
+				stable = 0
+				lastCount = n
+			}
+		} else {
+			stable = 0
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(pollInterval):
+		}
+	}
+	unprocessed, _ := s.Store.Records().ListUnprocessed(ctx, time.Now().UnixMilli(), 50)
+	return fmt.Errorf("pipeline not quiescent after %s: %d unprocessed records, %d active memories",
+		timeout, len(unprocessed), s.ActiveMemoryCount(ctx))
 }
 
 // DoJSON makes a JSON HTTP request and returns the status code and response body.
