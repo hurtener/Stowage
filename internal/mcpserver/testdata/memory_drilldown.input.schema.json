@@ -1,0 +1,12 @@
+{
+  "type": "object",
+  "properties": {
+    "memory_id": {
+      "type": "string"
+    },
+    "citation": {
+      "type": "string"
+    }
+  },
+  "additionalProperties": false
+}

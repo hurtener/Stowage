@@ -1,0 +1,51 @@
+{
+  "type": "object",
+  "properties": {
+    "memory_id": {
+      "type": "string"
+    },
+    "spans": {
+      "type": [
+        "null",
+        "array"
+      ],
+      "items": {
+        "type": "object",
+        "properties": {
+          "record_id": {
+            "type": "string"
+          },
+          "span_start": {
+            "type": "integer"
+          },
+          "span_end": {
+            "type": "integer"
+          },
+          "excerpt": {
+            "type": "string"
+          },
+          "occurred_at": {
+            "type": "integer"
+          },
+          "role": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "record_id",
+          "span_start",
+          "span_end",
+          "excerpt",
+          "occurred_at",
+          "role"
+        ],
+        "additionalProperties": false
+      }
+    }
+  },
+  "required": [
+    "memory_id",
+    "spans"
+  ],
+  "additionalProperties": false
+}

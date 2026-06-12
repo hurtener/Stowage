@@ -1,0 +1,45 @@
+{
+  "type": "object",
+  "properties": {
+    "query": {
+      "type": "string"
+    },
+    "limit": {
+      "type": "integer"
+    },
+    "from": {
+      "type": "integer"
+    },
+    "until": {
+      "type": "integer"
+    },
+    "kinds": {
+      "type": [
+        "null",
+        "array"
+      ],
+      "items": {
+        "type": "string"
+      }
+    },
+    "include_lanes": {
+      "type": "boolean"
+    },
+    "session_id": {
+      "type": "string"
+    },
+    "debug": {
+      "type": "boolean"
+    },
+    "response_id": {
+      "type": "string"
+    },
+    "profile": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "query"
+  ],
+  "additionalProperties": false
+}

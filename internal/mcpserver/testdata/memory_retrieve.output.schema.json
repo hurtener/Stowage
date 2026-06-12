@@ -1,0 +1,112 @@
+{
+  "type": "object",
+  "properties": {
+    "response_id": {
+      "type": "string"
+    },
+    "items": {
+      "type": [
+        "null",
+        "array"
+      ],
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "content": {
+            "type": "string"
+          },
+          "context": {
+            "type": "string"
+          },
+          "score": {
+            "type": "number"
+          },
+          "citation": {
+            "type": "string"
+          },
+          "lanes": {
+            "type": [
+              "null",
+              "array"
+            ],
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "id",
+          "kind",
+          "content",
+          "score",
+          "citation"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "support": {
+      "type": "object",
+      "properties": {
+        "strength": {
+          "type": "string"
+        },
+        "top_score": {
+          "type": "number"
+        },
+        "conflicts": {
+          "type": [
+            "null",
+            "array"
+          ],
+          "items": {
+            "type": "object",
+            "properties": {
+              "a": {
+                "type": "string"
+              },
+              "b": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "a",
+              "b"
+            ],
+            "additionalProperties": false
+          }
+        }
+      },
+      "required": [
+        "strength",
+        "top_score"
+      ],
+      "additionalProperties": false
+    },
+    "degraded": {
+      "type": "boolean"
+    },
+    "degraded_rerank": {
+      "type": "boolean"
+    },
+    "cache_hit": {
+      "type": "boolean"
+    },
+    "api": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "response_id",
+    "items",
+    "support",
+    "degraded",
+    "api"
+  ],
+  "additionalProperties": false
+}

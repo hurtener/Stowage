@@ -1,0 +1,45 @@
+{
+  "type": "object",
+  "properties": {
+    "topics": {
+      "type": [
+        "null",
+        "array"
+      ],
+      "items": {
+        "type": "object",
+        "properties": {
+          "key": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "pack": {
+            "type": "string"
+          },
+          "source": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "key",
+          "description",
+          "status",
+          "source"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "upserted": {
+      "type": "integer"
+    },
+    "deleted": {
+      "type": "string"
+    }
+  },
+  "additionalProperties": false
+}

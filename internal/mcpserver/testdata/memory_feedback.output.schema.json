@@ -1,0 +1,16 @@
+{
+  "type": "object",
+  "properties": {
+    "applied": {
+      "type": "integer"
+    },
+    "signal": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "applied",
+    "signal"
+  ],
+  "additionalProperties": false
+}

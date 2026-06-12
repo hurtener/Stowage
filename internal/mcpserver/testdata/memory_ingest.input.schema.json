@@ -1,0 +1,84 @@
+{
+  "type": "object",
+  "properties": {
+    "records": {
+      "type": [
+        "null",
+        "array"
+      ],
+      "items": {
+        "type": "object",
+        "properties": {
+          "tenant_id": {
+            "type": "string"
+          },
+          "project_id": {
+            "type": "string"
+          },
+          "user_id": {
+            "type": "string"
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "branch_id": {
+            "type": "string"
+          },
+          "role": {
+            "type": "string"
+          },
+          "content": {
+            "type": "string"
+          },
+          "source_agent": {
+            "type": "string"
+          },
+          "response_id": {
+            "type": "string"
+          },
+          "outcome": {
+            "type": "string"
+          },
+          "outcome_detail": {
+            "type": "string"
+          },
+          "occurred_at": {
+            "type": "integer"
+          },
+          "buffer_key": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "content"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "target_scope": {
+      "type": [
+        "null",
+        "object"
+      ],
+      "properties": {
+        "project_id": {
+          "type": "string"
+        },
+        "user_id": {
+          "type": "string"
+        },
+        "session_id": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "contributor_user_id": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "records"
+  ],
+  "additionalProperties": false
+}

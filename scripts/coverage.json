@@ -13,6 +13,7 @@
   "github.com/hurtener/stowage/internal/gateway/mock": 80,
   "github.com/hurtener/stowage/internal/gateway/openaicompat": 80,
   "github.com/hurtener/stowage/internal/identity": 80,
+  "github.com/hurtener/stowage/internal/mcpserver": 80,
   "github.com/hurtener/stowage/internal/lifecycle": 85,
   "github.com/hurtener/stowage/internal/pipeline": 80,
   "github.com/hurtener/stowage/internal/reconcile": 85,

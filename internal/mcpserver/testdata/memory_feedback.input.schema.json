@@ -1,0 +1,21 @@
+{
+  "type": "object",
+  "properties": {
+    "response_id": {
+      "type": "string"
+    },
+    "memory_id": {
+      "type": "string"
+    },
+    "citation": {
+      "type": "string"
+    },
+    "signal": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "signal"
+  ],
+  "additionalProperties": false
+}
