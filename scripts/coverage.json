@@ -1,4 +1,6 @@
 {
+  "github.com/hurtener/stowage/internal/boot": 80,
+  "github.com/hurtener/stowage/sdk/stowage": 85,
   "github.com/hurtener/stowage/eval/datasets/locomo": 70,
   "github.com/hurtener/stowage/eval/datasets/longmemeval": 70,
   "github.com/hurtener/stowage/eval/gain": 0,

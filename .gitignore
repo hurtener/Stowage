@@ -1,7 +1,7 @@
 # Binaries
 /bin/
 /dist/
-stowage
+/stowage
 !cmd/stowage/
 *.exe
 
@@ -35,3 +35,7 @@ node_modules/
 # Eval runtime artifacts (fetched datasets, run results)
 /eval/data/
 /eval/results/*.json
+
+# Go workspace (local dev only — never committed; see go.work for rationale)
+go.work
+go.work.sum

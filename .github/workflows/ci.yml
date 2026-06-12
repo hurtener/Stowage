@@ -43,6 +43,20 @@ jobs:
       - name: Eval CI gate (Phase 13)
         run: make eval-ci
 
+  harbor-adapter:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Build Harbor adapter
+        working-directory: adapters/harbor
+        run: go build ./...
+      - name: Test Harbor adapter
+        working-directory: adapters/harbor
+        run: go test -count=1 -timeout=60s ./...
+
   hygiene:
     runs-on: ubuntu-latest
     steps:
