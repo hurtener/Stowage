@@ -49,7 +49,9 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
-          go-version-file: go.mod
+          # Harbor v1.3.1 requires a newer toolchain than core; the adapter
+          # module's directive is authoritative for this job.
+          go-version-file: adapters/harbor/go.mod
       - name: Build Harbor adapter
         working-directory: adapters/harbor
         run: go build ./...
