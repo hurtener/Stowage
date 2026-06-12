@@ -82,8 +82,11 @@ func AnswerContextHit(contents []string, expectedAnswer string) bool {
 	return false
 }
 
-// containsToken reports whether needle occurs in haystack delimited by
-// non-alphanumeric runes (token boundaries) on both sides.
+// containsToken reports whether needle occurs in haystack delimited by token
+// boundaries on both sides. A boundary is a non-alphanumeric rune — EXCEPT
+// joining punctuation (./-:,) sandwiched between alphanumerics, which keeps
+// compound tokens like "f/2.8", "24-70mm", or "3:45" intact so a short answer
+// such as "2" cannot match inside them.
 func containsToken(haystack, needle string) bool {
 	for start := 0; ; {
 		i := strings.Index(haystack[start:], needle)
@@ -92,13 +95,28 @@ func containsToken(haystack, needle string) bool {
 		}
 		i += start
 		end := i + len(needle)
-		leftOK := i == 0 || !isAlnum(rune(haystack[i-1]))
-		rightOK := end == len(haystack) || !isAlnum(rune(haystack[end]))
-		if leftOK && rightOK {
+		if isBoundary(haystack, i-1, i-2) && isBoundary(haystack, end, end+1) {
 			return true
 		}
 		start = i + 1
 	}
+}
+
+// isBoundary reports whether the rune at index idx (with beyond one step
+// further away from the match) terminates a token. Out-of-range counts as a
+// boundary; joining punct with an alphanumeric beyond it does not.
+func isBoundary(s string, idx, beyond int) bool {
+	if idx < 0 || idx >= len(s) {
+		return true
+	}
+	r := rune(s[idx])
+	if isAlnum(r) {
+		return false
+	}
+	if strings.ContainsRune("./-:,", r) && beyond >= 0 && beyond < len(s) && isAlnum(rune(s[beyond])) {
+		return false // joining punct inside a compound token ("f/2.8", "24-70mm")
+	}
+	return true
 }
 
 func isAlnum(r rune) bool {
