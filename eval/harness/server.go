@@ -27,6 +27,7 @@ import (
 	"github.com/hurtener/stowage/internal/config"
 	"github.com/hurtener/stowage/internal/gateway"
 	"github.com/hurtener/stowage/internal/identity"
+	"github.com/hurtener/stowage/internal/lifecycle"
 	"github.com/hurtener/stowage/internal/pipeline"
 	"github.com/hurtener/stowage/internal/reconcile"
 	"github.com/hurtener/stowage/internal/retrieval"
@@ -178,6 +179,21 @@ func NewTestServer(t testing.TB, tenantID string) *TestServer {
 	reconcileStage.SetEmbedder(embedder)
 	reconcileStage.SetScopeInvalidator(retriever.Cache())
 	reconcileStage.Start(ctx)
+
+	// Phase 14 re-enqueue sweep. Ingest is fire-and-forget over a bounded
+	// channel: under burst, flush events drop and ONLY the re-enqueue sweep
+	// recovers the stalled records — production serve runs the full manager.
+	// Without it, full-mode runs stall with unprocessed records and score
+	// against a partial store (2026-06-12 finding). Mutating sweeps (decay/
+	// dedupe/rollup) are parked at long intervals so CI stays deterministic.
+	lcProfile := lifecycle.DefaultProfile()
+	lcProfile.DecayInterval = 24 * time.Hour
+	lcProfile.DedupeInterval = 24 * time.Hour
+	lcProfile.RollupInterval = 24 * time.Hour
+	lcProfile.ReenqueueInterval = 3 * time.Second
+	lcProfile.ReenqueueDeadline = 5 * time.Second
+	lcMgr := lifecycle.New(st, log, lcProfile, srv.PipelineIn())
+	lcMgr.Start(ctx)
 
 	httpSrv := httptest.NewServer(srv)
 
