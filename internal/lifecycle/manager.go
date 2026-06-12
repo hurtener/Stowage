@@ -43,10 +43,13 @@ type Profile struct {
 	DecayGraceSweeps int
 
 	// ConfirmTTL is the age at which a pending_confirmation memory is
-	// automatically promoted to active (Phase 18, D-065). Default 10m.
+	// automatically promoted to active (Phase 18, D-065). Default 72h.
+	// Per D-065: the newer memory wins after the review window lapses.
 	ConfirmTTL time.Duration
 
-	// ConfirmRepeats is reserved for future retry logic (Phase 18). Default 3.
+	// ConfirmRepeats is the match_count threshold at which a parked memory is
+	// promoted early via repeated-independent-extraction (Phase 18, D-065).
+	// Default 2.
 	ConfirmRepeats int
 }
 
@@ -68,8 +71,8 @@ func DefaultProfile() Profile {
 		RollupAge:         7 * 24 * time.Hour,
 		ReenqueueDeadline: 10 * time.Minute,
 		DecayGraceSweeps:  2,
-		ConfirmTTL:        10 * time.Minute,
-		ConfirmRepeats:    3,
+		ConfirmTTL:        72 * time.Hour, // D-065: 72 h review window
+		ConfirmRepeats:    2,              // D-065: 2 independent extractions promote early
 	}
 }
 
@@ -129,10 +132,10 @@ func New(st store.Store, log *slog.Logger, profile Profile, ingest chan<- pipeli
 		p.DecayGraceSweeps = 2
 	}
 	if p.ConfirmTTL <= 0 {
-		p.ConfirmTTL = 10 * time.Minute
+		p.ConfirmTTL = 72 * time.Hour // D-065: 72 h review window
 	}
 	if p.ConfirmRepeats <= 0 {
-		p.ConfirmRepeats = 3
+		p.ConfirmRepeats = 2 // D-065: 2 independent extractions promote early
 	}
 	return &Manager{
 		st:      st,

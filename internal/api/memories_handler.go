@@ -10,12 +10,14 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"time"
 
 	"github.com/oklog/ulid/v2"
 
 	"github.com/hurtener/stowage/internal/identity"
+	"github.com/hurtener/stowage/internal/reconcile"
 	"github.com/hurtener/stowage/internal/store"
 )
 
@@ -182,10 +184,17 @@ func (s *Server) walkSupersedesChain(ctx context.Context, scope identity.Scope, 
 // --- POST /v1/memories/{id}/rollback ----------------------------------------
 
 // handleRollbackMemory restores a memory to the state recorded in the most
-// recent D-017 prior-state event payload. Three conflict guards return 409:
-//  1. Memory is already deleted (status == 'deleted').
-//  2. No prior-state event found in the event log (limit 20).
-//  3. Prior-state payload is malformed or has no content.
+// recent D-017 prior-state event (memory.updated / memory.merged /
+// memory.superseded) for {id}. Contract: D-064.
+//
+// Conflict guards (409):
+//   - already_rolled_back: a memory.rolled_back event is newer than the newest
+//     restorable event (double-rollback guard).
+//   - invalid_prior_state: snapshot payload fails to parse or prior.ID != id.
+//   - downstream_conflict: result row has been superseded downstream (chain must
+//     unwind newest-first).
+//   - incomplete_snapshots: at least one merge sibling lacks a parseable snapshot.
+//   - no_prior_state: no restorable event found at all.
 func (s *Server) handleRollbackMemory(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	if id == "" {
@@ -197,7 +206,7 @@ func (s *Server) handleRollbackMemory(w http.ResponseWriter, r *http.Request) {
 	scope := identity.Scope{Tenant: authKey.TenantID}
 	ctx := r.Context()
 
-	// Fetch current memory.
+	// Fetch current memory state (404 guard + pre-rollback snapshot source).
 	mem, err := s.st.Memories().Get(ctx, scope, id)
 	if err != nil {
 		if isNotFound(err) {
@@ -209,40 +218,38 @@ func (s *Server) handleRollbackMemory(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Guard 1: already deleted.
-	if mem.Status == "deleted" {
-		respondJSON(w, http.StatusConflict, map[string]string{
-			"error": "already_deleted: memory is already deleted; cannot roll back",
-			"code":  "already_deleted",
-		})
-		return
-	}
-
-	// Guard 2: find the most recent event with a valid prior-state payload.
-	events, err := s.st.Events().ListBySubject(ctx, scope, id, 20)
+	// --- Scan event log (newest-first, limit 50) ----------------------------
+	events, err := s.st.Events().ListBySubject(ctx, scope, id, 50)
 	if err != nil {
 		s.log.ErrorContext(ctx, "api: rollback list events", "id", id, "err", err)
 		respondJSON(w, http.StatusInternalServerError, errBody("internal error"))
 		return
 	}
 
-	var prior *priorStatePayload
-	for _, ev := range events {
-		if ev.Payload == "" || ev.Payload == "{}" {
-			continue
-		}
-		var p priorStatePayload
-		if err := json.Unmarshal([]byte(ev.Payload), &p); err != nil {
-			continue
-		}
-		if p.ID == "" || p.Content == "" {
-			continue // not a prior-state payload
-		}
-		prior = &p
-		break
+	// Restorable event types (D-064).
+	isRestorable := func(evType string) bool {
+		return evType == "memory.updated" || evType == "memory.merged" || evType == "memory.superseded"
 	}
 
-	if prior == nil {
+	// Walk newest-first. The first restorable event wins; if a rolled_back
+	// event appears before any restorable event the call is a double-rollback.
+	var invertibleEvent *store.Event
+	for i := range events {
+		ev := &events[i]
+		if ev.Type == "memory.rolled_back" {
+			// A rollback event is newer than any restorable event → double rollback.
+			respondJSON(w, http.StatusConflict, map[string]string{
+				"error": "already_rolled_back: memory has already been rolled back",
+				"code":  "already_rolled_back",
+			})
+			return
+		}
+		if isRestorable(ev.Type) {
+			invertibleEvent = ev
+			break
+		}
+	}
+	if invertibleEvent == nil {
 		respondJSON(w, http.StatusConflict, map[string]string{
 			"error": "no_prior_state: no restorable prior state found in event log",
 			"code":  "no_prior_state",
@@ -250,108 +257,299 @@ func (s *Server) handleRollbackMemory(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Guard 3: validate prior-state content (already checked above via p.Content == "").
-	// Redundant but explicit.
-	if prior.Content == "" {
+	// --- Parse the prior-state snapshot -------------------------------------
+	prior, parseErr := parsePriorState(invertibleEvent.Payload)
+	if parseErr != nil || prior.ID != id {
 		respondJSON(w, http.StatusConflict, map[string]string{
-			"error": "invalid_prior_state: prior-state payload has no content",
+			"error": "invalid_prior_state: snapshot payload is missing or has wrong id",
 			"code":  "invalid_prior_state",
 		})
 		return
 	}
 
-	// Build the restored memory from the prior-state payload.
 	now := time.Now().UnixMilli()
-	restored := store.Memory{
-		ID:          prior.ID,
-		Kind:        prior.Kind,
-		Content:     prior.Content,
-		Context:     prior.Context,
-		Status:      prior.Status,
-		Importance:  prior.Importance,
-		Confidence:  prior.Confidence,
-		TrustSource: prior.TrustSource,
-		MatchCount:  prior.MatchCount,
-		InjectCount: prior.InjectCount,
-		UseCount:    prior.UseCount,
-		SaveCount:   prior.SaveCount,
-		FailCount:   prior.FailCount,
-		NoiseCount:  prior.NoiseCount,
-		Stability:   prior.Stability,
-		ValidFrom:   prior.ValidFrom,
-		ValidUntil:  prior.ValidUntil,
-		EpisodeID:   prior.EpisodeID,
-		PrivacyZone: prior.PrivacyZone,
-		ContentHash: prior.ContentHash,
-		CreatedAt:   prior.CreatedAt,
-		UpdatedAt:   now,
-	}
 
-	// Build provenance rows from prior-state payload.
-	var storeProvenance []store.Provenance
-	for _, p := range prior.Provenance {
-		storeProvenance = append(storeProvenance, store.Provenance{
-			ID:        ulid.Make().String(),
-			MemoryID:  restored.ID,
-			RecordID:  p.RecordID,
-			SpanStart: p.SpanStart,
-			SpanEnd:   p.SpanEnd,
-			TenantID:  scope.Tenant,
-			CreatedAt: now,
-		})
-	}
+	// --- Dispatch on event type ----------------------------------------------
 
-	// Determine targets: if the current memory has a superseder, tombstone it.
-	var targets []store.Memory
-	if mem.SupersededByID != "" {
-		superseder, err := s.st.Memories().Get(ctx, scope, mem.SupersededByID)
-		if err == nil {
-			targets = append(targets, *superseder)
-		} else if !isNotFound(err) {
-			s.log.WarnContext(ctx, "api: rollback fetch superseder", "id", mem.SupersededByID, "err", err)
-			// Non-fatal: proceed without tombstoning.
+	switch invertibleEvent.Type {
+	case "memory.updated":
+		// Restore {id} in place from snapshot. No tombstone.
+		s.commitUpdateRollback(w, ctx, scope, id, mem, prior, now)
+
+	case "memory.superseded":
+		// result row = current mem.SupersededByID.
+		// Downstream conflict guard: result row must still be active (or not
+		// superseded further) to allow rollback — chain unwinds newest-first.
+		if mem.SupersededByID == "" {
+			// No result row to tombstone; plain restore of {id}.
+			s.commitUpdateRollback(w, ctx, scope, id, mem, prior, now)
+			return
 		}
-	}
+		resultRow, fetchErr := s.st.Memories().Get(ctx, scope, mem.SupersededByID)
+		if fetchErr != nil && !isNotFound(fetchErr) {
+			s.log.ErrorContext(ctx, "api: rollback fetch result row", "id", mem.SupersededByID, "err", fetchErr)
+			respondJSON(w, http.StatusInternalServerError, errBody("internal error"))
+			return
+		}
+		if fetchErr == nil && resultRow.Status != "active" {
+			respondJSON(w, http.StatusConflict, map[string]string{
+				"error": "downstream_conflict: result row has been modified; unwind the chain newest-first",
+				"code":  "downstream_conflict",
+			})
+			return
+		}
 
+		// Fetch pre-rollback junctions for the memory.rolled_back event payload.
+		preJT, _ := s.st.Memories().GetJunctions(ctx, scope, id)
+
+		restored := priorToMemory(prior, now)
+		cs := store.CommitSet{
+			Action:     store.ActionRollback,
+			Memory:     restored,
+			Entities:   prior.Entities,
+			Keywords:   prior.Keywords,
+			Queries:    prior.Queries,
+			Provenance: buildProvenance(prior, scope, now),
+			Events: []store.Event{{
+				ID:        ulid.Make().String(),
+				Type:      "memory.rolled_back",
+				SubjectID: id,
+				Reason:    "api: rollback superseded op",
+				Payload:   reconcile.MarshalPriorState(*mem, preJT),
+				CreatedAt: now,
+			}},
+			Scope: scope,
+		}
+		if fetchErr == nil {
+			cs.Targets = []store.Memory{*resultRow}
+		}
+		s.doCommitRollback(w, ctx, scope, id, cs)
+
+	case "memory.merged":
+		// Merge rollback: find ALL siblings (same superseded_by_id), restore all
+		// atomically in ONE CommitSet. Every sibling must have a snapshot.
+		supersederID := mem.SupersededByID
+		if supersederID == "" {
+			// No superseder recorded; restore {id} alone.
+			s.commitUpdateRollback(w, ctx, scope, id, mem, prior, now)
+			return
+		}
+
+		// Downstream conflict guard on the digest.
+		digestRow, fetchErr := s.st.Memories().Get(ctx, scope, supersederID)
+		if fetchErr != nil && !isNotFound(fetchErr) {
+			s.log.ErrorContext(ctx, "api: rollback fetch digest", "id", supersederID, "err", fetchErr)
+			respondJSON(w, http.StatusInternalServerError, errBody("internal error"))
+			return
+		}
+		if fetchErr == nil && digestRow.Status != "active" {
+			respondJSON(w, http.StatusConflict, map[string]string{
+				"error": "downstream_conflict: digest has been modified; unwind newest-first",
+				"code":  "downstream_conflict",
+			})
+			return
+		}
+
+		// Discover ALL siblings (including {id}).
+		allSiblings, listErr := s.st.Memories().ListSupersededBy(ctx, scope, supersederID)
+		if listErr != nil {
+			s.log.ErrorContext(ctx, "api: rollback list siblings", "superseder", supersederID, "err", listErr)
+			respondJSON(w, http.StatusInternalServerError, errBody("internal error"))
+			return
+		}
+		// Ensure {id} is included in the sibling list (it should be, but guard).
+		if len(allSiblings) == 0 {
+			allSiblings = []store.Memory{*mem}
+		}
+
+		// Each sibling needs its own prior-state snapshot. Collect them.
+		type siblingSnap struct {
+			mem   store.Memory
+			prior *priorStatePayload
+			jt    store.MemoryJunctions
+		}
+		var snaps []siblingSnap
+		for _, sib := range allSiblings {
+			sibEvents, evErr := s.st.Events().ListBySubject(ctx, scope, sib.ID, 50)
+			if evErr != nil {
+				s.log.ErrorContext(ctx, "api: rollback list sibling events", "id", sib.ID, "err", evErr)
+				respondJSON(w, http.StatusInternalServerError, errBody("internal error"))
+				return
+			}
+			var sibPrior *priorStatePayload
+			for _, ev := range sibEvents {
+				if ev.Type == "memory.merged" {
+					p, pErr := parsePriorState(ev.Payload)
+					if pErr == nil && p.ID == sib.ID {
+						sibPrior = p
+						break
+					}
+				}
+			}
+			if sibPrior == nil {
+				respondJSON(w, http.StatusConflict, map[string]string{
+					"error": "incomplete_snapshots: sibling " + sib.ID + " lacks a parseable snapshot",
+					"code":  "incomplete_snapshots",
+				})
+				return
+			}
+			jt, _ := s.st.Memories().GetJunctions(ctx, scope, sib.ID)
+			snaps = append(snaps, siblingSnap{mem: sib, prior: sibPrior, jt: jt})
+		}
+
+		// Build CommitSet. Primary = first sibling ({id} or first in list).
+		// Extra = remaining siblings.
+		primary := snaps[0]
+		restoredPrimary := priorToMemory(primary.prior, now)
+		events := []store.Event{{
+			ID:        ulid.Make().String(),
+			Type:      "memory.rolled_back",
+			SubjectID: primary.mem.ID,
+			Reason:    "api: rollback merged op",
+			Payload:   reconcile.MarshalPriorState(primary.mem, primary.jt),
+			CreatedAt: now,
+		}}
+		var extras []store.RollbackMemory
+		for _, snap := range snaps[1:] {
+			extras = append(extras, store.RollbackMemory{
+				Memory:     priorToMemory(snap.prior, now),
+				Entities:   snap.prior.Entities,
+				Keywords:   snap.prior.Keywords,
+				Queries:    snap.prior.Queries,
+				Provenance: buildProvenance(snap.prior, scope, now),
+			})
+			events = append(events, store.Event{
+				ID:        ulid.Make().String(),
+				Type:      "memory.rolled_back",
+				SubjectID: snap.mem.ID,
+				Reason:    "api: rollback merged op (sibling)",
+				Payload:   reconcile.MarshalPriorState(snap.mem, snap.jt),
+				CreatedAt: now,
+			})
+		}
+
+		cs := store.CommitSet{
+			Action:        store.ActionRollback,
+			Memory:        restoredPrimary,
+			Entities:      primary.prior.Entities,
+			Keywords:      primary.prior.Keywords,
+			Queries:       primary.prior.Queries,
+			Provenance:    buildProvenance(primary.prior, scope, now),
+			ExtraMemories: extras,
+			Events:        events,
+			Scope:         scope,
+		}
+		if fetchErr == nil {
+			cs.Targets = []store.Memory{*digestRow}
+		}
+		s.doCommitRollback(w, ctx, scope, id, cs)
+	}
+}
+
+// commitUpdateRollback handles the simple updated-event rollback (restore in
+// place, no tombstone) and memory.superseded with no result row.
+func (s *Server) commitUpdateRollback(w http.ResponseWriter, ctx context.Context, scope identity.Scope, id string, mem *store.Memory, prior *priorStatePayload, now int64) {
+	preJT, _ := s.st.Memories().GetJunctions(ctx, scope, id)
+	restored := priorToMemory(prior, now)
 	cs := store.CommitSet{
 		Action:     store.ActionRollback,
 		Memory:     restored,
 		Entities:   prior.Entities,
 		Keywords:   prior.Keywords,
 		Queries:    prior.Queries,
-		Provenance: storeProvenance,
-		Targets:    targets,
+		Provenance: buildProvenance(prior, scope, now),
 		Events: []store.Event{{
 			ID:        ulid.Make().String(),
 			Type:      "memory.rolled_back",
 			SubjectID: id,
-			Reason:    "api: manual rollback requested",
-			Payload:   "{}",
+			Reason:    "api: rollback updated op",
+			Payload:   reconcile.MarshalPriorState(*mem, preJT),
 			CreatedAt: now,
 		}},
 		Scope: scope,
 	}
+	s.doCommitRollback(w, ctx, scope, id, cs)
+}
 
+// doCommitRollback executes the commit and writes the JSON response.
+func (s *Server) doCommitRollback(w http.ResponseWriter, ctx context.Context, scope identity.Scope, id string, cs store.CommitSet) {
 	if err := s.st.Memories().Commit(ctx, scope, cs); err != nil {
 		s.log.ErrorContext(ctx, "api: rollback commit", "id", id, "err", err)
 		respondJSON(w, http.StatusInternalServerError, errBody("internal error"))
 		return
 	}
-
-	// Invalidate the scope cache so the restored content is immediately retrievable.
 	s.invalidateScope(scope)
-
-	// Return the restored memory state.
 	mem2, err := s.st.Memories().Get(ctx, scope, id)
 	if err != nil {
-		// Commit succeeded; return minimal response.
-		respondJSON(w, http.StatusOK, map[string]interface{}{
-			"id":     id,
-			"status": restored.Status,
-		})
+		respondJSON(w, http.StatusOK, map[string]interface{}{"id": id})
 		return
 	}
 	respondJSON(w, http.StatusOK, memoryToJSON(mem2))
+}
+
+// parsePriorState parses a D-017 prior-state JSON payload.
+// Returns an error when the payload is empty, malformed, or lacks an ID.
+func parsePriorState(payload string) (*priorStatePayload, error) {
+	if payload == "" || payload == "{}" {
+		return nil, errNoPriorState
+	}
+	var p priorStatePayload
+	if err := json.Unmarshal([]byte(payload), &p); err != nil {
+		return nil, err
+	}
+	if p.ID == "" || p.Content == "" {
+		return nil, errNoPriorState
+	}
+	return &p, nil
+}
+
+// errNoPriorState is a sentinel error for parsePriorState.
+var errNoPriorState = fmt.Errorf("no prior state")
+
+// priorToMemory converts a priorStatePayload to a store.Memory for restore.
+func priorToMemory(p *priorStatePayload, updatedAt int64) store.Memory {
+	return store.Memory{
+		ID:          p.ID,
+		Kind:        p.Kind,
+		Content:     p.Content,
+		Context:     p.Context,
+		Status:      p.Status,
+		Importance:  p.Importance,
+		Confidence:  p.Confidence,
+		TrustSource: p.TrustSource,
+		MatchCount:  p.MatchCount,
+		InjectCount: p.InjectCount,
+		UseCount:    p.UseCount,
+		SaveCount:   p.SaveCount,
+		FailCount:   p.FailCount,
+		NoiseCount:  p.NoiseCount,
+		Stability:   p.Stability,
+		ValidFrom:   p.ValidFrom,
+		ValidUntil:  p.ValidUntil,
+		EpisodeID:   p.EpisodeID,
+		PrivacyZone: p.PrivacyZone,
+		ContentHash: p.ContentHash,
+		CreatedAt:   p.CreatedAt,
+		UpdatedAt:   updatedAt,
+	}
+}
+
+// buildProvenance converts provenance references in a priorStatePayload to
+// store.Provenance rows for a CommitSet.
+func buildProvenance(p *priorStatePayload, scope identity.Scope, now int64) []store.Provenance {
+	var rows []store.Provenance
+	for _, pref := range p.Provenance {
+		rows = append(rows, store.Provenance{
+			ID:        ulid.Make().String(),
+			MemoryID:  p.ID,
+			RecordID:  pref.RecordID,
+			SpanStart: pref.SpanStart,
+			SpanEnd:   pref.SpanEnd,
+			TenantID:  scope.Tenant,
+			CreatedAt: now,
+		})
+	}
+	return rows
 }
 
 // --- PATCH /v1/memories/{id} ------------------------------------------------
@@ -409,18 +607,22 @@ func (s *Server) handlePatchMemory(w http.ResponseWriter, r *http.Request) {
 
 	switch req.Action {
 	case "confirm":
-		// Promote parked → active; supersede any target listed in supersedes_id.
+		// Promote parked → active via the supersede path (D-065).
+		// The target's memory.superseded event carries MarshalPriorState so the
+		// promotion is itself reversible via D-064 rollback.
 		promoted := *mem
 		promoted.Status = "active"
 		promoted.UpdatedAt = now
 
 		var targets []store.Memory
+		var targetJT store.MemoryJunctions
 		if mem.SupersedesID != "" {
-			target, err := s.st.Memories().Get(ctx, scope, mem.SupersedesID)
-			if err == nil {
+			target, fetchErr := s.st.Memories().Get(ctx, scope, mem.SupersedesID)
+			if fetchErr == nil {
 				targets = append(targets, *target)
-			} else if !isNotFound(err) {
-				s.log.WarnContext(ctx, "api: confirm fetch target", "id", mem.SupersedesID, "err", err)
+				targetJT, _ = s.st.Memories().GetJunctions(ctx, scope, target.ID)
+			} else if !isNotFound(fetchErr) {
+				s.log.WarnContext(ctx, "api: confirm fetch target", "id", mem.SupersedesID, "err", fetchErr)
 			}
 		}
 
@@ -437,8 +639,9 @@ func (s *Server) handlePatchMemory(w http.ResponseWriter, r *http.Request) {
 				ID:        ulid.Make().String(),
 				Type:      "memory.superseded",
 				SubjectID: targets[0].ID,
-				Reason:    "api: superseded on confirm",
-				Payload:   "{}",
+				Reason:    "api: superseded on confirm (D-065)",
+				// D-065: prior-state snapshot on the target makes the promotion reversible.
+				Payload:   reconcile.MarshalPriorState(targets[0], targetJT),
 				CreatedAt: now,
 			})
 		}
@@ -459,9 +662,9 @@ func (s *Server) handlePatchMemory(w http.ResponseWriter, r *http.Request) {
 		respondJSON(w, http.StatusOK, map[string]string{"id": id, "status": "active"})
 
 	case "reject":
-		// Tombstone the parked memory using ActionConfirm with status=deleted.
+		// Expire the parked memory (status → 'expired', per D-065).
 		rejected := *mem
-		rejected.Status = "deleted"
+		rejected.Status = "expired"
 		rejected.UpdatedAt = now
 
 		cs := store.CommitSet{
@@ -482,7 +685,7 @@ func (s *Server) handlePatchMemory(w http.ResponseWriter, r *http.Request) {
 			respondJSON(w, http.StatusInternalServerError, errBody("internal error"))
 			return
 		}
-		respondJSON(w, http.StatusOK, map[string]string{"id": id, "status": "deleted"})
+		respondJSON(w, http.StatusOK, map[string]string{"id": id, "status": "expired"})
 	}
 }
 

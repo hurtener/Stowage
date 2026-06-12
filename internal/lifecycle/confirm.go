@@ -1,20 +1,20 @@
 package lifecycle
 
-// confirmSweep promotes pending_confirmation memories whose TTL has elapsed.
+// confirmSweep promotes pending_confirmation memories that are eligible.
 // This is the fifth lifecycle sweep (Phase 18, D-065), complementing the four
 // existing sweeps (decay, dedupe, rollup, re-enqueue). It follows the D-057
 // advisory-lock + per-tenant pattern established by the other sweeps.
 //
-// A parked memory is eligible when:
-//   - status = 'pending_confirmation'
-//   - now - created_at >= ConfirmTTL (default 10 minutes)
+// A parked memory is eligible when EITHER:
+//   - age >= ConfirmTTL (default 72 h) — OQ-4 lean-yes: the newer memory wins
+//     after the review window lapses; or
+//   - match_count >= ConfirmRepeats (default 2) — repeated independent extraction
+//     is confirmation.
 //
-// On promotion:
-//   1. ActionConfirm CommitSet: memory.status → 'active'
-//   2. If memory.supersedes_id is set, the target is superseded with
-//      superseded_by_id = memory.ID (standard confirm path from D-065).
-//   3. A memory.superseded event is emitted for each superseded target;
-//      a lifecycle.confirm event is emitted for the promoted memory.
+// On promotion the SUPERSEDE path is used (D-065): the target's memory.superseded
+// event carries MarshalPriorState so every auto-resolution is itself reversible
+// via D-064 rollback. Trust gates are NOT re-applied: TTL/threshold/human action
+// IS the gate's resolution.
 
 import (
 	"context"
@@ -23,6 +23,7 @@ import (
 	"github.com/oklog/ulid/v2"
 
 	"github.com/hurtener/stowage/internal/identity"
+	"github.com/hurtener/stowage/internal/reconcile"
 	"github.com/hurtener/stowage/internal/store"
 )
 
@@ -55,7 +56,7 @@ func (m *Manager) confirmTenant(ctx context.Context, tenant string) {
 	scope := identity.Scope{Tenant: tenant}
 	ttl := m.profile.ConfirmTTL
 	if ttl <= 0 {
-		ttl = 10 * time.Minute
+		ttl = 72 * time.Hour
 	}
 	batchSize := m.profile.ConfirmBatchSize
 	if batchSize <= 0 {
@@ -63,9 +64,9 @@ func (m *Manager) confirmTenant(ctx context.Context, tenant string) {
 	}
 	repeats := m.profile.ConfirmRepeats
 	if repeats <= 0 {
-		repeats = 3
+		repeats = 2
 	}
-	cutoff := time.Now().Add(-ttl).UnixMilli()
+	ttlCutoff := time.Now().Add(-ttl).UnixMilli()
 
 	processed := 0
 	cursor := ""
@@ -88,11 +89,17 @@ func (m *Manager) confirmTenant(ctx context.Context, tenant string) {
 			if processed >= batchSize {
 				break
 			}
-			// Only promote memories whose TTL has elapsed.
-			if mem.CreatedAt > cutoff {
+			// Eligible when TTL elapsed OR repeated-extraction threshold reached (D-065).
+			ttlElapsed := mem.CreatedAt <= ttlCutoff
+			repeatsReached := mem.MatchCount >= int64(repeats)
+			if !ttlElapsed && !repeatsReached {
 				continue
 			}
-			m.promoteParked(ctx, scope, mem, repeats)
+			reason := "parked TTL elapsed"
+			if repeatsReached && !ttlElapsed {
+				reason = "repeated independent extraction"
+			}
+			m.promoteParked(ctx, scope, mem, reason)
 			processed++
 		}
 
@@ -103,7 +110,10 @@ func (m *Manager) confirmTenant(ctx context.Context, tenant string) {
 	}
 }
 
-func (m *Manager) promoteParked(ctx context.Context, scope identity.Scope, mem store.Memory, _ int) {
+// promoteParked promotes a single pending_confirmation memory to active via
+// the supersede path (D-065). reason is "parked TTL elapsed" or
+// "repeated independent extraction" — it is threaded into event Reason fields.
+func (m *Manager) promoteParked(ctx context.Context, scope identity.Scope, mem store.Memory, reason string) {
 	now := time.Now().UnixMilli()
 
 	// Promote the parked memory to active.
@@ -111,21 +121,25 @@ func (m *Manager) promoteParked(ctx context.Context, scope identity.Scope, mem s
 	promoted.Status = "active"
 	promoted.UpdatedAt = now
 
-	// Look up the supersede target if any.
+	// Look up the supersede target if any. If the target is gone or not active,
+	// promote as a plain activate (no tombstone) — the target was already resolved.
 	var targets []store.Memory
+	var targetJT store.MemoryJunctions
 	if mem.SupersedesID != "" {
-		target, err := m.st.Memories().Get(ctx, scope, mem.SupersedesID)
-		if err == nil && target.Status == "active" {
+		target, fetchErr := m.st.Memories().Get(ctx, scope, mem.SupersedesID)
+		if fetchErr == nil && target.Status == "active" {
 			targets = append(targets, *target)
+			targetJT, _ = m.st.Memories().GetJunctions(ctx, scope, target.ID)
 		}
 	}
 
+	sweepReason := "confirm sweep: " + reason
 	events := []store.Event{
 		{
 			ID:        ulid.Make().String(),
 			Type:      "lifecycle.confirm",
 			SubjectID: mem.ID,
-			Reason:    "confirm sweep: parked TTL elapsed",
+			Reason:    sweepReason,
 			Payload:   "{}",
 			CreatedAt: now,
 		},
@@ -133,18 +147,20 @@ func (m *Manager) promoteParked(ctx context.Context, scope identity.Scope, mem s
 			ID:        ulid.Make().String(),
 			Type:      "memory.confirmed",
 			SubjectID: mem.ID,
-			Reason:    "confirm sweep: parked TTL elapsed",
+			Reason:    sweepReason,
 			Payload:   "{}",
 			CreatedAt: now,
 		},
 	}
+	// D-065: memory.superseded carries MarshalPriorState so the promotion is
+	// itself reversible via D-064 rollback.
 	for _, t := range targets {
 		events = append(events, store.Event{
 			ID:        ulid.Make().String(),
 			Type:      "memory.superseded",
 			SubjectID: t.ID,
-			Reason:    "confirm sweep: superseded on parked promotion",
-			Payload:   "{}",
+			Reason:    sweepReason,
+			Payload:   reconcile.MarshalPriorState(t, targetJT),
 			CreatedAt: now,
 		})
 	}
@@ -163,5 +179,5 @@ func (m *Manager) promoteParked(ctx context.Context, scope identity.Scope, mem s
 	}
 	m.log.InfoContext(ctx, "lifecycle/confirm: promoted parked memory",
 		"tenant", scope.Tenant, "memory_id", mem.ID,
-		"supersedes_id", mem.SupersedesID)
+		"supersedes_id", mem.SupersedesID, "reason", reason)
 }
