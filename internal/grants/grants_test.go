@@ -18,7 +18,6 @@ import (
 	"os"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/hurtener/stowage/internal/grants"
 	"github.com/hurtener/stowage/internal/identity"
@@ -976,6 +975,3 @@ func (e *mockEventStore) hasType(typ string) bool {
 }
 
 // nowMs returns the current time in Unix milliseconds.
-func nowMs() int64 {
-	return time.Now().UnixMilli()
-}

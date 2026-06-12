@@ -384,7 +384,7 @@ func testGrantCrossTenantUnconstructible(t *testing.T, factory Factory) {
 	gr := store.Grant{
 		ID: newID(), TenantID: tenantA, ProjectID: "p", UserID: "owner",
 		GroupID: grpB.ID, // group from tenant B
-		Access: "read", ZoneCeiling: "work",
+		Access:  "read", ZoneCeiling: "work",
 		CreatedAt: nowMs(), UpdatedAt: nowMs(),
 	}
 	// This may or may not error depending on FK constraints, but even if it

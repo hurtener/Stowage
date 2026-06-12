@@ -27,11 +27,11 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 
+	"context"
 	"github.com/hurtener/stowage/internal/api"
 	"github.com/hurtener/stowage/internal/config"
 	"github.com/hurtener/stowage/internal/grants"
 	"github.com/hurtener/stowage/internal/store"
-	"context"
 
 	_ "github.com/hurtener/stowage/internal/store/sqlitestore"
 )

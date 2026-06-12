@@ -111,7 +111,7 @@ type Retriever struct {
 	injWr       *InjectionWriter // nil when no injection store is wired
 	cache       *ResultCache
 	hotSet      *HotSet
-	rerankModel string          // cross-encoder model; empty = use gateway default
+	rerankModel string           // cross-encoder model; empty = use gateway default
 	grantsSt    store.GrantStore // nil when grants are not wired (Phase 15, D-060)
 }
 
