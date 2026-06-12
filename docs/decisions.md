@@ -759,3 +759,14 @@ not touch production behaviour.
 **Consequences:** AC-3 is satisfied deterministically; the lane filter exercises
 the real `include_lanes=true` retrieve path; no production code paths are
 special-cased.
+
+## D-056 — Coverage override: vindex/hnsw band 82 (interleaving variance, tracked)
+
+2026-06-12. hnsw coverage varies 80–86 % across identical runs: the
+per-tenant lazy-build vs incremental-upsert concurrency means goroutine
+interleaving decides which branches execute under -race. Deterministic
+branch tests were added in Phase 12 (raising the floor) but variance
+persists. Per the CLAUDE.md §11 override rule (class: scheduling-dependent
+branch execution): band set to 82. Follow-up tracked: make the concurrent
+branches deterministically reachable (injected scheduler hooks) and restore
+85 — candidates for the Wave 5/6 checkpoint audit.
