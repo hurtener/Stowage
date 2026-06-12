@@ -919,3 +919,71 @@ test ./internal/mcpserver/`.
 **Consequences:** No codegen step in CI. Schema goldens fail on any contract type
 rename (AC-6 mutation test). Dockyard dep is a normal public module dep, same
 as any other.
+
+## D-062 — Zero-config Harbor wiring = auto-registered tools + event-driven outcome capture
+
+2026-06-12. Phase 17 adds a Harbor integration adapter. D-032 originally framed
+"zero-config wiring" as ingest-on-turn via a per-turn middleware hook. Harbor
+v1.3.1 exposes no per-turn middleware hook; turns are not a first-class concept
+in the Harbor runtime.
+
+**Options considered:**
+1. **Middleware shim at the transport layer:** wrap Harbor's HTTP client to
+   intercept request/response pairs. Fragile — depends on Harbor's internal
+   transport, which is not a public API.
+2. **Tool wrappers only (no outcome capture):** register memory tools via
+   `PreRegisterTools`; skip outcome wiring. Simple but incomplete — no feedback
+   loop from task results to memory quality signals.
+3. **Tool wrappers + event-driven outcome capture (chosen):** register the seven
+   memory operations as in-proc tools (`inproc.RegisterFunc`) dropped into
+   `assemble.Options.PreRegisterTools` — ONE line for a Harbor app. Subscribe to
+   `task.completed` / `task.failed` on Harbor's `EventBus`; on each event,
+   ingest an outcome-tagged record AND apply a `use`/`fail` quality signal to
+   all retrieval response IDs the task's runs produced. Correlation is tracked
+   via an in-adapter map keyed by RunID, populated by the tool wrappers when a
+   `memory_retrieve` call returns a response_id.
+
+**Decision:** option 3. The adapter exposes two entry points:
+`Tools(client) []ToolDescriptor` (tool registration slice) and
+`WireOutcomes(ctx, bus, client)` (event subscription). Together they satisfy
+the D-032 intent: memory is automatically wired with a single `assemble.Options`
+change + one `WireOutcomes` call, with no per-call boilerplate.
+
+**Amends:** D-032's "ingest-on-turn" framing. The mechanism is event-driven,
+not turn-intercepting; the effect (automatic memory capture + outcome feedback)
+is equivalent.
+
+**Consequences:** The adapter is decoupled from Harbor internals and uses only
+`sdk/events`, `sdk/tools`, and `sdk/tools/inproc` — all public APIs. Any future
+Harbor per-turn hook can be layered on top without changing the adapter's
+public surface.
+
+## D-063 — adapters/harbor is a separate Go module
+
+2026-06-12. Harbor v1.3.1 pulls in a 67-package dependency tree (OpenTelemetry,
+gRPC, multiple cloud SDKs). Including Harbor as a dependency of the core stowage
+module would force those packages on every stowage consumer, including lightweight
+embedded deployments (D-022 Wails posture) and server-only deployments with no
+Harbor integration.
+
+**Options considered:**
+1. **Single module, optional build tags:** use `//go:build harbor` to gate the
+   adapter. Keeps one module but complicates the build matrix and doesn't
+   prevent `go mod tidy` from downloading Harbor's deps.
+2. **Separate Go module at `adapters/harbor`:** the adapter lives at
+   `github.com/hurtener/stowage/adapters/harbor` with its own `go.mod` that
+   requires Harbor v1.3.1 and pins stowage via `replace ../..` during
+   development (published version on release). Core `go.mod` never mentions
+   Harbor.
+
+**Decision:** option 2. `adapters/harbor` is a standalone module released in
+lockstep with the main module (same semver tag). CI builds and tests it in a
+separate job (`cd adapters/harbor && go build ./... && go test ./...`) using
+the replace directive; the public module proxy supplies Harbor at build time.
+The local `go.work` (gitignored) wires both modules for development convenience.
+
+**Consequences:** Core `go.mod` is provably Harbor-free (CI grep gate in AC-6).
+Consumers of just the memory server never download Harbor's dependency tree.
+The adapter module has its own test suite and coverage threshold (≥80%). New
+adapter versions can lag the core module by one release without breaking
+consumers of either.

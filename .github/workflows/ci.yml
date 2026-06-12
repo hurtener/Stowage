@@ -43,6 +43,22 @@ jobs:
       - name: Eval CI gate (Phase 13)
         run: make eval-ci
 
+  harbor-adapter:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          # Harbor v1.3.1 requires a newer toolchain than core; the adapter
+          # module's directive is authoritative for this job.
+          go-version-file: adapters/harbor/go.mod
+      - name: Build Harbor adapter
+        working-directory: adapters/harbor
+        run: go build ./...
+      - name: Test Harbor adapter
+        working-directory: adapters/harbor
+        run: go test -count=1 -timeout=60s ./...
+
   hygiene:
     runs-on: ubuntu-latest
     steps:
