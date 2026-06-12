@@ -21,6 +21,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"strconv"
 	"time"
 
 	"github.com/hurtener/stowage/eval/datasets"
@@ -30,7 +31,7 @@ import (
 type rawItem struct {
 	QuestionID       string      `json:"question_id"`
 	Question         string      `json:"question"`
-	Answer           string      `json:"answer"`
+	Answer           any         `json:"answer"` // string OR number in the real dataset
 	QuestionType     string      `json:"question_type"`
 	HaystackDates    []string    `json:"haystack_dates"`
 	HaystackSessions [][]rawTurn `json:"haystack_sessions"`
@@ -98,11 +99,29 @@ func normalize(items []rawItem) ([]datasets.Conversation, []datasets.Question, e
 			ConvID:   convID,
 			Category: item.QuestionType,
 			Expected: datasets.Expected{
-				Answer:      item.Answer,
+				Answer:      stringifyAnswer(item.Answer),
 				EvidenceIDs: item.EvidenceList,
 			},
 		}
 		qs = append(qs, q)
 	}
 	return convs, qs, nil
+}
+
+// stringifyAnswer renders the dataset's answer field (string or number in
+// the wild — found on first real-dataset contact) as a string.
+func stringifyAnswer(v any) string {
+	switch x := v.(type) {
+	case string:
+		return x
+	case float64:
+		if x == float64(int64(x)) {
+			return strconv.FormatInt(int64(x), 10)
+		}
+		return strconv.FormatFloat(x, 'f', -1, 64)
+	case nil:
+		return ""
+	default:
+		return fmt.Sprintf("%v", x)
+	}
 }

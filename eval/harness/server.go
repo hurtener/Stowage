@@ -16,6 +16,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"testing"
 	"time"
 
@@ -86,6 +87,20 @@ func NewTestServer(t testing.TB, tenantID string) *TestServer {
 	cfg.Store.DSN = dbPath
 	cfg.Gateway.Driver = "mock"
 	cfg.Gateway.EmbedDims = 4
+	// Full-mode override (build tag fullmode / operator runs): a real gateway
+	// driver + models via env. ci mode never sets these.
+	if d := os.Getenv("STOWAGE_EVAL_GATEWAY"); d != "" {
+		cfg.Gateway.Driver = d
+		cfg.Gateway.BaseURL = os.Getenv("STOWAGE_EVAL_BASE_URL")
+		cfg.Gateway.APIKey = os.Getenv("STOWAGE_EVAL_API_KEY_REF") // env.VAR form
+		cfg.Gateway.Model = os.Getenv("STOWAGE_EVAL_MODEL")
+		cfg.Gateway.EmbedModel = os.Getenv("STOWAGE_EVAL_EMBED_MODEL")
+		if v := os.Getenv("STOWAGE_EVAL_EMBED_DIMS"); v != "" {
+			if n, err := strconv.Atoi(v); err == nil {
+				cfg.Gateway.EmbedDims = n
+			}
+		}
+	}
 	cfg.Server.Listen = ":0"
 	cfg.Profile = "assistant"
 

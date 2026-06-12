@@ -12,11 +12,12 @@ if ! diff -q AGENTS.md CLAUDE.md >/dev/null; then
   fail=1
 fi
 
-# 2. Forbidden names (D-001, D-003). Patterns are assembled from fragments so
+# 2. Forbidden names (D-001, D-003). eval/data/ (gitignored third-party
+#    datasets) is excluded — the constraint governs repo content. Patterns are assembled from fragments so
 #    this script itself never trips the check.
 p1="$(printf 'ice%s' 'berg')"
 p2="$(printf 'yes%s' 'mem')"
-if grep -riIl --exclude-dir=.git -e "$p1" -e "$p2" . | grep -v '^\./scripts/drift-audit.sh$' >/tmp/stowage-forbidden.txt; then
+if grep -riIl --exclude-dir=.git --exclude-dir=data -e "$p1" -e "$p2" . | grep -v '^\./scripts/drift-audit.sh$' >/tmp/stowage-forbidden.txt; then
   echo "DRIFT: forbidden predecessor names found in:"
   cat /tmp/stowage-forbidden.txt
   fail=1
