@@ -914,25 +914,36 @@ func TestExtract_MarksRecordsProcessed(t *testing.T) {
 	okID := makeRecord(t, st, tenant, "The user prefers Go for systems programming.")
 	failID := makeRecord(t, st, tenant, "The user lives in Madrid.")
 
-	mock.PushScript(mockdrv.Script{JSON: candidateJSON(okID, "User prefers Go.")})
-	mock.PushScript(mockdrv.Script{Err: errors.New("simulated gateway failure")})
-
 	stage, in := newExtractStageAndChan(st, gw, svc, "assistant")
 	stage.Start(context.Background())
 
+	// Sequential flushes: the stage runs multiple workers and the mock script
+	// queue is FIFO, so concurrent flushes would race for the scripts.
+	mock.PushScript(mockdrv.Script{JSON: candidateJSON(okID, "User prefers Go.")})
 	in <- makeFlushedBuffer(tenant, []string{okID}, false)
+	collectBatches(t, stage.Downstream(), 1, 2*time.Second)
+	waitProcessed := func(id string, want bool) bool {
+		deadline := time.Now().Add(3 * time.Second)
+		for time.Now().Before(deadline) {
+			if up := unprocessed(); up[id] != want {
+				return true
+			}
+			time.Sleep(20 * time.Millisecond)
+		}
+		return false
+	}
+	if !waitProcessed(okID, false) {
+		t.Errorf("delivered extraction: record %s still unprocessed — re-enqueue would loop forever", okID)
+	}
+
+	mock.PushScript(mockdrv.Script{Err: errors.New("simulated gateway failure")})
 	in <- makeFlushedBuffer(tenant, []string{failID}, false)
 	close(in)
 	drainCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	stage.Drain(drainCtx)
-	collectBatches(t, stage.Downstream(), 1, 2*time.Second)
 
-	up := unprocessed()
-	if up[okID] {
-		t.Errorf("delivered extraction: record %s still unprocessed — re-enqueue would loop forever", okID)
-	}
-	if !up[failID] {
+	if up := unprocessed(); !up[failID] {
 		t.Errorf("failed extraction: record %s marked processed — re-enqueue can no longer retry it", failID)
 	}
 }
