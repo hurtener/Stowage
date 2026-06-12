@@ -5,6 +5,7 @@
   `clients/python`, `examples/embedded`
 - **RFC sections:** §9.3, §10, §2, D-019/D-022/D-032
 - **Depends on phases:** 16
+- **Informing briefs:** 02 (SDK-surface sprawl caution), 03 (fire-and-forget client ergonomics), 06 (embedded/offline posture)
 - **Grounding (verified 2026-06-12):** Harbor `github.com/hurtener/Harbor`
   v1.3.1 PUBLIC. Seams: `assemble.Options.PreRegisterTools
   []tools.ToolDescriptor`; `inproc.RegisterFunc[I,O](cat, name, fn, opts...)`;

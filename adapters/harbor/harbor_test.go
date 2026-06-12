@@ -53,7 +53,7 @@ func (f *fakeClient) Retrieve(_ context.Context, req stowage.RetrieveRequest) (s
 	f.mu.Lock()
 	f.retrieves = append(f.retrieves, req)
 	f.mu.Unlock()
-	return stowage.RetrieveResponse{API: "v1", ResponseID: "fake-resp"}, nil
+	return stowage.RetrieveResponse{API: "v1", ResponseID: "fake-resp", Items: []stowage.MemoryItem{}}, nil
 }
 
 func (f *fakeClient) Drilldown(_ context.Context, _ stowage.DrilldownRequest) (stowage.DrilldownResponse, error) {
