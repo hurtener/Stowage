@@ -7,6 +7,7 @@ package mcpserver
 
 import (
 	"context"
+	"github.com/hurtener/stowage/internal/auth"
 	"io"
 	"log/slog"
 	"net/http"
@@ -1010,11 +1011,10 @@ func TestHandlerFeedback_CitationWrongSignal_Applied(t *testing.T) {
 	// for a non-existent citation. This line simply exercises the branch.
 }
 
-// ── BearerMiddleware ─────────────────────────────────────────────────────────
+// ── KeyringMiddleware ─────────────────────────────────────────────────────────
 
-func TestBearerMiddleware_NoAuthHeader(t *testing.T) {
-	keys := []string{"sk-test-abc"}
-	handler := BearerMiddleware(keys, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+func TestKeyringMiddleware_NoAuthHeader(t *testing.T) {
+	handler := KeyringMiddleware(auth.NewMemKeyring(), http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
 
@@ -1027,9 +1027,8 @@ func TestBearerMiddleware_NoAuthHeader(t *testing.T) {
 	}
 }
 
-func TestBearerMiddleware_NonBearerPrefix(t *testing.T) {
-	keys := []string{"sk-test-abc"}
-	handler := BearerMiddleware(keys, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+func TestKeyringMiddleware_NonBearerPrefix(t *testing.T) {
+	handler := KeyringMiddleware(auth.NewMemKeyring(), http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
 
@@ -1043,9 +1042,8 @@ func TestBearerMiddleware_NonBearerPrefix(t *testing.T) {
 	}
 }
 
-func TestBearerMiddleware_WrongKey(t *testing.T) {
-	keys := []string{"sk-test-abc"}
-	handler := BearerMiddleware(keys, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+func TestKeyringMiddleware_WrongKey(t *testing.T) {
+	handler := KeyringMiddleware(auth.NewMemKeyring(), http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
 
@@ -1059,30 +1057,37 @@ func TestBearerMiddleware_WrongKey(t *testing.T) {
 	}
 }
 
-func TestBearerMiddleware_ValidKey_CallsNext(t *testing.T) {
-	keys := []string{"sk-test-abc", "sk-test-xyz"}
+func TestKeyringMiddleware_ValidKey_CallsNext(t *testing.T) {
+	kr := auth.NewMemKeyring()
+	key, plaintext, err := auth.Generate("t-mw", auth.RoleAgent)
+	if err != nil {
+		t.Fatalf("generate: %v", err)
+	}
+	if err := kr.Insert(key); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
 	var capturedScope identity.Scope
-	handler := BearerMiddleware(keys, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := KeyringMiddleware(kr, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		capturedScope, _ = identity.FromContext(r.Context())
 		w.WriteHeader(http.StatusOK)
 	}))
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
-	req.Header.Set("Authorization", "Bearer sk-test-abc")
+	req.Header.Set("Authorization", "Bearer "+plaintext)
 	rr := httptest.NewRecorder()
 	handler.ServeHTTP(rr, req)
 
 	if rr.Code != http.StatusOK {
 		t.Errorf("expected 200, got %d", rr.Code)
 	}
-	if capturedScope.Tenant == "" {
-		t.Error("expected scope to be injected into context")
+	if capturedScope.Tenant != "t-mw" {
+		t.Errorf("scope tenant must come from the KEY, got %q", capturedScope.Tenant)
 	}
 }
 
-func TestBearerMiddleware_EmptyKeys(t *testing.T) {
+func TestKeyringMiddleware_EmptyKeys(t *testing.T) {
 	// No valid keys → any bearer token is rejected.
-	handler := BearerMiddleware(nil, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	handler := KeyringMiddleware(auth.NewMemKeyring(), http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
 

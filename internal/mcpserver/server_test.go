@@ -3,12 +3,16 @@ package mcpserver_test
 import (
 	"context"
 	"log/slog"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/hurtener/dockyard/runtime/server"
 
+	"github.com/hurtener/stowage/internal/auth"
 	"github.com/hurtener/stowage/internal/identity"
 	"github.com/hurtener/stowage/internal/mcpserver"
 )
@@ -130,11 +134,37 @@ func TestStdioScopeFn_DefaultTenant(t *testing.T) {
 	}
 }
 
-func TestBearerMiddleware_ValidKey(t *testing.T) {
-	// Minimal smoke: BearerMiddleware exists and the returned handler is non-nil.
-	handler := mcpserver.BearerMiddleware([]string{"sk-test-123"}, nil)
-	if handler == nil {
-		t.Fatal("BearerMiddleware returned nil handler")
+func TestKeyringMiddleware_ValidKey(t *testing.T) {
+	kr := auth.NewMemKeyring()
+	key, plaintext, err := auth.Generate("tenant-mcp", auth.RoleAgent)
+	if err != nil {
+		t.Fatalf("generate: %v", err)
+	}
+	if err := kr.Insert(key); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+	var gotTenant string
+	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		sc, _ := identity.FromContext(r.Context())
+		gotTenant = sc.Tenant
+		w.WriteHeader(200)
+	})
+	handler := mcpserver.KeyringMiddleware(kr, inner)
+	req := httptest.NewRequest("POST", "/", nil)
+	req.Header.Set("Authorization", "Bearer "+plaintext)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != 200 || gotTenant != "tenant-mcp" {
+		t.Fatalf("want 200 + key tenant, got %d %q", rec.Code, gotTenant)
+	}
+	// Revoked key → 403 (runtime rotation, D-030).
+	if err := kr.Revoke(key.ID, time.Now()); err != nil {
+		t.Fatalf("revoke: %v", err)
+	}
+	rec2 := httptest.NewRecorder()
+	handler.ServeHTTP(rec2, req)
+	if rec2.Code != 403 {
+		t.Fatalf("revoked key: want 403, got %d", rec2.Code)
 	}
 }
 

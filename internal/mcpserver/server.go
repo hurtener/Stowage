@@ -2,6 +2,7 @@ package mcpserver
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -9,6 +10,7 @@ import (
 	"github.com/hurtener/dockyard/runtime/server"
 	"github.com/hurtener/dockyard/runtime/tool"
 
+	"github.com/hurtener/stowage/internal/auth"
 	"github.com/hurtener/stowage/internal/identity"
 	"github.com/hurtener/stowage/internal/pipeline"
 	"github.com/hurtener/stowage/internal/retrieval"
@@ -102,36 +104,38 @@ func New(info server.Info, svc *Services) (*server.Server, error) {
 	return srv, nil
 }
 
-// BearerMiddleware is an HTTP middleware that validates a static bearer token
-// and injects the tenant ID from the first matched key into the context via
-// identity.WithScope. keys is a slice of raw API key strings. Requests without
-// a valid Authorization: Bearer <key> header are rejected 401/403.
-//
-// This is the HTTP-transport auth guard (AC-5). Stdio mode uses StdioScopeFn
-// instead — bearer auth is irrelevant for a single-user local pipe.
-func BearerMiddleware(keys []string, next http.Handler) http.Handler {
-	keySet := make(map[string]bool, len(keys))
-	for _, k := range keys {
-		keySet[k] = true
-	}
+// KeyringMiddleware authenticates HTTP MCP requests against the store
+// keyring (auth.Verify — constant-time, runtime-rotatable keys, D-030) and
+// injects the key's tenant scope for CtxScopeFn.
+func KeyringMiddleware(kr auth.Keyring, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		auth := r.Header.Get("Authorization")
-		if auth == "" {
-			http.Error(w, "authorization required", http.StatusUnauthorized)
-			return
-		}
+		hdr := r.Header.Get("Authorization")
 		const prefix = "Bearer "
-		if !strings.HasPrefix(auth, prefix) {
+		if !strings.HasPrefix(hdr, prefix) {
 			http.Error(w, "authorization required", http.StatusUnauthorized)
 			return
 		}
-		raw := strings.TrimPrefix(auth, prefix)
-		if !keySet[raw] {
+		key, err := auth.Verify(kr, strings.TrimPrefix(hdr, prefix))
+		if err != nil {
 			http.Error(w, "forbidden", http.StatusForbidden)
 			return
 		}
-		// Inject a tenant-only scope so the ScopeFn can read it.
-		ctx := identity.WithScope(r.Context(), identity.Scope{Tenant: "default"})
+		// The KEY's tenant is the request tenant (D-030/P3) — never a
+		// config constant: the original static-list middleware hardcoded
+		// tenant "default" for every caller (multi-tenant hole, found in
+		// gate review) and kept plaintext keys in config.
+		ctx := identity.WithScope(r.Context(), identity.Scope{Tenant: key.TenantID})
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
+}
+
+// CtxScopeFn resolves the request scope injected by KeyringMiddleware.
+func CtxScopeFn() ScopeFn {
+	return func(ctx context.Context) (identity.Scope, error) {
+		sc, err := identity.FromContext(ctx)
+		if err != nil || sc.Tenant == "" {
+			return identity.Scope{}, fmt.Errorf("mcpserver: no authenticated scope in context")
+		}
+		return sc, nil
+	}
 }

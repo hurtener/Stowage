@@ -368,7 +368,7 @@ Flags:
 // Transport selection (AC-4 / D-020):
 //   - Default (no --http): stdio — ScopeFn is fixed to cfg.MCP.StdioTenant.
 //   - --http <addr>: streamable-HTTP — ScopeFn reads the scope from context
-//     (wired by BearerMiddleware in HTTP mode).
+//     (wired by KeyringMiddleware in HTTP mode — store-backed keys, D-030).
 func runMCP(args []string) {
 	var (
 		configPath string
@@ -471,7 +471,7 @@ func runMCP(args []string) {
 	// ScopeFn: stdio uses a fixed tenant; HTTP mode resolves from context.
 	var scopeFn mcpserver.ScopeFn
 	if httpAddr != "" {
-		scopeFn = mcpserver.StdioScopeFn(cfg.MCP.StdioTenant) // HTTP: real auth wired via BearerMiddleware
+		scopeFn = mcpserver.CtxScopeFn() // tenant from the authenticated key (KeyringMiddleware)
 	} else {
 		scopeFn = mcpserver.StdioScopeFn(cfg.MCP.StdioTenant)
 	}
@@ -505,7 +505,7 @@ func runMCP(args []string) {
 		}
 		httpSrv := &http.Server{
 			Addr:              httpAddr,
-			Handler:           handler,
+			Handler:           mcpserver.KeyringMiddleware(st.Keys(), handler),
 			ReadHeaderTimeout: 10 * time.Second,
 		}
 		go func() {
