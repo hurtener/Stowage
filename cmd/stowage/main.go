@@ -23,6 +23,7 @@ import (
 	"github.com/hurtener/stowage/internal/api"
 	"github.com/hurtener/stowage/internal/config"
 	"github.com/hurtener/stowage/internal/gateway"
+	"github.com/hurtener/stowage/internal/grants"
 	"github.com/hurtener/stowage/internal/lifecycle"
 	"github.com/hurtener/stowage/internal/pipeline"
 	"github.com/hurtener/stowage/internal/reconcile"
@@ -496,7 +497,12 @@ func runServe(args []string) {
 	// (async, zero added latency — P2 fire-and-forget via InjectionWriter, D-051).
 	retriever := retrieval.NewWithInjections(st.Memories(), st.Records(), vi, gw, st.Injections(), log)
 	retriever.WithRerankModel(cfg.Gateway.RerankModel) // Phase 12: rerank lane (D-052)
+	retriever.SetGrants(st.Grants())                   // Phase 15: grant-aware effective scopes (D-060)
 	srv.SetRetriever(retriever)
+
+	// Phase 15: grants service — group/grant management and zone-ceiling enforcement.
+	grantsSvc := grants.New(st.Grants(), st.Events(), log)
+	srv.SetGrantsService(grantsSvc)
 
 	// Phase 08: reconciliation stage wired to extract stage downstream.
 	reconcileStage := reconcile.New(

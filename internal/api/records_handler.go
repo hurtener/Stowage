@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 
+	"github.com/hurtener/stowage/internal/grants"
 	"github.com/hurtener/stowage/internal/identity"
 	"github.com/hurtener/stowage/internal/pipeline"
 	"github.com/hurtener/stowage/internal/records"
@@ -38,8 +39,25 @@ type recordInput struct {
 	BufferKey string `json:"buffer_key"`
 }
 
+// targetScopeInput is the optional pool-owner target scope for contribute-mode
+// ingest (Phase 15, D-059). When set, the records are committed into the
+// target user's scope, subject to an active contribute grant covering the caller.
+type targetScopeInput struct {
+	ProjectID string `json:"project_id"`
+	UserID    string `json:"user_id"`
+	SessionID string `json:"session_id"`
+}
+
 type ingestRequest struct {
 	Records []recordInput `json:"records"`
+
+	// TargetScope and ContributorUserID are the Phase 15 contribute-mode fields
+	// (D-059). When TargetScope is set the records are written into the target
+	// user's scope; the caller must have an active contribute grant in a group
+	// they belong to (identified by ContributorUserID). Without a covering grant
+	// the request is rejected 403.
+	TargetScope       *targetScopeInput `json:"target_scope,omitempty"`
+	ContributorUserID string            `json:"contributor_user_id,omitempty"`
 }
 
 type ingestResponse struct {
@@ -81,6 +99,40 @@ func (s *Server) handleIngest(w http.ResponseWriter, r *http.Request) {
 
 	authKey := keyFromContext(r.Context())
 
+	// Contribute-mode (Phase 15, D-059): when target_scope is set the records
+	// are committed into the pool owner's scope. Caller must hold an active
+	// contribute grant (403 otherwise). Cross-tenant contribute is never allowed.
+	targetTenantID := authKey.TenantID // always the auth key's tenant
+	targetProjectID := ""
+	targetUserID := ""
+	targetSessionID := ""
+	contributeMode := req.TargetScope != nil
+
+	if contributeMode {
+		if s.grantsSvc == nil {
+			respondJSON(w, http.StatusServiceUnavailable, errBody("grants service not available"))
+			return
+		}
+		targetProjectID = req.TargetScope.ProjectID
+		targetUserID = req.TargetScope.UserID
+		targetSessionID = req.TargetScope.SessionID
+		callerScope := identity.Scope{Tenant: authKey.TenantID}
+		targetScope := identity.Scope{
+			Tenant:  targetTenantID,
+			Project: targetProjectID,
+			User:    targetUserID,
+			Session: targetSessionID,
+		}
+		if err := s.grantsSvc.CheckContributeGrant(r.Context(), callerScope, targetScope, req.ContributorUserID); err != nil {
+			if errors.Is(err, grants.ErrNotCovered) || errors.Is(err, grants.ErrCrossTenantGrant) {
+				respondJSON(w, http.StatusForbidden, errBody("no active contribute grant for target scope"))
+				return
+			}
+			respondJSON(w, http.StatusInternalServerError, errBody("contribute check: "+err.Error()))
+			return
+		}
+	}
+
 	// Stamp and validate all items up-front so we don't partially commit.
 	// stampedItem preserves the per-record buffer_key routing hint (Phase 06).
 	type stampedItem struct {
@@ -94,11 +146,27 @@ func (s *Server) handleIngest(w http.ResponseWriter, r *http.Request) {
 				errBody(fmt.Sprintf("item[%d]: tenant scope forgery", i)))
 			return
 		}
+		// In contribute mode, scope fields are overridden with the target scope.
+		// The pool-owner's scope is used so memories land in the right tenant/project/user pool.
+		recProjectID := item.ProjectID
+		recUserID := item.UserID
+		recSessionID := item.SessionID
+		if contributeMode {
+			if targetProjectID != "" {
+				recProjectID = targetProjectID
+			}
+			if targetUserID != "" {
+				recUserID = targetUserID
+			}
+			if targetSessionID != "" {
+				recSessionID = targetSessionID
+			}
+		}
 		rec, err := records.New(records.Input{
 			TenantID:      authKey.TenantID,
-			ProjectID:     item.ProjectID,
-			UserID:        item.UserID,
-			SessionID:     item.SessionID,
+			ProjectID:     recProjectID,
+			UserID:        recUserID,
+			SessionID:     recSessionID,
 			BranchID:      item.BranchID,
 			Role:          item.Role,
 			Content:       item.Content,

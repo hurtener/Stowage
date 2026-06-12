@@ -249,6 +249,62 @@ type Injection struct {
 	CreatedAt  int64  // unix millis
 }
 
+// ScopedQuery pairs an identity.Scope with an optional zone-ceiling for
+// grant-aware reads (Phase 15, D-060). ZoneCeiling is "" for the caller's own
+// scope (no restriction); "public" or "work" for granted access.
+// Zone ordering: public < work < personal < intimate (constant: ZoneOrder).
+type ScopedQuery struct {
+	Scope       identity.Scope
+	ZoneCeiling string // "" | "public" | "work"
+}
+
+// ZoneOrder maps privacy_zone values to ordinal integers for ceiling comparison.
+// public < work < personal < intimate (documented here once, per D-060).
+var ZoneOrder = map[string]int{
+	"public":   0,
+	"work":     1,
+	"personal": 2,
+	"intimate": 3,
+}
+
+// Group is a named set of users within a tenant (RFC §5.3, D-016).
+type Group struct {
+	ID        string
+	TenantID  string
+	Name      string
+	CreatedAt int64
+}
+
+// GroupMember links a user to a group within a tenant.
+type GroupMember struct {
+	ID        string
+	GroupID   string
+	UserID    string
+	TenantID  string
+	CreatedAt int64
+}
+
+// Grant gives a named group read or contribute access to a slice of an owner
+// scope, capped by a privacy zone ceiling (RFC §5.3, D-016, Phase 15).
+// Only "public" and "work" are valid ZoneCeiling values; "personal" and
+// "intimate" are rejected at creation and never grantable.
+type Grant struct {
+	ID               string
+	TenantID         string
+	ProjectID        string // owner's project
+	UserID           string // owner's user
+	SessionID        string // owner's session (usually "")
+	GroupID          string
+	Access           string // "read" | "contribute"
+	TopicFilter      string // "" = all topics
+	KindFilter       string // "" = all kinds
+	ZoneCeiling      string // "public" | "work"
+	RedactionProfile string // stub; applied in a later phase
+	RevokedAt        int64  // unix millis; 0 = active
+	CreatedAt        int64
+	UpdatedAt        int64
+}
+
 // CommitSet is the transactional unit for one reconciliation outcome.
 // All writes (memory row, junction rows, provenance rows, link rows, event rows)
 // happen in a single DB transaction — the D-017/D-045 reversibility contract.

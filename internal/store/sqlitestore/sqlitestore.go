@@ -462,6 +462,7 @@ func (s *sqliteStore) Branches() store.BranchStore      { return &branchStore{s}
 func (s *sqliteStore) Ops() store.OpsStore              { return &opsStore{s} }
 func (s *sqliteStore) Vectors() store.VectorStore       { return &vectorStore{s} }
 func (s *sqliteStore) Injections() store.InjectionStore { return &injectionStore{s} }
+func (s *sqliteStore) Grants() store.GrantStore         { return &grantStore{s} }
 
 // nullStr converts empty string to nil (for nullable TEXT columns).
 func nullStr(s string) interface{} {

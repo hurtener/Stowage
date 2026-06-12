@@ -111,7 +111,8 @@ type Retriever struct {
 	injWr       *InjectionWriter // nil when no injection store is wired
 	cache       *ResultCache
 	hotSet      *HotSet
-	rerankModel string // cross-encoder model; empty = use gateway default
+	rerankModel string           // cross-encoder model; empty = use gateway default
+	grantsSt    store.GrantStore // nil when grants are not wired (Phase 15, D-060)
 }
 
 // New creates a Retriever wired to the given dependencies.
@@ -161,6 +162,11 @@ func (r *Retriever) Close() {
 // Retrieve runs the four lanes, fuses with RRF, applies utility scoring, and
 // returns the top-limit memories. The scope is enforced in every lane's store
 // call. Injection rows are recorded asynchronously after the limit trim (D-051).
+//
+// Phase 15: if a grants store is wired, effective scopes are resolved at the
+// start (one extra SQL query; D-060). For multi-scope requests (grants active),
+// lanes run across all effective scopes and the result cache is bypassed.
+// Zone-ceiling filtering is applied in Go as the defense-in-depth predicate (AC-1).
 func (r *Retriever) Retrieve(ctx context.Context, scope identity.Scope, req Request) (*Response, error) {
 	// Resolve profile presets for laneK and scoringK.
 	prof, ok := profileByName(req.Profile)
@@ -188,11 +194,18 @@ func (r *Retriever) Retrieve(ctx context.Context, scope identity.Scope, req Requ
 	tokens := Tokenize(req.Query)
 	querySig := QuerySig(tokens)
 
+	// Phase 15: resolve effective scopes (≤1 extra query; D-060).
+	// For the common case (no grants wired, or only own scope), this is a no-op
+	// equivalent — effectiveScopes has exactly one element.
+	effectiveScopes := r.resolveEffectiveScopes(ctx, store.ScopedQuery{Scope: scope})
+	multiScope := len(effectiveScopes) > 1
+
 	// Result-cache check (Phase 12).
 	// Skipped for debug:true (breakdowns are not cached — they're one-time diagnostic
 	// data and must be freshly computed). Session ID is part of the key because it
 	// affects the utility score (write-echo cooldown).
-	if !req.Debug {
+	// Multi-scope requests are NOT cached: revocation must be effective immediately (D-060).
+	if !req.Debug && !multiScope {
 		if cachedItems, cachedSup, ok := r.cache.Get(scope, querySig, req.Profile, req.SessionID, req.Window.From, req.Window.Until); ok {
 			return &Response{
 				ResponseID: responseID,
@@ -225,35 +238,41 @@ func (r *Retriever) Retrieve(ctx context.Context, scope identity.Scope, req Requ
 	}
 
 	// Run all non-vector lanes concurrently plus the vector lane.
+	// Phase 15: loops over effectiveScopes (≥1 element). For the common case
+	// (single own scope), this is identical to the pre-Phase-15 path.
 	eg, egCtx := errgroup.WithContext(ctx)
 
 	var lexicalIDs, queryIDs, structuredIDs, vectorIDs []string
 
 	eg.Go(func() error {
-		hits, err := r.mem.LexicalSearch(egCtx, scope, req.Query, laneK, req.Window, req.Kinds)
-		if err != nil {
-			r.log.WarnContext(egCtx, "retrieval: lexical lane error", "err", err)
-			return nil // degraded per-lane but not fatal
+		var all []string
+		for _, sq := range effectiveScopes {
+			hits, err := r.mem.LexicalSearch(egCtx, sq.Scope, req.Query, laneK, req.Window, req.Kinds)
+			if err != nil {
+				r.log.WarnContext(egCtx, "retrieval: lexical lane error", "err", err)
+				continue // degraded per-lane but not fatal
+			}
+			for _, h := range hits {
+				all = append(all, h.MemoryID)
+			}
 		}
-		ids := make([]string, len(hits))
-		for i, h := range hits {
-			ids[i] = h.MemoryID
-		}
-		lexicalIDs = ids
+		lexicalIDs = all
 		return nil
 	})
 
 	eg.Go(func() error {
-		hits, err := r.mem.QuerySearch(egCtx, scope, req.Query, laneK, req.Window)
-		if err != nil {
-			r.log.WarnContext(egCtx, "retrieval: queries lane error", "err", err)
-			return nil
+		var all []string
+		for _, sq := range effectiveScopes {
+			hits, err := r.mem.QuerySearch(egCtx, sq.Scope, req.Query, laneK, req.Window)
+			if err != nil {
+				r.log.WarnContext(egCtx, "retrieval: queries lane error", "err", err)
+				continue
+			}
+			for _, h := range hits {
+				all = append(all, h.MemoryID)
+			}
 		}
-		ids := make([]string, len(hits))
-		for i, h := range hits {
-			ids[i] = h.MemoryID
-		}
-		queryIDs = ids
+		queryIDs = all
 		return nil
 	})
 
@@ -261,21 +280,23 @@ func (r *Retriever) Retrieve(ctx context.Context, scope identity.Scope, req Requ
 		if len(tokens) == 0 {
 			return nil
 		}
-		neighbors, err := r.mem.FindNeighbors(egCtx, scope, store.NeighborQuery{
-			Entities: tokens,
-			Keywords: tokens,
-			Kinds:    req.Kinds,
-			Limit:    laneK,
-		})
-		if err != nil {
-			r.log.WarnContext(egCtx, "retrieval: structured lane error", "err", err)
-			return nil
+		var all []string
+		for _, sq := range effectiveScopes {
+			neighbors, err := r.mem.FindNeighbors(egCtx, sq.Scope, store.NeighborQuery{
+				Entities: tokens,
+				Keywords: tokens,
+				Kinds:    req.Kinds,
+				Limit:    laneK,
+			})
+			if err != nil {
+				r.log.WarnContext(egCtx, "retrieval: structured lane error", "err", err)
+				continue
+			}
+			for _, n := range neighbors {
+				all = append(all, n.ID)
+			}
 		}
-		ids := make([]string, len(neighbors))
-		for i, n := range neighbors {
-			ids[i] = n.ID
-		}
-		structuredIDs = ids
+		structuredIDs = all
 		return nil
 	})
 
@@ -283,19 +304,21 @@ func (r *Retriever) Retrieve(ctx context.Context, scope identity.Scope, req Requ
 		if degraded || queryVec == nil {
 			return nil
 		}
-		hits, err := r.vi.Search(egCtx, scope, queryVec, laneK, vindex.Filter{
-			Kinds:  req.Kinds,
-			Window: req.Window,
-		})
-		if err != nil {
-			r.log.WarnContext(egCtx, "retrieval: vector lane error", "err", err)
-			return nil
+		var all []string
+		for _, sq := range effectiveScopes {
+			hits, err := r.vi.Search(egCtx, sq.Scope, queryVec, laneK, vindex.Filter{
+				Kinds:  req.Kinds,
+				Window: req.Window,
+			})
+			if err != nil {
+				r.log.WarnContext(egCtx, "retrieval: vector lane error", "err", err)
+				continue
+			}
+			for _, h := range hits {
+				all = append(all, h.MemoryID)
+			}
 		}
-		ids := make([]string, len(hits))
-		for i, h := range hits {
-			ids[i] = h.MemoryID
-		}
-		vectorIDs = ids
+		vectorIDs = all
 		return nil
 	})
 
@@ -341,9 +364,37 @@ func (r *Retriever) Retrieve(ctx context.Context, scope identity.Scope, req Requ
 		lanesByID[h.MemoryID] = h.Lanes
 	}
 
-	mems, err := r.mem.GetMany(ctx, scope, topIDs)
-	if err != nil {
-		return nil, err
+	// Phase 15: for multi-scope requests, call GetMany for each effective scope
+	// and merge. For the own scope (ceiling=""), fetch as today. For granted scopes,
+	// apply zone ceiling defense-in-depth after fetching (AC-1).
+	var mems []store.Memory
+	var err error
+	if !multiScope {
+		// Common case: single scope — original behavior.
+		mems, err = r.mem.GetMany(ctx, scope, topIDs)
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		seenIDs := make(map[string]bool, len(topIDs))
+		for _, sq := range effectiveScopes {
+			got, gErr := r.mem.GetMany(ctx, sq.Scope, topIDs)
+			if gErr != nil {
+				r.log.WarnContext(ctx, "retrieval: GetMany for granted scope failed",
+					"scope", sq.Scope.String(), "err", gErr)
+				continue
+			}
+			// Apply zone ceiling (defense-in-depth, AC-1).
+			if sq.ZoneCeiling != "" {
+				got = applyZoneCeiling(got, sq.ZoneCeiling)
+			}
+			for _, m := range got {
+				if !seenIDs[m.ID] {
+					seenIDs[m.ID] = true
+					mems = append(mems, m)
+				}
+			}
+		}
 	}
 
 	// Compute ActivityTurns approximation:
@@ -485,7 +536,8 @@ func (r *Retriever) Retrieve(ctx context.Context, scope identity.Scope, req Requ
 
 	// Store result in the cache for subsequent identical queries (Phase 12).
 	// Debug requests are not cached (breakdowns are diagnostic and one-time).
-	if !req.Debug {
+	// Multi-scope requests are not cached (revocation must be live, D-060).
+	if !req.Debug && !multiScope {
 		r.cache.Put(scope, querySig, req.Profile, req.SessionID, req.Window.From, req.Window.Until, items, sup)
 	}
 

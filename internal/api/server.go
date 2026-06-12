@@ -23,6 +23,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
 	"github.com/hurtener/stowage/internal/config"
+	"github.com/hurtener/stowage/internal/grants"
 	"github.com/hurtener/stowage/internal/pipeline"
 	"github.com/hurtener/stowage/internal/retrieval"
 	"github.com/hurtener/stowage/internal/store"
@@ -56,6 +57,10 @@ type Server struct {
 	// retriever is the four-lane retrieval engine (Phase 09).
 	// Set via SetRetriever before calling ListenAndServe.
 	retriever *retrieval.Retriever
+
+	// grantsSvc provides group and grant management (Phase 15).
+	// Set via SetGrantsService before calling ListenAndServe.
+	grantsSvc *grants.Service
 
 	maxBodyB int64 // max request body bytes
 
@@ -130,6 +135,17 @@ func New(cfg *config.Config, st store.Store, log *slog.Logger, reg *prometheus.R
 	// DSAR stub — returns 501 (Phase 21 retention work implements the cascade).
 	mux.HandleFunc("DELETE /v1/admin/users/{user}", srv.authMiddleware(srv.handleDSARStub, true))
 
+	// Grants: group management (admin role) — Phase 15 (RFC §5.3).
+	mux.HandleFunc("POST /v1/admin/groups", srv.authMiddleware(srv.handleCreateGroup, true))
+	mux.HandleFunc("GET /v1/admin/groups", srv.authMiddleware(srv.handleListGroups, true))
+	mux.HandleFunc("POST /v1/admin/groups/{id}/members", srv.authMiddleware(srv.handleAddMember, true))
+	mux.HandleFunc("DELETE /v1/admin/groups/{id}/members/{user_id}", srv.authMiddleware(srv.handleRemoveMember, true))
+
+	// Grants: grant management (agent or admin) — Phase 15 (RFC §5.3).
+	mux.HandleFunc("GET /v1/scopes/grants", srv.authMiddleware(srv.handleListGrants, false))
+	mux.HandleFunc("PUT /v1/scopes/grants", srv.authMiddleware(srv.handleCreateGrant, false))
+	mux.HandleFunc("POST /v1/grants/{id}/revoke", srv.authMiddleware(srv.handleRevokeGrant, false))
+
 	readTimeout := time.Duration(cfg.Server.ReadTimeout) * time.Second
 	writeTimeout := time.Duration(cfg.Server.WriteTimeout) * time.Second
 	idleTimeout := time.Duration(cfg.Server.IdleTimeout) * time.Second
@@ -163,6 +179,12 @@ func (s *Server) SetTopicService(svc *topics.Service) {
 // Must be called before ListenAndServe.
 func (s *Server) SetRetriever(r *retrieval.Retriever) {
 	s.retriever = r
+}
+
+// SetGrantsService wires the grants.Service used by the grants and groups
+// endpoints (Phase 15). Must be called before ListenAndServe.
+func (s *Server) SetGrantsService(svc *grants.Service) {
+	s.grantsSvc = svc
 }
 
 // Pipeline returns the read end of the ingest pipeline channel.
