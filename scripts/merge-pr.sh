@@ -13,4 +13,16 @@ if [ "$total" -eq 0 ] || [ "$passing" -ne "$total" ]; then
   echo "REFUSED: $passing/$total checks passing — merge blocked." >&2
   exit 1
 fi
-exec gh pr merge "$pr" --squash --delete-branch
+# --delete-branch also tries to delete the LOCAL branch; when a worktree holds
+# it, gh exits non-zero even though the merge + remote-branch delete succeeded
+# (observed on PRs #21/#22). Verify the actual PR state before failing.
+if gh pr merge "$pr" --squash --delete-branch; then
+  exit 0
+fi
+state=$(gh pr view "$pr" --json state -q .state)
+if [ "$state" = "MERGED" ]; then
+  echo "merged OK (local branch cleanup failed — remove the worktree, then delete the branch)"
+  exit 0
+fi
+echo "REFUSED: merge did not complete (state=$state)." >&2
+exit 1

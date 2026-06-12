@@ -884,3 +884,68 @@ func TestValidateCandidatesNormalizesKeywordCase(t *testing.T) {
 		t.Errorf("entities not normalized: %v", valid[0].Entities)
 	}
 }
+
+// ── MarkProcessed wiring (2026-06-12 sanity-check finding) ────────────────────
+
+// TestExtract_MarksRecordsProcessed pins the re-enqueue convergence contract:
+// a successfully delivered extraction marks its records processed, while a
+// gateway failure leaves them unprocessed so the re-enqueue sweep retries.
+// Before this wiring MarkProcessed had no production caller and every record
+// re-extracted forever.
+func TestExtract_MarksRecordsProcessed(t *testing.T) {
+	t.Parallel()
+	st := newTestStore(t)
+	gw, mock := newMockGateway(t)
+	svc := topics.New(st.Topics(), noopLog(), "assistant")
+	tenant := "t-mark-processed"
+
+	unprocessed := func() map[string]bool {
+		recs, err := st.Records().ListUnprocessed(context.Background(), time.Now().Add(time.Second).UnixMilli(), 100)
+		if err != nil {
+			t.Fatalf("ListUnprocessed: %v", err)
+		}
+		out := make(map[string]bool, len(recs))
+		for _, r := range recs {
+			out[r.ID] = true
+		}
+		return out
+	}
+
+	okID := makeRecord(t, st, tenant, "The user prefers Go for systems programming.")
+	failID := makeRecord(t, st, tenant, "The user lives in Madrid.")
+
+	stage, in := newExtractStageAndChan(st, gw, svc, "assistant")
+	stage.Start(context.Background())
+
+	// Sequential flushes: the stage runs multiple workers and the mock script
+	// queue is FIFO, so concurrent flushes would race for the scripts.
+	mock.PushScript(mockdrv.Script{JSON: candidateJSON(okID, "User prefers Go.")})
+	in <- makeFlushedBuffer(tenant, []string{okID}, false)
+	collectBatches(t, stage.Downstream(), 1, 2*time.Second)
+	// waitUnprocessedIs polls until the record's membership in the unprocessed
+	// set equals want, or times out.
+	waitUnprocessedIs := func(id string, want bool) bool {
+		deadline := time.Now().Add(3 * time.Second)
+		for time.Now().Before(deadline) {
+			if up := unprocessed(); up[id] == want {
+				return true
+			}
+			time.Sleep(20 * time.Millisecond)
+		}
+		return false
+	}
+	if !waitUnprocessedIs(okID, false) {
+		t.Errorf("delivered extraction: record %s still unprocessed — re-enqueue would loop forever", okID)
+	}
+
+	mock.PushScript(mockdrv.Script{Err: errors.New("simulated gateway failure")})
+	in <- makeFlushedBuffer(tenant, []string{failID}, false)
+	close(in)
+	drainCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	stage.Drain(drainCtx)
+
+	if up := unprocessed(); !up[failID] {
+		t.Errorf("failed extraction: record %s marked processed — re-enqueue can no longer retry it", failID)
+	}
+}

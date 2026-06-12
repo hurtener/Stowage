@@ -55,14 +55,72 @@ func ComputeScores(results []QuestionResult) Scores {
 
 // AnswerContextHit returns true if expectedAnswer appears (case-insensitive)
 // in any of the provided content strings.
+//
+// Short answers (< 4 characters after trimming, e.g. "2", "$12", "NYC") must
+// match on token boundaries: a bare substring check lets "2" match inside
+// "f/2.8 lens", which produced a spurious hit in the 2026-06-12 n=10 baseline.
+// Longer answers keep the strict substring semantics (they are distinctive
+// enough that boundary anchoring only adds false negatives on punctuation).
 func AnswerContextHit(contents []string, expectedAnswer string) bool {
-	lower := strings.ToLower(expectedAnswer)
+	lower := strings.ToLower(strings.TrimSpace(expectedAnswer))
+	if lower == "" {
+		return false
+	}
+	short := len([]rune(lower)) < 4
 	for _, c := range contents {
-		if strings.Contains(strings.ToLower(c), lower) {
+		lc := strings.ToLower(c)
+		if !short {
+			if strings.Contains(lc, lower) {
+				return true
+			}
+			continue
+		}
+		if containsToken(lc, lower) {
 			return true
 		}
 	}
 	return false
+}
+
+// containsToken reports whether needle occurs in haystack delimited by token
+// boundaries on both sides. A boundary is a non-alphanumeric rune — EXCEPT
+// joining punctuation (./-:,) sandwiched between alphanumerics, which keeps
+// compound tokens like "f/2.8", "24-70mm", or "3:45" intact so a short answer
+// such as "2" cannot match inside them.
+func containsToken(haystack, needle string) bool {
+	for start := 0; ; {
+		i := strings.Index(haystack[start:], needle)
+		if i < 0 {
+			return false
+		}
+		i += start
+		end := i + len(needle)
+		if isBoundary(haystack, i-1, i-2) && isBoundary(haystack, end, end+1) {
+			return true
+		}
+		start = i + 1
+	}
+}
+
+// isBoundary reports whether the rune at index idx (with beyond one step
+// further away from the match) terminates a token. Out-of-range counts as a
+// boundary; joining punct with an alphanumeric beyond it does not.
+func isBoundary(s string, idx, beyond int) bool {
+	if idx < 0 || idx >= len(s) {
+		return true
+	}
+	r := rune(s[idx])
+	if isAlnum(r) {
+		return false
+	}
+	if strings.ContainsRune("./-:,", r) && beyond >= 0 && beyond < len(s) && isAlnum(rune(s[beyond])) {
+		return false // joining punct inside a compound token ("f/2.8", "24-70mm")
+	}
+	return true
+}
+
+func isAlnum(r rune) bool {
+	return (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9')
 }
 
 // percentile returns the p-th percentile value from a sorted slice.

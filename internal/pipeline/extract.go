@@ -25,7 +25,13 @@ const extractWorkers = 4
 const extractDownstreamCap = 256
 
 // extractMaxTokens is the model output token budget for the extract call.
-const extractMaxTokens = 4096
+// Sized for thinking models: reasoning tokens count against the output budget
+// (gateway returns ErrTruncated at max_tokens), and a truncated extraction
+// wastes the entire call — 4096 starved gemini-3.5-flash on real LongMemEval
+// conversations (2026-06-12 sanity check; the openaicompat live test had
+// documented this exact failure mode since Phase 04). Generation stops at the
+// closing brace, so the ceiling only bounds the worst case, not typical spend.
+const extractMaxTokens = 16384
 
 // ExtractStage consumes FlushedBuffer events from the buffer stage and
 // produces CandidateBatch events on its downstream channel.
@@ -120,6 +126,7 @@ func (e *ExtractStage) processFlush(ctx context.Context, fb FlushedBuffer) {
 	if fb.SkipPromotion {
 		e.emitEvent(ctx, fb.Scope, "extraction.skipped", fb.Key, "skip_promotion",
 			map[string]interface{}{"reason": "skip_promotion", "buffer_key": fb.Key})
+		e.markProcessed(ctx, fb)
 		return
 	}
 
@@ -143,6 +150,7 @@ func (e *ExtractStage) processFlush(ctx context.Context, fb FlushedBuffer) {
 	if len(activeTopics) == 0 {
 		e.emitEvent(ctx, fb.Scope, "extraction.skipped", fb.Key, "no_topics",
 			map[string]interface{}{"reason": "no_topics", "buffer_key": fb.Key})
+		e.markProcessed(ctx, fb)
 		return
 	}
 
@@ -208,11 +216,19 @@ func (e *ExtractStage) processFlush(ctx context.Context, fb FlushedBuffer) {
 	}
 
 	// Step 7a: Emit CandidateBatch on downstream (non-blocking; drop if full).
+	// Records are marked processed ONLY on successful delivery: a dropped
+	// batch leaves them unprocessed so the re-enqueue sweep retries the
+	// extraction instead of losing the candidates (crash-recovery contract).
+	delivered := true
 	select {
 	case e.out <- batch:
 	default:
+		delivered = false
 		e.log.WarnContext(ctx, "extract: downstream full; dropping batch",
 			"buffer_key", fb.Key)
+	}
+	if delivered {
+		e.markProcessed(ctx, fb)
 	}
 
 	// Step 7b: Emit extraction.completed event with counts (AC-8).
@@ -227,6 +243,22 @@ func (e *ExtractStage) processFlush(ctx context.Context, fb FlushedBuffer) {
 			"truncated":  truncatedFlag,
 			"buffer_key": fb.Key,
 		})
+}
+
+// markProcessed stamps processed_at on the flush's records. Extraction is
+// complete for them: either candidates were delivered downstream or the flush
+// was deliberately skipped. Without this stamp the Phase 14 re-enqueue sweep
+// re-offers every record forever — an unbounded re-extraction loop found by
+// the 2026-06-12 eval sanity check (MarkProcessed existed on both drivers but
+// had no production caller).
+func (e *ExtractStage) markProcessed(ctx context.Context, fb FlushedBuffer) {
+	if len(fb.RecordIDs) == 0 {
+		return
+	}
+	if err := e.st.Records().MarkProcessed(ctx, fb.RecordIDs); err != nil {
+		e.log.WarnContext(ctx, "extract: mark processed failed",
+			"buffer_key", fb.Key, "err", err)
+	}
 }
 
 // ----------------------------------------------------------------------------

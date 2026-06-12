@@ -520,16 +520,22 @@ func TestMatchCountBump(t *testing.T) {
 		t.Skip("memory not in results — skip match_count test")
 	}
 
-	// Wait briefly for the async goroutine to complete.
-	time.Sleep(100 * time.Millisecond)
-
-	updated, err := st.Memories().Get(ctx, scope, memID)
-	if err != nil {
-		t.Fatalf("Get after retrieve: %v", err)
+	// The bump is async — poll with a deadline instead of a fixed sleep
+	// (100 ms flaked on loaded CI runners).
+	deadline := time.Now().Add(5 * time.Second)
+	var lastCount int64
+	for time.Now().Before(deadline) {
+		updated, err := st.Memories().Get(ctx, scope, memID)
+		if err != nil {
+			t.Fatalf("Get after retrieve: %v", err)
+		}
+		lastCount = updated.MatchCount
+		if lastCount > initialCount {
+			return
+		}
+		time.Sleep(25 * time.Millisecond)
 	}
-	if updated.MatchCount <= initialCount {
-		t.Errorf("match_count not incremented: before=%d after=%d", initialCount, updated.MatchCount)
-	}
+	t.Errorf("match_count not incremented: before=%d after=%d", initialCount, lastCount)
 }
 
 // insertMemoryWithSession inserts a memory scoped to sessionID (for cooldown tests).
