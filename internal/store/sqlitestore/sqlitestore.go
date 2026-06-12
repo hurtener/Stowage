@@ -471,6 +471,26 @@ func nullStr(s string) interface{} {
 	return s
 }
 
+// Tenants returns distinct tenant IDs from the memories table.
+// Used by lifecycle sweeps to enumerate tenants for per-scope passes (D-057).
+func (s *sqliteStore) Tenants(ctx context.Context) ([]string, error) {
+	rows, err := s.rdb.QueryContext(ctx,
+		`SELECT DISTINCT tenant_id FROM memories ORDER BY tenant_id`)
+	if err != nil {
+		return nil, fmt.Errorf("sqlitestore: tenants: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	var out []string
+	for rows.Next() {
+		var t string
+		if err := rows.Scan(&t); err != nil {
+			return nil, fmt.Errorf("sqlitestore: scan tenant: %w", err)
+		}
+		out = append(out, t)
+	}
+	return out, rows.Err()
+}
+
 // AppliedMigrations returns versions from schema_migrations ascending; empty
 // (no error) when the table does not exist yet.
 func (s *sqliteStore) AppliedMigrations(ctx context.Context) ([]string, error) {

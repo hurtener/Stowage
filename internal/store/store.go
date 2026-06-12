@@ -54,6 +54,12 @@ type Store interface {
 
 	// Close flushes any pending writes and releases resources.
 	Close(ctx context.Context) error
+
+	// Tenants returns the distinct tenant IDs present in the store.
+	// This is an operator-level enumeration used by sweeps to iterate
+	// tenants and then operate per-scope (D-057). NOT a data read —
+	// only returns tenant ID strings, not scoped data.
+	Tenants(ctx context.Context) ([]string, error)
 }
 
 // RecordStore is the verbatim fidelity layer (RFC P1, D-006, D-024).
@@ -172,6 +178,17 @@ type MemoryStore interface {
 	// Commit returns ErrDuplicateContent for ActionAdd/ActionPark when the
 	// content_hash unique index fires (m7 TOCTOU guard).
 	Commit(ctx context.Context, scope identity.Scope, cs CommitSet) error
+
+	// ListActiveForDecay returns at most limit active memories for the scope,
+	// ordered by created_at, id ascending. cursor is an opaque pagination token.
+	// Used by the lifecycle decay sweep to batch-scan active memories per
+	// tenant-scope (Phase 14, D-058).
+	ListActiveForDecay(ctx context.Context, scope identity.Scope, limit int, cursor string) ([]Memory, string, error)
+
+	// SetValidUntil sets the valid_until field of a memory (unix millis).
+	// Used by the decay sweep to record the first-below-floor observation.
+	// A value of 0 clears the field (D-058).
+	SetValidUntil(ctx context.Context, scope identity.Scope, id string, validUntil int64) error
 }
 
 // TopicStore manages extraction magnets (RFC §4.1, D-007).

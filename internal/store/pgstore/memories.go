@@ -48,6 +48,13 @@ func (m *memoryStore) Insert(ctx context.Context, scope identity.Scope, mem stor
 	if mem.UpdatedAt == 0 {
 		mem.UpdatedAt = now
 	}
+	// Scope fields take precedence; fall back to the memory struct's own fields
+	// so that callers that pre-populate mem.SessionID (e.g. test helpers, imports)
+	// have their values persisted when no session is present in the scope.
+	sessionVal := scope.Session
+	if sessionVal == "" {
+		sessionVal = mem.SessionID
+	}
 	_, err := m.s.pool.Exec(ctx, `
 		INSERT INTO memories
 			(id, tenant_id, project_id, user_id, session_id, kind, content, context, status,
@@ -57,7 +64,7 @@ func (m *memoryStore) Insert(ctx context.Context, scope identity.Scope, mem stor
 			 episode_id, supersedes_id, superseded_by_id, privacy_zone,
 			 created_at, updated_at, content_hash)
 		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29)`,
-		mem.ID, scope.Tenant, nullStr(scope.Project), nullStr(scope.User), nullStr(scope.Session),
+		mem.ID, scope.Tenant, nullStr(scope.Project), nullStr(scope.User), nullStr(sessionVal),
 		mem.Kind, mem.Content, mem.Context, mem.Status,
 		mem.Importance, mem.Confidence, mem.TrustSource,
 		mem.MatchCount, mem.InjectCount, mem.UseCount, mem.SaveCount, mem.FailCount, mem.NoiseCount,
@@ -751,6 +758,72 @@ func insertEventPG(ctx context.Context, tx pgx.Tx, scope identity.Scope, ev stor
 		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
 		ev.ID, scope.Tenant, nullStr(scope.Project), nullStr(scope.User), nullStr(scope.Session),
 		ev.Type, ev.SubjectID, ev.Reason, ev.Payload, ev.CreatedAt,
+	)
+	return err
+}
+
+// ListActiveForDecay returns at most limit active memories for the scope,
+// ordered by (created_at, id) ascending. cursor is an opaque pagination token.
+// Scope is tenant-only for the decay sweep (no project/user/session filtering).
+func (m *memoryStore) ListActiveForDecay(ctx context.Context, scope identity.Scope, limit int, cursor string) ([]store.Memory, string, error) {
+	if scope.Tenant == "" {
+		return nil, "", store.ErrScopeRequired
+	}
+	next := 1
+	whereClause := fmt.Sprintf("tenant_id = $%d AND status = 'active'", next)
+	args := []interface{}{scope.Tenant}
+	next++
+
+	if cursor != "" {
+		ts, cid, perr := parseCursor(cursor)
+		if perr != nil {
+			return nil, "", perr
+		}
+		whereClause += fmt.Sprintf(` AND (created_at, id) > ($%d, $%d)`, next, next+1)
+		args = append(args, ts, cid)
+		next += 2
+	}
+	args = append(args, limit+1)
+
+	rows, err := m.s.pool.Query(ctx,
+		`SELECT `+memorySelectCols+` FROM memories WHERE `+whereClause+
+			fmt.Sprintf(` ORDER BY created_at ASC, id ASC LIMIT $%d`, next),
+		args...,
+	)
+	if err != nil {
+		return nil, "", fmt.Errorf("pgstore: list active for decay: %w", err)
+	}
+	defer rows.Close()
+
+	var out []store.Memory
+	for rows.Next() {
+		mem, err := scanMemory(rows)
+		if err != nil {
+			return nil, "", err
+		}
+		out = append(out, *mem)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, "", err
+	}
+	var nextCursor string
+	if len(out) > limit {
+		nextCursor = encodeCursor(out[limit-1].CreatedAt, out[limit-1].ID)
+		out = out[:limit]
+	}
+	return out, nextCursor, nil
+}
+
+// SetValidUntil sets the valid_until field of a memory (unix millis).
+// A value of 0 clears the field. Used by the decay sweep (D-058).
+func (m *memoryStore) SetValidUntil(ctx context.Context, scope identity.Scope, id string, validUntil int64) error {
+	if scope.Tenant == "" {
+		return store.ErrScopeRequired
+	}
+	now := time.Now().UnixMilli()
+	_, err := m.s.pool.Exec(ctx,
+		`UPDATE memories SET valid_until = $1, updated_at = $2 WHERE tenant_id = $3 AND id = $4`,
+		validUntil, now, scope.Tenant, id,
 	)
 	return err
 }

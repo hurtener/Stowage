@@ -157,6 +157,10 @@ func Run(t *testing.T, factory Factory) {
 	t.Run("RecordGetMany", func(t *testing.T) { testRecordGetMany(t, factory) })
 	t.Run("RecordGetManyMissingOmitted", func(t *testing.T) { testRecordGetManyMissingOmitted(t, factory) })
 	t.Run("RecordGetManyScopeIsolation", func(t *testing.T) { testRecordGetManyScopeIsolation(t, factory) })
+	// Phase 14 — lifecycle sweep store methods
+	t.Run("TenantsListing", func(t *testing.T) { testTenantsListing(t, factory) })
+	t.Run("MemoryListActiveForDecay", func(t *testing.T) { testMemoryListActiveForDecay(t, factory) })
+	t.Run("MemorySetValidUntil", func(t *testing.T) { testMemorySetValidUntil(t, factory) })
 }
 
 // --- helpers ----------------------------------------------------------------
@@ -3283,5 +3287,221 @@ func testRecordCountRecordsSinceScopeIsolation(t *testing.T, factory Factory) {
 	}
 	if nB != 1 {
 		t.Errorf("scopeB: got %d want 1", nB)
+	}
+}
+
+// --- Phase 14: lifecycle sweep store methods ---------------------------------
+
+// testTenantsListing asserts Store.Tenants returns distinct tenant IDs (D-057).
+func testTenantsListing(t *testing.T, factory Factory) {
+	t.Helper()
+	s, cleanup := factory()
+	defer cleanup()
+	ctx := context.Background()
+
+	// Empty store → no tenants.
+	tenants, err := s.Tenants(ctx)
+	if err != nil {
+		t.Fatalf("Tenants (empty): %v", err)
+	}
+	if len(tenants) != 0 {
+		t.Errorf("expected 0 tenants, got %d: %v", len(tenants), tenants)
+	}
+
+	// Insert memories for two tenants (same tenant_id → should deduplicate).
+	for _, tid := range []string{"tenant-a", "tenant-b", "tenant-a"} {
+		scope := tenantScope(tid)
+		mem := store.Memory{
+			ID:          newID(),
+			TenantID:    tid,
+			Kind:        "fact",
+			Content:     "conformance test",
+			Status:      "active",
+			Importance:  1,
+			Confidence:  0.5,
+			TrustSource: "llm_extracted",
+			Stability:   1.0,
+			CreatedAt:   nowMs(),
+			UpdatedAt:   nowMs(),
+		}
+		if err := s.Memories().Insert(ctx, scope, mem); err != nil {
+			t.Fatalf("insert memory for tenant %q: %v", tid, err)
+		}
+	}
+
+	tenants, err = s.Tenants(ctx)
+	if err != nil {
+		t.Fatalf("Tenants: %v", err)
+	}
+	if len(tenants) != 2 {
+		t.Errorf("expected 2 distinct tenants, got %d: %v", len(tenants), tenants)
+	}
+	tenantSet := map[string]bool{}
+	for _, tid := range tenants {
+		tenantSet[tid] = true
+	}
+	for _, expected := range []string{"tenant-a", "tenant-b"} {
+		if !tenantSet[expected] {
+			t.Errorf("expected tenant %q in result", expected)
+		}
+	}
+}
+
+// testMemoryListActiveForDecay asserts ListActiveForDecay returns only active
+// memories, paginates correctly, and is tenant-isolated.
+func testMemoryListActiveForDecay(t *testing.T, factory Factory) {
+	t.Helper()
+	s, cleanup := factory()
+	defer cleanup()
+	ctx := context.Background()
+
+	scope := tenantScope("decay-scope-a")
+	other := tenantScope("decay-scope-b")
+
+	insertActive := func(tid string, sc identity.Scope) string {
+		now := nowMs()
+		mem := store.Memory{
+			ID:          newID(),
+			TenantID:    tid,
+			Kind:        "fact",
+			Content:     "active memory " + newID(),
+			Status:      "active",
+			Importance:  1,
+			Confidence:  0.5,
+			TrustSource: "llm_extracted",
+			Stability:   1.0,
+			CreatedAt:   now,
+			UpdatedAt:   now,
+		}
+		if err := s.Memories().Insert(ctx, sc, mem); err != nil {
+			t.Fatalf("insert active memory: %v", err)
+		}
+		return mem.ID
+	}
+
+	// Insert 3 active memories in scope, 1 expired, 1 in other scope.
+	id1 := insertActive(scope.Tenant, scope)
+	id2 := insertActive(scope.Tenant, scope)
+	id3 := insertActive(scope.Tenant, scope)
+	expiredID := insertActive(scope.Tenant, scope)
+	insertActive(other.Tenant, other)
+
+	// Set one to expired.
+	if err := s.Memories().SetStatus(ctx, scope, expiredID, "expired", nowMs()); err != nil {
+		t.Fatalf("SetStatus expired: %v", err)
+	}
+
+	// List active for decay — should return exactly 3.
+	mems, nextCursor, err := s.Memories().ListActiveForDecay(ctx, scope, 10, "")
+	if err != nil {
+		t.Fatalf("ListActiveForDecay: %v", err)
+	}
+	if len(mems) != 3 {
+		t.Errorf("expected 3 active memories, got %d", len(mems))
+	}
+	if nextCursor != "" {
+		t.Errorf("expected empty cursor, got %q", nextCursor)
+	}
+	ids := map[string]bool{}
+	for _, m := range mems {
+		ids[m.ID] = true
+		if m.Status != "active" {
+			t.Errorf("expected status=active, got %q for %q", m.Status, m.ID)
+		}
+	}
+	for _, id := range []string{id1, id2, id3} {
+		if !ids[id] {
+			t.Errorf("expected ID %q in results", id)
+		}
+	}
+	if ids[expiredID] {
+		t.Error("expired memory should not appear in ListActiveForDecay")
+	}
+
+	// Pagination: limit=2, then cursor.
+	page1, cursor1, err := s.Memories().ListActiveForDecay(ctx, scope, 2, "")
+	if err != nil {
+		t.Fatalf("ListActiveForDecay page1: %v", err)
+	}
+	if len(page1) != 2 {
+		t.Errorf("expected 2 on page1, got %d", len(page1))
+	}
+	if cursor1 == "" {
+		t.Error("expected non-empty cursor after page1")
+	}
+
+	page2, cursor2, err := s.Memories().ListActiveForDecay(ctx, scope, 2, cursor1)
+	if err != nil {
+		t.Fatalf("ListActiveForDecay page2: %v", err)
+	}
+	if len(page2) != 1 {
+		t.Errorf("expected 1 on page2, got %d", len(page2))
+	}
+	if cursor2 != "" {
+		t.Errorf("expected empty cursor after last page, got %q", cursor2)
+	}
+
+	// Scope isolation — empty-tenant rejected.
+	_, _, err = s.Memories().ListActiveForDecay(ctx, identity.Scope{}, 10, "")
+	if err == nil {
+		t.Error("expected error for empty tenant scope")
+	}
+}
+
+// testMemorySetValidUntil asserts SetValidUntil sets and clears valid_until.
+func testMemorySetValidUntil(t *testing.T, factory Factory) {
+	t.Helper()
+	s, cleanup := factory()
+	defer cleanup()
+	ctx := context.Background()
+
+	scope := tenantScope("valid-until-scope")
+	now := nowMs()
+	mem := store.Memory{
+		ID:          newID(),
+		TenantID:    scope.Tenant,
+		Kind:        "fact",
+		Content:     "setvaliduntil test",
+		Status:      "active",
+		Importance:  1,
+		Confidence:  0.5,
+		TrustSource: "llm_extracted",
+		Stability:   1.0,
+		CreatedAt:   now,
+		UpdatedAt:   now,
+	}
+	if err := s.Memories().Insert(ctx, scope, mem); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+
+	// Set valid_until to future timestamp.
+	future := now + 3_600_000 // +1 hour
+	if err := s.Memories().SetValidUntil(ctx, scope, mem.ID, future); err != nil {
+		t.Fatalf("SetValidUntil: %v", err)
+	}
+	got, err := s.Memories().Get(ctx, scope, mem.ID)
+	if err != nil {
+		t.Fatalf("Get after SetValidUntil: %v", err)
+	}
+	if got.ValidUntil != future {
+		t.Errorf("ValidUntil: got %d, want %d", got.ValidUntil, future)
+	}
+
+	// Clear valid_until with 0.
+	if err := s.Memories().SetValidUntil(ctx, scope, mem.ID, 0); err != nil {
+		t.Fatalf("SetValidUntil(0): %v", err)
+	}
+	got, err = s.Memories().Get(ctx, scope, mem.ID)
+	if err != nil {
+		t.Fatalf("Get after clear: %v", err)
+	}
+	if got.ValidUntil != 0 {
+		t.Errorf("expected ValidUntil=0 after clear, got %d", got.ValidUntil)
+	}
+
+	// Empty tenant rejected.
+	err = s.Memories().SetValidUntil(ctx, identity.Scope{}, mem.ID, future)
+	if err == nil {
+		t.Error("expected error for empty tenant scope")
 	}
 }

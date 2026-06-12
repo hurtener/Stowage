@@ -202,6 +202,26 @@ func nullStr(s string) interface{} {
 	return s
 }
 
+// Tenants returns distinct tenant IDs from the memories table.
+// Used by lifecycle sweeps to enumerate tenants for per-scope passes (D-057).
+func (s *pgStore) Tenants(ctx context.Context) ([]string, error) {
+	rows, err := s.pool.Query(ctx,
+		`SELECT DISTINCT tenant_id FROM memories ORDER BY tenant_id`)
+	if err != nil {
+		return nil, fmt.Errorf("pgstore: tenants: %w", err)
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var t string
+		if err := rows.Scan(&t); err != nil {
+			return nil, fmt.Errorf("pgstore: scan tenant: %w", err)
+		}
+		out = append(out, t)
+	}
+	return out, rows.Err()
+}
+
 // AppliedMigrations returns versions from schema_migrations ascending; empty
 // (no error) when the table does not exist yet.
 func (s *pgStore) AppliedMigrations(ctx context.Context) ([]string, error) {

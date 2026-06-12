@@ -46,6 +46,13 @@ func (m *memoryStore) Insert(ctx context.Context, scope identity.Scope, mem stor
 		if mem.UpdatedAt == 0 {
 			mem.UpdatedAt = now
 		}
+		// Scope fields take precedence; fall back to the memory struct's own fields
+		// so that callers that pre-populate mem.SessionID (e.g. test helpers, imports)
+		// have their values persisted when no session is present in the scope.
+		sessionVal := scope.Session
+		if sessionVal == "" {
+			sessionVal = mem.SessionID
+		}
 		_, err := tx.Exec(`
 			INSERT INTO memories
 				(id, tenant_id, project_id, user_id, session_id, kind, content, context, status,
@@ -55,7 +62,7 @@ func (m *memoryStore) Insert(ctx context.Context, scope identity.Scope, mem stor
 				 episode_id, supersedes_id, superseded_by_id, privacy_zone,
 				 created_at, updated_at, content_hash)
 			VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-			mem.ID, scope.Tenant, nullStr(scope.Project), nullStr(scope.User), nullStr(scope.Session),
+			mem.ID, scope.Tenant, nullStr(scope.Project), nullStr(scope.User), nullStr(sessionVal),
 			mem.Kind, mem.Content, mem.Context, mem.Status,
 			mem.Importance, mem.Confidence, mem.TrustSource,
 			mem.MatchCount, mem.InjectCount, mem.UseCount, mem.SaveCount, mem.FailCount, mem.NoiseCount,
@@ -738,6 +745,68 @@ func insertEventSQLite(tx *sql.Tx, scope identity.Scope, ev store.Event, now int
 		ev.Type, ev.SubjectID, ev.Reason, ev.Payload, ev.CreatedAt,
 	)
 	return err
+}
+
+// ListActiveForDecay returns at most limit active memories for the scope,
+// ordered by (created_at, id) ascending. cursor is an opaque pagination token.
+// Scope is tenant-only for the decay sweep (no project/user/session filtering).
+func (m *memoryStore) ListActiveForDecay(ctx context.Context, scope identity.Scope, limit int, cursor string) ([]store.Memory, string, error) {
+	if scope.Tenant == "" {
+		return nil, "", store.ErrScopeRequired
+	}
+	whereClause := "tenant_id = ? AND status = 'active'"
+	args := []interface{}{scope.Tenant}
+
+	if cursor != "" {
+		ts, cid, perr := parseCursor(cursor)
+		if perr != nil {
+			return nil, "", perr
+		}
+		whereClause += " AND (created_at > ? OR (created_at = ? AND id > ?))"
+		args = append(args, ts, ts, cid)
+	}
+	args = append(args, limit+1)
+
+	q := `SELECT ` + memorySelectCols + ` FROM memories WHERE ` + whereClause + ` ORDER BY created_at ASC, id ASC LIMIT ?` //nolint:gosec
+	rows, err := m.s.rdb.QueryContext(ctx, q, args...)
+	if err != nil {
+		return nil, "", fmt.Errorf("sqlitestore: list active for decay: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var out []store.Memory
+	for rows.Next() {
+		mem, err := scanMemory(rows)
+		if err != nil {
+			return nil, "", err
+		}
+		out = append(out, *mem)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, "", err
+	}
+	var nextCursor string
+	if len(out) > limit {
+		nextCursor = encodeCursor(out[limit-1].CreatedAt, out[limit-1].ID)
+		out = out[:limit]
+	}
+	return out, nextCursor, nil
+}
+
+// SetValidUntil sets the valid_until field of a memory (unix millis).
+// A value of 0 clears the field. Used by the decay sweep (D-058).
+func (m *memoryStore) SetValidUntil(ctx context.Context, scope identity.Scope, id string, validUntil int64) error {
+	if scope.Tenant == "" {
+		return store.ErrScopeRequired
+	}
+	return m.s.exec(ctx, func(tx *sql.Tx) error {
+		now := time.Now().UnixMilli()
+		_, err := tx.Exec(
+			`UPDATE memories SET valid_until = ?, updated_at = ? WHERE tenant_id = ? AND id = ?`,
+			validUntil, now, scope.Tenant, id,
+		)
+		return err
+	})
 }
 
 func scanMemory(row rowScanner) (*store.Memory, error) {
