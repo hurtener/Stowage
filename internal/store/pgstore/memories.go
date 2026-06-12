@@ -397,6 +397,52 @@ func (m *memoryStore) GetByContentHash(ctx context.Context, scope identity.Scope
 	return mem, err
 }
 
+// GetByContentHashStatus returns the memory matching hash AND status within scope.
+// Unlike GetByContentHash (active-only), this accepts any status value (D-065).
+func (m *memoryStore) GetByContentHashStatus(ctx context.Context, scope identity.Scope, hash, status string) (*store.Memory, error) {
+	whereClause, args, next, err := buildScopeWhere(scope, 1)
+	if err != nil {
+		return nil, err
+	}
+	args = append(args, status, hash)
+	row := m.s.pool.QueryRow(ctx,
+		`SELECT `+memorySelectCols+` FROM memories WHERE `+whereClause+
+			fmt.Sprintf(` AND status = $%d AND content_hash = $%d LIMIT 1`, next, next+1),
+		args...,
+	)
+	mem, err := scanMemory(row)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, store.ErrNotFound
+	}
+	return mem, err
+}
+
+// ListSupersededBy returns memories whose superseded_by_id = supersederID within scope.
+// Used by the merge-rollback path to find all siblings (Phase 18, D-064).
+func (m *memoryStore) ListSupersededBy(ctx context.Context, scope identity.Scope, supersederID string) ([]store.Memory, error) {
+	whereClause, args, next, err := buildScopeWhere(scope, 1)
+	if err != nil {
+		return nil, err
+	}
+	args = append(args, supersederID)
+	q := `SELECT ` + memorySelectCols + ` FROM memories WHERE ` + whereClause +
+		fmt.Sprintf(` AND superseded_by_id = $%d`, next)
+	rows, rowsErr := m.s.pool.Query(ctx, q, args...)
+	if rowsErr != nil {
+		return nil, rowsErr
+	}
+	defer rows.Close()
+	var mems []store.Memory
+	for rows.Next() {
+		mem, scanErr := scanMemory(rows)
+		if scanErr != nil {
+			return nil, scanErr
+		}
+		mems = append(mems, *mem)
+	}
+	return mems, rows.Err()
+}
+
 // FindNeighbors returns active memories sharing entities or keywords with q,
 // ranked by overlap count descending then recency (D-044).
 func (m *memoryStore) FindNeighbors(ctx context.Context, scope identity.Scope, q store.NeighborQuery) ([]store.Memory, error) {
@@ -619,6 +665,75 @@ func execCommitPG(ctx context.Context, tx pgx.Tx, scope identity.Scope, cs store
 	case store.ActionDiscard:
 		// Nothing to persist; events carry the reason.
 
+	case store.ActionRollback:
+		// Full-row restore from a D-017 prior-state snapshot (Phase 18, D-064).
+		if err := restoreMemoryFullPG(ctx, tx, scope, cs.Memory, now); err != nil {
+			return fmt.Errorf("pgstore: commit rollback restore: %w", err)
+		}
+		if cs.FaultHook != nil {
+			if err := cs.FaultHook(); err != nil {
+				return err
+			}
+		}
+		if err := deleteJunctionsPG(ctx, tx, cs.Memory.ID); err != nil {
+			return err
+		}
+		if err := insertJunctionsPG(ctx, tx, scope, cs.Memory.ID, cs.Entities, cs.Keywords, cs.Queries); err != nil {
+			return err
+		}
+		if err := deleteProvenancePG(ctx, tx, cs.Memory.ID); err != nil {
+			return err
+		}
+		if err := insertProvenancePG(ctx, tx, scope, cs.Provenance, now); err != nil {
+			return err
+		}
+		// Restore extra memories (merge siblings).
+		for _, xm := range cs.ExtraMemories {
+			if err := restoreMemoryFullPG(ctx, tx, scope, xm.Memory, now); err != nil {
+				return fmt.Errorf("pgstore: commit rollback restore extra: %w", err)
+			}
+			if err := deleteJunctionsPG(ctx, tx, xm.Memory.ID); err != nil {
+				return err
+			}
+			if err := insertJunctionsPG(ctx, tx, scope, xm.Memory.ID, xm.Entities, xm.Keywords, xm.Queries); err != nil {
+				return err
+			}
+			if err := deleteProvenancePG(ctx, tx, xm.Memory.ID); err != nil {
+				return err
+			}
+			if err := insertProvenancePG(ctx, tx, scope, xm.Provenance, now); err != nil {
+				return err
+			}
+		}
+		// Tombstone result rows.
+		for _, t := range cs.Targets {
+			if _, err := tx.Exec(ctx,
+				`UPDATE memories SET status='deleted', updated_at=$1 WHERE tenant_id=$2 AND id=$3`,
+				now, scope.Tenant, t.ID,
+			); err != nil {
+				return fmt.Errorf("pgstore: commit rollback tombstone %q: %w", t.ID, err)
+			}
+		}
+
+	case store.ActionConfirm:
+		// Promote a pending_confirmation row to the given status (D-065, Phase 18).
+		if err := confirmMemoryStatusPG(ctx, tx, scope, cs.Memory, now); err != nil {
+			return fmt.Errorf("pgstore: commit confirm: %w", err)
+		}
+		if cs.FaultHook != nil {
+			if err := cs.FaultHook(); err != nil {
+				return err
+			}
+		}
+		for _, t := range cs.Targets {
+			if _, err := tx.Exec(ctx,
+				`UPDATE memories SET status='superseded', superseded_by_id=$1, updated_at=$2 WHERE tenant_id=$3 AND id=$4`,
+				cs.Memory.ID, now, scope.Tenant, t.ID,
+			); err != nil {
+				return fmt.Errorf("pgstore: commit confirm supersede %q: %w", t.ID, err)
+			}
+		}
+
 	default:
 		return fmt.Errorf("pgstore: commit: unknown action %q", cs.Action)
 	}
@@ -749,6 +864,51 @@ func insertLinksPG(ctx context.Context, tx pgx.Tx, scope identity.Scope, links [
 		}
 	}
 	return nil
+}
+
+// restoreMemoryFullPG performs a full-row UPDATE of ALL memory scalar fields
+// for ActionRollback (Phase 18, D-064).
+func restoreMemoryFullPG(ctx context.Context, tx pgx.Tx, scope identity.Scope, mem store.Memory, now int64) error {
+	if mem.UpdatedAt == 0 {
+		mem.UpdatedAt = now
+	}
+	_, err := tx.Exec(ctx, `
+		UPDATE memories SET
+			kind=$1, content=$2, context=$3, status=$4,
+			importance=$5, confidence=$6, trust_source=$7,
+			match_count=$8, inject_count=$9, use_count=$10, save_count=$11, fail_count=$12, noise_count=$13,
+			stability=$14, last_accessed_at=$15, valid_from=$16, valid_until=$17,
+			episode_id=$18, supersedes_id=$19, superseded_by_id=$20, privacy_zone=$21,
+			updated_at=$22, content_hash=$23
+		WHERE tenant_id=$24 AND id=$25`,
+		mem.Kind, mem.Content, mem.Context, mem.Status,
+		mem.Importance, mem.Confidence, mem.TrustSource,
+		mem.MatchCount, mem.InjectCount, mem.UseCount, mem.SaveCount, mem.FailCount, mem.NoiseCount,
+		mem.Stability, mem.LastAccessedAt, mem.ValidFrom, mem.ValidUntil,
+		mem.EpisodeID, mem.SupersedesID, mem.SupersededByID, mem.PrivacyZone,
+		mem.UpdatedAt, nullStr(mem.ContentHash),
+		scope.Tenant, mem.ID,
+	)
+	return err
+}
+
+// deleteProvenancePG removes all provenance rows for a memory (used on rollback).
+func deleteProvenancePG(ctx context.Context, tx pgx.Tx, memID string) error {
+	_, err := tx.Exec(ctx, `DELETE FROM provenance WHERE memory_id = $1`, memID)
+	return err
+}
+
+// confirmMemoryStatusPG sets status (and updated_at) for ActionConfirm (Phase 18, D-065).
+// superseded_by_id uses the raw string value (empty string) because the column is NOT NULL DEFAULT ”.
+func confirmMemoryStatusPG(ctx context.Context, tx pgx.Tx, scope identity.Scope, mem store.Memory, now int64) error {
+	if mem.UpdatedAt == 0 {
+		mem.UpdatedAt = now
+	}
+	_, err := tx.Exec(ctx,
+		`UPDATE memories SET status=$1, superseded_by_id=$2, updated_at=$3 WHERE tenant_id=$4 AND id=$5`,
+		mem.Status, mem.SupersededByID, mem.UpdatedAt, scope.Tenant, mem.ID,
+	)
+	return err
 }
 
 func insertEventPG(ctx context.Context, tx pgx.Tx, scope identity.Scope, ev store.Event, now int64) error {

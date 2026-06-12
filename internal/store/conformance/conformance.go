@@ -163,6 +163,8 @@ func Run(t *testing.T, factory Factory) {
 	t.Run("MemorySetValidUntil", func(t *testing.T) { testMemorySetValidUntil(t, factory) })
 	// Phase 15 — grants: groups, membership, grants, EffectiveScopes
 	RunGrants(t, factory)
+	// Phase 18 — rollback & pending-confirmation resolution
+	RunPhase18(t, factory)
 }
 
 // --- helpers ----------------------------------------------------------------
