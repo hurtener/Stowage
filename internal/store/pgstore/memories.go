@@ -417,6 +417,32 @@ func (m *memoryStore) GetByContentHashStatus(ctx context.Context, scope identity
 	return mem, err
 }
 
+// ListSupersededBy returns memories whose superseded_by_id = supersederID within scope.
+// Used by the merge-rollback path to find all siblings (Phase 18, D-064).
+func (m *memoryStore) ListSupersededBy(ctx context.Context, scope identity.Scope, supersederID string) ([]store.Memory, error) {
+	whereClause, args, next, err := buildScopeWhere(scope, 1)
+	if err != nil {
+		return nil, err
+	}
+	args = append(args, supersederID)
+	q := `SELECT ` + memorySelectCols + ` FROM memories WHERE ` + whereClause +
+		fmt.Sprintf(` AND superseded_by_id = $%d`, next)
+	rows, rowsErr := m.s.pool.Query(ctx, q, args...)
+	if rowsErr != nil {
+		return nil, rowsErr
+	}
+	defer rows.Close()
+	var mems []store.Memory
+	for rows.Next() {
+		mem, scanErr := scanMemory(rows)
+		if scanErr != nil {
+			return nil, scanErr
+		}
+		mems = append(mems, *mem)
+	}
+	return mems, rows.Err()
+}
+
 // FindNeighbors returns active memories sharing entities or keywords with q,
 // ranked by overlap count descending then recency (D-044).
 func (m *memoryStore) FindNeighbors(ctx context.Context, scope identity.Scope, q store.NeighborQuery) ([]store.Memory, error) {

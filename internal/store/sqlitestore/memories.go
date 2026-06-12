@@ -382,6 +382,31 @@ func (m *memoryStore) GetByContentHashStatus(ctx context.Context, scope identity
 	return mem, err
 }
 
+// ListSupersededBy returns memories whose superseded_by_id = supersederID within scope.
+// Used by the merge-rollback path to find all siblings (Phase 18, D-064).
+func (m *memoryStore) ListSupersededBy(ctx context.Context, scope identity.Scope, supersederID string) ([]store.Memory, error) {
+	whereClause, args, err := buildScopeWhere(scope)
+	if err != nil {
+		return nil, err
+	}
+	args = append(args, supersederID)
+	q := `SELECT ` + memorySelectCols + ` FROM memories WHERE ` + whereClause + ` AND superseded_by_id = ?` //nolint:gosec
+	rows, err := m.s.rdb.QueryContext(ctx, q, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var mems []store.Memory
+	for rows.Next() {
+		mem, scanErr := scanMemory(rows)
+		if scanErr != nil {
+			return nil, scanErr
+		}
+		mems = append(mems, *mem)
+	}
+	return mems, rows.Err()
+}
+
 // GetByContentHash returns the active memory matching hash within scope.
 // Returns ErrNotFound when absent (D-044).
 func (m *memoryStore) GetByContentHash(ctx context.Context, scope identity.Scope, hash string) (*store.Memory, error) {

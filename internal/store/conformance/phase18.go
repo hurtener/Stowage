@@ -6,7 +6,6 @@ package conformance
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"testing"
 	"time"
@@ -28,6 +27,9 @@ func RunPhase18(t *testing.T, factory Factory) {
 	t.Run("GetByContentHashStatus", func(t *testing.T) { testGetByContentHashStatus(t, factory) })
 	t.Run("GetByContentHashStatusNotFound", func(t *testing.T) { testGetByContentHashStatusNotFound(t, factory) })
 	t.Run("GetByContentHashStatusScopeIsolation", func(t *testing.T) { testGetByContentHashStatusScopeIsolation(t, factory) })
+	t.Run("ListSupersededBy", func(t *testing.T) { testListSupersededBy(t, factory) })
+	t.Run("ListSupersededByEmpty", func(t *testing.T) { testListSupersededByEmpty(t, factory) })
+	t.Run("ListSupersededByScopeIsolation", func(t *testing.T) { testListSupersededByScopeIsolation(t, factory) })
 	t.Run("CommitRollbackUpdate", func(t *testing.T) { testCommitRollbackUpdate(t, factory) })
 	t.Run("CommitRollbackSupersede", func(t *testing.T) { testCommitRollbackSupersede(t, factory) })
 	t.Run("CommitRollbackTombstone", func(t *testing.T) { testCommitRollbackTombstone(t, factory) })
@@ -946,15 +948,101 @@ func testAppliedMigrationsPhase18(t *testing.T, factory Factory) {
 	}
 }
 
-// jsonPayload is a helper for golden JSON comparison (unused fields ignored).
-func jsonPayload(t *testing.T, data string, key string) string {
+// --- MemoryStore.ListSupersededBy -------------------------------------------
+
+func testListSupersededBy(t *testing.T, factory Factory) {
 	t.Helper()
-	var m map[string]interface{}
-	if err := json.Unmarshal([]byte(data), &m); err != nil {
-		return ""
+	s, cleanup := factory()
+	defer cleanup()
+	ctx := context.Background()
+	scope := tenantScope("t-" + newID())
+
+	// Seed digest (the superseder).
+	digest := store.Memory{
+		ID: newID(), Kind: "fact", Content: "merged digest", Status: "active",
+		Importance: 3, Confidence: 0.8, TrustSource: "llm_extracted", Stability: 1.0,
+		CreatedAt: nowMs(), UpdatedAt: nowMs(),
 	}
-	v, _ := m[key].(string)
-	return v
+	if err := s.Memories().Insert(ctx, scope, digest); err != nil {
+		t.Fatalf("Insert digest: %v", err)
+	}
+
+	// Seed two siblings pointing to the digest.
+	sibA := store.Memory{
+		ID: newID(), Kind: "fact", Content: "sib-A", Status: "superseded",
+		SupersededByID: digest.ID,
+		Importance:     3, Confidence: 0.8, TrustSource: "llm_extracted", Stability: 1.0,
+		CreatedAt: nowMs(), UpdatedAt: nowMs(),
+	}
+	sibB := store.Memory{
+		ID: newID(), Kind: "fact", Content: "sib-B", Status: "superseded",
+		SupersededByID: digest.ID,
+		Importance:     3, Confidence: 0.8, TrustSource: "llm_extracted", Stability: 1.0,
+		CreatedAt: nowMs(), UpdatedAt: nowMs(),
+	}
+	if err := s.Memories().Insert(ctx, scope, sibA); err != nil {
+		t.Fatalf("Insert sibA: %v", err)
+	}
+	if err := s.Memories().Insert(ctx, scope, sibB); err != nil {
+		t.Fatalf("Insert sibB: %v", err)
+	}
+
+	got, err := s.Memories().ListSupersededBy(ctx, scope, digest.ID)
+	if err != nil {
+		t.Fatalf("ListSupersededBy: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("got %d memories want 2", len(got))
+	}
+	for _, m := range got {
+		if m.SupersededByID != digest.ID {
+			t.Errorf("unexpected superseded_by_id %q", m.SupersededByID)
+		}
+	}
+}
+
+func testListSupersededByEmpty(t *testing.T, factory Factory) {
+	t.Helper()
+	s, cleanup := factory()
+	defer cleanup()
+	ctx := context.Background()
+	scope := tenantScope("t-" + newID())
+
+	got, err := s.Memories().ListSupersededBy(ctx, scope, "no-such-id")
+	if err != nil {
+		t.Fatalf("ListSupersededBy: %v", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("expected 0, got %d", len(got))
+	}
+}
+
+func testListSupersededByScopeIsolation(t *testing.T, factory Factory) {
+	t.Helper()
+	s, cleanup := factory()
+	defer cleanup()
+	ctx := context.Background()
+	scopeA := tenantScope("A-" + newID())
+	scopeB := tenantScope("B-" + newID())
+
+	digestID := newID()
+	sib := store.Memory{
+		ID: newID(), Kind: "fact", Content: "sib", Status: "superseded",
+		SupersededByID: digestID,
+		Importance:     3, Confidence: 0.8, TrustSource: "llm_extracted", Stability: 1.0,
+		CreatedAt: nowMs(), UpdatedAt: nowMs(),
+	}
+	if err := s.Memories().Insert(ctx, scopeA, sib); err != nil {
+		t.Fatalf("Insert: %v", err)
+	}
+
+	got, err := s.Memories().ListSupersededBy(ctx, scopeB, digestID)
+	if err != nil {
+		t.Fatalf("ListSupersededBy scopeB: %v", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("cross-scope isolation violated: got %d", len(got))
+	}
 }
 
 // suppress unused warning for time import used in nowMs.

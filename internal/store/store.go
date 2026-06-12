@@ -200,6 +200,12 @@ type MemoryStore interface {
 	// Used by the decay sweep to record the first-below-floor observation.
 	// A value of 0 clears the field (D-058).
 	SetValidUntil(ctx context.Context, scope identity.Scope, id string, validUntil int64) error
+
+	// ListSupersededBy returns all memories whose superseded_by_id equals
+	// supersederID within scope. Used by the merge-rollback path to discover
+	// all siblings that were merged into a common digest (Phase 18, D-064).
+	// Returns an empty slice (not ErrNotFound) when none exist.
+	ListSupersededBy(ctx context.Context, scope identity.Scope, supersederID string) ([]Memory, error)
 }
 
 // TopicStore manages extraction magnets (RFC §4.1, D-007).
