@@ -25,7 +25,13 @@ const extractWorkers = 4
 const extractDownstreamCap = 256
 
 // extractMaxTokens is the model output token budget for the extract call.
-const extractMaxTokens = 4096
+// Sized for thinking models: reasoning tokens count against the output budget
+// (gateway returns ErrTruncated at max_tokens), and a truncated extraction
+// wastes the entire call — 4096 starved gemini-3.5-flash on real LongMemEval
+// conversations (2026-06-12 sanity check; the openaicompat live test had
+// documented this exact failure mode since Phase 04). Generation stops at the
+// closing brace, so the ceiling only bounds the worst case, not typical spend.
+const extractMaxTokens = 16384
 
 // ExtractStage consumes FlushedBuffer events from the buffer stage and
 // produces CandidateBatch events on its downstream channel.
