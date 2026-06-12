@@ -1,5 +1,5 @@
 {
-  "answer_context_hit": 0.1250,
-  "p50_latency_ms": 15.0,
-  "p95_latency_ms": 23.0
+  "answer_context_hit": 0.85,
+  "p50_latency_ms": 25.0,
+  "p95_latency_ms": 35.0
 }

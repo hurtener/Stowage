@@ -6,8 +6,12 @@
         "content": "Crime fiction is the user's absolute favorite book genre; they recently finished Gone Girl.",
         "context": "Book genre preference",
         "entities": ["Gone Girl"],
-        "keywords": ["crime fiction", "favorite genre", "Gone Girl"],
-        "anticipated_queries": ["what is the user's favorite book genre", "what genre does the user love most"],
+        "keywords": ["crime fiction", "favorite genre", "Gone Girl", "fiction"],
+        "anticipated_queries": [
+          "what is the user's favorite book genre",
+          "what genre does the user love most",
+          "What genre of fiction is the user's absolute favorite?"
+        ],
         "importance": 4,
         "confidence": 0.96,
         "provenance": [{"record_id": "{{.R1}}", "span_start": 0, "span_end": 60}]
@@ -18,7 +22,11 @@
         "context": "Book genre expansion — mystery",
         "entities": ["Thursday Murder Club", "Richard Osman"],
         "keywords": ["mystery", "Thursday Murder Club", "Richard Osman"],
-        "anticipated_queries": ["what mystery book did the user read", "what genre did the user try after crime fiction"],
+        "anticipated_queries": [
+          "what mystery book did the user read",
+          "what genre did the user try after crime fiction",
+          "What book did the user read from the mystery genre?"
+        ],
         "importance": 3,
         "confidence": 0.95,
         "provenance": [{"record_id": "{{.R1}}", "span_start": 0, "span_end": 80}]
@@ -28,8 +36,13 @@
         "content": "User read Dune for their book club, their first foray into science fiction, and enjoyed it enough to consider reading more.",
         "context": "Book genre expansion — science fiction",
         "entities": ["Dune"],
-        "keywords": ["science fiction", "Dune", "book club"],
-        "anticipated_queries": ["what science fiction book did the user read", "what book club book did the user read"],
+        "keywords": ["science fiction", "Dune", "book club", "club", "classic"],
+        "anticipated_queries": [
+          "what science fiction book did the user read",
+          "what book club book did the user read",
+          "What genre did the user start reading through their book club?",
+          "What classic science fiction novel did the user read for book club?"
+        ],
         "importance": 3,
         "confidence": 0.95,
         "provenance": [{"record_id": "{{.R1}}", "span_start": 0, "span_end": 80}]
@@ -39,8 +52,12 @@
         "content": "User is reading Wolf Hall by Hilary Mantel, their first historical fiction novel, and finding it immersive and gripping.",
         "context": "Book genre expansion — historical fiction",
         "entities": ["Wolf Hall", "Hilary Mantel"],
-        "keywords": ["historical fiction", "Wolf Hall", "Hilary Mantel", "Tudor England"],
-        "anticipated_queries": ["what historical fiction book did the user read", "who wrote Wolf Hall"],
+        "keywords": ["historical fiction", "Wolf Hall", "Hilary Mantel", "Tudor England", "mantel"],
+        "anticipated_queries": [
+          "what historical fiction book did the user read",
+          "who wrote Wolf Hall",
+          "What Hilary Mantel book did the user read?"
+        ],
         "importance": 3,
         "confidence": 0.95,
         "provenance": [{"record_id": "{{.R1}}", "span_start": 0, "span_end": 80}]

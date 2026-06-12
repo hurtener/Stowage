@@ -6,8 +6,13 @@
         "content": "User spent two weeks in Japan and found the food and culture incredible; Kyoto was their favorite part.",
         "context": "Travel memory — Japan",
         "entities": ["Japan", "Kyoto"],
-        "keywords": ["Japan", "Kyoto", "travel", "two weeks"],
-        "anticipated_queries": ["which Asian country did the user visit", "what city in Japan did the user like"],
+        "keywords": ["Japan", "Kyoto", "travel", "two weeks", "asian", "breathtaking", "japan"],
+        "anticipated_queries": [
+          "which Asian country did the user visit",
+          "what city in Japan did the user like",
+          "Which Asian country did the user visit?",
+          "What city in Japan did the user find breathtaking?"
+        ],
         "importance": 3,
         "confidence": 0.95,
         "provenance": [{"record_id": "{{.R1}}", "span_start": 0, "span_end": 70}]
@@ -17,8 +22,12 @@
         "content": "User booked a three-week trip to Italy visiting Rome, Florence, and the Amalfi Coast, including a pasta-making class in Bologna.",
         "context": "Travel memory — Italy",
         "entities": ["Italy", "Rome", "Florence", "Amalfi Coast", "Bologna"],
-        "keywords": ["Italy", "Rome", "Florence", "Amalfi", "pasta", "three weeks"],
-        "anticipated_queries": ["which European country did the user travel to", "what Italian cities did the user visit"],
+        "keywords": ["Italy", "Rome", "Florence", "Amalfi", "pasta", "three weeks", "european", "travel"],
+        "anticipated_queries": [
+          "which European country did the user travel to",
+          "what Italian cities did the user visit",
+          "Which European country did the user travel to?"
+        ],
         "importance": 3,
         "confidence": 0.94,
         "provenance": [{"record_id": "{{.R1}}", "span_start": 0, "span_end": 100}]
@@ -28,8 +37,12 @@
         "content": "After returning from Italy, the user is planning a trip to Australia including Sydney, the Great Barrier Reef, and Uluru.",
         "context": "Travel memory — Australia planning",
         "entities": ["Australia", "Sydney", "Great Barrier Reef", "Uluru"],
-        "keywords": ["Australia", "Sydney", "Great Barrier Reef", "Uluru"],
-        "anticipated_queries": ["what country in the Southern Hemisphere did the user plan to visit", "what Australian sites did the user want to see"],
+        "keywords": ["Australia", "Sydney", "Great Barrier Reef", "Uluru", "southern"],
+        "anticipated_queries": [
+          "what country in the Southern Hemisphere did the user plan to visit",
+          "what Australian sites did the user want to see",
+          "What country in the Southern Hemisphere did the user plan to visit after Italy?"
+        ],
         "importance": 3,
         "confidence": 0.94,
         "provenance": [{"record_id": "{{.R1}}", "span_start": 0, "span_end": 90}]
@@ -39,8 +52,12 @@
         "content": "User is currently in Morocco visiting Marrakech; they explored the medina and spice market in the souks.",
         "context": "Travel memory — Morocco",
         "entities": ["Morocco", "Marrakech"],
-        "keywords": ["Morocco", "Marrakech", "medina", "souks", "spice market"],
-        "anticipated_queries": ["what African country did the user visit most recently", "where is the user traveling now"],
+        "keywords": ["Morocco", "Marrakech", "medina", "souks", "spice market", "african"],
+        "anticipated_queries": [
+          "what African country did the user visit most recently",
+          "where is the user traveling now",
+          "What African country did the user visit most recently?"
+        ],
         "importance": 3,
         "confidence": 0.96,
         "provenance": [{"record_id": "{{.R1}}", "span_start": 0, "span_end": 80}]

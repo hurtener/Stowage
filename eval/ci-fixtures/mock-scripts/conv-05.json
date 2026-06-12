@@ -6,8 +6,12 @@
         "content": "In January the user was eating pizza and burgers frequently with no dietary changes planned.",
         "context": "Dietary baseline in January",
         "entities": [],
-        "keywords": ["pizza", "burgers", "January", "no changes"],
-        "anticipated_queries": ["what was the user eating at the start of the year", "what did the user eat before changing diet"],
+        "keywords": ["pizza", "burgers", "January", "no changes", "dietary"],
+        "anticipated_queries": [
+          "what was the user eating at the start of the year",
+          "what did the user eat before changing diet",
+          "What was the user eating at the start of the year before making dietary changes?"
+        ],
         "importance": 3,
         "confidence": 0.90,
         "provenance": [{"record_id": "{{.R1}}", "span_start": 0, "span_end": 70}]
@@ -17,8 +21,12 @@
         "content": "In March the user tried a vegetarian diet, eating no meat for the entire month.",
         "context": "Dietary change in March",
         "entities": [],
-        "keywords": ["vegetarian", "March", "no meat"],
-        "anticipated_queries": ["what diet did the user try in March", "when did the user try vegetarianism"],
+        "keywords": ["vegetarian", "March", "no meat", "march", "diet"],
+        "anticipated_queries": [
+          "what diet did the user try in March",
+          "when did the user try vegetarianism",
+          "What diet did the user try in March?"
+        ],
         "importance": 4,
         "confidence": 0.95,
         "provenance": [{"record_id": "{{.R1}}", "span_start": 0, "span_end": 60}]
@@ -28,8 +36,12 @@
         "content": "User permanently gave up all meat after watching a documentary about factory farming; now eating fully plant-based.",
         "context": "Permanent dietary decision",
         "entities": [],
-        "keywords": ["plant-based", "gave up meat", "documentary", "factory farming", "permanent"],
-        "anticipated_queries": ["why did the user give up meat", "what prompted the user's dietary change"],
+        "keywords": ["plant-based", "gave up meat", "documentary", "factory farming", "permanent", "permanently"],
+        "anticipated_queries": [
+          "why did the user give up meat",
+          "what prompted the user's dietary change",
+          "What prompted the user to permanently give up meat?"
+        ],
         "importance": 5,
         "confidence": 0.97,
         "provenance": [{"record_id": "{{.R1}}", "span_start": 0, "span_end": 90}]
@@ -39,8 +51,13 @@
         "content": "User went fully vegan in July, giving up dairy and eggs in addition to meat.",
         "context": "Full vegan transition in July",
         "entities": [],
-        "keywords": ["vegan", "July", "dairy", "eggs", "fully vegan"],
-        "anticipated_queries": ["what diet is the user following after July", "what animal products did the user give up"],
+        "keywords": ["vegan", "July", "dairy", "eggs", "fully vegan", "july"],
+        "anticipated_queries": [
+          "what diet is the user following after July",
+          "what animal products did the user give up",
+          "What diet is the user following after July?",
+          "What animal products did the user give up when going fully vegan?"
+        ],
         "importance": 5,
         "confidence": 0.97,
         "provenance": [{"record_id": "{{.R1}}", "span_start": 0, "span_end": 70}]

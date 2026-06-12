@@ -1,12 +1,10 @@
 package harness
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"net/url"
-	"os"
 	"time"
 )
 
@@ -55,6 +53,21 @@ type retrieveItem struct {
 }
 
 // RunCI runs the full CI eval: ingest conversations, retrieve + score questions.
+//
+// Fix (bbd134d diagnosis): the previous approach wrote one combined mock-script
+// file covering all 8 conversations and then flushed each buffer sequentially.
+// The global file-offset counter in the mock driver became misaligned when any
+// intervening gateway.Complete call (e.g. a reconcile decision call) consumed a
+// script entry meant for a later conversation's extraction, causing conversations
+// 2-8 to receive wrong scripts and produce zero memories.
+//
+// The fix uses PushScript (in-process queue) instead of the lazy file.  The
+// in-process queue takes priority over the file (see mock.Driver.Complete).
+// Each conversation's extraction script is pushed immediately before its buffer
+// flush, and RunCI waits for at least one new active memory after each flush
+// before pushing the next script.  This ensures (a) the queue holds exactly one
+// entry when the extraction Complete call fires, and (b) the in-process queue is
+// drained before the next conversation's entry is pushed.
 func (r *Runner) RunCI(ctx context.Context) (*RunResult, error) {
 	fixtures, err := LoadCIFixtures(r.cfg.FixturesDir)
 	if err != nil {
@@ -62,8 +75,9 @@ func (r *Runner) RunCI(ctx context.Context) (*RunResult, error) {
 	}
 
 	// Ingest all conversations and collect their record IDs.
+	// All ingestion is done upfront so record IDs are available for placeholder
+	// rendering before any flush fires.
 	allRecordIDs := make(map[string][]string) // convID → slice of IDs in ingest order
-
 	for i := range fixtures.Conversations {
 		conv := &fixtures.Conversations[i]
 		ids, err := r.ingestConversation(ctx, conv)
@@ -73,41 +87,46 @@ func (r *Runner) RunCI(ctx context.Context) (*RunResult, error) {
 		allRecordIDs[conv.ID] = ids
 	}
 
-	// Build the combined mock script: one entry per conversation (each already a
-	// single-entry array after Phase 13 consolidation).
-	// Write it to the mock script file so the gateway reads it on the first Complete call.
-	allEntries := make([]json.RawMessage, 0, len(fixtures.Conversations))
-	totalCandidates := 0
+	// Process each conversation: push its extraction script into the in-process
+	// mock queue, flush the buffer, then wait for at least one new memory before
+	// moving on.  The per-conversation wait serves a dual purpose:
+	//   1. It confirms the extraction Complete call has fired and returned (the
+	//      queue entry was consumed), so the queue is empty before the next push.
+	//   2. It acts as a fixture integrity check: if a conversation produces zero
+	//      new active memories the wait times out and RunCI returns a fatal error.
+	prevMemCount := r.srv.ActiveMemoryCount(ctx)
 	for _, conv := range fixtures.Conversations {
 		ids := allRecordIDs[conv.ID]
 		rendered := RenderMockScript(conv.MockScriptTemplate, ids)
+
 		var entries []json.RawMessage
 		if err := json.Unmarshal(rendered, &entries); err != nil {
 			return nil, fmt.Errorf("parse rendered script for %s: %w", conv.ID, err)
 		}
-		// Count candidates for WaitForMemories estimate.
-		totalCandidates += countCandidates(conv.MockScriptTemplate)
-		allEntries = append(allEntries, entries...)
-	}
-	scriptJSON, err := json.Marshal(allEntries)
-	if err != nil {
-		return nil, fmt.Errorf("marshal mock script: %w", err)
-	}
-	if err := os.WriteFile(r.srv.MockScriptPath, scriptJSON, 0o600); err != nil {
-		return nil, fmt.Errorf("write mock script: %w", err)
-	}
+		if len(entries) == 0 {
+			return nil, fmt.Errorf("fixture integrity: empty mock script for %s", conv.ID)
+		}
 
-	// Flush each conversation's buffer; single flush per conversation feeds one
-	// Complete call which consumes one mock script entry.
-	for _, conv := range fixtures.Conversations {
+		// Push this conversation's extraction response into the in-process queue.
+		// The extraction stage's next Complete() call will pop it (priority over file).
+		r.srv.PushExtractionScript(entries[0])
+
+		// Flush this conversation's buffer to trigger the extraction stage.
 		if err := r.flushBuffer(ctx, conv.ID); err != nil {
 			return nil, fmt.Errorf("flush %s: %w", conv.ID, err)
 		}
-	}
 
-	// Wait for memories to settle. Non-fatal: reconcile may deduplicate some.
-	if err := r.srv.WaitForMemories(ctx, totalCandidates); err != nil {
-		_ = err // log-only; scoring proceeds with whatever is stored
+		// Fixture integrity check: wait until at least one new active memory appears.
+		// If the conversation produced zero memories (wrong script, validation drop,
+		// or pipeline bug), WaitForMemories times out → fatal error.
+		if err := r.srv.WaitForMemories(ctx, prevMemCount+1); err != nil {
+			return nil, fmt.Errorf(
+				"fixture integrity: conversation %s committed 0 active memories — "+
+					"verify mock script provenance record IDs match flushed records: %w",
+				conv.ID, err,
+			)
+		}
+		prevMemCount = r.srv.ActiveMemoryCount(ctx)
 	}
 
 	// Score all questions.
@@ -269,10 +288,4 @@ func filterByLane(items []retrieveItem, disableLane string) []retrieveItem {
 		}
 	}
 	return out
-}
-
-// countCandidates counts the number of candidates in a mock script template.
-// Uses a fast heuristic: count occurrences of `"kind":` in the JSON.
-func countCandidates(scriptTemplate []byte) int {
-	return bytes.Count(scriptTemplate, []byte(`"kind":`))
 }

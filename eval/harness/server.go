@@ -33,8 +33,8 @@ import (
 	"github.com/hurtener/stowage/internal/topics"
 	"github.com/hurtener/stowage/internal/vindex"
 
-	// register drivers
-	_ "github.com/hurtener/stowage/internal/gateway/mock"
+	// register drivers; mock imported named so PushExtractionScript can type-assert.
+	gwtmock "github.com/hurtener/stowage/internal/gateway/mock"
 	_ "github.com/hurtener/stowage/internal/store/sqlitestore"
 	_ "github.com/hurtener/stowage/internal/vindex/hnsw"
 )
@@ -224,6 +224,28 @@ func (s *TestServer) Close() {
 // Scope returns the identity.Scope for the eval tenant.
 func (s *TestServer) Scope() identity.Scope {
 	return identity.Scope{Tenant: s.TenantID}
+}
+
+// PushExtractionScript queues a single JSON extraction response entry into the
+// mock gateway's in-process script queue. The extraction stage's Complete() call
+// consumes from this queue before falling back to the lazy file, so calling
+// PushExtractionScript immediately before a buffer flush guarantees the flush
+// consumes exactly this entry — eliminating the global file-offset race
+// (bbd134d diagnosis). Test-only boot-infrastructure; lives in server.go.
+func (s *TestServer) PushExtractionScript(entry json.RawMessage) {
+	drv := s.gw.(*gwtmock.Driver)
+	drv.PushScript(gwtmock.Script{JSON: entry})
+}
+
+// ActiveMemoryCount returns the number of active memories currently stored in
+// the eval tenant scope. Used by the runner's per-conversation fixture integrity
+// check to detect when a conversation produced zero committed memories.
+func (s *TestServer) ActiveMemoryCount(ctx context.Context) int {
+	mems, _, err := s.Store.Memories().ListByStatus(ctx, s.Scope(), "active", 500, "")
+	if err != nil {
+		return 0
+	}
+	return len(mems)
 }
 
 // WaitForMemories polls until at least minCount active memories exist in scope,

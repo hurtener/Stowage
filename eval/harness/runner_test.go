@@ -59,7 +59,6 @@ func TestEvalCI(t *testing.T) {
 		result.Scores.P50LatencyMs,
 		result.Scores.P95LatencyMs,
 	)
-
 	// Check against committed baselines; skip gracefully if baseline absent.
 	baselinePath := ciBaselinesPath(t)
 	if _, err := os.Stat(baselinePath); os.IsNotExist(err) {

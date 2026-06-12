@@ -6,8 +6,12 @@
         "content": "User previously lived in Chicago for the past four years and found the winters brutal.",
         "context": "Former location — Chicago",
         "entities": ["Chicago"],
-        "keywords": ["Chicago", "four years", "winters", "former location"],
-        "anticipated_queries": ["where did the user live before Austin", "what city did the user leave"],
+        "keywords": ["Chicago", "four years", "winters", "former location", "austin"],
+        "anticipated_queries": [
+          "where did the user live before Austin",
+          "what city did the user leave",
+          "Where did the user live before Austin?"
+        ],
         "importance": 3,
         "confidence": 0.93,
         "provenance": [{"record_id": "{{.R1}}", "span_start": 0, "span_end": 60}]
@@ -17,8 +21,12 @@
         "content": "User accepted a job offer in Austin and moved there from Chicago.",
         "context": "Current location — Austin",
         "entities": ["Austin", "Chicago"],
-        "keywords": ["Austin", "moved", "accepted job", "from Chicago"],
-        "anticipated_queries": ["where does the user currently live", "where did the user move to"],
+        "keywords": ["Austin", "moved", "accepted job", "from Chicago", "currently"],
+        "anticipated_queries": [
+          "where does the user currently live",
+          "where did the user move to",
+          "Where does the user currently live?"
+        ],
         "importance": 5,
         "confidence": 0.97,
         "provenance": [{"record_id": "{{.R1}}", "span_start": 0, "span_end": 65}]
@@ -29,7 +37,11 @@
         "context": "Former employer — Apex Technologies",
         "entities": ["Apex Technologies", "Austin"],
         "keywords": ["Apex Technologies", "Series B", "supply chain", "platform engineering", "former"],
-        "anticipated_queries": ["what startup did the user work at before their current job", "what was the user's first job in Austin"],
+        "anticipated_queries": [
+          "what startup did the user work at before their current job",
+          "what was the user's first job in Austin",
+          "What startup did the user work at before their current job?"
+        ],
         "importance": 4,
         "confidence": 0.96,
         "provenance": [{"record_id": "{{.R1}}", "span_start": 0, "span_end": 100}]
@@ -40,7 +52,11 @@
         "context": "Current employer — BigCorp",
         "entities": ["Apex Technologies", "BigCorp"],
         "keywords": ["left Apex", "BigCorp", "principal engineer", "culture fit"],
-        "anticipated_queries": ["what company does the user currently work at", "what happened at Apex"],
+        "anticipated_queries": [
+          "what company does the user currently work at",
+          "what happened at Apex",
+          "What company does the user currently work at?"
+        ],
         "importance": 5,
         "confidence": 0.97,
         "provenance": [{"record_id": "{{.R1}}", "span_start": 0, "span_end": 90}]
@@ -51,7 +67,11 @@
         "context": "Vehicle — Honda Civic",
         "entities": ["Honda Civic"],
         "keywords": ["Honda Civic", "car", "bought", "first car"],
-        "anticipated_queries": ["what car does the user drive", "what vehicle did the user buy"],
+        "anticipated_queries": [
+          "what car does the user drive",
+          "what vehicle did the user buy",
+          "What car does the user drive?"
+        ],
         "importance": 3,
         "confidence": 0.95,
         "provenance": [{"record_id": "{{.R1}}", "span_start": 0, "span_end": 55}]
