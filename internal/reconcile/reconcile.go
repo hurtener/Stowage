@@ -166,6 +166,15 @@ func (r *ReconcileStage) processCandidate(ctx context.Context, scope identity.Sc
 		return fmt.Errorf("reconcile: GetByContentHash: %w", err)
 	}
 
+	// Step 2b: Parked-duplicate check (Phase 18, D-064).
+	// If the same normalized content is already pending confirmation, bump its
+	// match_count and emit memory.reconfirmed — no duplicate park is created.
+	if discard, err := r.checkParkedDuplicate(ctx, scope, hash); err != nil {
+		return fmt.Errorf("reconcile: parked-dup check: %w", err)
+	} else if discard {
+		return nil
+	}
+
 	// Step 3: Find structural neighbors.
 	neighbors, err := r.mem.FindNeighbors(ctx, scope, store.NeighborQuery{
 		Entities: c.Entities,
@@ -673,6 +682,39 @@ func (r *ReconcileStage) enqueueEmbed(scope identity.Scope, c pipeline.Candidate
 		MemoryID:     memID,
 		EnrichedText: buildEnrichedText(m),
 	})
+}
+
+// checkParkedDuplicate returns true when the same content hash is already in
+// pending_confirmation state. It bumps the existing memory's match_count,
+// emits a memory.reconfirmed event, and returns true so the caller discards
+// the incoming candidate without creating a second parked row (Phase 18, D-064).
+func (r *ReconcileStage) checkParkedDuplicate(ctx context.Context, scope identity.Scope, hash string) (bool, error) {
+	existing, err := r.mem.GetByContentHashStatus(ctx, scope, hash, "pending_confirmation")
+	if errors.Is(err, store.ErrNotFound) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	// Hit: bump match counter.
+	if incErr := r.mem.IncrementCounter(ctx, scope, existing.ID, "match"); incErr != nil {
+		r.log.WarnContext(ctx, "reconcile: IncrementCounter failed on parked dup",
+			"id", existing.ID, "err", incErr)
+	}
+	// Emit memory.reconfirmed event atomically via ActionDiscard commit.
+	cs := store.CommitSet{
+		Action: store.ActionDiscard,
+		Events: []store.Event{
+			buildEvent("memory.reconfirmed", existing.ID,
+				"parked duplicate: content already pending confirmation", nowMs()),
+		},
+	}
+	if commitErr := r.mem.Commit(ctx, scope, cs); commitErr != nil {
+		r.log.WarnContext(ctx, "reconcile: memory.reconfirmed event commit failed", "err", commitErr)
+	}
+	r.log.DebugContext(ctx, "reconcile: parked dup reconfirmed",
+		"tenant", scope.Tenant, "hash", hash, "existing_id", existing.ID)
+	return true, nil
 }
 
 // --- helpers ----------------------------------------------------------------
