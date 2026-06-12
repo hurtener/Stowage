@@ -22,11 +22,13 @@ type Profile struct {
 	DedupeInterval    time.Duration // default 30m
 	RollupInterval    time.Duration // default 60m
 	ReenqueueInterval time.Duration // default 2m
+	ConfirmInterval   time.Duration // default 10m (Phase 18)
 
 	DecayBatchSize     int // memories per pass; default 200
 	DedupeBatchSize    int // comparisons per pass; default 200
 	RollupBatchSize    int // sessions per pass; default 50
 	ReenqueueBatchSize int // records per pass; default 100
+	ConfirmBatchSize   int // parked memories per pass; default 100 (Phase 18)
 
 	// RollupAge is the age threshold for rolling up session working memories.
 	// Sessions older than this are eligible for rollup (default 7 days).
@@ -39,6 +41,13 @@ type Profile struct {
 	// DecayGraceSweeps is the number of consecutive below-floor sweeps before
 	// a memory is expired (D-058). Default 2.
 	DecayGraceSweeps int
+
+	// ConfirmTTL is the age at which a pending_confirmation memory is
+	// automatically promoted to active (Phase 18, D-065). Default 10m.
+	ConfirmTTL time.Duration
+
+	// ConfirmRepeats is reserved for future retry logic (Phase 18). Default 3.
+	ConfirmRepeats int
 }
 
 // DefaultProfile returns the profile with sensible production defaults.
@@ -48,15 +57,19 @@ func DefaultProfile() Profile {
 		DedupeInterval:    30 * time.Minute,
 		RollupInterval:    60 * time.Minute,
 		ReenqueueInterval: 2 * time.Minute,
+		ConfirmInterval:   10 * time.Minute,
 
 		DecayBatchSize:     200,
 		DedupeBatchSize:    200,
 		RollupBatchSize:    50,
 		ReenqueueBatchSize: 100,
+		ConfirmBatchSize:   100,
 
 		RollupAge:         7 * 24 * time.Hour,
 		ReenqueueDeadline: 10 * time.Minute,
 		DecayGraceSweeps:  2,
+		ConfirmTTL:        10 * time.Minute,
+		ConfirmRepeats:    3,
 	}
 }
 
@@ -88,6 +101,9 @@ func New(st store.Store, log *slog.Logger, profile Profile, ingest chan<- pipeli
 	if p.ReenqueueInterval <= 0 {
 		p.ReenqueueInterval = 2 * time.Minute
 	}
+	if p.ConfirmInterval <= 0 {
+		p.ConfirmInterval = 10 * time.Minute
+	}
 	if p.DecayBatchSize <= 0 {
 		p.DecayBatchSize = 200
 	}
@@ -100,6 +116,9 @@ func New(st store.Store, log *slog.Logger, profile Profile, ingest chan<- pipeli
 	if p.ReenqueueBatchSize <= 0 {
 		p.ReenqueueBatchSize = 100
 	}
+	if p.ConfirmBatchSize <= 0 {
+		p.ConfirmBatchSize = 100
+	}
 	if p.RollupAge <= 0 {
 		p.RollupAge = 7 * 24 * time.Hour
 	}
@@ -108,6 +127,12 @@ func New(st store.Store, log *slog.Logger, profile Profile, ingest chan<- pipeli
 	}
 	if p.DecayGraceSweeps <= 0 {
 		p.DecayGraceSweeps = 2
+	}
+	if p.ConfirmTTL <= 0 {
+		p.ConfirmTTL = 10 * time.Minute
+	}
+	if p.ConfirmRepeats <= 0 {
+		p.ConfirmRepeats = 3
 	}
 	return &Manager{
 		st:      st,
@@ -124,6 +149,7 @@ func (m *Manager) Start(ctx context.Context) {
 	m.startSweep(ctx, "dedupe", m.profile.DedupeInterval, m.runDedupe)
 	m.startSweep(ctx, "rollup", m.profile.RollupInterval, m.runRollup)
 	m.startSweep(ctx, "reenqueue", m.profile.ReenqueueInterval, m.runReenqueue)
+	m.startSweep(ctx, "confirm", m.profile.ConfirmInterval, m.runConfirm)
 }
 
 // Stop signals all sweeps to stop and waits for them to finish.
@@ -161,7 +187,7 @@ func (m *Manager) startSweep(ctx context.Context, name string, base time.Duratio
 	}()
 }
 
-// RunForce synchronously executes all four sweeps once (for testing/smoke).
+// RunForce synchronously executes all five sweeps once (for testing/smoke).
 // Activated by STOWAGE_SWEEP_FORCE env var check in main.go.
 func (m *Manager) RunForce(ctx context.Context) {
 	m.log.InfoContext(ctx, "lifecycle: forced sweep run (all sweeps)")
@@ -169,4 +195,5 @@ func (m *Manager) RunForce(ctx context.Context) {
 	m.runDedupe(ctx)
 	m.runRollup(ctx)
 	m.runReenqueue(ctx)
+	m.runConfirm(ctx)
 }
