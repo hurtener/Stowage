@@ -922,17 +922,19 @@ func TestExtract_MarksRecordsProcessed(t *testing.T) {
 	mock.PushScript(mockdrv.Script{JSON: candidateJSON(okID, "User prefers Go.")})
 	in <- makeFlushedBuffer(tenant, []string{okID}, false)
 	collectBatches(t, stage.Downstream(), 1, 2*time.Second)
-	waitProcessed := func(id string, want bool) bool {
+	// waitUnprocessedIs polls until the record's membership in the unprocessed
+	// set equals want, or times out.
+	waitUnprocessedIs := func(id string, want bool) bool {
 		deadline := time.Now().Add(3 * time.Second)
 		for time.Now().Before(deadline) {
-			if up := unprocessed(); up[id] != want {
+			if up := unprocessed(); up[id] == want {
 				return true
 			}
 			time.Sleep(20 * time.Millisecond)
 		}
 		return false
 	}
-	if !waitProcessed(okID, false) {
+	if !waitUnprocessedIs(okID, false) {
 		t.Errorf("delivered extraction: record %s still unprocessed — re-enqueue would loop forever", okID)
 	}
 
