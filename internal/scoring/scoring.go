@@ -392,6 +392,53 @@ func trustMultiplierFor(trustSource string) float64 {
 	}
 }
 
+// DecayFactor computes the decay factor for a memory given its facts, the
+// current time in unix milliseconds, and the scope-activity turn count.
+// This is the same computation as Step 5 of Score; exported so the lifecycle
+// decay sweep can reuse it without constructing a full Inputs (Phase 14).
+// The returned value is in [decayFloorDefault, 1.0] for non-user_stated,
+// or [decayFloorUserStated, 1.0] for user_stated.
+func DecayFactor(facts MemoryFacts, nowMs int64, activityTurns int64) float64 {
+	use := facts.UseCount
+	save := facts.SaveCount
+	stability := facts.Stability
+	if stability <= 0 {
+		stability = 1.0
+	}
+	effectiveStability := stability * (1.0 + math.Log2(1.0+float64(use)+saveWeightInUseBoost*float64(save)))
+	turnsNorm := float64(activityTurns)
+	var daysNorm float64
+	if facts.LastAccessedAt > 0 {
+		elapsed := float64(nowMs - facts.LastAccessedAt)
+		if elapsed > 0 {
+			daysNorm = elapsed / msPerDay
+		}
+	}
+	delta := decayBlendAlpha*turnsNorm + (1-decayBlendAlpha)*daysNorm
+	df := 1.0
+	if effectiveStability > 0 && delta > 0 {
+		df = math.Exp(-delta / effectiveStability)
+	}
+	floor := decayFloorDefault
+	if facts.TrustSource == "user_stated" {
+		floor = decayFloorUserStated
+	}
+	if df < floor {
+		df = floor
+	}
+	return df
+}
+
+// DecayFloorFor returns the decay floor for the given trust source.
+// user_stated uses decayFloorUserStated; everything else uses decayFloorDefault.
+// Exported so the lifecycle sweep can compare against it (Phase 14).
+func DecayFloorFor(trustSource string) float64 {
+	if trustSource == "user_stated" {
+		return decayFloorUserStated
+	}
+	return decayFloorDefault
+}
+
 // scopeAffinityFactor returns the scope-affinity multiplier.
 // SameSession is set by the retrieval layer based on Request.SessionID.
 // SameProject (SameSession=false but same project context) would require

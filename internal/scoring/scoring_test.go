@@ -603,6 +603,123 @@ func TestCooldownSuppressesOnlyOriginSession(t *testing.T) {
 
 // TestHubDampeningAppliesAt4(t) is covered by TestHubDampeningThreshold above.
 
+// ── DecayFactor + DecayFloorFor (Phase 14 exports) ───────────────────────────
+
+// TestDecayFactorMatchesScore verifies that scoring.DecayFactor returns the same
+// decay component as the DecayFactor in the Score Breakdown (AC: pure-function
+// consistency, Phase 14 export).
+func TestDecayFactorMatchesScore(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name           string
+		trustSource    string
+		stability      float64
+		lastAccessedAt int64
+		nowMs          int64
+		activityTurns  int64
+	}{
+		{
+			name:           "zero elapsed",
+			trustSource:    "llm_extracted",
+			stability:      1.0,
+			lastAccessedAt: 1_000_000_000_000,
+			nowMs:          1_000_000_000_000,
+			activityTurns:  0,
+		},
+		{
+			name:           "old memory llm_extracted",
+			trustSource:    "llm_extracted",
+			stability:      1.0,
+			lastAccessedAt: 1,
+			nowMs:          1 + int64(100*msPerDayTest),
+			activityTurns:  0,
+		},
+		{
+			name:           "old memory user_stated",
+			trustSource:    "user_stated",
+			stability:      1.0,
+			lastAccessedAt: 1,
+			nowMs:          1 + int64(100*msPerDayTest),
+			activityTurns:  0,
+		},
+		{
+			name:           "with activity turns",
+			trustSource:    "agent_suggested",
+			stability:      5.0,
+			lastAccessedAt: 1_000_000_000_000,
+			nowMs:          1_000_000_000_000 + int64(10*msPerDayTest),
+			activityTurns:  20,
+		},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			facts := scoring.MemoryFacts{
+				TrustSource:    tc.trustSource,
+				Stability:      tc.stability,
+				LastAccessedAt: tc.lastAccessedAt,
+			}
+			// Get the decay factor from the standalone function.
+			df := scoring.DecayFactor(facts, tc.nowMs, tc.activityTurns)
+
+			// Get the decay factor from Score's breakdown (zero fused score → breakdown still valid).
+			in := scoring.Inputs{
+				Memory:        facts,
+				FusedScore:    1.0,
+				Now:           tc.nowMs,
+				ActivityTurns: tc.activityTurns,
+			}
+			_, bd := scoring.Score(in)
+
+			if math.Abs(df-bd.DecayFactor) > 1e-12 {
+				t.Errorf("DecayFactor=%v != Score.Breakdown.DecayFactor=%v", df, bd.DecayFactor)
+			}
+		})
+	}
+}
+
+func TestDecayFactorZeroStabilityDefaults(t *testing.T) {
+	t.Parallel()
+	// Stability <= 0 should default to 1.0 (defensive).
+	facts := scoring.MemoryFacts{
+		TrustSource:    "llm_extracted",
+		Stability:      0, // zero stability
+		LastAccessedAt: 1,
+	}
+	df := scoring.DecayFactor(facts, 1+int64(1*msPerDayTest), 0)
+	// Should still be >= decayFloorDefault (0.10), not NaN, not negative.
+	if df < 0.10-1e-9 {
+		t.Errorf("zero-stability decay factor %.6f < floor 0.10", df)
+	}
+}
+
+func TestDecayFloorFor(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		trustSource string
+		wantFloor   float64
+	}{
+		{"user_stated", 0.50},
+		{"llm_extracted", 0.10},
+		{"agent_suggested", 0.10},
+		{"agreed_upon", 0.10},
+		{"", 0.10},
+		{"unknown", 0.10},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.trustSource, func(t *testing.T) {
+			t.Parallel()
+			got := scoring.DecayFloorFor(tc.trustSource)
+			if math.Abs(got-tc.wantFloor) > 1e-12 {
+				t.Errorf("DecayFloorFor(%q)=%.2f, want %.2f", tc.trustSource, got, tc.wantFloor)
+			}
+		})
+	}
+}
+
 // ── FinalScore decomposition ──────────────────────────────────────────────────
 
 // TestFinalScoreProductCheck verifies that FinalScore == FusedScore × product

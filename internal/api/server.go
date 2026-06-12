@@ -171,6 +171,12 @@ func (s *Server) Pipeline() <-chan pipeline.Item {
 	return s.pipeline
 }
 
+// PipelineIn returns the write end of the ingest pipeline channel.
+// Used by the lifecycle re-enqueue sweep to re-submit stalled records (Phase 14).
+func (s *Server) PipelineIn() chan<- pipeline.Item {
+	return s.pipeline
+}
+
 // ServeHTTP implements http.Handler so *Server can be used directly with
 // httptest.NewServer in tests.
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {

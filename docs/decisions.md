@@ -770,3 +770,64 @@ persists. Per the CLAUDE.md §11 override rule (class: scheduling-dependent
 branch execution): band set to 82. Follow-up tracked: make the concurrent
 branches deterministically reachable (injected scheduler hooks) and restore
 85 — candidates for the Wave 5/6 checkpoint audit.
+
+## D-057 — Advisory locks for lifecycle sweeps (operator-level guard)
+
+2026-06-12. The lifecycle Manager runs 4 sweeps (decay, dedupe, rollup,
+re-enqueue) as periodic goroutines. In multi-replica deployments the same
+sweep could run concurrently on multiple nodes, causing duplicate expirations,
+double-merge artefacts, or duplicate re-enqueue items.
+
+**Options considered:**
+1. **Distributed mutex (Redis / etcd):** adds an external runtime dependency
+   that contradicts the "no new dependencies" directive and complicates
+   single-node deployments.
+2. **Database advisory lock (pg_advisory_lock / no-op on SQLite):** zero new
+   dependencies, uses the existing store connection, naturally scoped to the DB.
+3. **No locking, accept duplicates:** sweeps are idempotent at the record level
+   (SetStatus is idempotent, re-enqueue of already-processed record is a no-op
+   because ListUnprocessed filters on processed_at == 0). Acceptable, but
+   causes unnecessary churn and noisy logs under scale.
+
+**Decision:** option 2 (advisory lock). Each sweep acquires a distinct 64-bit
+lock key (decay=0x1401, dedupe=0x1402, rollup=0x1403, reenqueue=0x1404) via
+`store.Store.Ops().AdvisoryLock()`. On SQLite the lock is a no-op (single
+writer, no multi-replica). On Postgres it maps to `pg_try_advisory_lock`; if
+the lock is held by another replica the sweep logs a warning and skips the
+cycle (back-off on next ticker fire). Sweeps remain idempotent regardless of
+whether the lock fires, providing defence-in-depth.
+
+**Consequences:** No external infrastructure required. Single-node deployments
+(SQLite, single Postgres) are unaffected. Multi-replica Postgres deployments
+avoid redundant sweep work without coupling replicas.
+
+## D-058 — Grace period for decay expiry via valid_until (D-058)
+
+2026-06-12. Decay factor for a memory can briefly dip to the floor (clamped
+minimum) due to an access gap even for memories the user cares about. Expiring
+on the first below-floor observation would produce false positives.
+
+**Options considered:**
+1. **Immediate expiry on first below-floor:** simple but too aggressive; any
+   access gap causes permanent loss.
+2. **Count consecutive below-floor sweeps in memory (requires mutable counter):**
+   requires an additional column or in-memory state (not safe across restarts).
+3. **Timestamp-based grace via valid_until field:** store a "must recover by"
+   timestamp on first below-floor observation; expire only when that timestamp
+   is passed on a later sweep. `valid_until` already existed on the Memory
+   schema for validity-window semantics and is nullable.
+
+**Decision:** option 3 (valid_until grace period). On first below-floor
+observation the decay sweep sets `valid_until = now + grace_period` (default:
+`DecayGraceSweeps × DecayInterval = 2 × 10m = 20 minutes`). If the memory
+recovers (decay rises above floor, e.g. from a use event updating
+`last_accessed_at`), `valid_until` is cleared. If the memory is still at or
+below floor when `now > valid_until`, it is expired via `Commit(ActionDiscard)`
++ `SetStatus("expired")`. The grace duration is configurable via
+`Profile.DecayGraceSweeps` and `Profile.DecayInterval`.
+
+**Consequences:** Short access gaps do not trigger false-positive expiry.
+Memories that are genuinely stale expire within `grace + 1 sweep interval` of
+the second below-floor observation. The `valid_until` field is reused without
+schema changes. The `idx_memories_valid_until` partial index (migration 0004)
+makes expiry-candidate scans efficient.

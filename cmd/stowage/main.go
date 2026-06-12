@@ -23,6 +23,7 @@ import (
 	"github.com/hurtener/stowage/internal/api"
 	"github.com/hurtener/stowage/internal/config"
 	"github.com/hurtener/stowage/internal/gateway"
+	"github.com/hurtener/stowage/internal/lifecycle"
 	"github.com/hurtener/stowage/internal/pipeline"
 	"github.com/hurtener/stowage/internal/reconcile"
 	"github.com/hurtener/stowage/internal/retrieval"
@@ -370,14 +371,16 @@ Flags:
 //
 // 10. pipeline.NewExtractStage — extraction stage wired to buffer downstream
 // 11. Start stages + no-op Phase 08 placeholder consumer
-// 12. ListenAndServe   — start accepting connections
+// 12. lifecycle.Manager.Start  — decay/dedupe/rollup/re-enqueue sweeps (Phase 14)
+// 13. ListenAndServe   — start accepting connections
 //
 // Graceful shutdown on SIGTERM/SIGINT (Phase 07 order):
-//  1. api.Shutdown       — stop accepting; closes pipeline ingest channel
-//  2. bufStage.Drain     — workers + ticker finish
-//  3. extractStage.Drain — extraction workers finish
-//  4. gw.Close           — gateway flush + release
-//  5. store.Close        — via defer (happens after runServe returns)
+//  1. api.Shutdown          — stop accepting; closes pipeline ingest channel
+//  2. bufStage.Drain        — workers + ticker finish
+//  3. extractStage.Drain    — extraction workers finish
+//  4. lifecycle.Manager.Stop — sweep goroutines finish
+//  5. gw.Close              — gateway flush + release
+//  6. store.Close           — via defer (happens after runServe returns)
 func runServe(args []string) {
 	var configPath string
 	for i := 0; i < len(args); i++ {
@@ -508,6 +511,15 @@ func runServe(args []string) {
 	reconcileStage.SetScopeInvalidator(retriever.Cache()) // Phase 12: cache invalidation on commit (D-053)
 	reconcileStage.Start(ctx)
 
+	// Phase 14: lifecycle sweeps (decay, dedupe, rollup, re-enqueue).
+	// STOWAGE_SWEEP_FORCE=1 runs all sweeps once synchronously before serve (for smoke testing).
+	lcMgr := lifecycle.New(st, log, lifecycle.DefaultProfile(), srv.PipelineIn())
+	if os.Getenv("STOWAGE_SWEEP_FORCE") != "" {
+		log.Info("stowage serve: STOWAGE_SWEEP_FORCE set — running all sweeps once")
+		lcMgr.RunForce(ctx)
+	}
+	lcMgr.Start(ctx)
+
 	// Start HTTP server in a goroutine.
 	servErr := make(chan error, 1)
 	go func() {
@@ -544,6 +556,7 @@ func runServe(args []string) {
 	bufStage.Drain(shutdownCtx)
 	extractStage.Drain(shutdownCtx)
 	reconcileStage.Drain(shutdownCtx)
+	lcMgr.Stop()
 	if gwErr := gw.Close(shutdownCtx); gwErr != nil {
 		log.Warn("stowage serve: gateway close", "err", gwErr)
 	}
