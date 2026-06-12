@@ -2,6 +2,7 @@ package retrieval
 
 import (
 	"log/slog"
+	"time"
 
 	"github.com/hurtener/stowage/internal/store"
 )
@@ -33,3 +34,18 @@ func NewInjectionWriterForTest(inj store.InjectionStore, log *slog.Logger, cap i
 	go w.loop()
 	return w
 }
+
+// ExportNewResultCache creates a ResultCache for testing.
+func ExportNewResultCache(cap int) *ResultCache { return NewResultCache(cap) }
+
+// ExportNewHotSet creates a HotSet for testing.
+func ExportNewHotSet(cap int) *HotSet { return NewHotSet(cap) }
+
+// SetTestNow sets a custom clock on the ResultCache for TTL testing.
+func (c *ResultCache) SetTestNow(fn func() time.Time) { c.now = fn }
+
+// CacheOf returns the Retriever's ResultCache.
+func (r *Retriever) CacheOf() *ResultCache { return r.cache }
+
+// HotSetOf returns the Retriever's HotSet.
+func (r *Retriever) HotSetOf() *HotSet { return r.hotSet }

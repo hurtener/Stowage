@@ -42,3 +42,28 @@ type Usage struct {
 	OutputTokens int
 	CostUSD      float64
 }
+
+// RerankRequest carries query + documents to rerank.
+type RerankRequest struct {
+	Query     string
+	Documents []string
+	TopN      int // 0 = return all
+}
+
+// RerankResponse carries rerank results and provider usage.
+type RerankResponse struct {
+	Results []RerankResult
+	Usage   RerankUsage
+}
+
+// RerankResult is one reranked document with its relevance score.
+type RerankResult struct {
+	Index int
+	Score float64
+}
+
+// RerankUsage records rerank-specific cost (search units for Cohere).
+type RerankUsage struct {
+	SearchUnits int
+	CostUSD     float64
+}

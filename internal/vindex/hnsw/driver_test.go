@@ -2,6 +2,7 @@ package hnsw_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math"
 	"math/rand"
@@ -705,4 +706,48 @@ func benchVec(rng *rand.Rand, dims int) []float32 { //nolint:gocritic
 		}
 	}
 	return v
+}
+
+// failScanVS always fails Scan — covers lazyBuild's error branch
+// deterministically (CI showed interleaving-dependent coverage variance;
+// these tests pin the floor).
+type failScanVS struct{ benchVS }
+
+func (f *failScanVS) Scan(context.Context, identity.Scope, []string, store.Window) ([]store.StoredVector, error) {
+	return nil, errors.New("injected scan failure")
+}
+
+func TestLazyBuildScanError(t *testing.T) {
+	t.Parallel()
+	d := New(&failScanVS{}, 4, "test")
+	_, err := d.Search(context.Background(), identity.Scope{Tenant: "t-err"}, []float32{1, 0, 0, 0}, 5, vindex.Filter{})
+	if err == nil {
+		t.Fatal("expected error from injected scan failure")
+	}
+}
+
+func TestSearchEmptyGraphAndDimsMismatchSkip(t *testing.T) {
+	t.Parallel()
+	vs := newBenchVS()
+	scope := identity.Scope{Tenant: "t-empty-mix"}
+	d := New(vs, 4, "test")
+
+	// Empty graph search → empty results, no error.
+	hits, err := d.Search(context.Background(), scope, []float32{1, 0, 0, 0}, 5, vindex.Filter{})
+	if err != nil || len(hits) != 0 {
+		t.Fatalf("empty graph: %v %v", hits, err)
+	}
+
+	// One good vector + one dims-mismatched row: lazyBuild must skip the
+	// mismatch and index the good one.
+	_ = vs.Upsert(context.Background(), scope, store.StoredVector{
+		MemoryID: "good", TenantID: scope.Tenant, Vec: []float32{1, 0, 0, 0}})
+	_ = vs.Upsert(context.Background(), scope, store.StoredVector{
+		MemoryID: "bad-dims", TenantID: scope.Tenant, Vec: []float32{1, 0}})
+
+	d2 := New(vs, 4, "test")
+	hits, err = d2.Search(context.Background(), scope, []float32{1, 0, 0, 0}, 5, vindex.Filter{})
+	if err != nil || len(hits) != 1 || hits[0].MemoryID != "good" {
+		t.Fatalf("dims-mismatch skip: hits=%v err=%v", hits, err)
+	}
 }

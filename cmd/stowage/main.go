@@ -383,6 +383,7 @@ func runServe(args []string) {
 	// Phase 11: wire InjectionStore so every retrieve call records injection rows
 	// (async, zero added latency — P2 fire-and-forget via InjectionWriter, D-051).
 	retriever := retrieval.NewWithInjections(st.Memories(), st.Records(), vi, gw, st.Injections(), log)
+	retriever.WithRerankModel(cfg.Gateway.RerankModel) // Phase 12: rerank lane (D-052)
 	srv.SetRetriever(retriever)
 
 	// Phase 08: reconciliation stage wired to extract stage downstream.
@@ -395,6 +396,7 @@ func runServe(args []string) {
 		extractStage.Downstream(),
 	)
 	reconcileStage.SetEmbedder(embedder)
+	reconcileStage.SetScopeInvalidator(retriever.Cache()) // Phase 12: cache invalidation on commit (D-053)
 	reconcileStage.Start(ctx)
 
 	// Start HTTP server in a goroutine.

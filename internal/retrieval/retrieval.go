@@ -89,24 +89,29 @@ type MemoryItem struct {
 
 // Response is the retrieve response payload.
 type Response struct {
-	ResponseID string // caller-supplied or generated ULID (D-051)
-	Items      []MemoryItem
-	Support    Support // per-response evidence summary (Phase 10, RFC §4.2.5)
-	Degraded   bool    // true when the vector lane was skipped (D-036)
-	API        string  // "v1" (Phase 11)
+	ResponseID     string // caller-supplied or generated ULID (D-051)
+	Items          []MemoryItem
+	Support        Support // per-response evidence summary (Phase 10, RFC §4.2.5)
+	Degraded       bool    // true when the vector lane was skipped (D-036)
+	API            string  // "v1" (Phase 11)
+	CacheHit       bool    // true when the result was served from the result cache (Phase 12)
+	DegradedRerank bool    // true when the rerank pass failed and Phase-10 order was preserved (Phase 12)
 }
 
 // Retriever executes the four-lane retrieval and returns fused + scored results.
 // It is safe for concurrent use after New returns.
 // Call Close to drain the injection writer goroutine on shutdown.
 type Retriever struct {
-	mem   store.MemoryStore
-	recs  store.RecordStore
-	vi    vindex.Index
-	gw    gateway.Gateway
-	hub   *Hub
-	log   *slog.Logger
-	injWr *InjectionWriter // nil when no injection store is wired
+	mem         store.MemoryStore
+	recs        store.RecordStore
+	vi          vindex.Index
+	gw          gateway.Gateway
+	hub         *Hub
+	log         *slog.Logger
+	injWr       *InjectionWriter // nil when no injection store is wired
+	cache       *ResultCache
+	hotSet      *HotSet
+	rerankModel string // cross-encoder model; empty = use gateway default
 }
 
 // New creates a Retriever wired to the given dependencies.
@@ -114,14 +119,26 @@ type Retriever struct {
 // injSt may be nil (injection recording disabled — no injection writer started).
 func New(mem store.MemoryStore, recs store.RecordStore, vi vindex.Index, gw gateway.Gateway, log *slog.Logger) *Retriever {
 	return &Retriever{
-		mem:  mem,
-		recs: recs,
-		vi:   vi,
-		gw:   gw,
-		hub:  NewHub(hubMaxSize),
-		log:  log.With("subsystem", "retrieval"),
+		mem:    mem,
+		recs:   recs,
+		vi:     vi,
+		gw:     gw,
+		hub:    NewHub(hubMaxSize),
+		log:    log.With("subsystem", "retrieval"),
+		cache:  NewResultCache(0),
+		hotSet: NewHotSet(0),
 	}
 }
+
+// WithRerankModel sets the rerank model to use for the precise-profile pass.
+// Can be called after New; not safe to call concurrently with Retrieve.
+func (r *Retriever) WithRerankModel(model string) *Retriever {
+	r.rerankModel = model
+	return r
+}
+
+// Cache returns the result cache, which also implements ScopeInvalidator.
+func (r *Retriever) Cache() *ResultCache { return r.cache }
 
 // NewWithInjections creates a Retriever that also records injection rows.
 // Close must be called to drain the injection writer on shutdown.
@@ -167,6 +184,27 @@ func (r *Retriever) Retrieve(ctx context.Context, scope identity.Scope, req Requ
 		responseID = ulid.Make().String()
 	}
 
+	// Build the query tokens for the structured lane, hub LRU, and cache key.
+	tokens := Tokenize(req.Query)
+	querySig := QuerySig(tokens)
+
+	// Result-cache check (Phase 12).
+	// Skipped for debug:true (breakdowns are not cached — they're one-time diagnostic
+	// data and must be freshly computed). Session ID is part of the key because it
+	// affects the utility score (write-echo cooldown).
+	if !req.Debug {
+		if cachedItems, cachedSup, ok := r.cache.Get(scope, querySig, req.Profile, req.SessionID, req.Window.From, req.Window.Until); ok {
+			return &Response{
+				ResponseID: responseID,
+				Items:      cachedItems,
+				Support:    cachedSup,
+				Degraded:   false,
+				API:        "v1",
+				CacheHit:   true,
+			}, nil
+		}
+	}
+
 	// Embed the query for the vector lane (may fail → degraded).
 	var queryVec []float32
 	degraded := false
@@ -185,10 +223,6 @@ func (r *Retriever) Retrieve(ctx context.Context, scope identity.Scope, req Requ
 	} else {
 		degraded = true
 	}
-
-	// Build the query tokens for the structured lane and hub LRU.
-	tokens := Tokenize(req.Query)
-	querySig := QuerySig(tokens)
 
 	// Run all non-vector lanes concurrently plus the vector lane.
 	eg, egCtx := errgroup.WithContext(ctx)
@@ -431,6 +465,13 @@ func (r *Retriever) Retrieve(ctx context.Context, scope identity.Scope, req Requ
 		items[i] = s.item
 	}
 
+	// Cross-encoder rerank pass (Phase 12) — only for precise profile.
+	// On failure, degradedRerank=true and items retain Phase-10 order (D-052).
+	var degradedRerank bool
+	if prof.EnableRerank && r.gw != nil && len(items) > 0 {
+		degradedRerank, items = rerankPass(ctx, r.gw, r.rerankModel, req.Query, items, r.log)
+	}
+
 	// Build support summary.
 	sup, supErr := buildSupport(ctx, r.mem, scope, items)
 	if supErr != nil {
@@ -440,6 +481,17 @@ func (r *Retriever) Retrieve(ctx context.Context, scope identity.Scope, req Requ
 		if len(items) > 0 {
 			sup.TopScore = items[0].Score
 		}
+	}
+
+	// Store result in the cache for subsequent identical queries (Phase 12).
+	// Debug requests are not cached (breakdowns are diagnostic and one-time).
+	if !req.Debug {
+		r.cache.Put(scope, querySig, req.Profile, req.SessionID, req.Window.From, req.Window.Until, items, sup)
+	}
+
+	// Feed the hot set with the IDs of injected memories (Phase 12).
+	for _, item := range items {
+		r.hotSet.Record(scope, item.Memory.ID)
 	}
 
 	// Async match_count bumps — non-blocking, errors logged only (P2 spirit).
@@ -475,10 +527,11 @@ func (r *Retriever) Retrieve(ctx context.Context, scope identity.Scope, req Requ
 	}
 
 	return &Response{
-		ResponseID: responseID,
-		Items:      items,
-		Support:    sup,
-		Degraded:   degraded,
-		API:        "v1",
+		ResponseID:     responseID,
+		Items:          items,
+		Support:        sup,
+		Degraded:       degraded,
+		API:            "v1",
+		DegradedRerank: degradedRerank,
 	}, nil
 }

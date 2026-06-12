@@ -17,6 +17,8 @@ import (
 	"log/slog"
 	"math"
 	"os"
+	"sort"
+	"strings"
 	"sync"
 
 	"github.com/hurtener/stowage/internal/config"
@@ -147,6 +149,64 @@ func (d *Driver) Complete(ctx context.Context, req gateway.CompleteRequest) (gat
 	usage := gateway.Usage{InputTokens: len(req.System) + len(req.Messages), OutputTokens: len(s.JSON)}
 	d.meter.Record(ctx, "complete", d.cfg.Model, usage)
 	return gateway.CompleteResponse{JSON: s.JSON, Usage: usage}, nil
+}
+
+// Rerank returns deterministic relevance scores based on token overlap with the
+// query (Jaccard similarity). Results are sorted by score descending; ties are
+// broken by original document index.
+func (d *Driver) Rerank(ctx context.Context, req gateway.RerankRequest) (gateway.RerankResponse, error) {
+	queryTokens := tokenSet(req.Query)
+	results := make([]gateway.RerankResult, len(req.Documents))
+	for i, doc := range req.Documents {
+		docTokens := tokenSet(doc)
+		results[i] = gateway.RerankResult{Index: i, Score: jaccardOverlap(queryTokens, docTokens)}
+	}
+	// Sort by score descending; stable by original index on tie.
+	sort.SliceStable(results, func(i, j int) bool {
+		if results[i].Score != results[j].Score {
+			return results[i].Score > results[j].Score
+		}
+		return results[i].Index < results[j].Index
+	})
+	if req.TopN > 0 && len(results) > req.TopN {
+		results = results[:req.TopN]
+	}
+	usage := gateway.RerankUsage{SearchUnits: len(req.Documents)}
+	d.meter.RecordRerank(ctx, "mock-rerank", usage)
+	return gateway.RerankResponse{Results: results, Usage: usage}, nil
+}
+
+// tokenSet splits s into lowercase word tokens and returns them as a set.
+func tokenSet(s string) map[string]struct{} {
+	tokens := make(map[string]struct{})
+	for _, f := range strings.Fields(strings.ToLower(s)) {
+		tokens[f] = struct{}{}
+	}
+	return tokens
+}
+
+// jaccardOverlap computes the Jaccard similarity coefficient for two token sets.
+// Returns 1.0 when both sets are empty.
+func jaccardOverlap(a, b map[string]struct{}) float64 {
+	if len(a) == 0 && len(b) == 0 {
+		return 1.0
+	}
+	var intersection, union int
+	for k := range a {
+		union++
+		if _, ok := b[k]; ok {
+			intersection++
+		}
+	}
+	for k := range b {
+		if _, ok := a[k]; !ok {
+			union++
+		}
+	}
+	if union == 0 {
+		return 0
+	}
+	return float64(intersection) / float64(union)
 }
 
 // Probe always succeeds for the mock driver.

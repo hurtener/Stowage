@@ -4,7 +4,7 @@ PKG   := ./...
 VERSION ?= dev
 LDFLAGS := -s -w -X github.com/hurtener/stowage/internal/version.Version=$(VERSION)
 
-.PHONY: build test coverage bench vet lint drift-audit check-mirror preflight install-hooks clean
+.PHONY: build test coverage bench slo vet lint drift-audit check-mirror preflight install-hooks clean
 
 build:
 	CGO_ENABLED=0 go build -trimpath -ldflags '$(LDFLAGS)' -o $(BIN) ./cmd/stowage
@@ -19,6 +19,13 @@ coverage:
 
 bench:
 	go test -bench=. -benchmem -run=^$$ $(PKG)
+
+# slo runs the SLO measurement rig against a live postgres instance.
+# Requires STOWAGE_TEST_PG_DSN to be set; skips gracefully when absent.
+# Results are advisory — record them in eval/SLO.md (Phase 12, D-031).
+slo:
+	CGO_ENABLED=1 go test -tags=slo -v -run TestSLO ./internal/bench/slo/ \
+	  $(if $(STOWAGE_TEST_PG_DSN),-slo.dsn "$(STOWAGE_TEST_PG_DSN)",)
 
 vet:
 	go vet $(PKG)

@@ -632,3 +632,72 @@ injections for a response (enabling response-level feedback via
   the `feedback` column (set to `"wrong_citation"` by `MarkWrongCitation`).
 - The async injection writer (bounded channel, drop-with-metric) ensures
   Retrieve latency is unaffected by storage backpressure (P2 fire-and-forget).
+
+## D-052 — Rerank blend constants, slice size, and degradation contract
+
+2026-06-11. Phase 12 adds a cross-encoder rerank pass to the `precise` retrieval
+profile. Open questions: what are the blend weights, the slice size, and the
+degradation contract?
+
+**Decision:**
+
+- **Slice size:** `rerankSlice = 24` — the top-24 Phase-10 scored candidates are
+  sent to the rerank model. Capped at `rerankDocBudget = 32` (maximum documents
+  per call). The rest of the scored set is appended un-reranked.
+- **Blend formula:** `final = 0.6 × rerankNorm + 0.4 × phase10Norm` where each
+  score is normalised to [0, 1] against the maximum in the candidate slice.
+  Both weights are named constants (`rerankBlendRerank`, `rerankBlendScore`) in
+  `internal/retrieval/rerank.go`; they are profile-internal knobs, not config
+  keys (D-034 guardrail). The eval harness re-tunes them in Phase 13.
+- **Degradation contract:** any error from `gateway.Rerank` (including a tripped
+  breaker) sets `DegradedRerank: true` in the response envelope and returns the
+  candidates in their original Phase-10 utility-score order. The rerank failure
+  is never fatal to retrieval. Callers and agents can observe the flag.
+- **Profile gating:** only `precise` enables rerank (`Profile.EnableRerank = true`).
+  `balanced` and `broad` do not call the rerank model.
+
+**Consequences:** retrieval quality on focused queries (precise profile) is
+improved by the cross-encoder while the blend preserves signal from the Phase-10
+utility function; the degradation contract makes the model provider entirely
+optional (D-036 spirit extended to reranking).
+
+## D-053 — Cache invalidation via per-scope generation counters (OQ-9 resolved)
+
+2026-06-11. Phase 12 ships the hot–warm result cache (D-031). OQ-9 asked: what
+invalidation mechanism prevents stale results after a reconcile commit?
+
+**Considered options:**
+
+1. **Scan-based:** on every commit, find and delete all cache entries for the
+   scope. O(N) scan against the LRU. Risky under high commit rate.
+2. **TTL-only:** let entries expire after 60 s; no explicit invalidation. Simple,
+   but stale results survive up to 60 s after a write — unacceptable for coherent
+   sessions.
+3. **Per-scope generation counters:** a monotonic uint64 per scope string, bumped
+   O(1) on `InvalidateScope`. Cache entries store their generation at `Put` time;
+   a `Get` compares the stored generation to the current one — stale entries are
+   immediately invisible with no scan. Combines with a 60 s TTL for bounded
+   memory growth.
+
+**Decision:** option 3 (generation counters). Implemented in `ResultCache`
+(`internal/retrieval/cache.go`). The `ScopeInvalidator` interface (one method:
+`InvalidateScope(scope)`) is defined in `internal/retrieval` to avoid a
+retrieval→reconcile import cycle.
+
+**Wiring:** the reconcile stage calls `cache.InvalidateScope(scope)` after every
+content-changing commit (add, update, supersede, merge — not discard or counter
+bumps). The reconcile stage receives the invalidator as an optional dependency;
+it is nil when running without the result cache. No in-process event bus exists
+yet; the narrow interface is the documented choice over event-driven subscription
+until Phase X wires a general bus (see D-019).
+
+**Hot-set v1:** the injection-frequency `HotSet` is metrics-only in this phase.
+The retrieval fast-path consumption of hot-set IDs for pre-warm GetMany batches
+is measured by the SLO rig before wiring deeper — this avoids premature complexity
+and is documented here as the Phase 12 scope limit. The SLO rig informs Phase 13.
+
+**Consequences:** invalidation is O(1) on both read and write paths; a cross-scope
+cache hit is structurally impossible because the scope string is part of both the
+cache key and the generation key (AC-5 of Phase 12 acceptance criteria);
+`STOWAGE_CACHE_OFF=1` provides a debug escape hatch without removing the cache
+from production deployments.

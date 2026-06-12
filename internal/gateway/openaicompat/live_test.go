@@ -43,6 +43,60 @@ func liveEnv(t *testing.T) (keyEnvVar, model string) {
 	return keyEnvVar, model
 }
 
+// TestLiveOpenAICompat_RerankCohereShape calls the Cohere /rerank endpoint via
+// OpenRouter to verify the Cohere rerank wire shape end-to-end.
+// Requires STOWAGE_TEST_OPENROUTER_KEY (the live API key env var) to be set.
+// Rerank model is always "cohere/rerank-4-fast".
+func TestLiveOpenAICompat_RerankCohereShape(t *testing.T) {
+	apiKey := os.Getenv("STOWAGE_TEST_OPENROUTER_KEY")
+	if apiKey == "" {
+		t.Skip("STOWAGE_TEST_OPENROUTER_KEY must be set for live rerank test")
+	}
+
+	const keyEnv = "STOWAGE_LIVE_OPENROUTER_RERANK_KEY"
+	if err := os.Setenv(keyEnv, apiKey); err != nil {
+		t.Fatalf("setenv: %v", err)
+	}
+	t.Cleanup(func() { os.Unsetenv(keyEnv) }) //nolint:errcheck
+
+	cfg := config.GatewayConfig{
+		Driver:      "openaicompat",
+		BaseURL:     "https://openrouter.ai/api/v1",
+		APIKey:      fmt.Sprintf("env.%s", keyEnv),
+		Model:       "unused",
+		EmbedModel:  "unused",
+		EmbedDims:   1,
+		RerankModel: "cohere/rerank-4-fast",
+	}
+	gw, err := gateway.Open(context.Background(), cfg, discardLog(), prometheus.NewRegistry())
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer gw.Close(context.Background()) //nolint:errcheck
+
+	resp, err := gw.Rerank(context.Background(), gateway.RerankRequest{
+		Query: "what is Go programming",
+		Documents: []string{
+			"Go is an open source programming language that makes it easy to build simple, reliable, and efficient software.",
+			"Python is a high-level, general-purpose programming language.",
+			"The Go gopher is the mascot of the language.",
+		},
+		TopN: 3,
+	})
+	if err != nil {
+		t.Fatalf("Rerank: %v", err)
+	}
+	if len(resp.Results) == 0 {
+		t.Fatal("expected at least one result")
+	}
+	t.Logf("live rerank results: %+v (search_units=%d)", resp.Results, resp.Usage.SearchUnits)
+
+	// The first result should have higher score than the last.
+	if resp.Results[0].Score < resp.Results[len(resp.Results)-1].Score {
+		t.Errorf("results not sorted by score: first=%v last=%v", resp.Results[0].Score, resp.Results[len(resp.Results)-1].Score)
+	}
+}
+
 func TestLiveOpenAICompat_CompleteSchemaConstrained(t *testing.T) {
 	apiKey, model := liveEnv(t)
 

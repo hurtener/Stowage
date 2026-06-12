@@ -68,13 +68,14 @@ type VIndexConfig struct {
 // GatewayConfig selects the intelligence gateway driver.
 // APIKey must use env.VAR_NAME indirection (secret:"true", D-030).
 type GatewayConfig struct {
-	Driver     string `yaml:"driver"`
-	Provider   string `yaml:"provider"` // required iff driver=bifrost; one of the Bifrost SDK's supported providers (D-049)
-	BaseURL    string `yaml:"base_url"`
-	APIKey     string `yaml:"api_key"` // secret:"true" — must be env.VAR_NAME
-	Model      string `yaml:"model"`
-	EmbedModel string `yaml:"embed_model"`
-	EmbedDims  int    `yaml:"embed_dims"`
+	Driver      string `yaml:"driver"`
+	Provider    string `yaml:"provider"` // required iff driver=bifrost; one of the Bifrost SDK's supported providers (D-049)
+	BaseURL     string `yaml:"base_url"`
+	APIKey      string `yaml:"api_key"` // secret:"true" — must be env.VAR_NAME
+	Model       string `yaml:"model"`
+	EmbedModel  string `yaml:"embed_model"`
+	EmbedDims   int    `yaml:"embed_dims"`
+	RerankModel string `yaml:"rerank_model"` // cross-encoder model for the precise-profile rerank pass (Phase 12)
 }
 
 // TelemetryConfig controls logging and metrics.
@@ -103,6 +104,7 @@ var allKeys = []string{
 	"gateway.model",
 	"gateway.embed_model",
 	"gateway.embed_dims",
+	"gateway.rerank_model",
 	"telemetry.log_level",
 	"telemetry.log_format",
 	"telemetry.metrics_listen",
@@ -137,6 +139,7 @@ var envKeys = []struct {
 	{"STOWAGE_GATEWAY_MODEL", "gateway.model"},
 	{"STOWAGE_GATEWAY_EMBED_MODEL", "gateway.embed_model"},
 	{"STOWAGE_GATEWAY_EMBED_DIMS", "gateway.embed_dims"},
+	{"STOWAGE_GATEWAY_RERANK_MODEL", "gateway.rerank_model"},
 	{"STOWAGE_TELEMETRY_LOG_LEVEL", "telemetry.log_level"},
 	{"STOWAGE_TELEMETRY_LOG_FORMAT", "telemetry.log_format"},
 	{"STOWAGE_TELEMETRY_METRICS_LISTEN", "telemetry.metrics_listen"},
@@ -161,12 +164,13 @@ func Defaults() *Config {
 			Driver: "hnsw", // default: HNSW (D-048; owner directive — 100k brute ceiling too low)
 		},
 		Gateway: GatewayConfig{ //nolint:gosec // G101: api_key holds an env-var *name* (reference), not a credential
-			Driver:     "mock",
-			BaseURL:    "",
-			APIKey:     "env.STOWAGE_GATEWAY_API_KEY",
-			Model:      "claude-3-5-haiku-20241022",
-			EmbedModel: "voyage-3-lite",
-			EmbedDims:  512,
+			Driver:      "mock",
+			BaseURL:     "",
+			APIKey:      "env.STOWAGE_GATEWAY_API_KEY",
+			Model:       "claude-3-5-haiku-20241022",
+			EmbedModel:  "voyage-3-lite",
+			EmbedDims:   512,
+			RerankModel: "cohere/rerank-4-fast",
 		},
 		Telemetry: TelemetryConfig{
 			LogLevel:      "info",
@@ -415,6 +419,8 @@ func (c *Config) getByPath(path string) string {
 		return c.Gateway.EmbedModel
 	case "gateway.embed_dims":
 		return strconv.Itoa(c.Gateway.EmbedDims)
+	case "gateway.rerank_model":
+		return c.Gateway.RerankModel
 	case "telemetry.log_level":
 		return c.Telemetry.LogLevel
 	case "telemetry.log_format":
@@ -481,6 +487,8 @@ func (c *Config) setByPath(path, value string) error {
 			return fmt.Errorf("config.%s: %w", path, err)
 		}
 		c.Gateway.EmbedDims = n
+	case "gateway.rerank_model":
+		c.Gateway.RerankModel = value
 	case "telemetry.log_level":
 		c.Telemetry.LogLevel = value
 	case "telemetry.log_format":

@@ -1,7 +1,7 @@
 package retrieval
 
 // Profile controls the retrieval trade-off between precision and recall.
-// Named presets encode the {laneK, scoringK, defaultLimit} triple
+// Named presets encode the {laneK, scoringK, defaultLimit, enableRerank} tuple
 // used during the retrieve call (D-034 knob guardrail).
 type Profile struct {
 	// LaneK is the number of candidates fetched per lane before RRF fusion.
@@ -10,13 +10,16 @@ type Profile struct {
 	ScoringK int
 	// DefaultLimit is used when the caller does not specify a limit.
 	DefaultLimit int
+	// EnableRerank enables the cross-encoder rerank pass (Phase 12).
+	// Only ProfilePrecise enables this; balanced and broad rely on RRF + Phase-10.
+	EnableRerank bool
 }
 
 // The three named retrieval presets.
 var (
-	// ProfilePrecise favours depth over breadth: tight laneK, small limit.
-	// Best for focused queries where the top answer is highly likely to be exact.
-	ProfilePrecise = Profile{LaneK: 30, ScoringK: 10, DefaultLimit: 5}
+	// ProfilePrecise favours depth over breadth: tight laneK, small limit, plus
+	// cross-encoder reranking for maximum relevance (Phase 12).
+	ProfilePrecise = Profile{LaneK: 30, ScoringK: 10, DefaultLimit: 5, EnableRerank: true}
 
 	// ProfileBalanced is the default preset: wide enough for good recall,
 	// tight enough for fast responses.
