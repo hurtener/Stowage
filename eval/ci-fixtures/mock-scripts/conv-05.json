@@ -1,0 +1,50 @@
+[
+  {
+    "candidates": [
+      {
+        "kind": "fact",
+        "content": "In January the user was eating pizza and burgers frequently with no dietary changes planned.",
+        "context": "Dietary baseline in January",
+        "entities": [],
+        "keywords": ["pizza", "burgers", "January", "no changes"],
+        "anticipated_queries": ["what was the user eating at the start of the year", "what did the user eat before changing diet"],
+        "importance": 3,
+        "confidence": 0.90,
+        "provenance": [{"record_id": "{{.R1}}", "span_start": 0, "span_end": 70}]
+      },
+      {
+        "kind": "narrative",
+        "content": "In March the user tried a vegetarian diet, eating no meat for the entire month.",
+        "context": "Dietary change in March",
+        "entities": [],
+        "keywords": ["vegetarian", "March", "no meat"],
+        "anticipated_queries": ["what diet did the user try in March", "when did the user try vegetarianism"],
+        "importance": 4,
+        "confidence": 0.95,
+        "provenance": [{"record_id": "{{.R1}}", "span_start": 0, "span_end": 60}]
+      },
+      {
+        "kind": "decision",
+        "content": "User permanently gave up all meat after watching a documentary about factory farming; now eating fully plant-based.",
+        "context": "Permanent dietary decision",
+        "entities": [],
+        "keywords": ["plant-based", "gave up meat", "documentary", "factory farming", "permanent"],
+        "anticipated_queries": ["why did the user give up meat", "what prompted the user's dietary change"],
+        "importance": 5,
+        "confidence": 0.97,
+        "provenance": [{"record_id": "{{.R1}}", "span_start": 0, "span_end": 90}]
+      },
+      {
+        "kind": "fact",
+        "content": "User went fully vegan in July, giving up dairy and eggs in addition to meat.",
+        "context": "Full vegan transition in July",
+        "entities": [],
+        "keywords": ["vegan", "July", "dairy", "eggs", "fully vegan"],
+        "anticipated_queries": ["what diet is the user following after July", "what animal products did the user give up"],
+        "importance": 5,
+        "confidence": 0.97,
+        "provenance": [{"record_id": "{{.R1}}", "span_start": 0, "span_end": 70}]
+      }
+    ]
+  }
+]

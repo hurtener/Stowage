@@ -701,3 +701,61 @@ cache hit is structurally impossible because the scope string is part of both th
 cache key and the generation key (AC-5 of Phase 12 acceptance criteria);
 `STOWAGE_CACHE_OFF=1` provides a debug escape hatch without removing the cache
 from production deployments.
+
+## D-054 — Single-flush per conversation in CI eval (OQ-10 resolved)
+
+2026-06-11. Phase 13 adds the CI eval harness. OQ-10 asked: should multi-session
+conversations flush once per session or once per conversation?
+
+**Considered options:**
+
+1. **Per-session flush:** each session flushes its own buffer independently.
+   The mock script has one entry per session. Provenance placeholders must
+   reference the correct record IDs for each session (e.g. `{{.R3}}` for the
+   second session's first turn). Complex, error-prone template maintenance.
+2. **Per-conversation flush (single flush):** all sessions share one buffer key
+   (`buffer_key = conv.ID`). A single flush collects all turns across sessions.
+   The mock script has one entry per conversation with all candidates. All
+   provenance placeholders use `{{.R1}}` (the first record in the batch). Simple,
+   deterministic, zero template maintenance overhead.
+
+**Decision:** option 2 (single flush per conversation). All sessions of a
+conversation are ingested with `buffer_key = conv.ID`. One explicit flush
+produces one `Complete` call, consuming one mock script entry. Mock scripts for
+multi-session conversations (conv-03, conv-04, conv-05, conv-08) are consolidated
+to a single entry with all candidates, all using `{{.R1}}` provenance.
+
+**Consequences:** the harness runner is simpler; the mock script format is uniform
+across single-session and multi-session conversations; the provenance constraint
+(`minItems: 1` with a valid record ID) is always satisfied by `{{.R1}}`.
+
+## D-055 — Gate-bite mechanism: lane-based filter over retrieved items (AC-3)
+
+2026-06-11. Phase 13 must include a test proving the benchmark gate "bites" when
+a component regresses (AC-3). The cleanest real regression to simulate is the
+lexical lane going dark.
+
+**Considered options:**
+
+1. **Mock gateway returns empty candidates:** force zero extraction, no memories
+   stored. Gate trivially fails. Too blunt — does not test the retrieval path.
+2. **Reduce retrieve limit to 0:** causes all questions to miss. Fake — bypasses
+   real retrieval logic entirely.
+3. **Lane filter in the harness runner:** when `RunConfig.DisableLane = "lexical"`,
+   the runner filters out any retrieved item that has "lexical" in its `lanes`
+   slice before scoring. No production code is modified. The retrieval pipeline
+   runs normally; only the scorer's input changes.
+
+**Decision:** option 3 (lane filter in the harness runner). `filterByLane` is
+a pure in-memory post-processing step on the retrieve response. It is activated
+by the test-only `RunConfig.DisableLane` field (never set in production). The
+`TestEvalCIGateBites` test asserts the degraded score is strictly lower than the
+normal score, proving the gate would detect the regression.
+
+**Wiring:** `STOWAGE_EVAL_DISABLE_LANE` env var read by the runner at test start;
+documented in the harness honesty constraint (AC-7) as a test-only hook that does
+not touch production behaviour.
+
+**Consequences:** AC-3 is satisfied deterministically; the lane filter exercises
+the real `include_lanes=true` retrieve path; no production code paths are
+special-cased.

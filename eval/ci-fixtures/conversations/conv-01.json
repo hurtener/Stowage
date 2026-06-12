@@ -1,0 +1,19 @@
+{
+  "id": "ci-conv-01",
+  "category": "single_session_recall",
+  "sessions": [
+    {
+      "id": "ci-conv-01-s0",
+      "turns": [
+        {"role": "user", "content": "Hey there! I am Marcus. I have been a software engineer for eight years now."},
+        {"role": "assistant", "content": "Great to meet you, Marcus! Eight years is a solid amount of experience. What do you mainly work on?"},
+        {"role": "user", "content": "I focus on backend systems. Python is my primary language — I use it for almost everything."},
+        {"role": "assistant", "content": "Python is a fantastic choice for backend work. What kind of projects do you build?"},
+        {"role": "user", "content": "I work at a healthcare startup building data pipelines for patient records. Very compliance-heavy work."},
+        {"role": "assistant", "content": "That sounds challenging but rewarding. What tools are in your stack?"},
+        {"role": "user", "content": "We use PostgreSQL for storage, Kafka for streaming, and I do all my editing in Neovim."},
+        {"role": "assistant", "content": "A Neovim user — nice. What plugins do you rely on most?"}
+      ]
+    }
+  ]
+}

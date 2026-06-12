@@ -1,0 +1,21 @@
+{
+  "id": "ci-conv-06",
+  "category": "preference_recall",
+  "sessions": [
+    {
+      "id": "ci-conv-06-s0",
+      "turns": [
+        {"role": "user", "content": "Radiohead is without question my favorite band. I have seen them live six times."},
+        {"role": "assistant", "content": "Six times! You are a dedicated fan. What is your favorite era of their work?"},
+        {"role": "user", "content": "OK Computer is the perfect album in my opinion. Every track is extraordinary."},
+        {"role": "assistant", "content": "OK Computer is widely considered one of the greatest albums ever made."},
+        {"role": "user", "content": "I actually play guitar myself. Trying to learn some of the Jonny Greenwood parts."},
+        {"role": "assistant", "content": "Jonny Greenwood's guitar work is incredibly complex. How long have you been playing?"},
+        {"role": "user", "content": "About ten years. I will never sound like him but it is fun to try."},
+        {"role": "assistant", "content": "Live music will always beat recordings for me too. Do you go to many concerts?"},
+        {"role": "user", "content": "As many as I can. Live music beats recordings every single time — the energy is unmatched. Country music is the one genre I truly cannot stand though."},
+        {"role": "assistant", "content": "Interesting contrast — experimental rock devotee who dislikes country. Not uncommon!"}
+      ]
+    }
+  ]
+}

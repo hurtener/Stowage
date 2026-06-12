@@ -1,0 +1,5 @@
+{
+  "answer_context_hit": 0.1250,
+  "p50_latency_ms": 15.0,
+  "p95_latency_ms": 23.0
+}

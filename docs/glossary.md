@@ -198,3 +198,24 @@ New terms land here in the same PR that introduces them (CLAUDE.md §14).
   (build tag `slo`) that seeds memories into postgres, fires 1 000 concurrent
   sessions, and reports p50/p95/p99 + cache hit rate. Results are recorded in
   `eval/SLO.md` (D-031, Phase 12).
+- **CI eval fixture** — a deterministic conversation + mock script pair in
+  `eval/ci-fixtures/` used by the CI eval harness (Phase 13). Fixtures require
+  no external network calls; the mock gateway serves scripted `Complete`
+  responses from `STOWAGE_MOCK_SCRIPT`.
+- **Benchmark gate** — the quality regression check in `eval/harness/gate.go`
+  that compares a fresh CI eval run's `answer_context_hit` and latency percentiles
+  against committed baselines in `eval/baselines/ci.json`. A regression fails the
+  `make eval-ci` step in CI (Phase 13, D-055).
+- **Gate-bite test** — `TestEvalCIGateBites` in `eval/harness/runner_test.go`;
+  proves the benchmark gate detects a regression by running the harness twice
+  (normal + degraded) and asserting the degraded run scores lower (AC-3, D-055).
+- **answer_context_hit** — the primary CI eval metric: the fraction of questions
+  where the expected answer string appears (case-insensitive substring match) in
+  any retrieved item's content. Measures end-to-end recall across the full
+  extract → reconcile → retrieve pipeline (Phase 13).
+- **Gain harness** — the skeleton for measuring whether memory improves task
+  completion over a baseline (no-memory) run. Seed scenarios live in
+  `eval/gain/scenarios/`. The full fleet-loop measurement is Phase 20.
+- **Single flush per conversation** — the CI eval design decision (D-054) where
+  all sessions of a conversation share one buffer key and are flushed together,
+  producing one `Complete` call and one mock script consumption.

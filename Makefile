@@ -4,7 +4,7 @@ PKG   := ./...
 VERSION ?= dev
 LDFLAGS := -s -w -X github.com/hurtener/stowage/internal/version.Version=$(VERSION)
 
-.PHONY: build test coverage bench slo vet lint drift-audit check-mirror preflight install-hooks clean
+.PHONY: build test coverage bench slo eval-ci vet lint drift-audit check-mirror preflight install-hooks clean
 
 build:
 	CGO_ENABLED=0 go build -trimpath -ldflags '$(LDFLAGS)' -o $(BIN) ./cmd/stowage
@@ -19,6 +19,12 @@ coverage:
 
 bench:
 	go test -bench=. -benchmem -run=^$$ $(PKG)
+
+# eval-ci runs the deterministic CI eval harness (Phase 13).
+# Uses the mock gateway; no external network calls.
+# Checks the benchmark gate and the gate-bite test.
+eval-ci:
+	CGO_ENABLED=1 go test -race -v -timeout=5m -run 'TestEvalCI|TestEvalCIGateBites' ./eval/harness/
 
 # slo runs the SLO measurement rig against a live postgres instance.
 # Requires STOWAGE_TEST_PG_DSN to be set; skips gracefully when absent.

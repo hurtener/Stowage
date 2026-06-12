@@ -1,0 +1,15 @@
+{
+  "id": "gain-update-01",
+  "description": "Update/supersede: user first mentions one framework, then switches; eval checks latest state is recalled.",
+  "category": "update",
+  "turns": [
+    {"role": "user", "content": "I am using Vue.js for my personal project's frontend."},
+    {"role": "assistant", "content": "Vue is a clean and approachable framework. How's it going?"},
+    {"role": "user", "content": "I actually switched to SvelteKit last week — much better developer experience."},
+    {"role": "assistant", "content": "SvelteKit is gaining a lot of traction. Good choice!"},
+    {"role": "user", "content": "Yes, the compiled approach is much faster and the code is simpler."},
+    {"role": "assistant", "content": "The bundle size improvements are also notable."}
+  ],
+  "eval_question": "What frontend framework is the user currently using?",
+  "expected_answer": "SvelteKit"
+}

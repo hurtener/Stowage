@@ -1,0 +1,82 @@
+[
+  {
+    "question_id": "mini-lme-001",
+    "question": "What is Alice's favorite programming language?",
+    "answer": "Go",
+    "question_type": "single_session_recall",
+    "haystack_dates": ["2024-01-10"],
+    "haystack_sessions": [
+      [
+        {"role": "user", "content": "Hi! I am Alice. My favorite programming language is Go."},
+        {"role": "assistant", "content": "Nice to meet you, Alice! Go is a great choice."},
+        {"role": "user", "content": "I have been using it for three years now."},
+        {"role": "assistant", "content": "That is impressive. What do you build with it?"}
+      ]
+    ],
+    "evidence_list": ["0:0"]
+  },
+  {
+    "question_id": "mini-lme-002",
+    "question": "What city does Bob live in?",
+    "answer": "Berlin",
+    "question_type": "single_session_recall",
+    "haystack_dates": ["2024-02-01"],
+    "haystack_sessions": [
+      [
+        {"role": "user", "content": "I just moved to Berlin last month."},
+        {"role": "assistant", "content": "Berlin is a wonderful city!"},
+        {"role": "user", "content": "Yes, I love the food scene here."},
+        {"role": "assistant", "content": "What neighborhood did you move to?"}
+      ]
+    ],
+    "evidence_list": ["0:0"]
+  },
+  {
+    "question_id": "mini-lme-003",
+    "question": "What does Carol do for work?",
+    "answer": "nurse",
+    "question_type": "single_session_recall",
+    "haystack_dates": ["2024-03-05"],
+    "haystack_sessions": [
+      [
+        {"role": "user", "content": "I work as a nurse at a local hospital."},
+        {"role": "assistant", "content": "That is a very rewarding profession."},
+        {"role": "user", "content": "It is tiring but fulfilling."},
+        {"role": "assistant", "content": "How long have you been a nurse?"}
+      ]
+    ],
+    "evidence_list": ["0:0"]
+  },
+  {
+    "question_id": "mini-lme-004",
+    "question": "What is David's preferred coffee order?",
+    "answer": "oat milk latte",
+    "question_type": "preference_recall",
+    "haystack_dates": ["2024-04-12"],
+    "haystack_sessions": [
+      [
+        {"role": "user", "content": "I always order an oat milk latte when I visit a cafe."},
+        {"role": "assistant", "content": "Oat milk lattes are quite popular right now!"},
+        {"role": "user", "content": "I switched from regular milk two years ago."},
+        {"role": "assistant", "content": "Do you prefer any specific coffee beans?"}
+      ]
+    ],
+    "evidence_list": ["0:0"]
+  },
+  {
+    "question_id": "mini-lme-005",
+    "question": "What sport does Emma play on weekends?",
+    "answer": "tennis",
+    "question_type": "preference_recall",
+    "haystack_dates": ["2024-05-20"],
+    "haystack_sessions": [
+      [
+        {"role": "user", "content": "I play tennis every weekend with my friends."},
+        {"role": "assistant", "content": "Tennis is a fantastic sport for staying active!"},
+        {"role": "user", "content": "We usually play at the park near my house."},
+        {"role": "assistant", "content": "What is your skill level?"}
+      ]
+    ],
+    "evidence_list": ["0:0"]
+  }
+]

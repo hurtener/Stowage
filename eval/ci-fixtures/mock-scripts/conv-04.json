@@ -1,0 +1,50 @@
+[
+  {
+    "candidates": [
+      {
+        "kind": "preference",
+        "content": "Crime fiction is the user's absolute favorite book genre; they recently finished Gone Girl.",
+        "context": "Book genre preference",
+        "entities": ["Gone Girl"],
+        "keywords": ["crime fiction", "favorite genre", "Gone Girl"],
+        "anticipated_queries": ["what is the user's favorite book genre", "what genre does the user love most"],
+        "importance": 4,
+        "confidence": 0.96,
+        "provenance": [{"record_id": "{{.R1}}", "span_start": 0, "span_end": 60}]
+      },
+      {
+        "kind": "narrative",
+        "content": "User started reading mystery novels with The Thursday Murder Club by Richard Osman and found themselves hooked on the genre.",
+        "context": "Book genre expansion — mystery",
+        "entities": ["Thursday Murder Club", "Richard Osman"],
+        "keywords": ["mystery", "Thursday Murder Club", "Richard Osman"],
+        "anticipated_queries": ["what mystery book did the user read", "what genre did the user try after crime fiction"],
+        "importance": 3,
+        "confidence": 0.95,
+        "provenance": [{"record_id": "{{.R1}}", "span_start": 0, "span_end": 80}]
+      },
+      {
+        "kind": "narrative",
+        "content": "User read Dune for their book club, their first foray into science fiction, and enjoyed it enough to consider reading more.",
+        "context": "Book genre expansion — science fiction",
+        "entities": ["Dune"],
+        "keywords": ["science fiction", "Dune", "book club"],
+        "anticipated_queries": ["what science fiction book did the user read", "what book club book did the user read"],
+        "importance": 3,
+        "confidence": 0.95,
+        "provenance": [{"record_id": "{{.R1}}", "span_start": 0, "span_end": 80}]
+      },
+      {
+        "kind": "narrative",
+        "content": "User is reading Wolf Hall by Hilary Mantel, their first historical fiction novel, and finding it immersive and gripping.",
+        "context": "Book genre expansion — historical fiction",
+        "entities": ["Wolf Hall", "Hilary Mantel"],
+        "keywords": ["historical fiction", "Wolf Hall", "Hilary Mantel", "Tudor England"],
+        "anticipated_queries": ["what historical fiction book did the user read", "who wrote Wolf Hall"],
+        "importance": 3,
+        "confidence": 0.95,
+        "provenance": [{"record_id": "{{.R1}}", "span_start": 0, "span_end": 80}]
+      }
+    ]
+  }
+]

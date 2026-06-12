@@ -1,0 +1,61 @@
+[
+  {
+    "candidates": [
+      {
+        "kind": "gotcha",
+        "content": "The user is severely allergic to shellfish — even a small amount can require emergency care.",
+        "context": "Food allergy — critical safety information",
+        "entities": [],
+        "keywords": ["shellfish", "allergic", "allergy", "emergency"],
+        "anticipated_queries": ["what food is the user allergic to", "what should not be served to the user"],
+        "importance": 5,
+        "confidence": 0.99,
+        "provenance": [{"record_id": "{{.R1}}", "span_start": 0, "span_end": 70}]
+      },
+      {
+        "kind": "preference",
+        "content": "The user's favorite cuisine is Thai food, though they must avoid dishes with shrimp paste due to their shellfish allergy.",
+        "context": "Cuisine preference with dietary constraint",
+        "entities": [],
+        "keywords": ["Thai", "Thai food", "favorite cuisine", "shrimp paste"],
+        "anticipated_queries": ["what is the user's favorite cuisine", "what cuisine does the user enjoy most"],
+        "importance": 4,
+        "confidence": 0.96,
+        "provenance": [{"record_id": "{{.R3}}", "span_start": 0, "span_end": 80}]
+      },
+      {
+        "kind": "preference",
+        "content": "The user loves spicy food; Thai cuisine appeals to them partly because of the heat level.",
+        "context": "Flavor preference — spicy food",
+        "entities": [],
+        "keywords": ["spicy", "spicy food", "heat", "loves spicy"],
+        "anticipated_queries": ["what flavor profile does the user enjoy", "does the user like spicy food"],
+        "importance": 3,
+        "confidence": 0.94,
+        "provenance": [{"record_id": "{{.R3}}", "span_start": 80, "span_end": 150}]
+      },
+      {
+        "kind": "preference",
+        "content": "The user's favorite dish is green curry with tofu, which they order at restaurants and make at home.",
+        "context": "Favorite dish",
+        "entities": [],
+        "keywords": ["green curry", "tofu", "favorite dish"],
+        "anticipated_queries": ["what is the user's favorite dish", "what does the user usually order at Thai restaurants"],
+        "importance": 4,
+        "confidence": 0.96,
+        "provenance": [{"record_id": "{{.R5}}", "span_start": 0, "span_end": 65}]
+      },
+      {
+        "kind": "preference",
+        "content": "The user dislikes cilantro because they perceive it as tasting like soap, a known genetic trait.",
+        "context": "Herb dislike — cilantro",
+        "entities": [],
+        "keywords": ["cilantro", "dislikes", "tastes like soap", "leaves out"],
+        "anticipated_queries": ["what herb does the user dislike", "why does the user avoid cilantro"],
+        "importance": 3,
+        "confidence": 0.95,
+        "provenance": [{"record_id": "{{.R7}}", "span_start": 0, "span_end": 60}]
+      }
+    ]
+  }
+]

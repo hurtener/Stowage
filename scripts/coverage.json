@@ -1,4 +1,8 @@
 {
+  "github.com/hurtener/stowage/eval/harness": 0,
+  "github.com/hurtener/stowage/eval/gain": 0,
+  "github.com/hurtener/stowage/eval/datasets/locomo": 70,
+  "github.com/hurtener/stowage/eval/datasets/longmemeval": 70,
   "github.com/hurtener/stowage/internal/bench/slo": 0,
   "github.com/hurtener/stowage/internal/scoring": 90,
   "github.com/hurtener/stowage/internal/api": 80,

@@ -1,0 +1,42 @@
+{
+  "id": "ci-conv-05",
+  "category": "temporal_window",
+  "sessions": [
+    {
+      "id": "ci-conv-05-s0",
+      "turns": [
+        {"role": "user", "content": "Starting the new year with the same old habits I guess — had pizza and burgers for dinner three times this week."},
+        {"role": "assistant", "content": "No judgment! Do you have any dietary goals for the year?"},
+        {"role": "user", "content": "I should probably eat better but I have not made any changes yet."},
+        {"role": "assistant", "content": "Small steps help. Even adding one vegetable a day makes a difference."}
+      ]
+    },
+    {
+      "id": "ci-conv-05-s1",
+      "turns": [
+        {"role": "user", "content": "I decided to try a vegetarian diet for March. No meat at all this month."},
+        {"role": "assistant", "content": "That is a great experiment! How are you finding it so far?"},
+        {"role": "user", "content": "Harder than expected honestly. I miss chicken but the variety of vegetarian food surprised me."},
+        {"role": "assistant", "content": "Lots of people find the variety expands once they start exploring plant-based cooking."}
+      ]
+    },
+    {
+      "id": "ci-conv-05-s2",
+      "turns": [
+        {"role": "user", "content": "Still going strong on the plant-based path — I have officially given up all meat now, not just for a month."},
+        {"role": "assistant", "content": "That is a significant commitment. What made you decide to make it permanent?"},
+        {"role": "user", "content": "A documentary I watched about factory farming. Could not go back after seeing that."},
+        {"role": "assistant", "content": "Many people cite that as a turning point. How are you feeling health-wise?"}
+      ]
+    },
+    {
+      "id": "ci-conv-05-s3",
+      "turns": [
+        {"role": "user", "content": "I went fully vegan in July — no dairy or eggs either now. Feeling really good about it."},
+        {"role": "assistant", "content": "Going fully vegan is a major lifestyle shift. Are you finding it manageable day-to-day?"},
+        {"role": "user", "content": "It was tough at restaurants at first but most places have vegan options now."},
+        {"role": "assistant", "content": "The variety of vegan options has improved dramatically in recent years."}
+      ]
+    }
+  ]
+}

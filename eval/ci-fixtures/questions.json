@@ -1,0 +1,282 @@
+[
+  {
+    "id": "ci-q-001",
+    "text": "What programming language does Marcus primarily use?",
+    "conv_id": "ci-conv-01",
+    "category": "single_session_recall",
+    "expected": {"answer": "Python"}
+  },
+  {
+    "id": "ci-q-002",
+    "text": "What industry does Marcus work in?",
+    "conv_id": "ci-conv-01",
+    "category": "single_session_recall",
+    "expected": {"answer": "healthcare"}
+  },
+  {
+    "id": "ci-q-003",
+    "text": "How many years of engineering experience does Marcus have?",
+    "conv_id": "ci-conv-01",
+    "category": "single_session_recall",
+    "expected": {"answer": "eight"}
+  },
+  {
+    "id": "ci-q-004",
+    "text": "What text editor does Marcus use?",
+    "conv_id": "ci-conv-01",
+    "category": "single_session_recall",
+    "expected": {"answer": "Neovim"}
+  },
+  {
+    "id": "ci-q-005",
+    "text": "What database does Marcus use for storage?",
+    "conv_id": "ci-conv-01",
+    "category": "single_session_recall",
+    "expected": {"answer": "PostgreSQL"}
+  },
+  {
+    "id": "ci-q-006",
+    "text": "What city does Sarah live in?",
+    "conv_id": "ci-conv-02",
+    "category": "single_session_recall",
+    "expected": {"answer": "Vancouver"}
+  },
+  {
+    "id": "ci-q-007",
+    "text": "What is Sarah's job?",
+    "conv_id": "ci-conv-02",
+    "category": "single_session_recall",
+    "expected": {"answer": "graphic designer"}
+  },
+  {
+    "id": "ci-q-008",
+    "text": "What kind of car does Sarah drive?",
+    "conv_id": "ci-conv-02",
+    "category": "single_session_recall",
+    "expected": {"answer": "Toyota Prius"}
+  },
+  {
+    "id": "ci-q-009",
+    "text": "What is the name of Sarah's dog?",
+    "conv_id": "ci-conv-02",
+    "category": "single_session_recall",
+    "expected": {"answer": "Biscuit"}
+  },
+  {
+    "id": "ci-q-010",
+    "text": "What breed is Sarah's dog?",
+    "conv_id": "ci-conv-02",
+    "category": "single_session_recall",
+    "expected": {"answer": "golden retriever"}
+  },
+  {
+    "id": "ci-q-011",
+    "text": "Which Asian country did the user visit?",
+    "conv_id": "ci-conv-03",
+    "category": "multi_session_aggregation",
+    "expected": {"answer": "Japan"}
+  },
+  {
+    "id": "ci-q-012",
+    "text": "Which European country did the user travel to?",
+    "conv_id": "ci-conv-03",
+    "category": "multi_session_aggregation",
+    "expected": {"answer": "Italy"}
+  },
+  {
+    "id": "ci-q-013",
+    "text": "What country in the Southern Hemisphere did the user plan to visit after Italy?",
+    "conv_id": "ci-conv-03",
+    "category": "multi_session_aggregation",
+    "expected": {"answer": "Australia"}
+  },
+  {
+    "id": "ci-q-014",
+    "text": "What African country did the user visit most recently?",
+    "conv_id": "ci-conv-03",
+    "category": "multi_session_aggregation",
+    "expected": {"answer": "Morocco"}
+  },
+  {
+    "id": "ci-q-015",
+    "text": "What city in Japan did the user find breathtaking?",
+    "conv_id": "ci-conv-03",
+    "category": "multi_session_aggregation",
+    "expected": {"answer": "Kyoto"}
+  },
+  {
+    "id": "ci-q-016",
+    "text": "What genre of fiction is the user's absolute favorite?",
+    "conv_id": "ci-conv-04",
+    "category": "multi_session_aggregation",
+    "expected": {"answer": "crime fiction"}
+  },
+  {
+    "id": "ci-q-017",
+    "text": "What genre did the user start reading through their book club?",
+    "conv_id": "ci-conv-04",
+    "category": "multi_session_aggregation",
+    "expected": {"answer": "science fiction"}
+  },
+  {
+    "id": "ci-q-018",
+    "text": "What Hilary Mantel book did the user read?",
+    "conv_id": "ci-conv-04",
+    "category": "multi_session_aggregation",
+    "expected": {"answer": "Wolf Hall"}
+  },
+  {
+    "id": "ci-q-019",
+    "text": "What book did the user read from the mystery genre?",
+    "conv_id": "ci-conv-04",
+    "category": "multi_session_aggregation",
+    "expected": {"answer": "Thursday Murder Club"}
+  },
+  {
+    "id": "ci-q-020",
+    "text": "What classic science fiction novel did the user read for book club?",
+    "conv_id": "ci-conv-04",
+    "category": "multi_session_aggregation",
+    "expected": {"answer": "Dune"}
+  },
+  {
+    "id": "ci-q-021",
+    "text": "What was the user eating at the start of the year before making dietary changes?",
+    "conv_id": "ci-conv-05",
+    "category": "temporal_window",
+    "expected": {"answer": "pizza"}
+  },
+  {
+    "id": "ci-q-022",
+    "text": "What diet did the user try in March?",
+    "conv_id": "ci-conv-05",
+    "category": "temporal_window",
+    "expected": {"answer": "vegetarian"}
+  },
+  {
+    "id": "ci-q-023",
+    "text": "What prompted the user to permanently give up meat?",
+    "conv_id": "ci-conv-05",
+    "category": "temporal_window",
+    "expected": {"answer": "documentary"}
+  },
+  {
+    "id": "ci-q-024",
+    "text": "What diet is the user following after July?",
+    "conv_id": "ci-conv-05",
+    "category": "temporal_window",
+    "expected": {"answer": "vegan"}
+  },
+  {
+    "id": "ci-q-025",
+    "text": "What animal products did the user give up when going fully vegan?",
+    "conv_id": "ci-conv-05",
+    "category": "temporal_window",
+    "expected": {"answer": "dairy"}
+  },
+  {
+    "id": "ci-q-026",
+    "text": "What is the user's favorite band?",
+    "conv_id": "ci-conv-06",
+    "category": "preference_recall",
+    "expected": {"answer": "Radiohead"}
+  },
+  {
+    "id": "ci-q-027",
+    "text": "What instrument does the user play?",
+    "conv_id": "ci-conv-06",
+    "category": "preference_recall",
+    "expected": {"answer": "guitar"}
+  },
+  {
+    "id": "ci-q-028",
+    "text": "What is the user's favorite album?",
+    "conv_id": "ci-conv-06",
+    "category": "preference_recall",
+    "expected": {"answer": "OK Computer"}
+  },
+  {
+    "id": "ci-q-029",
+    "text": "Does the user prefer live music or studio recordings?",
+    "conv_id": "ci-conv-06",
+    "category": "preference_recall",
+    "expected": {"answer": "live music"}
+  },
+  {
+    "id": "ci-q-030",
+    "text": "What music genre does the user dislike?",
+    "conv_id": "ci-conv-06",
+    "category": "preference_recall",
+    "expected": {"answer": "country"}
+  },
+  {
+    "id": "ci-q-031",
+    "text": "What food is the user allergic to?",
+    "conv_id": "ci-conv-07",
+    "category": "preference_recall",
+    "expected": {"answer": "shellfish"}
+  },
+  {
+    "id": "ci-q-032",
+    "text": "What is the user's favorite cuisine?",
+    "conv_id": "ci-conv-07",
+    "category": "preference_recall",
+    "expected": {"answer": "Thai"}
+  },
+  {
+    "id": "ci-q-033",
+    "text": "What flavor profile does the user enjoy most in food?",
+    "conv_id": "ci-conv-07",
+    "category": "preference_recall",
+    "expected": {"answer": "spicy"}
+  },
+  {
+    "id": "ci-q-034",
+    "text": "What is the user's favorite dish?",
+    "conv_id": "ci-conv-07",
+    "category": "preference_recall",
+    "expected": {"answer": "green curry"}
+  },
+  {
+    "id": "ci-q-035",
+    "text": "What herb does the user dislike?",
+    "conv_id": "ci-conv-07",
+    "category": "preference_recall",
+    "expected": {"answer": "cilantro"}
+  },
+  {
+    "id": "ci-q-036",
+    "text": "Where does the user currently live?",
+    "conv_id": "ci-conv-08",
+    "category": "update_supersede",
+    "expected": {"answer": "Austin"}
+  },
+  {
+    "id": "ci-q-037",
+    "text": "Where did the user live before Austin?",
+    "conv_id": "ci-conv-08",
+    "category": "update_supersede",
+    "expected": {"answer": "Chicago"}
+  },
+  {
+    "id": "ci-q-038",
+    "text": "What company does the user currently work at?",
+    "conv_id": "ci-conv-08",
+    "category": "update_supersede",
+    "expected": {"answer": "BigCorp"}
+  },
+  {
+    "id": "ci-q-039",
+    "text": "What startup did the user work at before their current job?",
+    "conv_id": "ci-conv-08",
+    "category": "update_supersede",
+    "expected": {"answer": "Apex"}
+  },
+  {
+    "id": "ci-q-040",
+    "text": "What car does the user drive?",
+    "conv_id": "ci-conv-08",
+    "category": "update_supersede",
+    "expected": {"answer": "Honda Civic"}
+  }
+]
