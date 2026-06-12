@@ -572,4 +572,3 @@ func makeTopicsHandler(svc *Services) tool.Handler[TopicsInput, TopicsOutput] {
 		}
 	}
 }
-

@@ -9,6 +9,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"os"
@@ -509,22 +510,44 @@ func runMCP(args []string) {
 		}
 		go func() {
 			<-ctx.Done()
+			// ctx is already cancelled here; a fresh background context is correct
+			// for the graceful shutdown timeout — the parent is intentionally done.
 			shutCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
-			_ = httpSrv.Shutdown(shutCtx)
+			_ = httpSrv.Shutdown(shutCtx) //nolint:contextcheck
 		}()
 		if listenErr := httpSrv.ListenAndServe(); listenErr != nil && !errors.Is(listenErr, http.ErrServerClosed) {
 			log.Error("stowage mcp: http serve", "err", listenErr)
 			os.Exit(1)
 		}
 	} else {
-		if serveErr := srv.ServeStdio(ctx); serveErr != nil {
+		if serveErr := srv.ServeStdio(ctx); serveErr != nil && !isCleanMCPExit(serveErr) {
 			log.Error("stowage mcp: stdio serve", "err", serveErr)
 			os.Exit(1)
 		}
 	}
 
 	log.Info("stowage mcp: stopped")
+}
+
+// isCleanMCPExit reports whether err represents a normal MCP server exit that
+// should not propagate as an error:
+//   - io.EOF: stdin closed by the client (normal stdio session end).
+//   - context.Canceled / context.DeadlineExceeded: SIGTERM / timeout.
+//   - "server is closing: EOF": the go-sdk's error for a clean stdin close;
+//     the jsonrpc2 wire layer wraps io.EOF in a custom error type that does
+//     not implement Unwrap, so errors.Is(err, io.EOF) misses it — we fall
+//     back to the string suffix as a belt-and-suspenders check.
+func isCleanMCPExit(err error) bool {
+	if errors.Is(err, io.EOF) ||
+		errors.Is(err, context.Canceled) ||
+		errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	// Belt-and-suspenders: match the jsonrpc2 "server is closing: EOF" error
+	// that the SDK produces when the stdio transport hits EOF on stdin.
+	msg := err.Error()
+	return len(msg) >= 3 && msg[len(msg)-3:] == "EOF"
 }
 
 const serveUsage = `stowage serve — run the HTTP memory service
