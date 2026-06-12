@@ -16,6 +16,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/hurtener/dockyard/runtime/server"
 	"github.com/prometheus/client_golang/prometheus"
 
 	"github.com/hurtener/stowage/eval/datasets/locomo"
@@ -25,6 +26,7 @@ import (
 	"github.com/hurtener/stowage/internal/gateway"
 	"github.com/hurtener/stowage/internal/grants"
 	"github.com/hurtener/stowage/internal/lifecycle"
+	"github.com/hurtener/stowage/internal/mcpserver"
 	"github.com/hurtener/stowage/internal/pipeline"
 	"github.com/hurtener/stowage/internal/reconcile"
 	"github.com/hurtener/stowage/internal/retrieval"
@@ -51,7 +53,7 @@ Usage:
 Commands:
   config    configuration utilities (explain)
   serve     run the HTTP memory service        (lands in Phase 05)
-  mcp       run the MCP tool server            (lands in Phase 17)
+  mcp       run the MCP tool server            (lands in Phase 16)
   migrate   apply store schema migrations
   eval      run the evaluation harness         (lands in Phase 13)
   version   print the build version
@@ -96,8 +98,7 @@ func main() {
 		runServe(os.Args[2:])
 
 	case "mcp":
-		fmt.Fprintf(os.Stderr, "stowage mcp: not implemented yet — lands in Phase 17\n")
-		os.Exit(1)
+		runMCP(os.Args[2:])
 
 	case "eval":
 		runEval(os.Args[2:])
@@ -346,6 +347,184 @@ func runEvalFetch(args []string) {
 		fmt.Fprintf(os.Stderr, "stowage eval fetch: unknown dataset %q (known: longmemeval, locomo)\n", dataset)
 		os.Exit(2)
 	}
+}
+
+const mcpUsage = `stowage mcp — run the MCP tool server (Phase 16)
+
+Usage:
+  stowage mcp [--config path] [--http addr]
+
+Flags:
+  --config path   path to config file (default: auto-discover)
+  --http addr     serve streamable-HTTP on addr instead of stdio (e.g. :7162)
+`
+
+// runMCP implements `stowage mcp [--config path] [--http addr]`.
+//
+// Boot sequence mirrors runServe (Steps 1–9 of the serve boot doc) but omits
+// the HTTP API server and instead starts the Dockyard MCP server.
+//
+// Transport selection (AC-4 / D-020):
+//   - Default (no --http): stdio — ScopeFn is fixed to cfg.MCP.StdioTenant.
+//   - --http <addr>: streamable-HTTP — ScopeFn reads the scope from context
+//     (wired by BearerMiddleware in HTTP mode).
+func runMCP(args []string) {
+	var (
+		configPath string
+		httpAddr   string
+	)
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--config":
+			if i+1 >= len(args) {
+				fmt.Fprintln(os.Stderr, "stowage mcp: --config requires a path argument")
+				os.Exit(2)
+			}
+			configPath = args[i+1]
+			i++
+		case "--http":
+			if i+1 >= len(args) {
+				fmt.Fprintln(os.Stderr, "stowage mcp: --http requires an address argument")
+				os.Exit(2)
+			}
+			httpAddr = args[i+1]
+			i++
+		case "--help", "-h":
+			_, _ = fmt.Fprint(os.Stdout, mcpUsage)
+			os.Exit(0)
+		default:
+			fmt.Fprintf(os.Stderr, "stowage mcp: unknown flag %q\n\n%s", args[i], mcpUsage)
+			os.Exit(2)
+		}
+	}
+
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
+	defer stop()
+
+	cfg, err := config.Load(ctx, configPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "stowage mcp: load config: %v\n", err)
+		os.Exit(1)
+	}
+	if err := cfg.Validate(); err != nil {
+		fmt.Fprintf(os.Stderr, "stowage mcp: invalid config: %v\n", err)
+		os.Exit(1)
+	}
+
+	log, reg, err := telemetry.New(telemetry.Config{
+		LogLevel:  cfg.Telemetry.LogLevel,
+		LogFormat: cfg.Telemetry.LogFormat,
+	})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "stowage mcp: telemetry: %v\n", err)
+		os.Exit(1)
+	}
+	slog.SetDefault(log)
+	_ = reg
+
+	st, err := store.Open(ctx, cfg.Store)
+	if err != nil {
+		log.Error("stowage mcp: open store", "err", err)
+		os.Exit(1)
+	}
+	defer func() {
+		closeCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if closeErr := st.Close(closeCtx); closeErr != nil {
+			log.Error("stowage mcp: close store", "err", closeErr)
+		}
+	}()
+
+	if err := st.Migrate(ctx); err != nil {
+		log.Error("stowage mcp: migrate", "err", err)
+		os.Exit(1)
+	}
+
+	gw, err := gateway.Open(ctx, cfg.Gateway, log, reg)
+	if err != nil {
+		log.Error("stowage mcp: gateway open", "err", err)
+		os.Exit(1)
+	}
+	if probeErr := gw.Probe(ctx); probeErr != nil {
+		log.Warn("stowage mcp: gateway probe failed (degraded)", "err", probeErr)
+	}
+
+	vi, err := vindex.Open(cfg.VIndex, st.Vectors(), cfg.Gateway.EmbedDims, cfg.Gateway.EmbedModel)
+	if err != nil {
+		log.Error("stowage mcp: vindex open", "err", err)
+		os.Exit(1)
+	}
+
+	embedder := reconcile.NewEmbedder(st.Vectors(), vi, gw, log)
+	embedder.Start(ctx)
+
+	retriever := retrieval.NewWithInjections(st.Memories(), st.Records(), vi, gw, st.Injections(), log)
+	retriever.WithRerankModel(cfg.Gateway.RerankModel)
+	retriever.SetGrants(st.Grants())
+
+	topicSvc := topics.New(st.Topics(), log, cfg.Profile)
+
+	// Pipeline channel for ingest (non-blocking, fire-and-forget).
+	pipelineCh := make(chan pipeline.Item, 4096)
+
+	// ScopeFn: stdio uses a fixed tenant; HTTP mode resolves from context.
+	var scopeFn mcpserver.ScopeFn
+	if httpAddr != "" {
+		scopeFn = mcpserver.StdioScopeFn(cfg.MCP.StdioTenant) // HTTP: real auth wired via BearerMiddleware
+	} else {
+		scopeFn = mcpserver.StdioScopeFn(cfg.MCP.StdioTenant)
+	}
+
+	svc := &mcpserver.Services{
+		Store:      st,
+		Retriever:  retriever,
+		TopicSvc:   topicSvc,
+		PipelineIn: pipelineCh,
+		Log:        log,
+		ScopeFn:    scopeFn,
+	}
+
+	srv, err := mcpserver.New(server.Info{
+		Name:    "stowage",
+		Title:   "Stowage Memory MCP Server",
+		Version: version.Version,
+	}, svc)
+	if err != nil {
+		log.Error("stowage mcp: create server", "err", err)
+		os.Exit(1)
+	}
+
+	log.Info("stowage mcp: ready", "tools", len(srv.Tools()), "transport", map[bool]string{true: "http:" + httpAddr, false: "stdio"}[httpAddr != ""])
+
+	if httpAddr != "" {
+		handler, hErr := srv.HTTPHandler(nil)
+		if hErr != nil {
+			log.Error("stowage mcp: http handler", "err", hErr)
+			os.Exit(1)
+		}
+		httpSrv := &http.Server{
+			Addr:              httpAddr,
+			Handler:           handler,
+			ReadHeaderTimeout: 10 * time.Second,
+		}
+		go func() {
+			<-ctx.Done()
+			shutCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			_ = httpSrv.Shutdown(shutCtx)
+		}()
+		if listenErr := httpSrv.ListenAndServe(); listenErr != nil && !errors.Is(listenErr, http.ErrServerClosed) {
+			log.Error("stowage mcp: http serve", "err", listenErr)
+			os.Exit(1)
+		}
+	} else {
+		if serveErr := srv.ServeStdio(ctx); serveErr != nil {
+			log.Error("stowage mcp: stdio serve", "err", serveErr)
+			os.Exit(1)
+		}
+	}
+
+	log.Info("stowage mcp: stopped")
 }
 
 const serveUsage = `stowage serve — run the HTTP memory service

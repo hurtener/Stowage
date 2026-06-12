@@ -30,6 +30,13 @@ const (
 // Provenance maps dot-separated config key paths to their Origin.
 type Provenance map[string]Origin
 
+// MCPConfig configures the MCP server surface (Phase 16, D-020).
+type MCPConfig struct {
+	// StdioTenant is the fixed tenant ID used in stdio mode.
+	// Defaults to "default". Set STOWAGE_MCP_TENANT to override.
+	StdioTenant string `yaml:"stdio_tenant"`
+}
+
 // Config is the full Stowage runtime configuration. All fields have defaults
 // so that Load with no file and no env produces a working config (AC-1).
 type Config struct {
@@ -39,6 +46,7 @@ type Config struct {
 	VIndex    VIndexConfig    `yaml:"vindex"`
 	Gateway   GatewayConfig   `yaml:"gateway"`
 	Telemetry TelemetryConfig `yaml:"telemetry"`
+	MCP       MCPConfig       `yaml:"mcp"`
 
 	prov Provenance
 }
@@ -108,6 +116,7 @@ var allKeys = []string{
 	"telemetry.log_level",
 	"telemetry.log_format",
 	"telemetry.metrics_listen",
+	"mcp.stdio_tenant",
 }
 
 // secretKeyPaths is the set of keys that hold env.VAR_NAME references.
@@ -143,6 +152,7 @@ var envKeys = []struct {
 	{"STOWAGE_TELEMETRY_LOG_LEVEL", "telemetry.log_level"},
 	{"STOWAGE_TELEMETRY_LOG_FORMAT", "telemetry.log_format"},
 	{"STOWAGE_TELEMETRY_METRICS_LISTEN", "telemetry.metrics_listen"},
+	{"STOWAGE_MCP_TENANT", "mcp.stdio_tenant"},
 }
 
 // Defaults returns a fully working Config with no file or env input. (AC-1)
@@ -176,6 +186,9 @@ func Defaults() *Config {
 			LogLevel:      "info",
 			LogFormat:     "text",
 			MetricsListen: ":7161",
+		},
+		MCP: MCPConfig{
+			StdioTenant: "default",
 		},
 		prov: make(Provenance),
 	}
@@ -427,6 +440,8 @@ func (c *Config) getByPath(path string) string {
 		return c.Telemetry.LogFormat
 	case "telemetry.metrics_listen":
 		return c.Telemetry.MetricsListen
+	case "mcp.stdio_tenant":
+		return c.MCP.StdioTenant
 	default:
 		return ""
 	}
@@ -495,6 +510,8 @@ func (c *Config) setByPath(path, value string) error {
 		c.Telemetry.LogFormat = value
 	case "telemetry.metrics_listen":
 		c.Telemetry.MetricsListen = value
+	case "mcp.stdio_tenant":
+		c.MCP.StdioTenant = value
 	default:
 		return fmt.Errorf("config: unknown key path %q", path)
 	}

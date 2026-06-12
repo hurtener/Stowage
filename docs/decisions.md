@@ -896,3 +896,26 @@ window). EffectiveScopes resolution is a single extra JOIN per request — bench
 shows no regression on the hot path (no-grants common case fast-path: single
 element slice, identical code to pre-Phase-15). Personal/intimate memories
 never cross a grant even if mis-stored (AC-1 defense test in conformance suite).
+
+## D-061 — Dockyard integration = runtime-library embedding; manifest/codegen skipped
+
+2026-06-12. Phase 16 wires the MCP surface via `github.com/hurtener/dockyard`
+v1.7.3 as a pure Go library dependency — `go get`, no replace directive, no
+manifest/codegen workflow.
+
+**Context:** D-020 anticipated a `dockyard validate` manifest gate. The working
+pattern (examples/backend-tools-only) shows that the runtime `tool.Builder`
+generates JSON Schema from Go types at registration time; the manifest/codegen
+workflow applies only to scaffolded CLI projects, not library embedding.
+
+**Decision:** Skip manifest + codegen. The in-repo schema goldens in
+`internal/mcpserver/testdata/*.schema.json` (generated via `tool.Builder.Schemas()`
+and compared in `TestSchemaGoldens`) are the contract drift gate, replacing the
+`dockyard validate` step named in D-020. Golden regeneration: `UPDATE_GOLDEN=1 go
+test ./internal/mcpserver/`.
+
+**Amends:** D-020's "validate gates" wording.
+
+**Consequences:** No codegen step in CI. Schema goldens fail on any contract type
+rename (AC-6 mutation test). Dockyard dep is a normal public module dep, same
+as any other.
