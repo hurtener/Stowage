@@ -21,7 +21,13 @@ const (
 	reconcileWorkers = 4
 
 	// decisionMaxTokens is the model output token budget for the decision call.
-	decisionMaxTokens = 512
+	// The decision JSON itself is tiny, but thinking models spend reasoning
+	// tokens against this same budget and the gateway fails the call outright
+	// at max_tokens (ErrTruncated) — 512 starved gemini-3.5-flash and
+	// dead-lettered every reconcile decision (2026-06-12 sanity check, same
+	// failure mode as extraction). Generation stops at the closing brace, so
+	// the ceiling bounds the worst case, not typical spend.
+	decisionMaxTokens = 8192
 
 	// nearDupThreshold is the bigram-Jaccard similarity at or above which a
 	// candidate is treated as the same fact as a retrieved neighbor and
