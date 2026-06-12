@@ -1,6 +1,6 @@
 # Phase 18 — Rollback & pending-confirmation resolution
 
-- **Status:** draft
+- **Status:** implemented
 - **Owning subsystem(s):** `internal/api` (memories handler), `internal/store`
   (rollback commit + subject-indexed events), `internal/lifecycle` (confirm
   sweep), `internal/reconcile` (parked-duplicate counter)
@@ -181,12 +181,14 @@ content is submitted multiple times.
 ### ActionConfirm for reject
 
 The `PATCH /v1/memories/{id}` reject path uses `ActionConfirm` with
-`Memory.Status='deleted'` rather than introducing a new action. This is valid
+`Memory.Status='expired'` rather than introducing a new action. This is valid
 because `confirmMemoryStatusSQLite/PG` performs a plain status+superseded_by_id
-UPDATE, and `status='deleted'` is a valid terminal state. The driver's
-`superseded_by_id` column is `NOT NULL DEFAULT ''`, so the raw string value
-(empty string, not SQL NULL) must be passed; `nullStr()` is intentionally not
-used there.
+UPDATE, and `status='expired'` is the correct terminal state for a rejected
+parked memory per D-065 (using `'deleted'` was incorrect — `'expired'` signals
+that the trust window elapsed without confirmation rather than an administrative
+deletion). The driver's `superseded_by_id` column is `NOT NULL DEFAULT ''`, so
+the raw string value (empty string, not SQL NULL) must be passed; `nullStr()` is
+intentionally not used there.
 
 ### superseded_by_id NOT NULL constraint
 
@@ -194,6 +196,39 @@ Both the SQLite and Postgres schemas define `superseded_by_id TEXT NOT NULL DEFA
 The `confirmMemoryStatusSQLite/PG` helpers were initially written using `nullStr()`
 which sends SQL NULL, violating the NOT NULL constraint. Fixed to pass the raw
 string value directly (empty string is the valid sentinel).
+
+### Gate-review fixes (post-first-pass)
+
+During gate review, the following issues were found and fixed:
+
+**handleRollbackMemory (D-064):** The initial implementation did not fully
+implement the D-064 contract. Fixed: (1) scan newest 50 events via
+`ListBySubject`, (2) double-rollback guard — a `memory.rolled_back` event
+newer than any restorable event returns 409 `already_rolled_back`, (3) type
+dispatch on `memory.updated` / `memory.superseded` / `memory.merged`, (4)
+downstream conflict guard — result row must still be `active`, (5) merge
+rollback discovers ALL siblings via `ListSupersededBy` and restores them in
+ONE CommitSet, (6) `memory.rolled_back` carries `MarshalPriorState` so the
+rollback is itself reversible.
+
+**handlePatchMemory confirm:** The `memory.superseded` event on the confirm
+path now carries `MarshalPriorState` of the target (was `{}` before), making
+every auto-resolution reversible per D-064.
+
+**handlePatchMemory reject:** Changed `status='deleted'` → `status='expired'`
+per D-065 contract. The response body now returns `"status":"expired"`.
+
+**confirm.go (lifecycle sweep):** Eligibility check was previously TTL-only.
+Fixed to also promote when `match_count >= ConfirmRepeats` (repeated
+independent extraction). `MarshalPriorState` added to superseded events.
+`ConfirmTTL` default corrected from 10 m to 72 h; `ConfirmRepeats` default
+corrected from 3 to 2.
+
+**ListSupersededBy:** New store method added to both drivers (SQLite and
+Postgres) and to the conformance suite. Required by the merge-rollback path.
+
+**Coverage bands:** api ≥ 80 %, lifecycle ≥ 85 %, reconcile ≥ 85 %,
+sqlitestore ≥ 85 %. All bands met as of gate-review pass.
 
 ## Decisions filed
 
@@ -203,8 +238,8 @@ string value directly (empty string is the valid sentinel).
 - D-065: OQ-4 RESOLVED — pending_confirmation auto-resolves in favor of the
   newer memory after `confirmTTL` (72 h default) or at `confirmRepeats` (2)
   independent re-extractions; promotion rides the supersede path so it is
-  always reversible; explicit confirm/reject via PATCH; assert/correct PATCH
-  actions deferred to v1.2.
+  always reversible; explicit confirm/reject via PATCH (reject → `expired`);
+  assert/correct PATCH actions deferred to v1.2.
 
 ## Risks & mitigations
 
