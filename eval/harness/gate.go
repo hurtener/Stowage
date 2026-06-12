@@ -15,8 +15,11 @@ type Baseline struct {
 }
 
 // CheckGate compares actual scores against the baseline at baselinePath.
-// Returns a non-nil error if any quality metric dropped or latency spiked
-// beyond 3x the baseline (generous headroom for busy CI runners).
+// Returns a non-nil error if any quality metric dropped. Latency clauses
+// only apply when the baseline sets them > 0 — the CI baseline sets them to 0
+// (disabled) because CI-runner latency is machine noise (observed: 79ms p50
+// on a runner vs 25ms locally, tripping 3x headroom with identical quality);
+// latency enforcement is the SLO rig's job on reference hardware (D-031).
 func CheckGate(actual Scores, baselinePath string) error {
 	data, err := os.ReadFile(baselinePath) //nolint:gosec // operator-supplied path
 	if err != nil {
