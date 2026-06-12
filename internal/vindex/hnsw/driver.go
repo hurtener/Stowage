@@ -74,6 +74,19 @@ type tenantGraph struct {
 	built       bool                 // lazy-build done flag
 }
 
+// invalidateLocked discards the in-memory graph and sidecar so the next Search
+// lazy-rebuilds from the vector store. Caller must hold tg.mu for writing.
+//
+// This is the ONLY safe way to remove or replace a node: coder/hnsw v0.6.1
+// Graph.Delete leaves dangling inbound edges (D-066), so graph.Delete must
+// never be called on a graph that will be searched or added to again.
+func (tg *tenantGraph) invalidateLocked() {
+	tg.graph = newGraph()
+	tg.meta = make(map[string]metaEntry)
+	tg.pendingMeta = make(map[string]bool)
+	tg.built = false
+}
+
 // New creates a new HNSW vindex driver.
 // dims is the expected embedding dimensionality; 0 means unchecked.
 // model is the embedding model name written to the vector store.
@@ -158,20 +171,23 @@ func (d *driver) Upsert(ctx context.Context, scope identity.Scope, memoryID stri
 		return nil
 	}
 
-	// Incremental add/replace.
-	// coder/hnsw v0.6.1 Add has an internal delete-then-reinsert path for
-	// duplicate keys, but its postcondition check (g.Len() must equal preLen+1)
-	// fails because the internal Delete reduces Len to preLen-1 and the
-	// subsequent insert only restores it to preLen. Workaround: explicit
-	// Delete before Add when the key already exists. Hard deletes are supported
-	// — see D-048 deletion-semantics finding.
+	// Incremental add for NEW keys only. coder/hnsw v0.6.1 Graph.Delete leaves
+	// dangling INBOUND edges (adjacency is asymmetric; isolate() only removes
+	// the edges the node itself knows about), so a graph that has seen a
+	// Delete can later crash inside Add: traversal reaches the deleted node,
+	// adopts its key as the inter-layer elevator, and `layer.nodes[*elevator]`
+	// on the next layer is nil (SIGSEGV seen in CI, reproduced locally with
+	// -count=40). Delete-then-Add is therefore forbidden: a duplicate-key
+	// upsert invalidates the tenant graph and the next Search lazy-rebuilds
+	// from the vector store (D-066).
 	if d.dims == 0 {
 		if tg.graph.Len() > 0 && len(vec) != tg.graph.Dims() {
 			return vindex.ErrDimsMismatch{Got: len(vec), Want: tg.graph.Dims()}
 		}
 	}
 	if _, exists := tg.graph.Lookup(memoryID); exists {
-		tg.graph.Delete(memoryID)
+		tg.invalidateLocked()
+		return nil
 	}
 	tg.graph.Add(coderhnsw.MakeNode(memoryID, vec))
 
@@ -191,9 +207,11 @@ func (d *driver) Upsert(ctx context.Context, scope identity.Scope, memoryID stri
 
 // Delete removes the embedding for memoryID. No-op when absent.
 //
-// Deletion semantics: coder/hnsw v0.6.1 supports HARD deletes via
-// Graph.Delete, which removes the node from all layers and replenishes
-// neighborhood connectivity. No tombstone set is needed. See D-048.
+// Deletion semantics (D-066, amends the D-048 hard-delete finding): the BLOB
+// store row is removed immediately; the in-memory graph is invalidated and
+// lazily rebuilt on the next Search rather than mutated in place, because
+// coder/hnsw v0.6.1 Graph.Delete leaves dangling inbound edges that crash
+// later Adds.
 func (d *driver) Delete(ctx context.Context, scope identity.Scope, memoryID string) error {
 	// Remove from BLOB store first.
 	if err := d.vs.Delete(ctx, scope, memoryID); err != nil {
@@ -210,10 +228,16 @@ func (d *driver) Delete(ctx context.Context, scope identity.Scope, memoryID stri
 	tg.mu.Lock()
 	defer tg.mu.Unlock()
 
-	// Hard-delete from HNSW graph (safe even when key is absent — returns false).
-	tg.graph.Delete(memoryID)
-	delete(tg.meta, memoryID)
-	delete(tg.pendingMeta, memoryID)
+	// Never graph.Delete (dangling inbound edges, D-066): when the key is in
+	// the built graph, invalidate and let the next Search lazy-rebuild from
+	// the vector store (the BLOB row is already gone, so the rebuilt graph
+	// excludes it). Absent key or unbuilt graph: nothing to do.
+	if _, exists := tg.graph.Lookup(memoryID); exists {
+		tg.invalidateLocked()
+	} else {
+		delete(tg.meta, memoryID)
+		delete(tg.pendingMeta, memoryID)
+	}
 
 	return nil
 }

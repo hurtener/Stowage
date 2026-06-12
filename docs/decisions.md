@@ -1028,3 +1028,28 @@ assert/correct PATCH actions stay in v1.2 trust extensions.
 **Consequences:** parked memories stop being a roach motel; a fifth sweep
 (confirm) joins the lifecycle manager under the Phase 14 idempotency/
 singleflight contract.
+
+## D-066 — vindex/hnsw: graph.Delete is forbidden; invalidate-and-rebuild instead
+
+2026-06-12. CI (and local repro at -count=40) hit SIGSEGVs inside coder/hnsw
+v0.6.1 `Graph.Add`: upstream `Delete` removes a node from `layer.nodes` and
+calls `isolate()`, but HNSW adjacency is asymmetric — inbound edges from nodes
+the deleted node doesn't list survive as dangling references. A later Add can
+traverse to the deleted node, adopt its key as the inter-layer elevator, and
+dereference `layer.nodes[*elevator]` == nil. v0.6.1 is the latest upstream;
+no fixed release exists. The driver previously did Delete-then-Add for
+duplicate-key upserts (working around a separate upstream duplicate-key Add
+bug) and hard Deletes for removals — both paths could corrupt the graph and
+crash a production server.
+
+**Decision:** the in-memory graph is append-only. Duplicate-key upserts and
+deletes invalidate the tenant graph (`built=false`, fresh graph) and the next
+Search lazy-rebuilds from the vector store, which is already the boot path.
+Amends D-048's hard-delete finding. Cost: one rebuild per tenant after a
+replace/delete burst, amortized by the existing lazy-build; vector-store rows
+remain the source of truth either way.
+
+**Consequences:** no upstream graph mutation bug is reachable; rebuild
+correctness is covered by the existing recall-floor and conformance tests;
+re-embedded memories become searchable on the next query rather than
+immediately (cache-rebuild semantics, identical content).
