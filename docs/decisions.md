@@ -1053,3 +1053,84 @@ remain the source of truth either way.
 correctness is covered by the existing recall-floor and conformance tests;
 re-embedded memories become searchable on the next query rather than
 immediately (cache-rebuild semantics, identical content).
+
+## D-067 — Productionization parity-lens hardening program
+
+2026-06-13. A productionization-hardening program run per
+`docs/notes/productionization-playbook.md` (§7 homes the generic method onto
+Stowage). The findings doc is `docs/notes/parity-lens-findings.md`; this entry
+records the program and pre-reserves its per-phase decision numbers.
+
+**The lens (owner-confirmed at GATE 1, parity — both seams co-equal):**
+*"Same code, same seams" must be literally true — every capability, lifecycle,
+and semantic must be reachable and behave identically on the embedded-sqlite path
+AND the server-over-Postgres path; any behavior/lifecycle/capability that exists,
+works, runs, or is observable on only one of the two — in EITHER direction — is a
+parity finding.* Two axes checked together: the **path axis** (embedded
+`sdk/stowage` vs server `cmd/stowage`→`internal/api`+`internal/mcpserver`) and the
+**backend axis** (sqlite vs Postgres, `internal/store`). Unlike Harbor's
+single-favored-path lens, neither side is privileged; divergence in either
+direction is the bug.
+
+**Audit calibration:** 11 read-only investigators (one per §7.2 seam) + an
+adversarial skeptic on every blocker/major, pipelined per seam. 40 agents; 35
+findings (9 blocker / 20 major / 6 minor); 28 skeptic-survived, 1 refuted, several
+recalibrated. Verdict: the **backend axis is essentially clean** (the Store seam's
+shared conformance suite exercises both drivers; the only substantive divergence
+is FTS `MATCH` vs `plainto_tsquery`); the **path axis is not** — the headline is
+that `stowage mcp` starts no pipeline/lifecycle, so MCP `memory_ingest` is a
+silent dead-end, plus a privileged HTTP-handler stratum (rollback, grants
+management, topic writes, buffer flush, branch ops, contribute-mode) absent from
+the embedded SDK surface.
+
+**Wave structure (triage by change-type, §3):**
+- **Wave A — correctness + honesty:** the outright bugs (MCP-no-pipeline,
+  contribute-mode silent mis-scope, embedded config-validation/D-030 bypass,
+  sqlite FTS hard-error, embedded rune-safety, embedded gateway-defaults) + doc
+  honesty. The behavior-changing MCP fix is its own `fix` PR + decision + E2E.
+- **Wave B — mechanical re-homing / surface-parity:** lift handler-resident
+  orchestration into the shared service layer and expose the management/control
+  verbs uniformly across {SDK, MCP, HTTP}, byte-for-byte / both-paths-identical
+  behavior bar; staged by file-collision (the SDK `Client`/`http`/`embedded` trio
+  is shared) not logical grouping.
+- **Wave C — finish or formally defer half-shipped primitives:** playbook stub,
+  runtime API-key embedded management, `memory_assert` cross-surface parity.
+- **Wave D — decision-shaped RFC remainder:** is `stowage mcp` standalone or a
+  proxy; what is the SDK `Client`/embedded-facade contract; codify
+  `boot.StartPipeline` as the canonical anti-drift post-boot seam.
+
+**Principles (binding for this program):**
+1. **Single source of post-boot wiring** — pipeline + lifecycle + backfill start
+   through one shared helper consumed by serve, mcp, and embedded; hand-duplicated
+   wiring is the root of the flagship bug.
+2. **Both-paths-identical bar** — a re-homing/parity fix lands its conformance
+   scenario passing embedded AND server in the SAME PR.
+3. **Bidirectional parity** — a capability reachable/observable on only one
+   path/backend is a finding regardless of which side favors it.
+4. **Same-PR repair** (§4.4) — fix what the work surfaces, wherever it lives; name
+   it in the PR body.
+5. **Honesty over silence** — a declared-but-ignored field (contribute-mode on
+   MCP) is worse than absence; fail loud or honor it.
+
+**Pre-reserved decision numbers** (parallel agents append their own entries
+without numbering collisions; unused numbers are released with a dated note):
+- **D-068** — Wave A: shared `boot.StartPipeline` + MCP pipeline/lifecycle parity
+  (the flagship fix).
+- **D-069** — Wave A: embedded correctness/honesty bundle (config validation +
+  D-030 guard, gateway defaults, FTS sanitization, rune-safe drill-down,
+  contribute-mode fail-loud).
+- **D-070** — Wave B: `reconcile.Rollback` core + cross-surface reversibility
+  parity (rollback/confirm/reject/get-patch on SDK + MCP).
+- **D-071** — Wave B: management/control verb surface-parity (topic write, buffer
+  flush, branch ops, contribute-mode honoring, grants management) on SDK + MCP.
+- **D-072** — Wave C: finish-or-defer half-shipped primitives (playbook, API-key
+  embedded management, `memory_assert`).
+- **D-073** — Wave D: `stowage mcp` server model + SDK/embedded-facade RFC
+  amendment; `boot.StartPipeline` codified as the canonical seam.
+
+**Consequences:** the program is the citable plan for closing the "same code, same
+seams" gap; the embedded and MCP surfaces reach parity with the HTTP server for
+binding capabilities (P1 fidelity drill-down, P4 forgetting + reversibility, P3
+scope/grants); the structural `StartPipeline` seam prevents the three entrypoints
+from silently diverging again. Wave A does not begin until the owner approves this
+entry and the findings doc (GATE 2).
