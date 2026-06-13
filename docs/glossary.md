@@ -140,9 +140,11 @@ New terms land here in the same PR that introduces them (CLAUDE.md §14).
   already operate on content+context separately.
 - **Backfill sweep** — a background job that scans for active memories missing
   a vector entry (`memory_vectors` row) and enqueues them for embedding (D-047).
-  Runs once at serve-boot (immediate pass) then on a jittered 5–7-minute ticker
-  via `Embedder.BackfillSweep`. Provides crash-recovery for embed jobs dropped
-  from the bounded channel or lost to gateway failures. Limit 64 per pass.
+  Runs once at startup (immediate pass) then on a jittered 5–7-minute ticker via
+  `Embedder.BackfillSweep`, started by `boot.StartPipeline` on every live path
+  (serve, mcp, embedded — D-068; previously serve-only). Provides crash-recovery
+  for embed jobs dropped from the bounded channel or lost to gateway failures.
+  Limit 64 per pass.
 - **ActivityTurns** — the approximate count of records written to a tenant scope
   since the oldest `last_accessed_at` across the current retrieve result set
   (Phase 10). Used by the decay factor to normalise recency: a memory idle for
@@ -219,3 +221,8 @@ New terms land here in the same PR that introduces them (CLAUDE.md §14).
 - **Single flush per conversation** — the CI eval design decision (D-054) where
   all sessions of a conversation share one buffer key and are flushed together,
   producing one `Complete` call and one mock script consumption.
+- **StartPipeline** — the single canonical post-boot wiring (`boot.StartPipeline`,
+  D-068) that turns an opened `Stack` into a live derivation system: the
+  buffer/extract/reconcile stages, the lifecycle Manager (all sweeps), and the
+  embedding `BackfillSweep`. Shared by `stowage serve`, `stowage mcp`, and
+  `sdk/stowage` (NewEmbedded) so the three entrypoints cannot drift apart.

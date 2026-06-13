@@ -25,10 +25,7 @@ import (
 	"github.com/hurtener/stowage/internal/api"
 	"github.com/hurtener/stowage/internal/boot"
 	"github.com/hurtener/stowage/internal/config"
-	"github.com/hurtener/stowage/internal/lifecycle"
 	"github.com/hurtener/stowage/internal/mcpserver"
-	"github.com/hurtener/stowage/internal/pipeline"
-	"github.com/hurtener/stowage/internal/reconcile"
 	"github.com/hurtener/stowage/internal/store"
 	"github.com/hurtener/stowage/internal/store/migrations"
 	"github.com/hurtener/stowage/internal/version"
@@ -421,8 +418,23 @@ func runMCP(args []string) {
 	}()
 	slog.SetDefault(stk.Log)
 
-	// Pipeline channel for ingest (non-blocking, fire-and-forget).
-	pipelineCh := make(chan pipeline.Item, 4096)
+	// Start the live derivation system — the identical buffer/extract/reconcile
+	// pipeline, lifecycle sweeps, and embedding backfill that `stowage serve` and
+	// the SDK run (D-068). Without this, MCP-ingested records durably appended but
+	// never became memories (the flagship parity blocker, BUG-1).
+	p, err := boot.StartPipeline(ctx, stk, *cfg)
+	if err != nil {
+		stk.Log.Error("stowage mcp: start pipeline", "err", err)
+		os.Exit(1)
+	}
+	defer func() {
+		// ctx is cancelled on signal; use a fresh bounded context for drain.
+		drainCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		if err := p.Drain(drainCtx); err != nil { //nolint:contextcheck // parent ctx is intentionally done at shutdown
+			stk.Log.Error("stowage mcp: drain pipeline", "err", err)
+		}
+	}()
 
 	// ScopeFn: stdio uses a fixed tenant; HTTP mode resolves from context.
 	var scopeFn mcpserver.ScopeFn
@@ -436,7 +448,7 @@ func runMCP(args []string) {
 		Store:      stk.Store,
 		Retriever:  stk.Retriever,
 		TopicSvc:   stk.TopicSvc,
-		PipelineIn: pipelineCh,
+		PipelineIn: p.In,
 		Log:        stk.Log,
 		ScopeFn:    scopeFn,
 	}
@@ -517,29 +529,22 @@ Flags:
 
 // runServe implements `stowage serve [--config path]`.
 //
-// Boot sequence (Phase 07):
-//  1. config.Load      — typed config, fail-loud validation
-//  2. telemetry.New    — slog + Prometheus registry
-//  3. store.Open       — open store driver
-//  4. Migrate          — apply pending migrations (idempotent)
-//  5. gateway.Open     — open intelligence gateway (mock default; D-036)
-//  6. gateway.Probe    — probe; failure = warn + degraded (D-036), never fatal
-//  7. api.New          — build HTTP server with all routes
-//  8. pipeline.New     — construct buffer stage between store and api
-//  9. topics.New       — construct topics service
+// Boot sequence:
+//  1. config.Load          — typed config, fail-loud validation
+//  2. boot.Open            — telemetry, store+migrate, gateway+probe, vindex,
+//     embedder, retriever, topics, grants (static stack)
+//  3. api.New              — build HTTP server with all routes
+//  4. boot.StartPipeline   — the live derivation system (buffer/extract/reconcile
+//     stages + lifecycle sweeps + embedding backfill); the
+//     single canonical post-boot wiring shared with
+//     `stowage mcp` and the SDK (D-068)
+//  5. srv.Set*             — wire the HTTP surface onto the live system
+//  6. ListenAndServe       — start accepting connections
 //
-// 10. pipeline.NewExtractStage — extraction stage wired to buffer downstream
-// 11. Start stages + no-op Phase 08 placeholder consumer
-// 12. lifecycle.Manager.Start  — decay/dedupe/rollup/re-enqueue sweeps (Phase 14)
-// 13. ListenAndServe   — start accepting connections
-//
-// Graceful shutdown on SIGTERM/SIGINT (Phase 07 order):
-//  1. api.Shutdown          — stop accepting; closes pipeline ingest channel
-//  2. bufStage.Drain        — workers + ticker finish
-//  3. extractStage.Drain    — extraction workers finish
-//  4. lifecycle.Manager.Stop — sweep goroutines finish
-//  5. gw.Close              — gateway flush + release
-//  6. store.Close           — via defer (happens after runServe returns)
+// Graceful shutdown on SIGTERM/SIGINT:
+//  1. api.Shutdown — stop accepting HTTP (no further ingest enqueues)
+//  2. p.Drain      — stop sweeps + backfill, close channel, drain the stages
+//  3. stk.Close    — retriever/gateway/store close (via defer)
 func runServe(args []string) {
 	var configPath string
 	for i := 0; i < len(args); i++ {
@@ -598,43 +603,22 @@ func runServe(args []string) {
 		os.Exit(1)
 	}
 
-	// Construct buffer stage (Phase 06). Stage sits between store and api.
-	trig := pipeline.TriggersFromConfig(cfg.Profile)
-	bufStage := pipeline.New(stk.Store, stk.Log, trig, srv.Pipeline())
-	srv.SetStage(bufStage)
-	bufStage.Start(ctx)
+	// Start the live derivation system — buffer/extract/reconcile stages, the
+	// lifecycle sweeps, and the embedding backfill — via the single canonical
+	// post-boot wiring shared with `stowage mcp` and the SDK (D-068). No stage
+	// is constructed directly here; StartPipeline owns the ingest channel.
+	p, err := boot.StartPipeline(ctx, stk, *cfg)
+	if err != nil {
+		stk.Log.Error("stowage serve: start pipeline", "err", err)
+		os.Exit(1)
+	}
 
-	// Topics + extract stage (Phase 07).
+	// Wire the HTTP surface onto the live system.
+	srv.SetPipelineIn(p.In) // ingest enqueues onto the shared channel
+	srv.SetStage(p.Stage)   // buffer flush / branch control
 	srv.SetTopicService(stk.TopicSvc)
-	extractStage := pipeline.NewExtractStage(stk.Store, stk.Gateway, stk.TopicSvc, stk.Log, cfg.Profile, bufStage.Downstream())
-	extractStage.Start(ctx)
-
-	// Phase 09/11: serve-only backfill sweep + retriever + grants wiring.
-	go stk.Embedder.BackfillSweep(ctx)
 	srv.SetRetriever(stk.Retriever)
 	srv.SetGrantsService(stk.GrantsSvc)
-
-	// Phase 08: reconciliation stage wired to extract stage downstream.
-	reconcileStage := reconcile.New(
-		stk.Store.Memories(),
-		stk.Store.Ops(),
-		stk.Store.Events(),
-		stk.Gateway,
-		stk.Log,
-		extractStage.Downstream(),
-	)
-	reconcileStage.SetEmbedder(stk.Embedder)
-	reconcileStage.SetScopeInvalidator(stk.Retriever.Cache()) // Phase 12: cache invalidation (D-053)
-	reconcileStage.Start(ctx)
-
-	// Phase 14: lifecycle sweeps (decay, dedupe, rollup, re-enqueue).
-	// STOWAGE_SWEEP_FORCE=1 runs all sweeps once synchronously before serve (for smoke testing).
-	lcMgr := lifecycle.New(stk.Store, stk.Log, lifecycle.DefaultProfile(), srv.PipelineIn())
-	if os.Getenv("STOWAGE_SWEEP_FORCE") != "" {
-		stk.Log.Info("stowage serve: STOWAGE_SWEEP_FORCE set — running all sweeps once")
-		lcMgr.RunForce(ctx)
-	}
-	lcMgr.Start(ctx)
 
 	// Start HTTP server in a goroutine.
 	servErr := make(chan error, 1)
@@ -658,22 +642,19 @@ func runServe(args []string) {
 		os.Exit(1)
 	}
 
-	// Graceful shutdown (Phase 07 order):
-	//  1. api.Shutdown       — stop accepting; closes the ingest pipeline channel.
-	//  2. bufStage.Drain     — buffer workers + ticker finish; closes FlushedBuffer ch.
-	//  3. extractStage.Drain — extract workers finish; closes CandidateBatch ch.
-	//  4. reconcileStage.Drain
-	//  5. lcMgr.Stop
-	//  6. stk.Close (deferred above) — retriever.Close, gateway.Close, store.Close
+	// Graceful shutdown:
+	//  1. api.Shutdown — stop accepting HTTP; no further ingest enqueues possible.
+	//  2. p.Drain      — stop sweeps + backfill (the ingest-channel producers),
+	//                    close the channel, then drain buffer → extract → reconcile.
+	//  3. stk.Close (deferred above) — retriever.Close, gateway.Close, store.Close
 	shutdownCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	if err := srv.Shutdown(shutdownCtx); err != nil {
 		stk.Log.Error("stowage serve: shutdown", "err", err)
 	}
-	bufStage.Drain(shutdownCtx)
-	extractStage.Drain(shutdownCtx)
-	reconcileStage.Drain(shutdownCtx)
-	lcMgr.Stop()
+	if err := p.Drain(shutdownCtx); err != nil {
+		stk.Log.Error("stowage serve: drain pipeline", "err", err)
+	}
 	stk.Log.Info("stowage serve: stopped")
 	// stk.Close runs via defer above (gateway.Close, store.Close included).
 }

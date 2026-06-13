@@ -222,7 +222,7 @@ func (s *Server) handleIngest(w http.ResponseWriter, r *http.Request) {
 	allEnqueued := true
 	for _, si := range stamped {
 		select {
-		case s.pipeline <- pipeline.Item{
+		case s.ingestSink <- pipeline.Item{
 			RecordID:  si.rec.ID,
 			TenantID:  authKey.TenantID,
 			BufferKey: si.bufferKey,

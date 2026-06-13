@@ -46,6 +46,13 @@ type Server struct {
 	// pipelineDrops is incremented. The record is already durable (P2).
 	pipeline chan pipeline.Item // Stage drains this after Shutdown closes it.
 
+	// ingestSink is the channel the ingest handler enqueues onto. It defaults
+	// to the server-owned pipeline channel above (the standalone/test path);
+	// when the live system is wired by boot.StartPipeline (serve), SetPipelineIn
+	// redirects it to the shared pipeline-owned channel (D-068). The server does
+	// not own or close ingestSink when it has been injected.
+	ingestSink chan<- pipeline.Item
+
 	// stage is the buffer pipeline stage (may be nil — tests don't wire it).
 	// Set via SetStage before calling ListenAndServe.
 	stage *pipeline.Stage
@@ -92,6 +99,9 @@ func New(cfg *config.Config, st store.Store, log *slog.Logger, reg *prometheus.R
 		ingestTotal:   ingestTotal,
 		pipelineDrops: pipelineDrops,
 	}
+	// Default the ingest sink to the server-owned channel; serve overrides it
+	// with the boot.StartPipeline-owned channel via SetPipelineIn.
+	srv.ingestSink = srv.pipeline
 
 	mux := http.NewServeMux()
 
@@ -192,8 +202,17 @@ func (s *Server) SetGrantsService(svc *grants.Service) {
 	s.grantsSvc = svc
 }
 
-// Pipeline returns the read end of the ingest pipeline channel.
-// Pass this to pipeline.New so the stage can consume ingest items.
+// SetPipelineIn redirects the ingest handler's enqueue target to an
+// externally-owned channel — the one created and consumed by boot.StartPipeline
+// (D-068). Must be called before ListenAndServe. The server does NOT close an
+// injected channel on Shutdown; the Pipeline owner (boot.Pipeline.Drain) does.
+func (s *Server) SetPipelineIn(ch chan<- pipeline.Item) {
+	s.ingestSink = ch
+}
+
+// Pipeline returns the read end of the server-owned ingest pipeline channel.
+// Pass this to pipeline.New so the stage can consume ingest items. Used by the
+// standalone/test wiring path; serve uses boot.StartPipeline instead.
 func (s *Server) Pipeline() <-chan pipeline.Item {
 	return s.pipeline
 }
@@ -230,7 +249,10 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	if err := s.httpSrv.Shutdown(ctx); err != nil {
 		return fmt.Errorf("api: shutdown: %w", err)
 	}
-	// All HTTP handlers have exited — no more pipeline sends possible.
+	// All HTTP handlers have exited — no more pipeline sends possible. This
+	// closes the server-owned channel only; when boot.StartPipeline injected an
+	// external ingest sink via SetPipelineIn, that channel is owned and closed by
+	// boot.Pipeline.Drain, and this server-owned channel is simply unused.
 	close(s.pipeline)
 	// Drain the injection writer goroutine (Phase 11, P2 graceful drain).
 	if s.retriever != nil {

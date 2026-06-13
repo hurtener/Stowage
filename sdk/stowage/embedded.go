@@ -9,9 +9,7 @@ import (
 	"github.com/hurtener/stowage/internal/boot"
 	"github.com/hurtener/stowage/internal/config"
 	"github.com/hurtener/stowage/internal/identity"
-	"github.com/hurtener/stowage/internal/lifecycle"
 	"github.com/hurtener/stowage/internal/pipeline"
-	"github.com/hurtener/stowage/internal/reconcile"
 	"github.com/hurtener/stowage/internal/records"
 	"github.com/hurtener/stowage/internal/retrieval"
 	"github.com/hurtener/stowage/internal/store"
@@ -31,9 +29,12 @@ import (
 // called concurrently with any Client operation; it closes the pipeline channel,
 // which would cause a panic if Ingest is called after that point.
 type embeddedClient struct {
-	stack    *boot.Stack
-	scope    identity.Scope
-	pipeline chan<- pipeline.Item
+	stack *boot.Stack
+	scope identity.Scope
+	// pl is the live derivation system started by boot.StartPipeline. Ingest
+	// enqueues onto pl.In; pl.Stage is retained for the flush/branch control
+	// verbs Wave B surfaces on the SDK. Safe for concurrent use after construction.
+	pl *boot.Pipeline
 }
 
 // trySend sends item to the pipeline channel in a non-blocking, panic-safe way.
@@ -114,52 +115,31 @@ func NewEmbedded(parentCtx context.Context, cfg config.Config, opts ...Option) (
 		return nil, nil, fmt.Errorf("sdk: embedded boot: %w", err)
 	}
 
-	// Pipeline channel — bounded, fire-and-forget (P2).
-	pipelineCh := make(chan pipeline.Item, 4096)
-
-	// Buffer stage: accumulate per-session ingest items into flush windows.
-	trig := pipeline.TriggersFromConfig(cfg.Profile)
-	bufStage := pipeline.New(stk.Store, stk.Log, trig, pipelineCh)
-	bufStage.Start(innerCtx)
-
-	// Extract stage: extract memory candidates from flushed buffers.
-	extractStage := pipeline.NewExtractStage(stk.Store, stk.Gateway, stk.TopicSvc, stk.Log, cfg.Profile, bufStage.Downstream())
-	extractStage.Start(innerCtx)
-
-	// Reconcile stage: commit extracted candidates, embed, invalidate cache.
-	reconcileStage := reconcile.New(
-		stk.Store.Memories(),
-		stk.Store.Ops(),
-		stk.Store.Events(),
-		stk.Gateway,
-		stk.Log,
-		extractStage.Downstream(),
-	)
-	reconcileStage.SetEmbedder(stk.Embedder)
-	reconcileStage.SetScopeInvalidator(stk.Retriever.Cache())
-	reconcileStage.Start(innerCtx)
-
-	// Lifecycle sweeps: decay, dedupe, rollup, re-enqueue.
-	lcMgr := lifecycle.New(stk.Store, stk.Log, lifecycle.DefaultProfile(), pipelineCh)
-	lcMgr.Start(innerCtx)
+	// Start the live derivation system — buffer/extract/reconcile stages,
+	// lifecycle sweeps, and embedding backfill — via the single canonical
+	// post-boot wiring shared with `stowage serve` and `stowage mcp` (D-068).
+	// This is the same helper the server entrypoints use, so the embedded path
+	// cannot drift from them.
+	p, err := boot.StartPipeline(innerCtx, stk, cfg)
+	if err != nil {
+		cancel()
+		_ = stk.Close(innerCtx)
+		return nil, nil, fmt.Errorf("sdk: embedded start pipeline: %w", err)
+	}
 
 	client := &embeddedClient{
-		stack:    stk,
-		scope:    identity.Scope{Tenant: o.tenantID},
-		pipeline: pipelineCh,
+		stack: stk,
+		scope: identity.Scope{Tenant: o.tenantID},
+		pl:    p,
 	}
 
 	closer := func(ctx context.Context) error {
-		cancel() // stop background goroutines first
-		lcMgr.Stop()
-		// Close the pipeline channel to unblock buffer stage workers (mirrors
-		// the api.Shutdown → close(pipeline) pattern in cmd/stowage serve).
-		// The closer MUST NOT be called concurrently with any Client operation.
-		close(pipelineCh)
-		// Drain pipeline stages in order (matches serve shutdown sequence).
-		bufStage.Drain(ctx)
-		extractStage.Drain(ctx)
-		reconcileStage.Drain(ctx)
+		// Drain the live system first: stop sweeps + backfill, close the ingest
+		// channel, drain the stages. The closer MUST NOT be called concurrently
+		// with any Client operation (Ingest sends on p.In). Then cancel the boot
+		// context (stops the embedder worker) and close the stack.
+		_ = p.Drain(ctx)
+		cancel()
 		return stk.Close(ctx)
 	}
 
@@ -226,7 +206,7 @@ func (c *embeddedClient) Ingest(ctx context.Context, req IngestRequest) (IngestR
 
 	allEnqueued := true
 	for _, si := range stamped {
-		if !trySend(c.pipeline, pipeline.Item{
+		if !trySend(c.pl.In, pipeline.Item{
 			RecordID:  si.rec.ID,
 			TenantID:  c.scope.Tenant,
 			BufferKey: si.bufferKey,

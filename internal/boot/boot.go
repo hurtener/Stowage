@@ -12,21 +12,25 @@
 //   - topics.Service create
 //   - grants.Service create
 //
-// What Open does NOT do:
+// Open builds the static stack only. Turning it into a live system — the
+// pipeline buffer/extract/reconcile stages, the lifecycle sweeps, and the
+// embedding BackfillSweep — is the job of StartPipeline (see pipeline.go), the
+// single canonical post-boot wiring seam shared by `stowage serve`,
+// `stowage mcp`, and `sdk/stowage` (D-068). Open deliberately does NOT do:
 //   - HTTP listening (cmd/stowage serve)
 //   - MCP transport (cmd/stowage mcp)
-//   - Pipeline buffer/extract/reconcile stages (cmd/stowage serve + sdk embedded)
-//   - lifecycle sweeps (cmd/stowage serve + sdk embedded)
+//   - the live derivation system — pipeline stages, lifecycle sweeps, and the
+//     embedding BackfillSweep (all three: use boot.StartPipeline)
 //   - slog.SetDefault (callers decide whether to replace the global logger)
-//   - BackfillSweep (serve-only optimisation; cmd/stowage serve starts it)
 //
 // Usage:
 //
 //	stack, err := boot.Open(ctx, cfg)
 //	if err != nil { ... }
 //	defer stack.Close(shutdownCtx)
-//	slog.SetDefault(stack.Log)           // optional: replace global logger
-//	go stack.Embedder.BackfillSweep(ctx) // optional: serve-mode backfill
+//	slog.SetDefault(stack.Log)              // optional: replace global logger
+//	p, err := boot.StartPipeline(ctx, stack, cfg) // start the live system
+//	defer p.Drain(shutdownCtx)
 package boot
 
 import (
