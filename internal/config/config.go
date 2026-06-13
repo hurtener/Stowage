@@ -265,6 +265,15 @@ func (c *Config) FillZeroDefaults() {
 	}
 	if c.Telemetry.LogFormat == "" {
 		c.Telemetry.LogFormat = d.Telemetry.LogFormat
+		// Mirror config.Load's defaults < profile merge so the embedded fleet
+		// matches the server fleet (D-067 lens). config.Load resolves the
+		// profile-specific log_format (fleet → json); FillZeroDefaults — the
+		// embedded path's defaults layer — must apply the same profile override
+		// for a zero field, not the flat Defaults() value. telemetry.log_format is
+		// the only field-level profile override today (see Profiles()).
+		if pf, ok := Profiles()[c.Profile]["telemetry.log_format"]; ok {
+			c.Telemetry.LogFormat = pf
+		}
 	}
 	if c.Telemetry.MetricsListen == "" {
 		c.Telemetry.MetricsListen = d.Telemetry.MetricsListen

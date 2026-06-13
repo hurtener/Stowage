@@ -72,15 +72,24 @@ func TestEvalCI(t *testing.T) {
 // TestEvalCIGateBites proves AC-3: disabling a load-bearing retrieval lane
 // plants a regression that would fail the gate.
 //
-// The test runs the harness twice — normal and with a disabled lane — and
-// asserts the degraded run scores strictly below the normal run. This is a
-// test-only harness hook; no production code is modified.
+// It asserts that disabling EACH production lane individually
+// — vector, queries, AND lexical — strictly lowers the score, using the lane
+// FILTER alone (no limit cap). This is stronger than the prior single-vector
+// check in two ways (D-067 Wave-A checkpoint):
 //
-// We disable the "vector" lane (a load-bearing lane every answer is surfaced by
-// in this fixture set). Until h2 this test disabled "lexical", which only bit
-// because the sqlite FTS lane hard-errored on the "?"-terminated fixture queries
-// (BUG-4); with that fixed the lexical/queries lanes work and the answers are
-// robustly multi-lane, so removing lexical alone no longer degrades (D-069).
+//   - The lexical/queries lanes are now load-bearing in the fixture set, so a
+//     regression in their class (BUG-4 was exactly this: the sqlite FTS5 MATCH
+//     path that BOTH lanes share — see internal/store/sqlitestore/fts.go's
+//     ftsMatchArg — hard-erroring on "?"-terminated queries and silently
+//     dropping the lanes) is now caught. The "queries" lane exercises that
+//     shared FTS-MATCH path; a dedicated keyword-phrased fixture (ci-q-lex-01,
+//     answer "Kafka") makes the "lexical" LexicalSearch path load-bearing too —
+//     LexicalSearch ANDs all query tokens, so natural-language questions
+//     (full of stopwords) surface nothing, but a keyword query whose tokens all
+//     appear in one memory does.
+//   - The limit cap is DECOUPLED from the filter (CapLimitToOne is left false),
+//     so the degradation is attributable to the missing lane, not to fetching
+//     fewer results.
 //
 // Not marked t.Parallel() because NewTestServer calls t.Setenv (env var
 // isolation for the mock gateway script path).
@@ -88,41 +97,47 @@ func TestEvalCIGateBites(t *testing.T) {
 	ctx := context.Background()
 	dir := ciFixturesDir(t)
 
-	// Normal run.
-	srv1 := harness.NewTestServer(t, "eval-gate-normal")
-	normalResult, err := harness.NewRunner(srv1, harness.RunConfig{
+	// Normal run (full limit, no lane disabled).
+	srvN := harness.NewTestServer(t, "eval-gate-normal")
+	normalResult, err := harness.NewRunner(srvN, harness.RunConfig{
 		FixturesDir: dir,
 	}).RunCI(ctx)
 	if err != nil {
 		t.Fatalf("normal RunCI: %v", err)
 	}
-
-	// Degraded run: any item the "vector" lane contributed to is filtered out.
-	srv2 := harness.NewTestServer(t, "eval-gate-degraded")
-	degradedResult, err := harness.NewRunner(srv2, harness.RunConfig{
-		FixturesDir: dir,
-		DisableLane: "vector",
-	}).RunCI(ctx)
-	if err != nil {
-		t.Fatalf("degraded RunCI: %v", err)
-	}
-
-	t.Logf("normal:   answer_context_hit=%.4f (%d/%d)",
+	t.Logf("normal: answer_context_hit=%.4f (%d/%d)",
 		normalResult.Scores.AnswerContextHit,
 		normalResult.Scores.HitCount,
 		normalResult.Scores.TotalQuestions)
-	t.Logf("degraded: answer_context_hit=%.4f (%d/%d)",
-		degradedResult.Scores.AnswerContextHit,
-		degradedResult.Scores.HitCount,
-		degradedResult.Scores.TotalQuestions)
 
-	// The gate MUST bite: degraded scores must be strictly lower.
-	if degradedResult.Scores.AnswerContextHit >= normalResult.Scores.AnswerContextHit {
-		t.Errorf("gate-bite test FAILED: disabling the vector lane did not lower scores "+
-			"(degraded=%.4f >= normal=%.4f) — "+
-			"check that the harness DisableLane hook is filtering lane results correctly",
-			degradedResult.Scores.AnswerContextHit,
-			normalResult.Scores.AnswerContextHit,
-		)
+	// Each production lane must be load-bearing: disabling it (filter only, no
+	// limit cap) strictly lowers the score.
+	for _, lane := range []string{"vector", "queries", "lexical"} {
+		lane := lane
+		t.Run(lane, func(t *testing.T) {
+			//nolint:contextcheck // NewTestServer is test boot infra: it owns its
+			// background goroutine lifecycle via t.Cleanup, not the test's ctx
+			// (same as the top-level NewTestServer calls above).
+			srv := harness.NewTestServer(t, "eval-gate-"+lane)
+			degraded, err := harness.NewRunner(srv, harness.RunConfig{
+				FixturesDir: dir,
+				DisableLane: lane, // CapLimitToOne deliberately left false
+			}).RunCI(ctx)
+			if err != nil {
+				t.Fatalf("degraded RunCI (lane=%s): %v", lane, err)
+			}
+			t.Logf("disable %-8s: answer_context_hit=%.4f (%d/%d)",
+				lane,
+				degraded.Scores.AnswerContextHit,
+				degraded.Scores.HitCount,
+				degraded.Scores.TotalQuestions)
+
+			if degraded.Scores.AnswerContextHit >= normalResult.Scores.AnswerContextHit {
+				t.Errorf("gate-bite FAILED for lane %q: the FILTER alone did not lower "+
+					"scores (degraded=%.4f >= normal=%.4f) — lane is not load-bearing, "+
+					"so a regression in it would slip past the benchmark gate",
+					lane, degraded.Scores.AnswerContextHit, normalResult.Scores.AnswerContextHit)
+			}
+		})
 	}
 }

@@ -71,3 +71,41 @@ func TestFillZeroDefaults_PreservesExplicit(t *testing.T) {
 		t.Errorf("Profile = %q, want coding-agent", c.Profile)
 	}
 }
+
+// TestFillZeroDefaults_ProfileLogFormat proves the embedded defaults layer
+// resolves the profile-specific telemetry.log_format (fleet → json), mirroring
+// config.Load's defaults < profile merge so the embedded fleet matches the
+// server fleet (D-067 Wave-A checkpoint).
+func TestFillZeroDefaults_ProfileLogFormat(t *testing.T) {
+	t.Parallel()
+
+	// fleet profile, log_format unset → must resolve to the profile override.
+	fleet := Config{Profile: "fleet"}
+	fleet.Store.Driver = "sqlite"
+	fleet.Store.DSN = "/tmp/fleet.db"
+	fleet.FillZeroDefaults()
+	if fleet.Telemetry.LogFormat != "json" {
+		t.Errorf("fleet log_format = %q, want json (profile override; embedded must match server)",
+			fleet.Telemetry.LogFormat)
+	}
+
+	// assistant profile → flat default text.
+	asst := Config{Profile: "assistant"}
+	asst.Store.Driver = "sqlite"
+	asst.Store.DSN = "/tmp/asst.db"
+	asst.FillZeroDefaults()
+	if asst.Telemetry.LogFormat != "text" {
+		t.Errorf("assistant log_format = %q, want text", asst.Telemetry.LogFormat)
+	}
+
+	// Explicit caller value survives the profile override (file/env > profile).
+	explicit := Config{Profile: "fleet"}
+	explicit.Store.Driver = "sqlite"
+	explicit.Store.DSN = "/tmp/exp.db"
+	explicit.Telemetry.LogFormat = "text"
+	explicit.FillZeroDefaults()
+	if explicit.Telemetry.LogFormat != "text" {
+		t.Errorf("explicit log_format = %q, want text (caller value clobbered by profile)",
+			explicit.Telemetry.LogFormat)
+	}
+}

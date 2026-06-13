@@ -2,7 +2,30 @@
 //
 // The server is backed by a temp SQLite database, a mock gateway driven by
 // a scripted response file, and the full buffer → extract → reconcile pipeline.
-// It mirrors the boot sequence in cmd/stowage/main.go#runServe.
+//
+// Sanctioned post-boot-wiring exception (D-067 Wave-A checkpoint, 2026-06-13).
+// Every production entrypoint (`stowage serve`/`stowage mcp`/`sdk/stowage`)
+// turns a static stack into a live system through the single shared seam
+// boot.StartPipeline (D-068). The eval harness deliberately does NOT — it
+// hand-wires the buffer/extract/reconcile/lifecycle stages below — because its
+// CI-determinism needs cannot be expressed through that seam without polluting
+// it with test-only knobs and would change eval SCORING (the D-035 gate):
+//
+//   - Flush triggers must suppress auto-flush so the per-conversation mock
+//     script (PushExtractionScript) is consumed at the deliberate flush, not by
+//     a background age/count tick (the bbd134d file-offset race). StartPipeline
+//     derives triggers from cfg.Profile and cannot park them.
+//   - The lifecycle profile parks the mutating sweeps (decay/dedupe/rollup at
+//     24h) and runs only a fast re-enqueue sweep (3s) for burst recovery, so CI
+//     stays deterministic. StartPipeline hardcodes lifecycle.DefaultProfile().
+//   - The retriever is built WITHOUT the rerank model / grants wiring that
+//     boot.Open applies, so the mock-gateway scores stay stable against the
+//     committed CI baseline.
+//
+// This divergence is intentional and tracked. TestHarnessStageParity asserts the
+// harness keeps wiring the same logical stages boot.StartPipeline does, so a new
+// stage added to the shared seam fails the harness in-sync check rather than
+// silently skipping the benchmark gate (the AC-1 grep does not scan eval/).
 package harness
 
 import (

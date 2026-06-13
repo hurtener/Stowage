@@ -31,5 +31,5 @@
   "github.com/hurtener/stowage/internal/topics": 85,
   "github.com/hurtener/stowage/internal/vindex": 85,
   "github.com/hurtener/stowage/internal/vindex/conformance": 0,
-  "github.com/hurtener/stowage/internal/vindex/hnsw": 82
+  "github.com/hurtener/stowage/internal/vindex/hnsw": 85
 }

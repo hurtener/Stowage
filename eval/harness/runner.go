@@ -12,22 +12,30 @@ import (
 type RunConfig struct {
 	// FixturesDir is the path to eval/ci-fixtures/.
 	FixturesDir string
-	// DisableLane: when non-empty, two degradations are applied to simulate a
-	// lane failure (gate-bite harness hook, AC-3):
-	//   1. Any item the named lane contributed to surfacing is filtered out
-	//      (presence semantics — discard results that relied on the broken lane).
-	//   2. The retrieve limit is capped at 1 to guarantee fewer results.
-	// Both degrade retrieval quality reliably in CI regardless of embedding
-	// randomness (D-055).
+	// DisableLane: when non-empty, any item the named lane contributed to
+	// surfacing is filtered out of the scored results (presence semantics —
+	// discard results that relied on the broken lane). This is the gate-bite
+	// harness hook (AC-3): it proves the LANE FILTER alone bites the gate.
+	//
+	// Note (D-067 Wave-A checkpoint): the limit cap (CapLimitToOne) is now
+	// DECOUPLED from DisableLane. Previously DisableLane silently also capped the
+	// retrieve limit at 1, so a "degradation" could come from fetching fewer
+	// results rather than from the missing lane — the test could not prove the
+	// FILTER bit. The gate-bite test now sets DisableLane WITHOUT the cap, so any
+	// observed degradation is attributable to the lane filter alone.
 	//
 	// Note (D-069): this hook originally used "only-lane" filter semantics and
 	// named the "lexical" lane. That only ever bit because the sqlite FTS lane
 	// hard-errored on the fixture queries (every one ends in "?", BUG-4), so the
 	// degraded run returned nothing. Once BUG-4 was fixed the lexical/queries
-	// lanes work and the answers are robustly multi-lane, so single-lane "only"
-	// removal no longer degrades. The hook now uses presence semantics and the
-	// test disables a load-bearing lane to keep the gate honestly biting.
+	// lanes work and the answers are robustly multi-lane; the hook now uses
+	// presence semantics and the test disables EACH production lane to keep the
+	// gate honestly biting on a lexical/queries regression too.
 	DisableLane string
+	// CapLimitToOne, when true, caps the retrieve limit at 1 (an orthogonal
+	// quality degradation). Kept as an explicit, opt-in knob so it cannot be
+	// confused with the DisableLane filter degradation.
+	CapLimitToOne bool
 	// RetrieveLimit is the number of results to fetch per question. Default 5.
 	RetrieveLimit int
 }
@@ -234,11 +242,11 @@ func (r *Runner) scoreQuestion(ctx context.Context, q QuestionFixture) (Question
 		Items []retrieveItem `json:"items"`
 	}
 
-	// When a lane is disabled, cap the retrieve limit at 1 to simulate the
-	// quality degradation of a broken lane. This guarantees the degraded score
-	// drops below the normal score regardless of embedding randomness (D-055).
+	// The limit cap is an explicit, opt-in degradation, decoupled from the lane
+	// filter (D-067 Wave-A checkpoint) so the gate-bite test proves the FILTER
+	// bites, not the cap.
 	limit := r.cfg.RetrieveLimit
-	if r.cfg.DisableLane != "" && limit > 1 {
+	if r.cfg.CapLimitToOne && limit > 1 {
 		limit = 1
 	}
 

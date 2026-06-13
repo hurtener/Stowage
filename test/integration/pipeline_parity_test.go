@@ -601,3 +601,92 @@ func TestPipelineParity_GatewayDegraded(t *testing.T) {
 		t.Logf("stack close: %v", err)
 	}
 }
+
+// TestMCPIngestAfterDrainNoPanic proves the Wave-A checkpoint fix: a `stowage
+// mcp` ingest that races the shutdown Drain must NOT panic across the MCP
+// boundary (CLAUDE.md §13). It exercises the exact unsafe interleaving the
+// HTTP-path Shutdown ordering is meant to prevent — an ingest handler enqueuing
+// after boot.StartPipeline's Drain has CLOSED the ingest channel — and asserts
+// the shared pipeline.TrySend defense degrades it to Enqueued=false with the
+// verbatim record still durably appended (P1), instead of a send-on-closed
+// panic. Runs under -race over the real in-process MCP transport.
+func TestMCPIngestAfterDrainNoPanic(t *testing.T) {
+	cfg := baseConfig(t)
+	tenant := "mcp-drain-tenant"
+	scope := identity.Scope{Tenant: tenant}
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+
+	stk, p := startStack(t, cfg)
+	t.Cleanup(func() {
+		shutCtx, c := context.WithTimeout(context.Background(), 15*time.Second)
+		defer c()
+		_ = stk.Close(shutCtx)
+	})
+
+	srv, err := mcpserver.New(server.Info{Name: "stowage", Version: "test"}, &mcpserver.Services{
+		Store:      stk.Store,
+		Retriever:  stk.Retriever,
+		TopicSvc:   stk.TopicSvc,
+		PipelineIn: p.In,
+		Log:        stk.Log,
+		ScopeFn:    mcpserver.StdioScopeFn(tenant),
+	})
+	if err != nil {
+		t.Fatalf("mcpserver.New: %v", err)
+	}
+
+	clientT := srv.ServeInMemory(ctx)
+	client := mcpsdk.NewClient(&mcpsdk.Implementation{Name: "drain-client", Version: "0.0.0"}, nil)
+	session, err := client.Connect(ctx, clientT, nil)
+	if err != nil {
+		t.Fatalf("mcp connect: %v", err)
+	}
+	t.Cleanup(func() { _ = session.Close() })
+
+	// Drain the pipeline FIRST — this closes the ingest channel p.In, the exact
+	// state an in-flight handler can hit if a send races shutdown.
+	drainCtx, dcancel := context.WithTimeout(ctx, 15*time.Second)
+	defer dcancel()
+	if err := p.Drain(drainCtx); err != nil {
+		t.Fatalf("drain: %v", err)
+	}
+
+	// Now ingest over the live MCP transport. The handler must NOT panic on the
+	// send to the closed channel; it must return success with Enqueued=false.
+	res, err := session.CallTool(ctx, &mcpsdk.CallToolParams{
+		Name: "memory_ingest",
+		Arguments: mcpserver.IngestInput{
+			Records: []mcpserver.IngestRecord{
+				{Role: "user", Content: recContent, SessionID: paritySess},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("memory_ingest after drain: transport error (possible panic across MCP boundary): %v", err)
+	}
+	if res.IsError {
+		t.Fatalf("memory_ingest after drain returned IsError: %+v", res.Content)
+	}
+
+	var out mcpserver.IngestOutput
+	b, _ := json.Marshal(res.StructuredContent)
+	if uerr := json.Unmarshal(b, &out); uerr != nil {
+		t.Fatalf("decode ingest result: %v", uerr)
+	}
+	if len(out.IDs) != 1 {
+		t.Fatalf("expected 1 id, got %d", len(out.IDs))
+	}
+	if out.Enqueued {
+		t.Errorf("expected Enqueued=false after the ingest channel was closed, got true")
+	}
+
+	// P1: the verbatim record is still durably appended despite the dropped enqueue.
+	got, err := stk.Store.Records().GetMany(ctx, scope, out.IDs)
+	if err != nil {
+		t.Fatalf("records GetMany: %v", err)
+	}
+	if len(got) != 1 {
+		t.Errorf("durable record after drain: got %d want 1", len(got))
+	}
+}

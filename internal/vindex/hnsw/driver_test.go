@@ -101,6 +101,78 @@ func TestHNSW_LazyBuild(t *testing.T) {
 	}
 }
 
+// TestHNSW_IncrementalUpsertRefreshSidecar deterministically exercises the
+// incremental-upsert path — the branch that, under -race, only ran when goroutine
+// interleaving happened to upsert a new key into an already-BUILT tenant graph
+// before a Search, leaving the hnsw coverage band variable on loaded CI runners
+// (D-056). TestHNSW_LazyBuild does NOT reach it: it upserts before any Search, so
+// every key takes the `!tg.built` early return rather than the built-graph Add.
+//
+// Here we force the sequence: build the graph first (Search → lazyBuild), THEN
+// upsert a NEW key into the built graph (the incremental Add branch, which marks
+// the key pendingMeta), THEN Search (pendingMeta > 0 → refreshSidecar fills kind
+// and createdAt from the store). This makes the incremental path and
+// refreshSidecar covered without depending on race interleaving — stable across
+// runs (re-affirming the band raise alongside D-056).
+func TestHNSW_IncrementalUpsertRefreshSidecar(t *testing.T) {
+	t.Parallel()
+
+	st, cleanup := openTestStore(t)
+	defer cleanup()
+	ctx := context.Background()
+	scope := identity.Scope{Tenant: "incr-refresh-" + newTestID()}
+
+	vi := New(st.Vectors(), 4, "test-model")
+	vec := unitVec(4)
+
+	// 1. Seed one vector and Search to force lazyBuild → tg.built = true.
+	seedID := newTestID()
+	insertTestMem(t, ctx, st, scope, seedID, "fact", 1_000_000)
+	if err := vi.Upsert(ctx, scope, seedID, vec); err != nil {
+		t.Fatalf("seed upsert: %v", err)
+	}
+	if _, err := vi.Search(ctx, scope, vec, 5, vindex.Filter{}); err != nil {
+		t.Fatalf("build search: %v", err)
+	}
+
+	// 2. Incremental upsert of a NEW key into the now-built graph: the built-graph
+	//    Add branch runs and marks the key pendingMeta (kind/createdAt unknown).
+	newID := newTestID()
+	insertTestMem(t, ctx, st, scope, newID, "preference", 2_000_000)
+	if err := vi.Upsert(ctx, scope, newID, vec); err != nil {
+		t.Fatalf("incremental upsert: %v", err)
+	}
+
+	// 3. Search → pendingMeta > 0 → refreshSidecar backfills kind/createdAt.
+	hits, err := vi.Search(ctx, scope, vec, 5, vindex.Filter{})
+	if err != nil {
+		t.Fatalf("post-incremental search: %v", err)
+	}
+	if len(hits) != 2 {
+		t.Fatalf("expected 2 hits after incremental upsert, got %d", len(hits))
+	}
+
+	// The refreshed sidecar must now drive the kind filter for the incremental key.
+	pref, err := vi.Search(ctx, scope, vec, 5, vindex.Filter{Kinds: []string{"preference"}})
+	if err != nil {
+		t.Fatalf("kind-filtered search: %v", err)
+	}
+	if len(pref) != 1 || pref[0].MemoryID != newID {
+		t.Fatalf("expected only the incremental 'preference' key after refreshSidecar, got %+v", pref)
+	}
+
+	// And the refreshed createdAt must drive the window filter (exclude the key).
+	win, err := vi.Search(ctx, scope, vec, 5, vindex.Filter{Window: store.Window{Until: 1_500_000}})
+	if err != nil {
+		t.Fatalf("window-filtered search: %v", err)
+	}
+	for _, h := range win {
+		if h.MemoryID == newID {
+			t.Fatalf("window filter should exclude the incremental key (createdAt=2_000_000)")
+		}
+	}
+}
+
 // TestHNSW_UnderFillRefetch verifies AC-4: filtered search correctly returns
 // only matching entries even when the majority of the corpus has a different
 // kind. Uses k=1 with a corpus of 202 entries where the target kind

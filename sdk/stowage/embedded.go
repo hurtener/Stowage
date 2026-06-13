@@ -38,21 +38,13 @@ type embeddedClient struct {
 }
 
 // trySend sends item to the pipeline channel in a non-blocking, panic-safe way.
-// Returns false if the channel is full or closed. Uses recover to swallow the
-// send-on-closed-channel panic that can occur if the closer races with a final
+// Returns false if the channel is full or closed. It delegates to the shared
+// pipeline.TrySend so the embedded SDK and the MCP `memory_ingest` surface use
+// ONE panic-safe enqueue and cannot drift apart (D-067 lens). The recover guards
+// the send-on-closed-channel panic that can occur if the closer races a final
 // Ingest call.
-func trySend(ch chan<- pipeline.Item, item pipeline.Item) (sent bool) {
-	defer func() {
-		if r := recover(); r != nil {
-			sent = false
-		}
-	}()
-	select {
-	case ch <- item:
-		return true
-	default:
-		return false
-	}
+func trySend(ch chan<- pipeline.Item, item pipeline.Item) bool {
+	return pipeline.TrySend(ch, item)
 }
 
 // NewEmbedded boots a complete in-process Stowage stack — store, gateway,

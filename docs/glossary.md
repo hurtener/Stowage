@@ -226,3 +226,22 @@ New terms land here in the same PR that introduces them (CLAUDE.md §14).
   buffer/extract/reconcile stages, the lifecycle Manager (all sweeps), and the
   embedding `BackfillSweep`. Shared by `stowage serve`, `stowage mcp`, and
   `sdk/stowage` (NewEmbedded) so the three entrypoints cannot drift apart.
+- **ClampExcerpt** — the shared, UTF-8 rune-safe provenance-excerpt shaper
+  (`retrieval.ClampExcerpt`, D-069) used by both the server (HTTP+MCP) and the
+  embedded SDK drill-down paths, so a span offset landing mid-rune can never
+  return invalid UTF-8 (parity-lens BUG-5).
+- **FillZeroDefaults** — the embedded path's defaults layer
+  (`config.Config.FillZeroDefaults`, D-069): applies the same
+  defaults < profile merge `config.Load` runs (gateway model/dims/rerank,
+  profile-resolved `telemetry.log_format`) to a programmatically-built config, so
+  an in-process host's lanes and fleet behaviour match the server's.
+- **ftsMatchArg** — the sqlite FTS5 query sanitiser
+  (`internal/store/sqlitestore`, D-069): extracts alphanumeric terms from raw user
+  text and ANDs them as quoted string literals, mirroring Postgres
+  `plainto_tsquery` robustness so operator/special-char queries can no longer
+  hard-error and silently drop the lexical/queries lanes (parity-lens BUG-4).
+- **TrySend** — the shared panic-safe non-blocking ingest enqueue
+  (`pipeline.TrySend`, D-067 Wave-A checkpoint): used by both the MCP
+  `memory_ingest` handler and the embedded SDK `Ingest` so a send racing the
+  shutdown `Drain` (closed channel) degrades to a dropped item instead of
+  panicking across the API/MCP boundary.
