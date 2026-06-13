@@ -109,9 +109,20 @@ func TestEvalCIGateBites(t *testing.T) {
 		normalResult.Scores.AnswerContextHit,
 		normalResult.Scores.HitCount,
 		normalResult.Scores.TotalQuestions)
+	normalHits := hitSet(normalResult)
 
 	// Each production lane must be load-bearing: disabling it (filter only, no
-	// limit cap) strictly lowers the score.
+	// limit cap) must drop at least one question the normal run answered.
+	//
+	// Asserted at the PER-QUESTION level, not on the aggregate score: the vector
+	// lane rides on hnsw's goroutine-interleaving recall variance (D-056), so the
+	// absolute base score is not perfectly stable run-to-run. A thin-margin
+	// aggregate `degraded < normal` comparison was therefore flaky in CI — the
+	// lexical lane uniquely surfaces a single fixture, and unrelated vector
+	// variance could lift the degraded run to or above the (also-varying) normal
+	// run. Requiring a specific normally-hit question to flip to a miss is
+	// deterministic for each lane's uniquely-owned fixture(s) and independent of
+	// unrelated vector variance.
 	for _, lane := range []string{"vector", "queries", "lexical"} {
 		lane := lane
 		t.Run(lane, func(t *testing.T) {
@@ -126,18 +137,37 @@ func TestEvalCIGateBites(t *testing.T) {
 			if err != nil {
 				t.Fatalf("degraded RunCI (lane=%s): %v", lane, err)
 			}
-			t.Logf("disable %-8s: answer_context_hit=%.4f (%d/%d)",
+			degradedHits := hitSet(degraded)
+			var dropped []string
+			for id := range normalHits {
+				if !degradedHits[id] {
+					dropped = append(dropped, id)
+				}
+			}
+			t.Logf("disable %-8s: answer_context_hit=%.4f (%d/%d); dropped %d normally-hit question(s): %v",
 				lane,
 				degraded.Scores.AnswerContextHit,
 				degraded.Scores.HitCount,
-				degraded.Scores.TotalQuestions)
+				degraded.Scores.TotalQuestions,
+				len(dropped), dropped)
 
-			if degraded.Scores.AnswerContextHit >= normalResult.Scores.AnswerContextHit {
-				t.Errorf("gate-bite FAILED for lane %q: the FILTER alone did not lower "+
-					"scores (degraded=%.4f >= normal=%.4f) — lane is not load-bearing, "+
+			if len(dropped) == 0 {
+				t.Errorf("gate-bite FAILED for lane %q: disabling the lane (FILTER alone) "+
+					"dropped NO normally-answered question — the lane is not load-bearing, "+
 					"so a regression in it would slip past the benchmark gate",
-					lane, degraded.Scores.AnswerContextHit, normalResult.Scores.AnswerContextHit)
+					lane)
 			}
 		})
 	}
+}
+
+// hitSet returns the set of question IDs the run answered (AnswerContextHit).
+func hitSet(r *harness.RunResult) map[string]bool {
+	m := make(map[string]bool, len(r.Results))
+	for _, q := range r.Results {
+		if q.Hit {
+			m[q.QuestionID] = true
+		}
+	}
+	return m
 }
