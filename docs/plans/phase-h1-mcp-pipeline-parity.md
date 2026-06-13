@@ -1,6 +1,6 @@
 # Phase h1 — `boot.StartPipeline`: pipeline + lifecycle parity across all entrypoints
 
-- **Status:** draft | approved | in-progress | shipped
+- **Status:** ~~draft | approved | in-progress~~ **shipped**
 - **Owning subsystem(s):** `internal/boot`, `cmd/stowage`, `sdk/stowage`, (consumers of) `internal/pipeline`, `internal/reconcile`, `internal/lifecycle`
 - **RFC sections:** §4.1 (write path — MCP `memory_ingest` and SDK are co-equal ingest entries), §9.2 (`stowage mcp` standalone server), §9.3 (SDK in-process embeds *the whole server*), §10 (channels + supervision, run standalone)
 - **Depends on phases:** 06 (buffers), 07 (extraction), 08 (reconcile), 14 (sweeps), 17 (MCP), 18 (SDKs) — all shipped

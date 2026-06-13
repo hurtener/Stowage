@@ -1162,3 +1162,47 @@ seams" gap; single-user binding capabilities (P1 fidelity drill-down, P4 forgett
 `StartPipeline` seam prevents the three entrypoints from silently diverging again.
 Wave A does not begin until the owner approves this entry and the findings doc
 (GATE 2).
+
+## D-068 — `boot.StartPipeline` is the single post-boot live-wiring seam
+
+2026-06-13. D-067 Wave A, flagship correctness fix (Phase h1; plan
+`docs/plans/phase-h1-mcp-pipeline-parity.md`). Implements the structural remedy
+pre-reserved as D-068 in D-067.
+
+**Decision.** Turning an opened `boot.Stack` into a *live* derivation system —
+the buffer/extract/reconcile pipeline stages, the lifecycle Manager (all five
+sweeps), and the embedding `BackfillSweep` — happens in exactly one place:
+`boot.StartPipeline(ctx, *Stack, config.Config) (*Pipeline, error)`. The returned
+`*Pipeline` exposes `In` (the fire-and-forget ingest channel, P2), `Stage` (the
+buffer stage, for the flush/branch verbs Wave B surfaces), and `Drain(ctx)` (stops
+the sweeps + backfill, closes the channel, then drains the stages in dataflow
+order; idempotent). `boot.Open` stays the static-stack builder; it no longer
+implies any serving.
+
+**Why.** `runMCP` booted the stack, accepted `memory_ingest`, and started **no
+stages** — MCP-ingested records durably appended, enqueued into a consumer-less
+channel, filled it, then silently dropped while the tool reported success
+(parity-lens BUG-1). The post-boot wiring was hand-duplicated across
+`runServe`/`runMCP`/`NewEmbedded` (Pattern P2) and had drifted; `BackfillSweep`
+ran on serve only. Centralizing the wiring makes the three entrypoints share one
+supervised path so they cannot diverge again.
+
+**Scope.** `runServe`, `runMCP`, and `sdk/stowage.NewEmbedded` all obtain their
+live system from `StartPipeline` and `Drain` it on shutdown. The API server's
+ingest channel is now injectable (`Server.SetPipelineIn`) so serve sends onto the
+shared `StartPipeline`-owned channel; the standalone/test path keeps the
+server-owned channel. The MCP buffer-control verbs themselves remain Wave B — this
+phase only makes ingested records *progress*.
+
+**Behavior-changing.** MCP ingest now produces memories (and MCP/embedded now run
+the lifecycle sweeps and `BackfillSweep`). Shipped as its own `fix` PR with an E2E
+(`test/integration/pipeline_parity_test.go` proves serve/mcp/embedded yield the
+same reconciled memory + provenance under `-race`; `scripts/smoke/phase-h1.sh`
+drives the real `stowage mcp` binary). Closes the flagship parity blocker (D-067).
+
+**Same-PR repair.** `StartPipeline.Drain` stops the lifecycle sweeps *before*
+closing the ingest channel. The prior `runServe` order closed the channel
+(`api.Shutdown`) and stopped the lifecycle Manager last, so a re-enqueue sweep
+firing in that window could panic sending on a closed channel (a `select`/default
+does not save a send on a closed channel). The corrected reverse-dependency drain
+fixes this latent race for every entrypoint.
