@@ -23,6 +23,13 @@ func (m *memoryStore) LexicalSearch(
 		return nil, nil
 	}
 
+	// Sanitize the user text into a safe FTS5 MATCH argument (BUG-4). An input
+	// with no indexable term yields a clean empty result, never a lane error.
+	matchArg := ftsMatchArg(query)
+	if matchArg == "" {
+		return nil, nil
+	}
+
 	// SQLite FTS5 bm25() returns negative values; negate to get a positive score.
 	// We join memories to apply scope, status, kind, and window filters.
 	var sb strings.Builder
@@ -33,7 +40,7 @@ func (m *memoryStore) LexicalSearch(
 		FROM memories_fts
 		JOIN memories m ON m.rowid = memories_fts.rowid
 		WHERE memories_fts MATCH ? AND m.tenant_id = ? AND m.status = 'active'`)
-	args = append(args, query, scope.Tenant)
+	args = append(args, matchArg, scope.Tenant)
 
 	if scope.Project != "" {
 		sb.WriteString(` AND m.project_id = ?`)
@@ -97,6 +104,12 @@ func (m *memoryStore) QuerySearch(
 		return nil, nil
 	}
 
+	// Sanitize the user text into a safe FTS5 MATCH argument (BUG-4).
+	matchArg := ftsMatchArg(query)
+	if matchArg == "" {
+		return nil, nil
+	}
+
 	var sb strings.Builder
 	args := []interface{}{}
 
@@ -106,7 +119,7 @@ func (m *memoryStore) QuerySearch(
 		JOIN memory_queries mq ON mq.rowid = memory_queries_fts.rowid
 		JOIN memories m ON m.id = mq.memory_id
 		WHERE memory_queries_fts MATCH ? AND m.tenant_id = ? AND m.status = 'active'`)
-	args = append(args, query, scope.Tenant)
+	args = append(args, matchArg, scope.Tenant)
 
 	if scope.Project != "" {
 		sb.WriteString(` AND m.project_id = ?`)

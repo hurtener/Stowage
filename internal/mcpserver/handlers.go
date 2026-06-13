@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"time"
-	"unicode/utf8"
 
 	"github.com/hurtener/dockyard/runtime/tool"
 	"github.com/oklog/ulid/v2"
@@ -22,6 +21,17 @@ func makeIngestHandler(svc *Services) tool.Handler[IngestInput, IngestOutput] {
 		scope, err := svc.ScopeFn(ctx)
 		if err != nil {
 			return tool.Result[IngestOutput]{}, fmt.Errorf("memory_ingest: resolve scope: %w", err)
+		}
+
+		// Contribute-mode (target_scope / contributor_user_id) is a multi-user,
+		// grant-gated write. The MCP surface declares the fields but does not yet
+		// honor them (full HTTP↔MCP honoring is Wave B). Until then we FAIL LOUD
+		// rather than silently ingesting into the caller's own scope — a silent
+		// mis-scope is worse than a clear rejection (D-069, parity-lens BUG-2).
+		if in.TargetScope != nil || in.ContributorUserID != "" {
+			return tool.Result[IngestOutput]{}, fmt.Errorf(
+				"memory_ingest: contribute-mode (target_scope/contributor_user_id) is not yet supported on the MCP surface; " +
+					"use the HTTP /v1/records contribute path instead — refusing to avoid a silent mis-scope into the caller's own pool")
 		}
 
 		if len(in.Records) == 0 {
@@ -274,7 +284,7 @@ func makeDrilldownHandler(svc *Services) tool.Handler[DrilldownInput, DrilldownO
 				RecordID:   r.ID,
 				SpanStart:  p.SpanStart,
 				SpanEnd:    p.SpanEnd,
-				Excerpt:    clampExcerpt(r.Content, p.SpanStart, p.SpanEnd),
+				Excerpt:    retrieval.ClampExcerpt(r.Content, p.SpanStart, p.SpanEnd),
 				OccurredAt: r.OccurredAt,
 				Role:       r.Role,
 			})
@@ -286,36 +296,6 @@ func makeDrilldownHandler(svc *Services) tool.Handler[DrilldownInput, DrilldownO
 			Structured: out,
 		}, nil
 	}
-}
-
-// clampExcerpt returns content[s:e] with bounds clamped and UTF-8 safe.
-func clampExcerpt(content string, s, e int) string {
-	n := len(content)
-	if s < 0 {
-		s = 0
-	}
-	if s > n {
-		s = n
-	}
-	if e < s {
-		e = s
-	}
-	if e > n {
-		e = n
-	}
-	if s == e {
-		return ""
-	}
-	for s < n && !utf8.RuneStart(content[s]) {
-		s++
-	}
-	if s > e {
-		e = s
-	}
-	for e > s && e < n && !utf8.RuneStart(content[e]) {
-		e--
-	}
-	return content[s:e]
 }
 
 // ─── memory_feedback ──────────────────────────────────────────────────────────

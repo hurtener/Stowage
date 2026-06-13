@@ -169,6 +169,56 @@ func TestHandlerIngest_EmptyRecords(t *testing.T) {
 	}
 }
 
+// TestHandlerIngest_ContributeFailLoud proves the MCP memory_ingest handler
+// rejects contribute-mode fields (target_scope / contributor_user_id) with a
+// clear error rather than silently ingesting into the caller's own scope, and
+// performs NO store write on that path (D-069, parity-lens BUG-2 / AC-5).
+func TestHandlerIngest_ContributeFailLoud(t *testing.T) {
+	cases := []struct {
+		name string
+		in   IngestInput
+	}{
+		{
+			name: "target_scope set",
+			in: IngestInput{
+				Records:     []IngestRecord{{Role: "user", Content: "should not be written"}},
+				TargetScope: &IngestTargetScope{UserID: "other-user"},
+			},
+		},
+		{
+			name: "contributor_user_id set",
+			in: IngestInput{
+				Records:           []IngestRecord{{Role: "user", Content: "should not be written"}},
+				ContributorUserID: "contributor-1",
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			svc := newHandlerServices(t)
+			h := makeIngestHandler(svc)
+			ctx := context.Background()
+
+			_, err := h(ctx, tc.in)
+			if err == nil {
+				t.Fatal("expected fail-loud error for contribute-mode field, got nil")
+			}
+
+			// No store write into the caller scope.
+			scope := identity.Scope{Tenant: "test-tenant"}
+			n, cerr := svc.Store.Records().CountRecordsSince(ctx, scope, 0)
+			if cerr != nil {
+				t.Fatalf("count records: %v", cerr)
+			}
+			if n != 0 {
+				t.Errorf("expected 0 records written on rejected contribute call, got %d", n)
+			}
+		})
+	}
+}
+
 func TestHandlerIngest_DefaultRole(t *testing.T) {
 	svc := newHandlerServices(t)
 	h := makeIngestHandler(svc)
@@ -892,94 +942,9 @@ func TestHandlerTopics_NilTopicSvc(t *testing.T) {
 	}
 }
 
-// ── clampExcerpt ──────────────────────────────────────────────────────────────
-
-func TestClampExcerpt_Normal(t *testing.T) {
-	got := clampExcerpt("hello world", 6, 11)
-	if got != "world" {
-		t.Errorf("expected 'world', got %q", got)
-	}
-}
-
-func TestClampExcerpt_Clamp(t *testing.T) {
-	got := clampExcerpt("hello", 0, 100)
-	if got != "hello" {
-		t.Errorf("expected 'hello', got %q", got)
-	}
-}
-
-func TestClampExcerpt_Empty(t *testing.T) {
-	got := clampExcerpt("hello", 3, 3)
-	if got != "" {
-		t.Errorf("expected empty, got %q", got)
-	}
-}
-
-func TestClampExcerpt_NegativeStart(t *testing.T) {
-	got := clampExcerpt("hello", -5, 3)
-	if got != "hel" {
-		t.Errorf("expected 'hel', got %q", got)
-	}
-}
-
-func TestClampExcerpt_StartBeyondEnd(t *testing.T) {
-	// s > n clamps to n; e < s clamps e to s → result empty.
-	got := clampExcerpt("hello", 100, 200)
-	if got != "" {
-		t.Errorf("expected empty, got %q", got)
-	}
-}
-
-func TestClampExcerpt_EndBeforeStart(t *testing.T) {
-	// e < s → e clamped to s → empty.
-	got := clampExcerpt("hello world", 8, 3)
-	if got != "" {
-		t.Errorf("expected empty, got %q", got)
-	}
-}
-
-func TestClampExcerpt_UTF8(t *testing.T) {
-	// "héllo" — é is a 2-byte rune (0xC3 0xA9).
-	s := "héllo"
-	// span [0,3] straddles the 2-byte rune at position 1-2; clampExcerpt must
-	// return a valid UTF-8 string.
-	got := clampExcerpt(s, 0, 3)
-	if !isValidUTF8(got) {
-		t.Errorf("clampExcerpt returned invalid UTF-8: %q", got)
-	}
-}
-
-func isValidUTF8(s string) bool {
-	for i := 0; i < len(s); {
-		r, size := decodeFirst(s[i:])
-		if r == 0xFFFD && size == 1 {
-			return false
-		}
-		i += size
-	}
-	return true
-}
-
-// decodeFirst is a minimal rune decoder for the test helper above.
-func decodeFirst(s string) (rune, int) {
-	if len(s) == 0 {
-		return 0, 0
-	}
-	b := s[0]
-	if b < 0x80 {
-		return rune(b), 1
-	}
-	if b < 0xC0 {
-		return 0xFFFD, 1
-	}
-	if b < 0xE0 && len(s) >= 2 {
-		return rune(b&0x1F)<<6 | rune(s[1]&0x3F), 2
-	}
-	if b < 0xF0 && len(s) >= 3 {
-		return rune(b&0x0F)<<12 | rune(s[1]&0x3F)<<6 | rune(s[2]&0x3F), 3
-	}
-	return 0xFFFD, 1
-}
+// clampExcerpt tests moved to internal/retrieval (TestClampExcerpt) — the
+// drill-down excerpt shaper is now the single shared retrieval.ClampExcerpt used
+// by the HTTP, MCP, and embedded SDK surfaces (D-069, BUG-5).
 
 // ── memory_drilldown (extra paths) ───────────────────────────────────────────
 

@@ -3,9 +3,9 @@ package api
 import (
 	"encoding/json"
 	"net/http"
-	"unicode/utf8"
 
 	"github.com/hurtener/stowage/internal/identity"
+	"github.com/hurtener/stowage/internal/retrieval"
 	"github.com/hurtener/stowage/internal/store"
 )
 
@@ -127,7 +127,7 @@ func (s *Server) handleDrilldown(w http.ResponseWriter, r *http.Request) {
 		if !ok {
 			continue // record may have been deleted or out of scope
 		}
-		excerpt := clampExcerpt(rec.Content, p.SpanStart, p.SpanEnd)
+		excerpt := retrieval.ClampExcerpt(rec.Content, p.SpanStart, p.SpanEnd)
 		spans = append(spans, drilldownSpan{
 			RecordID:   rec.ID,
 			SpanStart:  p.SpanStart,
@@ -139,37 +139,4 @@ func (s *Server) handleDrilldown(w http.ResponseWriter, r *http.Request) {
 	}
 
 	respondJSON(w, http.StatusOK, drilldownResponse{MemoryID: memoryID, Spans: spans})
-}
-
-// clampExcerpt returns content[s:e] with bounds clamped to [0, len(content)]
-// and endpoints aligned to UTF-8 rune boundaries (RFC P1; no mid-rune splits).
-func clampExcerpt(content string, s, e int) string {
-	n := len(content)
-	if s < 0 {
-		s = 0
-	}
-	if s > n {
-		s = n
-	}
-	if e < s {
-		e = s
-	}
-	if e > n {
-		e = n
-	}
-	if s == e {
-		return ""
-	}
-	// Advance s past any UTF-8 continuation bytes.
-	for s < n && !utf8.RuneStart(content[s]) {
-		s++
-	}
-	if s > e {
-		e = s
-	}
-	// Retract e backward to a rune start (e == n is always valid).
-	for e > s && e < n && !utf8.RuneStart(content[e]) {
-		e--
-	}
-	return content[s:e]
 }

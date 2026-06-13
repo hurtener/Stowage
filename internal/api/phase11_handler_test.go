@@ -11,6 +11,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/hurtener/stowage/internal/identity"
 	"github.com/hurtener/stowage/internal/store"
@@ -128,6 +129,163 @@ func TestDrilldown_ByMemoryID(t *testing.T) {
 	}
 	if len(res.Spans) > 0 && res.Spans[0].Excerpt != content {
 		t.Errorf("excerpt: got %q want %q", res.Spans[0].Excerpt, content)
+	}
+}
+
+// TestDrilldown_ValidationBranches exercises the handleDrilldown validation and
+// not-found branches (kept covered after the excerpt shaper moved to the shared
+// retrieval.ClampExcerpt, D-069).
+func TestDrilldown_ValidationBranches(t *testing.T) {
+	t.Parallel()
+	_, ts, st := newTestServer(t)
+	_, pt := mustCreateAgentKey(t, st, "tenant-ddval")
+
+	do := func(t *testing.T, payload string) *http.Response {
+		t.Helper()
+		req, _ := http.NewRequest("POST", ts.URL+"/v1/drilldown", strings.NewReader(payload))
+		req.Header.Set("Authorization", bearerHeader(pt))
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("POST /v1/drilldown: %v", err)
+		}
+		return resp
+	}
+
+	cases := []struct {
+		name    string
+		payload string
+		want    int
+	}{
+		{"neither set", `{}`, http.StatusBadRequest},
+		{"both set", `{"memory_id":"m","citation":"c"}`, http.StatusBadRequest},
+		{"unknown field", `{"bogus":"x"}`, http.StatusBadRequest},
+		{"malformed json", `{not json`, http.StatusBadRequest},
+		{"citation not found", `{"citation":"01injnotfound"}`, http.StatusNotFound},
+		{"memory not found", `{"memory_id":"01memnotfound"}`, http.StatusOK}, // empty provenance → 200 empty spans
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			resp := do(t, tc.payload)
+			defer drainClose(resp.Body)
+			if resp.StatusCode != tc.want {
+				t.Errorf("payload %s: got %d want %d", tc.payload, resp.StatusCode, tc.want)
+			}
+		})
+	}
+}
+
+// TestDrilldown_NoProvenanceReturnsEmptySpans covers the empty-provenance branch
+// (a memory with no provenance rows → 200 with an empty spans array).
+func TestDrilldown_NoProvenanceReturnsEmptySpans(t *testing.T) {
+	t.Parallel()
+	_, ts, st := newTestServer(t)
+	_, pt := mustCreateAgentKey(t, st, "tenant-ddnoprov")
+	scope := identity.Scope{Tenant: "tenant-ddnoprov"}
+
+	nowMs := time.Now().UnixMilli()
+	memID := fmt.Sprintf("01memnp%015x", nowMs)
+	cs := store.CommitSet{
+		Action: store.ActionAdd,
+		Memory: store.Memory{
+			ID: memID, Kind: "fact", Content: "no provenance memory", Context: "ctx",
+			Status: "active", Confidence: 0.9, TrustSource: "llm_extracted",
+			Stability: 1.0, ContentHash: memID, CreatedAt: nowMs, UpdatedAt: nowMs,
+		},
+		Events: []store.Event{{ID: memID + "e", Type: "memory.added", SubjectID: memID, Payload: `{}`}},
+	}
+	if err := st.Memories().Commit(context.Background(), scope, cs); err != nil {
+		t.Fatalf("commit memory: %v", err)
+	}
+
+	body := jsonBody(t, map[string]string{"memory_id": memID})
+	req, _ := http.NewRequest("POST", ts.URL+"/v1/drilldown", body)
+	req.Header.Set("Authorization", bearerHeader(pt))
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("POST /v1/drilldown: %v", err)
+	}
+	defer drainClose(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("got %d want 200", resp.StatusCode)
+	}
+	var res struct {
+		Spans []any `json:"spans"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&res); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(res.Spans) != 0 {
+		t.Errorf("expected 0 spans, got %d", len(res.Spans))
+	}
+}
+
+// TestDrilldown_MidRuneSpanIsValidUTF8 proves the HTTP drill-down excerpt is
+// rune-safe: a provenance span whose byte offset lands mid-rune yields valid
+// UTF-8, matching the shared retrieval.ClampExcerpt used by every surface
+// (D-069, BUG-5 / AC-4).
+func TestDrilldown_MidRuneSpanIsValidUTF8(t *testing.T) {
+	t.Parallel()
+	_, ts, st := newTestServer(t)
+	_, pt := mustCreateAgentKey(t, st, "tenant-ddrune")
+	scope := identity.Scope{Tenant: "tenant-ddrune"}
+
+	// "日本語" — each rune is 3 bytes. A span end of 4 lands mid-rune.
+	content := "日本語のメモ"
+	nowMs := time.Now().UnixMilli()
+	recID := fmt.Sprintf("01rec%016x", nowMs+1)
+	memID := fmt.Sprintf("01mem%016x", nowMs+1)
+	evtID := fmt.Sprintf("01evt%016x", nowMs+1)
+
+	if err := st.Records().Append(context.Background(), scope, []store.Record{
+		{ID: recID, Role: "user", Content: content, OccurredAt: nowMs, CreatedAt: nowMs},
+	}); err != nil {
+		t.Fatalf("append record: %v", err)
+	}
+	cs := store.CommitSet{
+		Action: store.ActionAdd,
+		Memory: store.Memory{
+			ID: memID, Kind: "fact", Content: content, Context: "ctx",
+			Status: "active", Confidence: 0.9, TrustSource: "llm_extracted",
+			Stability: 1.0, ContentHash: memID, CreatedAt: nowMs, UpdatedAt: nowMs,
+		},
+		Provenance: []store.Provenance{
+			{ID: evtID, MemoryID: memID, RecordID: recID, SpanStart: 1, SpanEnd: 4, TenantID: scope.Tenant, CreatedAt: nowMs},
+		},
+		Events: []store.Event{{ID: evtID + "e", Type: "memory.added", SubjectID: memID, Payload: `{}`}},
+	}
+	if err := st.Memories().Commit(context.Background(), scope, cs); err != nil {
+		t.Fatalf("commit memory: %v", err)
+	}
+
+	body := jsonBody(t, map[string]string{"memory_id": memID})
+	req, _ := http.NewRequest("POST", ts.URL+"/v1/drilldown", body)
+	req.Header.Set("Authorization", bearerHeader(pt))
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("POST /v1/drilldown: %v", err)
+	}
+	defer drainClose(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("drilldown: got %d want 200", resp.StatusCode)
+	}
+	var res struct {
+		Spans []struct {
+			Excerpt string `json:"excerpt"`
+		} `json:"spans"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&res); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(res.Spans) == 0 {
+		t.Fatal("expected at least one span")
+	}
+	if !utf8.ValidString(res.Spans[0].Excerpt) {
+		t.Errorf("excerpt is not valid UTF-8: %q", res.Spans[0].Excerpt)
 	}
 }
 

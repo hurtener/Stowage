@@ -26,13 +26,22 @@ type IngestRecord struct {
 }
 
 // IngestTargetScope is the optional contribute-mode target scope.
+//
+// NOTE (D-069, parity-lens BUG-2): contribute-mode is a multi-user, grant-gated
+// write that the MCP surface does NOT yet honor. Setting this field (or
+// ContributorUserID) on a memory_ingest call is rejected with an error rather
+// than silently mis-scoping into the caller's own pool. Full HTTP↔MCP honoring
+// lands in Wave B; for now use HTTP POST /v1/records for contribute writes.
 type IngestTargetScope struct {
 	ProjectID string `json:"project_id,omitempty"`
 	UserID    string `json:"user_id,omitempty"`
 	SessionID string `json:"session_id,omitempty"`
 }
 
-// IngestInput is the memory_ingest tool input.
+// IngestInput is the memory_ingest tool input. Records ingest into the caller's
+// own scope. TargetScope/ContributorUserID (contribute-mode) are declared for
+// forward-compatibility but are NOT yet honored on MCP — setting either fails
+// loud (see IngestTargetScope; D-069).
 type IngestInput struct {
 	Records           []IngestRecord     `json:"records"`
 	TargetScope       *IngestTargetScope `json:"target_scope,omitempty"`

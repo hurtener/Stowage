@@ -87,20 +87,33 @@ func NewEmbedded(parentCtx context.Context, cfg config.Config, opts ...Option) (
 		return nil, nil, errors.New("sdk: NewEmbedded requires WithTenantID option")
 	}
 
-	// Apply sqlite + mock defaults when not explicitly set.
+	// Apply the sqlite store default early so the embedded DSN-required check
+	// below can key off the effective driver.
 	if cfg.Store.Driver == "" {
 		cfg.Store.Driver = "sqlite"
 	}
-	if cfg.Gateway.Driver == "" {
-		cfg.Gateway.Driver = "mock"
-	}
-	if cfg.VIndex.Driver == "" {
-		cfg.VIndex.Driver = "hnsw"
-	}
 
-	// Validate the minimal config subset needed for embedded mode.
+	// Embedded mode requires an explicit Store.DSN for sqlite — we do NOT fall
+	// back to the server's "./data/stowage.db" default, so an in-process host
+	// never silently writes to an unexpected path. Checked BEFORE FillZeroDefaults
+	// (which would otherwise populate the default DSN).
 	if cfg.Store.DSN == "" && cfg.Store.Driver == "sqlite" {
 		return nil, nil, errors.New("sdk: NewEmbedded requires Store.DSN (use a temp file path or ':memory:')")
+	}
+
+	// Apply the same defaults layer the server applies via config.Load —
+	// gateway model / embedding dims / rerank model, profile, telemetry, etc. —
+	// so the embedded vector + rerank lanes are populated identically to the
+	// server under a documented-minimal config (D-069, parity-lens Pattern P3).
+	cfg.FillZeroDefaults()
+
+	// Run the SAME fail-loud validation the server runs before boot.Open
+	// (cmd/stowage). This enforces the D-030 secret-indirection guard (a literal
+	// gateway.api_key fails closed) and rejects unknown drivers/profiles, so an
+	// embedded host can never stand up a stack the server would reject at boot
+	// (D-069, parity-lens BUG-3). No half-built stack escapes the constructor.
+	if err := cfg.Validate(); err != nil {
+		return nil, nil, fmt.Errorf("sdk: NewEmbedded: invalid config: %w", err)
 	}
 
 	// innerCtx controls the lifetime of background goroutines started by boot.Open
@@ -348,31 +361,12 @@ func (c *embeddedClient) Drilldown(ctx context.Context, req DrilldownRequest) (D
 			RecordID:   rec.ID,
 			SpanStart:  p.SpanStart,
 			SpanEnd:    p.SpanEnd,
-			Excerpt:    safeExcerpt(rec.Content, p.SpanStart, p.SpanEnd),
+			Excerpt:    retrieval.ClampExcerpt(rec.Content, p.SpanStart, p.SpanEnd),
 			OccurredAt: rec.OccurredAt,
 			Role:       rec.Role,
 		})
 	}
 	return DrilldownResponse{MemoryID: memoryID, Spans: spans}, nil
-}
-
-// safeExcerpt returns content[s:e] with bounds clamped to valid range.
-// Mirrors the clampExcerpt logic in internal/api.
-func safeExcerpt(content string, s, e int) string {
-	n := len(content)
-	if s < 0 {
-		s = 0
-	}
-	if s > n {
-		s = n
-	}
-	if e < s {
-		e = s
-	}
-	if e > n {
-		e = n
-	}
-	return content[s:e]
 }
 
 // Feedback implements Client.

@@ -1206,3 +1206,72 @@ closing the ingest channel. The prior `runServe` order closed the channel
 firing in that window could panic sending on a closed channel (a `select`/default
 does not save a send on a closed channel). The corrected reverse-dependency drain
 fixes this latent race for every entrypoint.
+
+## D-069 — Wave A embedded correctness + honesty bundle
+
+2026-06-13. D-067 Wave A correctness + honesty punch-list (Phase h2; plan
+`docs/plans/phase-h2-correctness-honesty.md`). Six independent fixes from the
+parity-lens findings (BUG-2..BUG-5, Pattern P3, doc honesty). No new config
+knobs (D-034 not engaged) — this bundle makes *existing* validation/defaults fire
+on the embedded path and removes silent semantic divergences.
+
+**Decision.**
+
+1. **Embedded config validation + D-030 guard (BUG-3).** `sdk/stowage.NewEmbedded`
+   runs the same `config.Config.Validate()` the server runs before `boot.Open`,
+   including the D-030 secret-indirection guard (a literal `gateway.api_key`
+   instead of an `env.VAR` reference fails closed). An invalid embedded config
+   returns an error from the constructor — never a half-built stack (nil client +
+   nil closer on the error path).
+
+2. **Embedded gateway defaults (Pattern P3).** `NewEmbedded` applies the same
+   defaults layer the server gets via `config.Load`, through the new
+   `config.(*Config).FillZeroDefaults` (fills every zero-valued field from
+   `config.Defaults()`, preserving caller-set values). The embedding dims/model,
+   rerank model, and chat model are now populated identically to the server under
+   a documented-minimal config, so the embedded vector + rerank lanes are no
+   longer silent no-ops. Embedded still requires an explicit `Store.DSN` for
+   sqlite (checked before the fill) so it never silently writes to the server's
+   default path.
+
+3. **sqlite FTS query sanitization (BUG-4).** The sqlite lexical/queries lane
+   builds its FTS5 `MATCH` argument via `ftsMatchArg`: it extracts the
+   alphanumeric terms from the user text (dropping every operator/special
+   character), wraps each as an FTS5 string literal, and ANDs them (space =
+   implicit AND). This mirrors the Postgres `plainto_tsquery('simple')`
+   robustness profile — operator/special-char input (`"`, `OR`, `*`, `:`, `-`,
+   unbalanced quotes, …) yields a result set or a clean empty, never a hard error
+   that silently drops both lexical lanes. Exact FTS5↔`plainto_tsquery` hit-set
+   equivalence is not claimed (engine difference); the no-crash invariant is
+   covered by `FuzzFTSQueryArg`.
+
+4. **Embedded rune-safe drill-down (BUG-5).** The drill-down excerpt shaper is now
+   a single shared `retrieval.ClampExcerpt` (UTF-8-boundary-safe) consumed by the
+   HTTP handler, the MCP handler, and the embedded SDK. The embedded path
+   previously raw-byte-sliced the provenance span and could split a multi-byte
+   rune (invalid UTF-8); sharing one function makes the three surfaces unable to
+   diverge again.
+
+5. **Contribute-mode fail-loud on MCP (BUG-2 / honesty).** MCP `memory_ingest`
+   declared `target_scope` / `contributor_user_id` but ignored them — a silent
+   mis-scope into the caller's own pool. The handler now **rejects** the call with
+   a clear error when either field is set, before any store write. Full HTTP↔MCP
+   contribute honoring remains Wave B; per the tiered capability model these are
+   multi-user verbs (server surfaces only — never the single-user embedded SDK,
+   which omits the fields entirely).
+
+6. **Doc honesty.** The MCP `memory_ingest` tool description and the
+   `contracts.go` godoc no longer imply contribute-mode works on MCP; they state
+   it is rejected and point at HTTP `/v1/records`.
+
+**Why.** The embedded-sqlite path and the server-over-Postgres path must be
+literally "same code, same seams" (D-067 lens). These six were the Wave A
+"fix now, no design" defects: a security-adjacent validation bypass, a silent
+lane no-op, a sqlite-only robustness cliff, an invalid-UTF-8 excerpt, and a
+silent grant-gated mis-scope — each closed without new knobs.
+
+**Same-PR repairs.** (a) `newTestStore` in `internal/store/sqlitestore` now takes
+`testing.TB` so the FTS fuzz seed setup can reuse it. (b) The duplicated
+`clampExcerpt` copies in `internal/api` and `internal/mcpserver` (and their
+tests) were removed in favour of the shared `retrieval.ClampExcerpt`; the table
+test moved to `internal/retrieval`.
