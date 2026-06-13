@@ -25,6 +25,39 @@ divergence in either direction is the bug.
 
 ---
 
+## Capability tiers (owner clarification, 2026-06-13 — refines the lens)
+
+The owner resolved both GATE-2 questions, which refine the flat lens into a
+**tiered** one. Governing principle, verbatim intent: ***logic should be one but
+access is through different surfaces (to avoid drift).*** One core; thin surfaces.
+
+The surfaces and their tiers:
+
+- **Embedded SDK (`sdk/stowage`, in-process) — inherently single-user.** It
+  exposes only single-user memory capabilities. **Team sharing (grants/groups
+  management, contribute-mode) and tenant admin (API-key management) are *not*
+  embedded capabilities — by design, not omission.**
+- **Server = HTTP (`internal/api`) + MCP (`internal/mcpserver`) — co-equal access
+  points over one running stack.** MCP is *not* an embeddable; it is a server
+  access point so consumers can manage memory through agents without being forced
+  into a proprietary UI. HTTP and MCP must expose the *same* capabilities.
+
+Parity is therefore **tiered**:
+
+| Capability tier | Must be reachable + identical on | Explicitly NOT on |
+|---|---|---|
+| **Single-user** (ingest, retrieve, drilldown, feedback, citations, topics R/W, rollback, confirm/reject, buffer flush, branches, playbook; the pipeline + lifecycle) | embedded SDK **+** HTTP **+** MCP | — |
+| **Multi-user / admin** (grants & group management, contribute-mode, runtime API-key admin) | HTTP **+** MCP | embedded SDK (single-user) |
+| **Backend** (every Store capability) | sqlite **+** Postgres | — |
+
+This reclassifies two findings below (grants-management and contribute-mode are
+**not** embedded-parity violations) and *sharpens* the rest: the flagship MCP bug
+stands (a server surface must run the stack), and the privileged-HTTP-handler
+stratum is now a drift between **co-equal surfaces** of one logic core, exactly
+the thing the governing principle forbids.
+
+---
+
 ## One-paragraph verdict
 
 **The store/backend axis is essentially clean; the path axis is not.** The audit
@@ -39,10 +72,13 @@ sweeps at all**, so MCP-ingested records are durably appended and then never
 become memories and never decay (flagship blocker). Around that sit two
 structural patterns: (1) a **privileged HTTP-handler stratum** — rollback,
 grants/team-sharing management, topic writes, buffer flush, branch ops,
-contribute-mode — wired only to `internal/api` and absent from the 8-method SDK
-`Client` interface (and mostly from MCP), so several *binding* capabilities
-(D-017 reversibility, D-016 team sharing) are unreachable on the embedded path;
-and (2) **path-divergent post-boot wiring** that is hand-duplicated across
+contribute-mode — wired only to `internal/api`. Under the tiered model this
+splits cleanly: **single-user** verbs (rollback/D-017, topic write, flush,
+branches) absent from the embedded SDK *and* from MCP are genuine parity
+violations; **multi-user** verbs (grants/D-016, contribute) are correctly absent
+from embedded but are still a drift between the **co-equal server surfaces**
+(HTTP has them, MCP does not). (2) **path-divergent post-boot wiring** that is
+hand-duplicated across
 `runServe`/`runMCP`/`NewEmbedded` and has drifted. The **Store seam itself is a
 parity success story** (shared conformance suite exercises both drivers, every
 method on both, identical migrations) — the single substantive backend
@@ -112,18 +148,28 @@ A whole class of write/control/management verbs is wired only to `internal/api`
 HTTP handlers, absent from the 8-method SDK `Client` interface
 (`Ingest/Retrieve/Drilldown/Feedback/ResolveCitations/Topics(list-only)/Playbook(stub)`)
 and mostly from the MCP tool set. The service-layer logic largely exists on
-`boot.Stack`; it is simply not surfaced uniformly. Two of these are *binding*
-capabilities unreachable on the embedded path:
+`boot.Stack`; it is simply not surfaced uniformly. Read against the **tiered
+model**: single-user verbs must reach {SDK, HTTP, MCP}; multi-user verbs must
+reach {HTTP, MCP}.
 
-| Capability | Reachable on | Missing on | Severity | Evidence |
-|---|---|---|---|---|
-| **Reconciliation rollback** (D-064/D-017, **binding §6**) + confirm/reject + memory Get/Patch | HTTP | SDK, MCP | blocker | `internal/api/memories_handler.go:198,449`, `sdk/stowage/client.go:10`, `internal/mcpserver/server.go:55-102` |
-| **Grants/groups/membership management** (D-016, RFC §5.3) | HTTP | SDK, MCP, CLI | blocker | `internal/api/grants_handler.go:113-349`, `sdk/stowage/client.go:10-41`, `internal/boot/boot.go:159` (svc built, never surfaced) |
-| **Topic upsert/delete + `pack:off`** (D-043) | HTTP, MCP | SDK (list-only) | blocker | `internal/api/topics_handler.go:69,127`, `internal/mcpserver/handlers.go:493`, `sdk/stowage/client.go:34` |
-| **Buffer flush** (explicit / session_end) | HTTP | SDK, MCP | major | `internal/api/buffers_handler.go:63`, `internal/pipeline/pipeline.go:183`, `sdk/stowage/client.go:10` |
-| **Branch fork/merge/discard** (+ discard skip-promotion, D-029) | HTTP | SDK, MCP | major | `internal/api/branches_handler.go:99-101`, `internal/pipeline/pipeline.go:385`, `internal/pipeline/extract.go:125` |
-| **`memory_assert`** (direct write, bypasses pipeline) — **reverse direction** | MCP | SDK, HTTP | major | `internal/mcpserver` (assert tool) |
-| **Runtime API-key management** (D-030) | HTTP | SDK, MCP | minor | `internal/api` admin routes |
+| Capability | Tier | Reachable on | Missing where it should be | Severity | Evidence |
+|---|---|---|---|---|---|
+| **Reconciliation rollback** (D-064/D-017, **binding §6**) + confirm/reject + memory Get/Patch | single-user | HTTP | SDK, MCP | blocker | `internal/api/memories_handler.go:198,449`, `sdk/stowage/client.go:10`, `internal/mcpserver/server.go:55-102` |
+| **Topic upsert/delete + `pack:off`** (D-043) | single-user | HTTP, MCP | SDK (list-only) | blocker | `internal/api/topics_handler.go:69,127`, `internal/mcpserver/handlers.go:493`, `sdk/stowage/client.go:34` |
+| **Buffer flush** (explicit / session_end) | single-user | HTTP | SDK, MCP | major | `internal/api/buffers_handler.go:63`, `internal/pipeline/pipeline.go:183`, `sdk/stowage/client.go:10` |
+| **Branch fork/merge/discard** (+ discard skip-promotion, D-029) | single-user | HTTP | SDK, MCP | major | `internal/api/branches_handler.go:99-101`, `internal/pipeline/pipeline.go:385`, `internal/pipeline/extract.go:125` |
+| **`memory_assert`** (direct write, bypasses pipeline) — **reverse direction** | single-user | MCP | SDK, HTTP | major | `internal/mcpserver` (assert tool) |
+| **Grants/groups/membership management** (D-016, RFC §5.3) | multi-user | HTTP | **MCP** (correctly absent on SDK) | major | `internal/api/grants_handler.go:113-349`, `internal/mcpserver/contracts.go` (no grant tool) |
+| **Contribute-mode ingest** (D-059) | multi-user | HTTP | **MCP** (correctly absent on SDK) | major (+ BUG-2 silent mis-scope on MCP) | `internal/api/records_handler.go:109-134`, `internal/mcpserver/handlers.go:20-118` |
+| **Runtime API-key management** (D-030) | multi-user/admin | HTTP | MCP (correctly absent on SDK) | minor | `internal/api` admin routes |
+
+> **Reclassified by the owner's tiered model:** grants management, contribute-mode,
+> and API-key admin are **multi-user/admin** — their absence on the embedded SDK
+> is *correct by design* (embedded is single-user), not a parity violation. They
+> remain a drift between the **co-equal server surfaces**: present on HTTP, missing
+> on MCP, which the governing principle (one core, parity across surfaces)
+> requires closing. Grants management is thus a **major server-surface (HTTP↔MCP)
+> finding**, not an embedded blocker.
 
 The **branch-discard** case has a real P4 consequence: discard flushes with
 `SkipPromotion=true`, so speculative branch content is *suppressed* from durable
@@ -209,36 +255,48 @@ Delivery: A2–A7 unify into one `chore`/`fix` punch-list where non-behavioral; 
 Lift handler-resident orchestration into the shared service layer (where not
 already there) and expose the management/control verbs uniformly across {SDK
 `Client`, MCP tools, HTTP}, with the both-paths-identical bar.
-- **B1 (D-070):** lift rollback orchestration out of `memories_handler.go` into an
-  exported `reconcile.Rollback`; expose Rollback + confirm/reject + memory
-  Get/Patch on SDK + MCP.
-- **B2 (D-071):** surface-parity for the remaining stratum — topic write,
-  buffer flush, branch ops, contribute-mode (full honoring), and (pending the
-  Wave-D facade call) grants management — on SDK + MCP.
+Apply the **tiered** target: single-user verbs reach {SDK, HTTP, MCP};
+multi-user verbs reach {HTTP, MCP} only (never the SDK).
+- **B1 (D-070) — single-user reversibility:** lift rollback orchestration out of
+  `memories_handler.go` into an exported `reconcile.Rollback`; expose Rollback +
+  confirm/reject + memory Get/Patch on **SDK + MCP**.
+- **B2 (D-071) — single-user control verbs:** topic write, buffer flush, branch
+  ops, `memory_assert` on **SDK + MCP**.
+- **B3 (D-071, server-surface only):** grants/group management and contribute-mode
+  (full honoring) on **MCP** to match HTTP — **not** added to the SDK (multi-user;
+  embedded is single-user). Closes the HTTP↔MCP drift the governing principle
+  forbids.
 
 **Staging is by file-collision, not logical grouping:** `sdk/stowage/client.go`,
-`http.go`, `embedded.go`, and the shared SDK suite test are touched by *every*
-item here → run as sequential stages, not a wide fan-out (the Harbor 2+2 lesson —
-a wide fan-out is a merge bloodbath).
+`http.go`, `embedded.go`, and the shared SDK suite test are touched by every
+single-user item → run B1/B2 as sequential stages, not a wide fan-out (the Harbor
+2+2 lesson — a wide fan-out is a merge bloodbath). B3 touches the MCP surface +
+shared core only (SDK untouched), so it can run alongside B1/B2 without colliding.
 
 ### Wave C — finish or formally defer half-shipped primitives
 - **Playbook** (`Client.Playbook` returns `Stub:true`) — finish (launch-scope per
   D-018/D-033) or record a deferral + honest godoc.
-- **Runtime API-key management** on the embedded path — first in-process consumer
-  or recorded deferral.
-- **`memory_assert`** — grant SDK/HTTP parity or record an MCP-only deferral.
+- **Runtime API-key management** — confirm it reaches both server surfaces (HTTP +
+  MCP); record the by-design embedded exclusion.
 - Any verb Wave B deferred rather than re-homed.
 
 ### Wave D — decision-shaped RFC remainder
-Architecture-level calls the parity findings surface (RFC amendments, not phase
-plans):
-- **Is `stowage mcp` a standalone server or a thin proxy to a remote stowage?**
-  Wave A makes it behave like `serve`; D ratifies the model in the RFC.
-- **What is the SDK `Client` contract / the embedded facade?** Which verbs are
-  in-scope for embedding — is team-sharing *management* an embedded capability or
-  inherently a multi-tenant-server concern? This defines the embedded surface,
-  analogous to Harbor's Wave D facade question.
-- Codify `boot.StartPipeline` as the canonical post-boot seam (anti-drift).
+**Both original GATE-2 questions are now resolved by the owner (2026-06-13) and
+recorded in the tiered model above:**
+- *Is team-sharing management an embedded capability?* — **No.** Embedded is
+  inherently single-user; grants/contribute/admin are server-surface tiers.
+- *Is `stowage mcp` standalone or a proxy?* — **A server access point**, co-equal
+  with HTTP over the running stack (MCP adds management-via-agents so consumers
+  aren't forced through a proprietary UI). It runs the stack (Wave A fix stands).
+
+The remaining decision-shaped work for the RFC amendment:
+- **Server deployment shape:** does one `stowage serve` process expose *both* HTTP
+  and MCP over a single stack/pipeline (preferred — strictly one logic core), or
+  does `stowage mcp` remain a separate process that also runs a full stack? Either
+  satisfies "MCP runs the pipeline"; the RFC picks the canonical shape.
+- **Codify the governing principle** — *one logic core, thin surfaces* — with
+  `boot.StartPipeline` as the canonical anti-drift post-boot seam and the tiered
+  capability matrix as the surface contract.
 
 ---
 

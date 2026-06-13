@@ -1072,6 +1072,20 @@ parity finding.* Two axes checked together: the **path axis** (embedded
 single-favored-path lens, neither side is privileged; divergence in either
 direction is the bug.
 
+**Tiered refinement (owner, 2026-06-13 — resolves both GATE-2 questions):** the
+flat lens is qualified by capability tier. Governing principle, verbatim intent:
+*logic should be one but access is through different surfaces (to avoid drift)* —
+one core, thin surfaces. (1) **Embedded `sdk/stowage` is inherently single-user**;
+team sharing (grants/groups management, contribute-mode) and tenant admin
+(API-key management) are **not** embedded capabilities by design. (2) **`stowage
+mcp` is a server access point, not an embeddable** — co-equal with HTTP over the
+running stack (MCP adds management-via-agents so consumers aren't forced through a
+proprietary UI), so it must run the full pipeline. Parity is therefore tiered:
+single-user capabilities reach {embedded SDK, HTTP, MCP}; multi-user/admin
+capabilities reach {HTTP, MCP} only; backend parity (sqlite↔Postgres) unchanged.
+This reclassifies the "grants/contribute unreachable on embedded" findings as
+correct-by-design (they become HTTP↔MCP server-surface drift instead).
+
 **Audit calibration:** 11 read-only investigators (one per §7.2 seam) + an
 adversarial skeptic on every blocker/major, pipelined per seam. 40 agents; 35
 findings (9 blocker / 20 major / 6 minor); 28 skeptic-survived, 1 refuted, several
@@ -1088,25 +1102,36 @@ the embedded SDK surface.
   contribute-mode silent mis-scope, embedded config-validation/D-030 bypass,
   sqlite FTS hard-error, embedded rune-safety, embedded gateway-defaults) + doc
   honesty. The behavior-changing MCP fix is its own `fix` PR + decision + E2E.
-- **Wave B — mechanical re-homing / surface-parity:** lift handler-resident
-  orchestration into the shared service layer and expose the management/control
-  verbs uniformly across {SDK, MCP, HTTP}, byte-for-byte / both-paths-identical
-  behavior bar; staged by file-collision (the SDK `Client`/`http`/`embedded` trio
-  is shared) not logical grouping.
+- **Wave B — mechanical re-homing / surface-parity (tiered):** lift
+  handler-resident orchestration into the shared service layer; expose single-user
+  verbs (rollback/confirm/reject, topic write, flush, branches, `memory_assert`)
+  on {SDK, MCP, HTTP} and multi-user verbs (grants management, contribute-mode) on
+  {HTTP, MCP} only — never the SDK. Byte-for-byte / both-paths-identical behavior
+  bar; staged by file-collision (the SDK `Client`/`http`/`embedded` trio is shared
+  by the single-user items) not logical grouping.
 - **Wave C — finish or formally defer half-shipped primitives:** playbook stub,
-  runtime API-key embedded management, `memory_assert` cross-surface parity.
-- **Wave D — decision-shaped RFC remainder:** is `stowage mcp` standalone or a
-  proxy; what is the SDK `Client`/embedded-facade contract; codify
-  `boot.StartPipeline` as the canonical anti-drift post-boot seam.
+  runtime API-key (HTTP+MCP) management, any verb Wave B deferred.
+- **Wave D — decision-shaped RFC remainder:** the GATE-2 questions are resolved
+  (embedded=single-user; mcp=server access point that runs the stack); the
+  remainder is the **server deployment shape** (one `serve` process exposing both
+  HTTP+MCP over one stack — preferred — vs a separate full-stack `mcp` process)
+  and codifying the *one-core-many-surfaces* principle + tiered capability matrix +
+  `boot.StartPipeline` as the canonical anti-drift seam in the RFC.
 
 **Principles (binding for this program):**
-1. **Single source of post-boot wiring** — pipeline + lifecycle + backfill start
+1. **One logic core, thin tiered surfaces** (owner's governing principle) — a
+   capability is implemented once in the core/service layer; surfaces (SDK, HTTP,
+   MCP) are thin callers. Single-user capabilities reach all three; multi-user/
+   admin capabilities reach the two server surfaces (HTTP+MCP); drift between
+   surfaces of one core is the bug.
+2. **Single source of post-boot wiring** — pipeline + lifecycle + backfill start
    through one shared helper consumed by serve, mcp, and embedded; hand-duplicated
    wiring is the root of the flagship bug.
-2. **Both-paths-identical bar** — a re-homing/parity fix lands its conformance
+3. **Both-paths-identical bar** — a re-homing/parity fix lands its conformance
    scenario passing embedded AND server in the SAME PR.
-3. **Bidirectional parity** — a capability reachable/observable on only one
-   path/backend is a finding regardless of which side favors it.
+4. **Bidirectional parity (within tier)** — a capability reachable/observable on
+   only one in-tier surface/backend is a finding regardless of which side favors
+   it.
 4. **Same-PR repair** (§4.4) — fix what the work surfaces, wherever it lives; name
    it in the PR body.
 5. **Honesty over silence** — a declared-but-ignored field (contribute-mode on
@@ -1119,18 +1144,21 @@ without numbering collisions; unused numbers are released with a dated note):
 - **D-069** — Wave A: embedded correctness/honesty bundle (config validation +
   D-030 guard, gateway defaults, FTS sanitization, rune-safe drill-down,
   contribute-mode fail-loud).
-- **D-070** — Wave B: `reconcile.Rollback` core + cross-surface reversibility
-  parity (rollback/confirm/reject/get-patch on SDK + MCP).
-- **D-071** — Wave B: management/control verb surface-parity (topic write, buffer
-  flush, branch ops, contribute-mode honoring, grants management) on SDK + MCP.
+- **D-070** — Wave B: `reconcile.Rollback` core + single-user reversibility parity
+  (rollback/confirm/reject/get-patch on SDK + MCP + HTTP).
+- **D-071** — Wave B: tiered surface-parity — single-user control verbs (topic
+  write, buffer flush, branch ops, `memory_assert`) on SDK + MCP; multi-user verbs
+  (grants management, contribute-mode honoring) on MCP to match HTTP (not SDK).
 - **D-072** — Wave C: finish-or-defer half-shipped primitives (playbook, API-key
-  embedded management, `memory_assert`).
-- **D-073** — Wave D: `stowage mcp` server model + SDK/embedded-facade RFC
-  amendment; `boot.StartPipeline` codified as the canonical seam.
+  HTTP+MCP management, deferred verbs).
+- **D-073** — Wave D: server deployment shape + one-core-many-surfaces principle +
+  tiered capability matrix + `boot.StartPipeline` codified in the RFC.
 
 **Consequences:** the program is the citable plan for closing the "same code, same
-seams" gap; the embedded and MCP surfaces reach parity with the HTTP server for
-binding capabilities (P1 fidelity drill-down, P4 forgetting + reversibility, P3
-scope/grants); the structural `StartPipeline` seam prevents the three entrypoints
-from silently diverging again. Wave A does not begin until the owner approves this
-entry and the findings doc (GATE 2).
+seams" gap; single-user binding capabilities (P1 fidelity drill-down, P4 forgetting
++ reversibility) reach parity across SDK + HTTP + MCP, and the multi-user tier
+(P3 grants/team-sharing management) reaches parity across the two server surfaces
+(HTTP + MCP) while staying off the single-user embedded path; the structural
+`StartPipeline` seam prevents the three entrypoints from silently diverging again.
+Wave A does not begin until the owner approves this entry and the findings doc
+(GATE 2).
