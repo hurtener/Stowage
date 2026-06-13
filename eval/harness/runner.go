@@ -14,10 +14,19 @@ type RunConfig struct {
 	FixturesDir string
 	// DisableLane: when non-empty, two degradations are applied to simulate a
 	// lane failure (gate-bite harness hook, AC-3):
-	//   1. Items whose lanes list contains ONLY the named lane are filtered out.
+	//   1. Any item the named lane contributed to surfacing is filtered out
+	//      (presence semantics — discard results that relied on the broken lane).
 	//   2. The retrieve limit is capped at 1 to guarantee fewer results.
 	// Both degrade retrieval quality reliably in CI regardless of embedding
 	// randomness (D-055).
+	//
+	// Note (D-069): this hook originally used "only-lane" filter semantics and
+	// named the "lexical" lane. That only ever bit because the sqlite FTS lane
+	// hard-errored on the fixture queries (every one ends in "?", BUG-4), so the
+	// degraded run returned nothing. Once BUG-4 was fixed the lexical/queries
+	// lanes work and the answers are robustly multi-lane, so single-lane "only"
+	// removal no longer degrades. The hook now uses presence semantics and the
+	// test disables a load-bearing lane to keep the gate honestly biting.
 	DisableLane string
 	// RetrieveLimit is the number of results to fetch per question. Default 5.
 	RetrieveLimit int
@@ -282,10 +291,23 @@ func (r *Runner) scoreQuestion(ctx context.Context, q QuestionFixture) (Question
 func filterByLane(items []retrieveItem, disableLane string) []retrieveItem {
 	var out []retrieveItem
 	for _, item := range items {
-		// Keep if the item has multiple lanes or none of the lanes is the disabled one.
-		if len(item.Lanes) != 1 || item.Lanes[0] != disableLane {
-			out = append(out, item)
+		// Simulate the named lane being down: discard any result that the disabled
+		// lane contributed to surfacing (presence semantics, not "only-lane"). This
+		// degrades retrieval regardless of multi-lane redundancy — see RunConfig
+		// for why "only-lane" semantics stopped biting once BUG-4 was fixed (D-069).
+		if containsLane(item.Lanes, disableLane) {
+			continue
 		}
+		out = append(out, item)
 	}
 	return out
+}
+
+func containsLane(lanes []string, lane string) bool {
+	for _, l := range lanes {
+		if l == lane {
+			return true
+		}
+	}
+	return false
 }

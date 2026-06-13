@@ -53,7 +53,7 @@ func New(info server.Info, svc *Services) (*server.Server, error) {
 	}
 
 	if err := tool.New[IngestInput, IngestOutput]("memory_ingest").
-		Describe("Ingest one or more verbatim interaction records into Stowage memory (mirrors POST /v1/records).").
+		Describe("Ingest one or more verbatim interaction records into the caller's own Stowage memory scope. Contribute-mode (target_scope/contributor_user_id) is NOT yet honored on the MCP surface and is rejected with an error — use HTTP POST /v1/records for grant-gated contribute writes.").
 		Handler(makeIngestHandler(svc)).
 		Register(srv); err != nil {
 		return nil, err

@@ -1,9 +1,13 @@
-package api
+package retrieval
 
-// Internal (white-box) tests for clampExcerpt — the UTF-8 safe span extractor
-// used by the drill-down handler (RFC P1; AC-4: verbatim spans, no mid-rune splits).
+// Tests for ClampExcerpt — the single canonical UTF-8-safe span extractor shared
+// by the HTTP, MCP, and embedded SDK drill-down surfaces (RFC P1; D-069 / AC-4:
+// verbatim spans, no mid-rune splits).
 
-import "testing"
+import (
+	"testing"
+	"unicode/utf8"
+)
 
 func TestClampExcerpt(t *testing.T) {
 	t.Parallel()
@@ -45,11 +49,32 @@ func TestClampExcerpt(t *testing.T) {
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			got := clampExcerpt(tc.content, tc.s, tc.e)
+			got := ClampExcerpt(tc.content, tc.s, tc.e)
 			if got != tc.want {
-				t.Errorf("clampExcerpt(%q, %d, %d) = %q want %q",
+				t.Errorf("ClampExcerpt(%q, %d, %d) = %q want %q",
 					tc.content, tc.s, tc.e, got, tc.want)
 			}
+			if !utf8.ValidString(got) {
+				t.Errorf("ClampExcerpt(%q, %d, %d) = %q is not valid UTF-8",
+					tc.content, tc.s, tc.e, got)
+			}
 		})
+	}
+}
+
+// TestClampExcerptAlwaysValidUTF8 fuzzes mid-rune offsets over multibyte content
+// and asserts the result is always valid UTF-8 (the BUG-5 invariant the embedded
+// path previously violated by raw byte-slicing).
+func TestClampExcerptAlwaysValidUTF8(t *testing.T) {
+	t.Parallel()
+	content := "café — 日本語 — naïve façade 🚀 done"
+	n := len(content)
+	for s := -2; s <= n+2; s++ {
+		for e := -2; e <= n+2; e++ {
+			got := ClampExcerpt(content, s, e)
+			if !utf8.ValidString(got) {
+				t.Fatalf("ClampExcerpt(content, %d, %d) = %q is not valid UTF-8", s, e, got)
+			}
+		}
 	}
 }

@@ -198,6 +198,83 @@ func Defaults() *Config {
 	return c
 }
 
+// FillZeroDefaults sets every zero-valued field of c to the corresponding value
+// from Defaults(), preserving any field the caller explicitly set. It is the
+// defaults layer the embedded SDK path (sdk/stowage.NewEmbedded) applies before
+// Validate so the in-process stack validates and populates the same retrieval
+// lanes (gateway model / embedding dims / rerank model) as the server, which
+// gets these via Load (D-069, parity-lens Pattern P3 / BUG-3).
+//
+// Note: Store.DSN is also filled from Defaults() here; embedded callers that
+// require an explicit DSN must check it before calling FillZeroDefaults.
+func (c *Config) FillZeroDefaults() {
+	d := Defaults()
+
+	if c.Profile == "" {
+		c.Profile = d.Profile
+	}
+
+	if c.Server.Listen == "" {
+		c.Server.Listen = d.Server.Listen
+	}
+	if c.Server.ReadTimeout == 0 {
+		c.Server.ReadTimeout = d.Server.ReadTimeout
+	}
+	if c.Server.WriteTimeout == 0 {
+		c.Server.WriteTimeout = d.Server.WriteTimeout
+	}
+	if c.Server.IdleTimeout == 0 {
+		c.Server.IdleTimeout = d.Server.IdleTimeout
+	}
+	if c.Server.MaxBodyBytes == 0 {
+		c.Server.MaxBodyBytes = d.Server.MaxBodyBytes
+	}
+
+	if c.Store.Driver == "" {
+		c.Store.Driver = d.Store.Driver
+	}
+	if c.Store.DSN == "" {
+		c.Store.DSN = d.Store.DSN
+	}
+
+	if c.VIndex.Driver == "" {
+		c.VIndex.Driver = d.VIndex.Driver
+	}
+
+	if c.Gateway.Driver == "" {
+		c.Gateway.Driver = d.Gateway.Driver
+	}
+	if c.Gateway.APIKey == "" {
+		c.Gateway.APIKey = d.Gateway.APIKey
+	}
+	if c.Gateway.Model == "" {
+		c.Gateway.Model = d.Gateway.Model
+	}
+	if c.Gateway.EmbedModel == "" {
+		c.Gateway.EmbedModel = d.Gateway.EmbedModel
+	}
+	if c.Gateway.EmbedDims == 0 {
+		c.Gateway.EmbedDims = d.Gateway.EmbedDims
+	}
+	if c.Gateway.RerankModel == "" {
+		c.Gateway.RerankModel = d.Gateway.RerankModel
+	}
+
+	if c.Telemetry.LogLevel == "" {
+		c.Telemetry.LogLevel = d.Telemetry.LogLevel
+	}
+	if c.Telemetry.LogFormat == "" {
+		c.Telemetry.LogFormat = d.Telemetry.LogFormat
+	}
+	if c.Telemetry.MetricsListen == "" {
+		c.Telemetry.MetricsListen = d.Telemetry.MetricsListen
+	}
+
+	if c.MCP.StdioTenant == "" {
+		c.MCP.StdioTenant = d.MCP.StdioTenant
+	}
+}
+
 // Load builds a Config by merging in order: defaults < profile < file < env.
 // path is optional; pass "" to skip the file step.
 // context.Context is accepted for future cancellation support on I/O paths.

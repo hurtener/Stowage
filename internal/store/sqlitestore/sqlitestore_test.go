@@ -22,7 +22,8 @@ import (
 )
 
 // newTestStore opens a fresh SQLite store in a temp dir and migrates it.
-func newTestStore(t *testing.T) (store.Store, func()) {
+// It accepts testing.TB so it works from both unit tests and fuzz seed setup.
+func newTestStore(t testing.TB) (store.Store, func()) {
 	t.Helper()
 	dir := t.TempDir()
 	dsn := filepath.Join(dir, "test.db")

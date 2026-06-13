@@ -113,6 +113,97 @@ func TestClientEmbedded_MissingDSN(t *testing.T) {
 	}
 }
 
+// TestClientEmbedded_ConfigValidation proves NewEmbedded runs the same fail-loud
+// config validation the server runs before boot.Open, including the D-030
+// secret-indirection guard (D-069, AC-1). A literal gateway.api_key (not env.VAR)
+// must fail closed; an unknown driver/profile must fail; a valid minimal config
+// must succeed — and no half-built stack escapes the constructor on failure.
+func TestClientEmbedded_ConfigValidation(t *testing.T) {
+	mkValid := func(t *testing.T) config.Config {
+		cfg := config.Config{}
+		cfg.Store.Driver = "sqlite"
+		cfg.Store.DSN = filepath.Join(t.TempDir(), "valid.db")
+		cfg.Gateway.Driver = "mock"
+		return cfg
+	}
+
+	tests := []struct {
+		name    string
+		mutate  func(t *testing.T, c *config.Config)
+		wantErr bool
+	}{
+		{
+			name:    "valid minimal",
+			mutate:  func(_ *testing.T, _ *config.Config) {},
+			wantErr: false,
+		},
+		{
+			name: "literal api_key fails closed (D-030)",
+			mutate: func(_ *testing.T, c *config.Config) {
+				c.Gateway.APIKey = "sk-literal-secret-value" //nolint:gosec // test asserts this is rejected
+			},
+			wantErr: true,
+		},
+		{
+			name: "unknown store driver",
+			mutate: func(_ *testing.T, c *config.Config) {
+				c.Store.Driver = "bogusdriver"
+				c.Store.DSN = "x"
+			},
+			wantErr: true,
+		},
+		{
+			name: "unknown profile",
+			mutate: func(_ *testing.T, c *config.Config) {
+				c.Profile = "no-such-profile"
+			},
+			wantErr: true,
+		},
+		{
+			name: "env-ref api_key is accepted",
+			mutate: func(_ *testing.T, c *config.Config) {
+				c.Gateway.APIKey = "env.SOME_KEY"
+			},
+			wantErr: false,
+		},
+	}
+
+	for _, tc := range tests {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := mkValid(t)
+			tc.mutate(t, &cfg)
+
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			client, closer, err := stowage.NewEmbedded(ctx, cfg, stowage.WithTenantID("t"))
+			if tc.wantErr {
+				if err == nil {
+					if closer != nil {
+						shutCtx, done := context.WithTimeout(context.Background(), 5*time.Second)
+						defer done()
+						_ = closer(shutCtx)
+					}
+					t.Fatalf("NewEmbedded: expected error, got nil (client=%v)", client != nil)
+				}
+				// No half-built stack: both client and closer must be nil.
+				if client != nil || closer != nil {
+					t.Errorf("NewEmbedded error path returned non-nil client/closer (half-built stack)")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("NewEmbedded: unexpected error: %v", err)
+			}
+			t.Cleanup(func() {
+				shutCtx, done := context.WithTimeout(context.Background(), 5*time.Second)
+				defer done()
+				_ = closer(shutCtx)
+			})
+		})
+	}
+}
+
 // TestClientEmbedded_IngestRetrieveCycle is an end-to-end smoke that proves
 // the full ingest→pipeline→retrieve cycle works in embedded mode.
 func TestClientEmbedded_IngestRetrieveCycle(t *testing.T) {

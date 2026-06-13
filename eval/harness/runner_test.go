@@ -69,12 +69,18 @@ func TestEvalCI(t *testing.T) {
 	}
 }
 
-// TestEvalCIGateBites proves AC-3: disabling the lexical lane plants a
-// retrieval regression that would fail the gate.
+// TestEvalCIGateBites proves AC-3: disabling a load-bearing retrieval lane
+// plants a regression that would fail the gate.
 //
-// The test runs the harness twice — normal and with DisableLane="lexical" —
-// and asserts the degraded run scores strictly below the normal run.
-// This is a test-only harness hook; no production code is modified.
+// The test runs the harness twice — normal and with a disabled lane — and
+// asserts the degraded run scores strictly below the normal run. This is a
+// test-only harness hook; no production code is modified.
+//
+// We disable the "vector" lane (a load-bearing lane every answer is surfaced by
+// in this fixture set). Until h2 this test disabled "lexical", which only bit
+// because the sqlite FTS lane hard-errored on the "?"-terminated fixture queries
+// (BUG-4); with that fixed the lexical/queries lanes work and the answers are
+// robustly multi-lane, so removing lexical alone no longer degrades (D-069).
 //
 // Not marked t.Parallel() because NewTestServer calls t.Setenv (env var
 // isolation for the mock gateway script path).
@@ -91,11 +97,11 @@ func TestEvalCIGateBites(t *testing.T) {
 		t.Fatalf("normal RunCI: %v", err)
 	}
 
-	// Degraded run: any item that has "lexical" in its lanes is filtered.
+	// Degraded run: any item the "vector" lane contributed to is filtered out.
 	srv2 := harness.NewTestServer(t, "eval-gate-degraded")
 	degradedResult, err := harness.NewRunner(srv2, harness.RunConfig{
 		FixturesDir: dir,
-		DisableLane: "lexical",
+		DisableLane: "vector",
 	}).RunCI(ctx)
 	if err != nil {
 		t.Fatalf("degraded RunCI: %v", err)
@@ -112,7 +118,7 @@ func TestEvalCIGateBites(t *testing.T) {
 
 	// The gate MUST bite: degraded scores must be strictly lower.
 	if degradedResult.Scores.AnswerContextHit >= normalResult.Scores.AnswerContextHit {
-		t.Errorf("gate-bite test FAILED: disabling lexical lane did not lower scores "+
+		t.Errorf("gate-bite test FAILED: disabling the vector lane did not lower scores "+
 			"(degraded=%.4f >= normal=%.4f) — "+
 			"check that the harness DisableLane hook is filtering lane results correctly",
 			degradedResult.Scores.AnswerContextHit,
