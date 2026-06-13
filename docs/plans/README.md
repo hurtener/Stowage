@@ -304,3 +304,27 @@ approve commits as `agreed_upon`). 26 reasoning traces + audit export (signed
 bundles; retention class — **OQ-10**). 27 proactive engine (threshold +
 per-turn budget; per-tenant governance in scope_settings; dismissals demote —
 all consuming signals captured since day one).
+
+## Productionization hardening track (D-067)
+
+An orthogonal, post-launch program enforcing the parity lens — *"same code, same
+seams"* across the embedded-sqlite and server-over-Postgres paths (findings:
+`docs/notes/parity-lens-findings.md`; method:
+`docs/notes/productionization-playbook.md`). Numbered as a `phase-h*` sub-series
+so it does not collide with the reserved launch (19–21) / post-launch (22–27)
+roadmap slots; smoke scripts still match the `scripts/smoke/phase-*.sh` gate.
+Governing principle (D-067): **one logic core, thin tiered surfaces** — single-user
+capabilities reach {SDK, HTTP, MCP}; multi-user/admin capabilities reach {HTTP,
+MCP}; backend parity (sqlite↔Postgres) throughout.
+
+### Wave A — correctness + honesty
+
+| # | Phase | Owns | RFC | Deps | Decision |
+|---|-------|------|-----|------|----------|
+| h1 | `boot.StartPipeline` — pipeline + lifecycle parity across entrypoints (flagship: `stowage mcp` runs no pipeline today) | `internal/boot`, `cmd/stowage`, `sdk/stowage` | §4.1, §9.2, §9.3, §10 | 06–08, 14, 17, 18 | D-068 |
+| h2 | Wave A correctness + honesty bundle (embedded config validation + D-030, gateway defaults, sqlite FTS sanitization, rune-safe drill-down, MCP contribute-mode fail-loud, doc honesty) | `sdk/stowage`, `internal/config`, `internal/store`, `internal/retrieval`, `internal/mcpserver` | §9.4, §9.1, §4.2, P1 | 02, 09, 17, 18 | D-069 |
+
+Waves B (mechanical re-homing / tiered surface-parity, D-070/D-071), C
+(finish-or-defer half-shipped primitives, D-072), and D (decision-shaped RFC
+remainder: server deployment shape + facade, D-073) follow per D-067; each wave's
+plans are authored before implementation and gated by a checkpoint audit (§17).
