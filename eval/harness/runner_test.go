@@ -72,15 +72,24 @@ func TestEvalCI(t *testing.T) {
 // TestEvalCIGateBites proves AC-3: disabling a load-bearing retrieval lane
 // plants a regression that would fail the gate.
 //
-// The test runs the harness twice — normal and with a disabled lane — and
-// asserts the degraded run scores strictly below the normal run. This is a
-// test-only harness hook; no production code is modified.
+// It asserts that disabling EACH production lane individually
+// — vector, queries, AND lexical — strictly lowers the score, using the lane
+// FILTER alone (no limit cap). This is stronger than the prior single-vector
+// check in two ways (D-067 Wave-A checkpoint):
 //
-// We disable the "vector" lane (a load-bearing lane every answer is surfaced by
-// in this fixture set). Until h2 this test disabled "lexical", which only bit
-// because the sqlite FTS lane hard-errored on the "?"-terminated fixture queries
-// (BUG-4); with that fixed the lexical/queries lanes work and the answers are
-// robustly multi-lane, so removing lexical alone no longer degrades (D-069).
+//   - The lexical/queries lanes are now load-bearing in the fixture set, so a
+//     regression in their class (BUG-4 was exactly this: the sqlite FTS5 MATCH
+//     path that BOTH lanes share — see internal/store/sqlitestore/fts.go's
+//     ftsMatchArg — hard-erroring on "?"-terminated queries and silently
+//     dropping the lanes) is now caught. The "queries" lane exercises that
+//     shared FTS-MATCH path; a dedicated keyword-phrased fixture (ci-q-lex-01,
+//     answer "Kafka") makes the "lexical" LexicalSearch path load-bearing too —
+//     LexicalSearch ANDs all query tokens, so natural-language questions
+//     (full of stopwords) surface nothing, but a keyword query whose tokens all
+//     appear in one memory does.
+//   - The limit cap is DECOUPLED from the filter (CapLimitToOne is left false),
+//     so the degradation is attributable to the missing lane, not to fetching
+//     fewer results.
 //
 // Not marked t.Parallel() because NewTestServer calls t.Setenv (env var
 // isolation for the mock gateway script path).
@@ -88,41 +97,77 @@ func TestEvalCIGateBites(t *testing.T) {
 	ctx := context.Background()
 	dir := ciFixturesDir(t)
 
-	// Normal run.
-	srv1 := harness.NewTestServer(t, "eval-gate-normal")
-	normalResult, err := harness.NewRunner(srv1, harness.RunConfig{
+	// Normal run (full limit, no lane disabled).
+	srvN := harness.NewTestServer(t, "eval-gate-normal")
+	normalResult, err := harness.NewRunner(srvN, harness.RunConfig{
 		FixturesDir: dir,
 	}).RunCI(ctx)
 	if err != nil {
 		t.Fatalf("normal RunCI: %v", err)
 	}
-
-	// Degraded run: any item the "vector" lane contributed to is filtered out.
-	srv2 := harness.NewTestServer(t, "eval-gate-degraded")
-	degradedResult, err := harness.NewRunner(srv2, harness.RunConfig{
-		FixturesDir: dir,
-		DisableLane: "vector",
-	}).RunCI(ctx)
-	if err != nil {
-		t.Fatalf("degraded RunCI: %v", err)
-	}
-
-	t.Logf("normal:   answer_context_hit=%.4f (%d/%d)",
+	t.Logf("normal: answer_context_hit=%.4f (%d/%d)",
 		normalResult.Scores.AnswerContextHit,
 		normalResult.Scores.HitCount,
 		normalResult.Scores.TotalQuestions)
-	t.Logf("degraded: answer_context_hit=%.4f (%d/%d)",
-		degradedResult.Scores.AnswerContextHit,
-		degradedResult.Scores.HitCount,
-		degradedResult.Scores.TotalQuestions)
+	normalHits := hitSet(normalResult)
 
-	// The gate MUST bite: degraded scores must be strictly lower.
-	if degradedResult.Scores.AnswerContextHit >= normalResult.Scores.AnswerContextHit {
-		t.Errorf("gate-bite test FAILED: disabling the vector lane did not lower scores "+
-			"(degraded=%.4f >= normal=%.4f) — "+
-			"check that the harness DisableLane hook is filtering lane results correctly",
-			degradedResult.Scores.AnswerContextHit,
-			normalResult.Scores.AnswerContextHit,
-		)
+	// Each production lane must be load-bearing: disabling it (filter only, no
+	// limit cap) must drop at least one question the normal run answered.
+	//
+	// Asserted at the PER-QUESTION level, not on the aggregate score: the vector
+	// lane rides on hnsw's goroutine-interleaving recall variance (D-056), so the
+	// absolute base score is not perfectly stable run-to-run. A thin-margin
+	// aggregate `degraded < normal` comparison was therefore flaky in CI — the
+	// lexical lane uniquely surfaces a single fixture, and unrelated vector
+	// variance could lift the degraded run to or above the (also-varying) normal
+	// run. Requiring a specific normally-hit question to flip to a miss is
+	// deterministic for each lane's uniquely-owned fixture(s) and independent of
+	// unrelated vector variance.
+	for _, lane := range []string{"vector", "queries", "lexical"} {
+		lane := lane
+		t.Run(lane, func(t *testing.T) {
+			//nolint:contextcheck // NewTestServer is test boot infra: it owns its
+			// background goroutine lifecycle via t.Cleanup, not the test's ctx
+			// (same as the top-level NewTestServer calls above).
+			srv := harness.NewTestServer(t, "eval-gate-"+lane)
+			degraded, err := harness.NewRunner(srv, harness.RunConfig{
+				FixturesDir: dir,
+				DisableLane: lane, // CapLimitToOne deliberately left false
+			}).RunCI(ctx)
+			if err != nil {
+				t.Fatalf("degraded RunCI (lane=%s): %v", lane, err)
+			}
+			degradedHits := hitSet(degraded)
+			var dropped []string
+			for id := range normalHits {
+				if !degradedHits[id] {
+					dropped = append(dropped, id)
+				}
+			}
+			t.Logf("disable %-8s: answer_context_hit=%.4f (%d/%d); dropped %d normally-hit question(s): %v",
+				lane,
+				degraded.Scores.AnswerContextHit,
+				degraded.Scores.HitCount,
+				degraded.Scores.TotalQuestions,
+				len(dropped), dropped)
+
+			if len(dropped) == 0 {
+				t.Errorf("gate-bite FAILED for lane %q: disabling the lane (FILTER alone) "+
+					"dropped NO normally-answered question — the lane is not load-bearing, "+
+					"so a regression in it would slip past the benchmark gate",
+					lane)
+			}
+		})
 	}
+}
+
+// hitSet returns the set of question IDs the run answered (AnswerContextHit).
+func hitSet(r *harness.RunResult) map[string]bool {
+	m := make(map[string]bool, len(r.Results))
+	for _, q := range r.Results {
+		if q.Hit {
+			m[q.QuestionID] = true
+		}
+	}
+	return m
 }

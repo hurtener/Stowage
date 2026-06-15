@@ -405,8 +405,15 @@ func runMCP(args []string) {
 	}
 
 	// Boot the core stack (telemetry, store, gateway, vindex, embedder, retriever,
-	// topics, grants). ctx controls the embedder goroutine lifetime.
-	stk, err := boot.Open(ctx, cfg)
+	// topics, grants). Use context.Background() — NOT the signal ctx — so the
+	// embedder worker, pipeline stages, and sweeps live for the process lifetime
+	// and are torn down by the graceful Drain + Close below, exactly as `serve`
+	// and the embedded SDK do. Passing the signal ctx here would cancel the
+	// embedder at SIGTERM, BEFORE Drain flushes the reconcile stage, so records
+	// drained at shutdown would lose their embeddings (boot.Open's ctx governs the
+	// embedder goroutine and Close does not stop it). Aligning the three paths
+	// here closes that lifecycle divergence (D-067 lens).
+	stk, err := boot.Open(context.Background(), cfg)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "stowage mcp: boot: %v\n", err)
 		os.Exit(1)
@@ -422,7 +429,13 @@ func runMCP(args []string) {
 	// pipeline, lifecycle sweeps, and embedding backfill that `stowage serve` and
 	// the SDK run (D-068). Without this, MCP-ingested records durably appended but
 	// never became memories (the flagship parity blocker, BUG-1).
-	p, err := boot.StartPipeline(ctx, stk, *cfg)
+	//
+	// context.Background() (not the signal ctx) for the same reason as boot.Open
+	// above: the stages drain on channel close (Drain) and the sweeps stop via
+	// Drain, so they need a lifetime independent of the shutdown signal — matching
+	// `serve`. Shutdown is driven by ServeStdio(ctx) / httpSrv.Shutdown reacting
+	// to the signal ctx, then the deferred Drain.
+	p, err := boot.StartPipeline(context.Background(), stk, *cfg)
 	if err != nil {
 		stk.Log.Error("stowage mcp: start pipeline", "err", err)
 		os.Exit(1)
@@ -476,6 +489,15 @@ func runMCP(args []string) {
 			Handler:           mcpserver.KeyringMiddleware(stk.Store.Keys(), handler),
 			ReadHeaderTimeout: 10 * time.Second,
 		}
+		// shutdownDone is closed only after httpSrv.Shutdown FINISHES draining
+		// in-flight handlers. ListenAndServe returns as soon as Shutdown CLOSES
+		// the listeners — not when in-flight handlers complete — so without this
+		// barrier the deferred p.Drain could close the ingest channel while an
+		// MCP handler is still in its non-blocking enqueue (a send on a closed
+		// channel, a panic across the MCP boundary). `serve` gets this right by
+		// calling srv.Shutdown synchronously before p.Drain; mirror that here by
+		// awaiting Shutdown before this function returns and the defers run.
+		shutdownDone := make(chan struct{})
 		go func() {
 			<-ctx.Done()
 			// ctx is already cancelled here; a fresh background context is correct
@@ -483,11 +505,16 @@ func runMCP(args []string) {
 			shutCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
 			_ = httpSrv.Shutdown(shutCtx) //nolint:contextcheck
+			close(shutdownDone)
 		}()
 		if listenErr := httpSrv.ListenAndServe(); listenErr != nil && !errors.Is(listenErr, http.ErrServerClosed) {
 			stk.Log.Error("stowage mcp: http serve", "err", listenErr)
 			os.Exit(1)
 		}
+		// ListenAndServe returned because Shutdown closed the listeners; wait for
+		// Shutdown to finish draining in-flight handlers before the deferred Drain
+		// closes the ingest channel (ingress-before-Drain, no send-on-closed race).
+		<-shutdownDone
 	} else {
 		if serveErr := srv.ServeStdio(ctx); serveErr != nil && !isCleanMCPExit(serveErr) {
 			stk.Log.Error("stowage mcp: stdio serve", "err", serveErr)

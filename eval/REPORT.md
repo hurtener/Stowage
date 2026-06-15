@@ -28,9 +28,16 @@ comparison requires the Phase 20 judged-QA mode.
 
 ## Valid baseline (2026-06-12, run #6)
 
+> ⚠️ **Computed pre-BUG-4 (D-069); lexical/queries lanes inactive — pending
+> re-baseline.** This run (2026-06-12) predates the BUG-4 FTS fix (2026-06-13),
+> so the sqlite lexical + queries lanes hard-errored on the "?"-terminated
+> LongMemEval questions and silently dropped out — these numbers reflect
+> vector + structured retrieval only. A full real-gateway re-run is Phase-20
+> scope (needs an API key); see "Re-baseline follow-up" below.
+
 | Dataset | n | answer_context_hit | p50 | p95 | Gateway |
 |---|---|---|---|---|---|
-| LongMemEval oracle (cleaned) | 10 | **0.30** (3/10) | 573 ms | 733 ms | openaicompat → OpenRouter (extract gemini-3.5-flash, embed gemini-embedding-2 3072d) |
+| LongMemEval oracle (cleaned) | 10 | **0.30** (3/10) ⚠️ pre-BUG-4 | 573 ms | 733 ms | openaicompat → OpenRouter (extract gemini-3.5-flash, embed gemini-embedding-2 3072d) |
 
 Run validity, verified: pipeline fully quiescent before scoring (66 active
 memories from 10 conversations, zero unprocessed records, zero dead
@@ -56,9 +63,13 @@ Results: `eval/results/longmemeval-n10-20260612T180501Z.jsonl`
 
 ## n=50 confirmation (2026-06-12, run #7)
 
+> ⚠️ **Computed pre-BUG-4 (D-069); lexical/queries lanes inactive — pending
+> re-baseline.** Same caveat as run #6: the lexical + queries lanes were dead
+> for the "?"-terminated questions in this run.
+
 | Dataset | n | answer_context_hit | p50 | p95 | Gateway |
 |---|---|---|---|---|---|
-| LongMemEval oracle (cleaned) | 50 | **0.20** (10/50) | 517 ms | 1025 ms | same as run #6 |
+| LongMemEval oracle (cleaned) | 50 | **0.20** (10/50) ⚠️ pre-BUG-4 | 517 ms | 1025 ms | same as run #6 |
 
 Validity: 299 active memories from 50 conversations, zero unprocessed
 records at scoring, 160 distinct retrieved memories across 250 slots.
@@ -125,3 +136,24 @@ the 2026-06-12 sanity check:
 This score is the starting line the benchmark gate defends; every later
 phase must improve it, and the Phase 20 judged-QA mode supersedes it for
 external comparison.
+
+## Re-baseline follow-up (2026-06-13, D-067 Wave-A checkpoint)
+
+The two real-gateway headline runs above (run #6 n=10=0.30, run #7 n=50=0.20)
+were computed on 2026-06-12, BEFORE the BUG-4 FTS fix landed on 2026-06-13
+(D-069). Every LongMemEval question ends in "?", and the pre-fix sqlite
+lexical/queries lanes passed the raw "?"-terminated text straight to FTS5
+`MATCH`, which hard-errored and silently dropped both lanes — so those headline
+numbers reflect vector + structured retrieval only and almost certainly
+understate post-fix retrieval.
+
+A corrected re-baseline requires a full real-gateway re-run, which is **Phase-20
+scope** (it needs an API key and the `longmemeval_s` haystack — not attempted in
+this checkpoint). Until then, treat the ⚠️-flagged rows as a pre-BUG-4 lower
+bound, not the current baseline. The CI gate (`make eval-ci`, mock gateway) is
+unaffected — its fixtures and baseline (eval/baselines/ci.json) were re-derived
+post-fix and the lexical + queries lanes are load-bearing there
+(TestEvalCIGateBites).
+
+**Action:** Phase 20 re-runs n=10/n=50 with the real gateway post-BUG-4 and
+replaces the ⚠️-flagged rows with corrected figures.

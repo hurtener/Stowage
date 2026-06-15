@@ -278,5 +278,12 @@
     "conv_id": "ci-conv-08",
     "category": "update_supersede",
     "expected": {"answer": "Honda Civic"}
+  },
+  {
+    "id": "ci-q-lex-01",
+    "text": "Marcus database storage streaming",
+    "conv_id": "ci-conv-01",
+    "category": "lexical_term_match",
+    "expected": {"answer": "Kafka"}
   }
 ]

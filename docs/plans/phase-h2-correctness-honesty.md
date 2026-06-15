@@ -1,6 +1,6 @@
 # Phase h2 — Wave A correctness + honesty bundle
 
-- **Status:** draft | approved | in-progress | shipped
+- **Status:** ~~draft | approved | in-progress~~ **shipped**
 - **Owning subsystem(s):** `sdk/stowage`, `internal/config`, `internal/store` (FTS query build), `internal/retrieval` (drill-down shaping), `internal/mcpserver`, plus doc surfaces
 - **RFC sections:** §9.4 (config: zero-config, fail-loud, knob guardrail), §9.1 (D-030 keys never in config files), §4.2 (lexical lane / FTS), P1 (provenance drill-down fidelity)
 - **Depends on phases:** 02 (config/auth), 09 (retrieval lanes), 17 (MCP), 18 (SDKs) — all shipped

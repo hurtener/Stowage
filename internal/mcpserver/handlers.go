@@ -95,22 +95,19 @@ func makeIngestHandler(svc *Services) tool.Handler[IngestInput, IngestOutput] {
 			return tool.Result[IngestOutput]{}, fmt.Errorf("memory_ingest: store: %w", err)
 		}
 
-		// Non-blocking pipeline enqueue.
+		// Non-blocking, panic-safe pipeline enqueue (P2). Uses the shared
+		// pipeline.TrySend so a send racing the shutdown Drain (channel closed)
+		// degrades to Enqueued=false instead of panicking across the MCP boundary
+		// — the same helper the SDK uses (D-067 lens, parity defense-in-depth).
 		allEnqueued := true
 		for _, si := range stamped {
-			if svc.PipelineIn == nil {
-				allEnqueued = false
-				continue
-			}
-			select {
-			case svc.PipelineIn <- pipeline.Item{
+			if !pipeline.TrySend(svc.PipelineIn, pipeline.Item{
 				RecordID:  si.rec.ID,
 				TenantID:  scope.Tenant,
 				BufferKey: si.bufferKey,
 				SessionID: si.rec.SessionID,
 				BranchID:  si.rec.BranchID,
-			}:
-			default:
+			}) {
 				allEnqueued = false
 			}
 		}

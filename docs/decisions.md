@@ -771,6 +771,21 @@ branch execution): band set to 82. Follow-up tracked: make the concurrent
 branches deterministically reachable (injected scheduler hooks) and restore
 85 — candidates for the Wave 5/6 checkpoint audit.
 
+**Note (2026-06-13, D-067 Wave-A checkpoint — band RAISED to 85, variance
+resolved).** The follow-up tracked above is done. The variance came from the
+incremental-upsert path (built-graph `Upsert` of a new key → `pendingMeta` →
+`Search` → `refreshSidecar`) being reachable only when goroutine interleaving
+happened to order an upsert-into-a-built-graph before a Search; `refreshSidecar`
+sat at 0 % otherwise. `TestHNSW_IncrementalUpsertRefreshSidecar`
+(`internal/vindex/hnsw/driver_test.go`) now forces that sequence
+DETERMINISTICALLY (build via Search → upsert new key → Search), independent of
+`-race` scheduling. Verified stable: `go test -race -cover -count=5
+./internal/vindex/hnsw/` reports **89.1 % on all five runs** (was 80–86 %
+variable; ~83.7 % locally before the test). Band in `scripts/coverage.json`
+raised 82 → 85 (the §11 standard for conformance-tested drivers, ~4 pt headroom
+under the stable 89.1 %). Not a silent lowering — a real fix plus a justified
+raise.
+
 ## D-057 — Advisory locks for lifecycle sweeps (operator-level guard)
 
 2026-06-12. The lifecycle Manager runs 4 sweeps (decay, dedupe, rollup,
@@ -1162,6 +1177,64 @@ seams" gap; single-user binding capabilities (P1 fidelity drill-down, P4 forgett
 `StartPipeline` seam prevents the three entrypoints from silently diverging again.
 Wave A does not begin until the owner approves this entry and the findings doc
 (GATE 2).
+
+**Note (2026-06-13) — Wave-A checkpoint outcomes (`chore(checkpoint)`, gates
+Wave B).** The read-only Wave-A checkpoint audit (§17 / playbook §4.5) ran and its
+punch list was resolved in one chore PR. No new decision numbers consumed
+(D-070/D-071 stay reserved for Wave B). Outcomes:
+
+1. **FAIL fixed — `stowage mcp --http` drain-before-shutdown race.** `runMCP`
+   ran `httpSrv.Shutdown` in an unawaited goroutine, so `ListenAndServe`
+   returning (listeners closed) let the deferred `p.Drain` close the ingest
+   channel while an in-flight MCP handler could still be enqueuing — a
+   send-on-closed-channel panic across the MCP boundary (CLAUDE.md §13). Fix:
+   `runMCP` now awaits `Shutdown` (a `shutdownDone` barrier) before the deferred
+   Drain, mirroring `serve`'s synchronous Shutdown-before-Drain order
+   (`cmd/stowage/main.go`). Defense-in-depth: a shared panic-safe non-blocking
+   enqueue `pipeline.TrySend` (`internal/pipeline/enqueue.go`) now backs BOTH the
+   MCP `memory_ingest` handler and the SDK `Ingest`, so a late send degrades to
+   `Enqueued=false` instead of panicking. Proof:
+   `TestMCPIngestAfterDrainNoPanic` (`test/integration/pipeline_parity_test.go`)
+   + `TestTrySend` (`internal/pipeline/enqueue_test.go`).
+
+2. **Eval harness hand-wiring — sanctioned exception (lower-risk choice).** The
+   harness keeps hand-wiring the pipeline rather than routing through
+   `boot.StartPipeline`: its CI-determinism needs (suppress auto-flush to protect
+   the per-conversation mock-script offset; parked mutating sweeps; a retriever
+   built without rerank/grants to hold the committed CI baseline) cannot be
+   expressed through the shared seam without test-only knobs AND would change eval
+   SCORING — risking the D-035 gate in a PR that gates Wave B. Recorded as a
+   documented exception in `eval/harness/server.go`, kept honest by
+   `TestHarnessStageParity` (asserts the harness wires the same stage
+   constructors `boot.StartPipeline` does — the Phase-h1 AC-1 grep does not scan
+   `eval/`).
+
+3. **Eval gate-bite hardened.** `TestEvalCIGateBites` now asserts that disabling
+   EACH production lane (vector, queries, lexical) individually degrades, via the
+   lane FILTER alone — the limit cap is decoupled (`RunConfig.CapLimitToOne`).
+   A keyword-phrased fixture (`ci-q-lex-01`, answer "Kafka") makes the lexical
+   `LexicalSearch` path load-bearing (its AND-over-all-tokens semantics surface
+   nothing for stopword-heavy natural-language questions). The `queries` lane
+   exercises the shared `ftsMatchArg` FTS-MATCH path BUG-4 actually broke.
+
+4. **REPORT.md honesty.** The real-gateway headline rows (n=10=0.30, n=50=0.20,
+   2026-06-12) are annotated "computed pre-BUG-4 (D-069); lexical/queries lanes
+   inactive — pending re-baseline"; a re-baseline follow-up is filed (Phase-20
+   scope, needs an API key — not attempted here).
+
+5. **h2 plan Status** flipped to **shipped**.
+
+6. **D-056 hnsw band** raised 82 → 85 via a deterministic incremental-upsert/
+   `refreshSidecar` test; 5-run `-race` coverage stable at 89.1 % (see the dated
+   note in D-056).
+
+7. **NITs.** `runMCP` now boots the stack + pipeline on `context.Background()`
+   (not the signal ctx) so the embedder/stages/sweeps live through Drain like
+   `serve`/embedded (was: embedder killed at SIGTERM before Drain).
+   `config.FillZeroDefaults` now resolves the profile-specific
+   `telemetry.log_format` (fleet → json), so the embedded fleet matches the
+   server fleet. New helper vocabulary (`ClampExcerpt`, `FillZeroDefaults`,
+   `ftsMatchArg`, `TrySend`) added to `docs/glossary.md`.
 
 ## D-068 — `boot.StartPipeline` is the single post-boot live-wiring seam
 
