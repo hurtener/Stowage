@@ -324,7 +324,19 @@ MCP}; backend parity (sqlite↔Postgres) throughout.
 | h1 | `boot.StartPipeline` — pipeline + lifecycle parity across entrypoints (flagship: `stowage mcp` runs no pipeline today) | `internal/boot`, `cmd/stowage`, `sdk/stowage` | §4.1, §9.2, §9.3, §10 | 06–08, 14, 17, 18 | D-068 |
 | h2 | Wave A correctness + honesty bundle (embedded config validation + D-030, gateway defaults, sqlite FTS sanitization, rune-safe drill-down, MCP contribute-mode fail-loud, doc honesty) | `sdk/stowage`, `internal/config`, `internal/store`, `internal/retrieval`, `internal/mcpserver` | §9.4, §9.1, §4.2, P1 | 02, 09, 17, 18 | D-069 |
 
-Waves B (mechanical re-homing / tiered surface-parity, D-070/D-071), C
-(finish-or-defer half-shipped primitives, D-072), and D (decision-shaped RFC
-remainder: server deployment shape + facade, D-073) follow per D-067; each wave's
-plans are authored before implementation and gated by a checkpoint audit (§17).
+Wave A shipped: h1 (D-068, #28), h2 (D-069, #29), checkpoint (#30).
+
+### Wave B — mechanical re-homing / tiered surface-parity
+
+| # | Phase | Owns | RFC | Deps | Decision |
+|---|-------|------|-----|------|----------|
+| h3 | Reconciliation reversibility parity — lift rollback/confirm/reject/get into an exported `reconcile` core; reachable on {SDK, MCP, HTTP} | `internal/reconcile`, `internal/api`, `internal/mcpserver`, `sdk/stowage` | §6, §9.1-3 | 15/18, h1, h2 | D-070 |
+| h4 | Tiered control-verb surface parity — single-user (topics/flush/branches/assert) on {SDK, MCP, HTTP}; multi-user (grants mgmt, contribute honoring) on {HTTP, MCP} only | `sdk/stowage`, `internal/mcpserver`, `internal/grants`, `internal/api` | §5.3-5, §4.1, §9.1-3 | **h3**, 16 | D-071 |
+
+h4 shares the SDK `Client`/`http`/`embedded` trio + `mcpserver/server.go` with h3,
+so **h4 lands after h3** (sequential, file-collision per playbook §3). A Wave-B
+checkpoint audit (§17) gates Wave C.
+
+Waves C (finish-or-defer half-shipped primitives, D-072) and D (decision-shaped
+RFC remainder: server deployment shape + facade, D-073) follow per D-067; each
+wave's plans are authored before implementation and gated by a checkpoint audit.
