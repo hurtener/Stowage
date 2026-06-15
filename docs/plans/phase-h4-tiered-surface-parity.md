@@ -25,13 +25,12 @@ capability on the server surfaces.
 
 ## Findings I'm departing from
 
-- **`memory_assert` reachability (OPEN QUESTION for the owner).** Today assert
-  (direct add/update/delete, pipeline-bypassing) is MCP-only. It is a single-user
-  verb, so the tiered model says {SDK, MCP, HTTP}. **Recommendation:** add it to
-  the SDK `Client` (single-user, embedded hosts need a direct-write escape hatch);
-  leave HTTP out for now (the HTTP surface intentionally routes writes through the
-  pipeline) OR add an HTTP route too. The owner picks; default = **add to SDK,
-  not HTTP**, recorded here before implementation.
+- **`memory_assert` reachability (RESOLVED by the owner, 2026-06-15).** Today
+  assert (direct add/update/delete, pipeline-bypassing) is MCP-only. It is a
+  single-user verb. **Decision: add it to the SDK `Client`, NOT to HTTP** — embedded
+  hosts get a direct-write escape hatch, while the HTTP surface intentionally keeps
+  writes routed through the ingest pipeline. So `memory_assert` parity target =
+  {SDK, MCP}; HTTP deliberately excluded (recorded in D-071). Cleared to build.
 
 ## Design
 
