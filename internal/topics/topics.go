@@ -4,6 +4,9 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"time"
+
+	"github.com/oklog/ulid/v2"
 
 	"github.com/hurtener/stowage/internal/identity"
 	"github.com/hurtener/stowage/internal/store"
@@ -48,6 +51,61 @@ func New(ts store.TopicStore, log *slog.Logger, profile string) *Service {
 //     Source="pack".
 //
 // Deleted and paused topics are excluded.
+// TopicUpsert is one topic to upsert via Upsert.
+type TopicUpsert struct {
+	Key         string
+	Description string
+	Status      string // defaults to "active"; must be "active" or "paused"
+}
+
+// Upsert upserts each topic by key within scope and returns the count written.
+// It is the shared topic-write core for the embedded SDK (D-071); pack:off is a
+// normal topic whose Key == PackOff, so opting out of the virtual default pack
+// is an Upsert of {key: "pack:off"} (D-043). status defaults to "active".
+func (s *Service) Upsert(ctx context.Context, scope identity.Scope, items []TopicUpsert) (int, error) {
+	if len(items) == 0 {
+		return 0, fmt.Errorf("topics: upsert: items must not be empty")
+	}
+	now := time.Now().UnixMilli()
+	for i, item := range items {
+		if item.Key == "" {
+			return 0, fmt.Errorf("topics: upsert: item[%d]: key must not be empty", i)
+		}
+		status := item.Status
+		if status == "" {
+			status = "active"
+		}
+		if status != "active" && status != "paused" {
+			return 0, fmt.Errorf("topics: upsert: item[%d]: status must be active or paused", i)
+		}
+		t := store.Topic{
+			ID:          ulid.Make().String(),
+			TenantID:    scope.Tenant,
+			Key:         item.Key,
+			Description: item.Description,
+			Status:      status,
+			CreatedAt:   now,
+			UpdatedAt:   now,
+		}
+		if err := s.ts.Upsert(ctx, scope, t); err != nil {
+			return 0, fmt.Errorf("topics: upsert item[%d]: %w", i, err)
+		}
+	}
+	return len(items), nil
+}
+
+// Delete soft-deletes a topic by key within scope. Returns store.ErrNotFound
+// (wrapped) when the key is absent.
+func (s *Service) Delete(ctx context.Context, scope identity.Scope, key string) error {
+	if key == "" {
+		return fmt.Errorf("topics: delete: key must not be empty")
+	}
+	if err := s.ts.Delete(ctx, scope, key); err != nil {
+		return fmt.Errorf("topics: delete: %w", err)
+	}
+	return nil
+}
+
 func (s *Service) ActiveTopics(ctx context.Context, scope identity.Scope) ([]TopicView, error) {
 	stored, err := s.ts.List(ctx, scope)
 	if err != nil {

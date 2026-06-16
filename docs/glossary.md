@@ -245,3 +245,10 @@ New terms land here in the same PR that introduces them (CLAUDE.md §14).
   `memory_ingest` handler and the embedded SDK `Ingest` so a send racing the
   shutdown `Drain` (closed channel) degrades to a dropped item instead of
   panicking across the API/MCP boundary.
+- **Tiered surface parity** — the placement rule for control/management verbs
+  (D-067, D-071): single-user verbs (topic write, buffer flush, branch
+  fork/merge/discard, `memory_assert`) are reachable on {SDK, MCP, HTTP};
+  multi-user/admin verbs (grants/group management, contribute-mode honoring) on
+  {HTTP, MCP} only — never the single-user embedded SDK. `memory_assert` is the
+  one single-user verb deliberately excluded from HTTP (writes stay pipeline-routed
+  there). Each verb has one shared core so the surfaces cannot drift.

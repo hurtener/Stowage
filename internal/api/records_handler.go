@@ -99,31 +99,29 @@ func (s *Server) handleIngest(w http.ResponseWriter, r *http.Request) {
 
 	authKey := keyFromContext(r.Context())
 
-	// Contribute-mode (Phase 15, D-059): when target_scope is set the records
-	// are committed into the pool owner's scope. Caller must hold an active
-	// contribute grant (403 otherwise). Cross-tenant contribute is never allowed.
-	targetTenantID := authKey.TenantID // always the auth key's tenant
-	targetProjectID := ""
-	targetUserID := ""
-	targetSessionID := ""
+	// Contribute-mode (Phase 15, D-059; honored via the shared core, D-071): when
+	// target_scope is set the records are committed into the pool owner's scope.
+	// Caller must hold an active contribute grant (403 otherwise). Cross-tenant
+	// contribute is never allowed. The grant-check + scope-override live in
+	// grants.AuthorizeContribute so the HTTP and MCP ingest paths cannot drift.
 	contributeMode := req.TargetScope != nil
+	var contribute grants.ContributeContext
 
 	if contributeMode {
 		if s.grantsSvc == nil {
 			respondJSON(w, http.StatusServiceUnavailable, errBody("grants service not available"))
 			return
 		}
-		targetProjectID = req.TargetScope.ProjectID
-		targetUserID = req.TargetScope.UserID
-		targetSessionID = req.TargetScope.SessionID
 		callerScope := identity.Scope{Tenant: authKey.TenantID}
 		targetScope := identity.Scope{
-			Tenant:  targetTenantID,
-			Project: targetProjectID,
-			User:    targetUserID,
-			Session: targetSessionID,
+			Tenant:  authKey.TenantID, // always the auth key's tenant
+			Project: req.TargetScope.ProjectID,
+			User:    req.TargetScope.UserID,
+			Session: req.TargetScope.SessionID,
 		}
-		if err := s.grantsSvc.CheckContributeGrant(r.Context(), callerScope, targetScope, req.ContributorUserID); err != nil {
+		var err error
+		contribute, err = s.grantsSvc.AuthorizeContribute(r.Context(), callerScope, targetScope, req.ContributorUserID)
+		if err != nil {
 			if errors.Is(err, grants.ErrNotCovered) || errors.Is(err, grants.ErrCrossTenantGrant) {
 				respondJSON(w, http.StatusForbidden, errBody("no active contribute grant for target scope"))
 				return
@@ -146,21 +144,13 @@ func (s *Server) handleIngest(w http.ResponseWriter, r *http.Request) {
 				errBody(fmt.Sprintf("item[%d]: tenant scope forgery", i)))
 			return
 		}
-		// In contribute mode, scope fields are overridden with the target scope.
-		// The pool-owner's scope is used so memories land in the right tenant/project/user pool.
+		// In contribute mode, scope fields are overridden with the target scope
+		// via the shared core so memories land in the right pool (D-071).
 		recProjectID := item.ProjectID
 		recUserID := item.UserID
 		recSessionID := item.SessionID
 		if contributeMode {
-			if targetProjectID != "" {
-				recProjectID = targetProjectID
-			}
-			if targetUserID != "" {
-				recUserID = targetUserID
-			}
-			if targetSessionID != "" {
-				recSessionID = targetSessionID
-			}
+			recProjectID, recUserID, recSessionID = contribute.ApplyTo(recProjectID, recUserID, recSessionID)
 		}
 		rec, err := records.New(records.Input{
 			TenantID:      authKey.TenantID,

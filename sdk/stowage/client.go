@@ -52,4 +52,31 @@ type Client interface {
 	// ResolveMemory confirms or rejects a pending_confirmation memory (D-065).
 	// confirm promotes it to active (superseding any target); reject expires it.
 	ResolveMemory(ctx context.Context, req ResolveRequest) (ResolveResponse, error)
+
+	// ── Tier-A control verbs (D-071): single-user verbs on {SDK, MCP, HTTP} ──
+
+	// UpsertTopics upserts extraction topics in the client's scope (D-043).
+	// Opting out of the virtual default pack is an upsert of {Key: "pack:off"}.
+	UpsertTopics(ctx context.Context, req UpsertTopicsRequest) (UpsertTopicsResponse, error)
+
+	// DeleteTopic soft-deletes a topic by key in the client's scope (D-043).
+	DeleteTopic(ctx context.Context, key string) (DeleteTopicResponse, error)
+
+	// Flush flushes a named buffer key with trigger explicit|session_end (D-071).
+	Flush(ctx context.Context, req FlushRequest) (FlushResponse, error)
+
+	// ForkBranch forks a new branch for a session (D-029).
+	ForkBranch(ctx context.Context, req ForkBranchRequest) (ForkBranchResponse, error)
+
+	// MergeBranch transitions a branch to merged (D-029).
+	MergeBranch(ctx context.Context, branchID string) (BranchResponse, error)
+
+	// DiscardBranch transitions a branch to discarded; its buffered turns are
+	// flushed with SkipPromotion (never promoted to memories) (D-029).
+	DiscardBranch(ctx context.Context, branchID string) (BranchResponse, error)
+
+	// Assert directly adds, updates, or deletes a memory, bypassing the ingest
+	// pipeline (D-071). This is an embedded-host escape hatch; the HTTP surface
+	// deliberately omits it (writes stay routed through the pipeline there).
+	Assert(ctx context.Context, req AssertRequest) (AssertResponse, error)
 }

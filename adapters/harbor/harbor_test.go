@@ -95,6 +95,36 @@ func (f *fakeClient) ResolveMemory(_ context.Context, req stowage.ResolveRequest
 	return stowage.ResolveResponse{ID: req.MemoryID, Status: "active"}, nil
 }
 
+// Tier-A control verbs (D-071) — stubbed so fakeClient satisfies the grown
+// stowage.Client interface.
+func (f *fakeClient) UpsertTopics(_ context.Context, req stowage.UpsertTopicsRequest) (stowage.UpsertTopicsResponse, error) {
+	return stowage.UpsertTopicsResponse{Upserted: len(req.Topics)}, nil
+}
+
+func (f *fakeClient) DeleteTopic(_ context.Context, key string) (stowage.DeleteTopicResponse, error) {
+	return stowage.DeleteTopicResponse{Deleted: key}, nil
+}
+
+func (f *fakeClient) Flush(_ context.Context, req stowage.FlushRequest) (stowage.FlushResponse, error) {
+	return stowage.FlushResponse{Key: req.Key, Trigger: req.Trigger, Flushed: true}, nil
+}
+
+func (f *fakeClient) ForkBranch(_ context.Context, _ stowage.ForkBranchRequest) (stowage.ForkBranchResponse, error) {
+	return stowage.ForkBranchResponse{BranchID: "fake-branch"}, nil
+}
+
+func (f *fakeClient) MergeBranch(_ context.Context, branchID string) (stowage.BranchResponse, error) {
+	return stowage.BranchResponse{BranchID: branchID, Status: "merged"}, nil
+}
+
+func (f *fakeClient) DiscardBranch(_ context.Context, branchID string) (stowage.BranchResponse, error) {
+	return stowage.BranchResponse{BranchID: branchID, Status: "discarded"}, nil
+}
+
+func (f *fakeClient) Assert(_ context.Context, req stowage.AssertRequest) (stowage.AssertResponse, error) {
+	return stowage.AssertResponse{MemoryID: req.MemoryID, Action: req.Action, Status: "active"}, nil
+}
+
 // ── Fake Harbor EventBus ─────────────────────────────────────────────────────
 
 // fakeSub is a simple in-memory subscription.

@@ -1397,3 +1397,62 @@ HTTP/MCP-only and land in h4 (D-071).
 `internal/reconcile`; the three surfaces cannot drift. `MarshalPriorState` stays
 in `reconcile` and now has a matching `parsePriorState` inverse colocated with
 the core that consumes it.
+
+## D-071 — Tiered control-verb surface parity (topics/flush/branches/assert; grants/contribute)
+
+**Status:** accepted (Phase h4, D-067 Wave B).
+
+**Context.** After D-070 the reversibility trio was on {SDK, MCP, HTTP}, but the
+remaining control/management verbs were unevenly placed: topic write was HTTP+MCP
+but SDK was list-only; buffer flush and branch fork/merge/discard were HTTP-only;
+`memory_assert` was MCP-only; grants/group management was HTTP-only; and MCP
+contribute-mode was a fail-loud shim (h2). The tiered parity model (D-067) decides
+where each verb belongs.
+
+**Decision.** Apply the tiered model:
+
+- **Tier A — single-user control verbs → {SDK, MCP, HTTP}:** topic upsert/delete
+  (+ `pack:off`, D-043), buffer flush (explicit/session_end), branch
+  fork/merge/discard (discard→SkipPromotion, D-029), and `memory_assert`.
+- **Tier B — multi-user/admin verbs → {HTTP, MCP} only, never the single-user SDK:**
+  grants/group/membership management and contribute-mode honoring (D-016/D-059).
+
+**`memory_assert` reachability (owner-resolved open question).** Assert is a
+single-user, pipeline-bypassing direct write. It is added to the **SDK and MCP**
+but **deliberately NOT to HTTP** — embedded hosts get a direct-write escape hatch
+while the HTTP surface keeps all writes routed through the ingest pipeline. The
+HTTP `Client` implementation returns `ErrAssertHTTPUnsupported`.
+
+**Shared cores (surfaces cannot drift).** Each re-homed verb has ONE core the thin
+surfaces call:
+- assert → `internal/reconcile.Assert` (MCP handler + embedded SDK).
+- branch fork/merge/discard → `internal/pipeline.{ForkBranch,MergeBranch,DiscardBranch}`
+  (HTTP handler lifted onto it; MCP + embedded SDK call it). Discard's flush is now
+  synchronous in the core (the prior HTTP `go FlushBranch(r.Context())` also fixed a
+  latent request-context-cancellation race).
+- topic write → `internal/topics.Service.{Upsert,Delete}` (embedded SDK). HTTP/MCP
+  retain their pre-existing inline store calls (byte-identical construction;
+  golden-locked).
+- contribute → `internal/grants.Service.AuthorizeContribute` + `ContributeContext.ApplyTo`
+  (grant-check + scope-override) consumed by BOTH the HTTP `records_handler` and the
+  MCP `memory_ingest` handler. h2's MCP fail-loud is replaced: with a covering
+  contribute grant the records are stamped with the pool-owner scope; without one the
+  request is rejected (never a silent mis-scope).
+
+**Single-user boundary is enforced, not documented.** A reflection test over the SDK
+`Client` interface (`sdk/stowage.TestClientTierBoundary`) fails the build if any
+Tier-B verb name (Grant/Group/Member/Contribute) ever appears, and asserts every
+Tier-A verb is present.
+
+**Surface-count note (against D-015/D-018).** The MCP tool count grows from 10 to
+**13**: `memory_flush`, `memory_branch` (action: fork|merge|discard), and the Tier-B
+`memory_grants` (action-tagged: create_group/list_groups/add_member/remove_member/
+list_members/create_grant/list_grants/revoke_grant). Per D-015's small-surface
+discipline the branch and grants verbs are folded into action-tagged tools rather
+than one tool per verb. Schema goldens added under `internal/mcpserver/testdata/`.
+
+**Consequences.** The both-surfaces-identical bar is proven by
+`test/integration/surface_parity_test.go` (embedded SDK ⇄ HTTP, real sqlite,
+`-race`); MCP contribute honoring + rejection by `internal/mcpserver`
+(`contribute_test.go`, real store + grants service). A control-verb behavior change
+is now a single-site edit in its core.

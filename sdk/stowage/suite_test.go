@@ -5,6 +5,7 @@ package stowage_test
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	stowage "github.com/hurtener/stowage/sdk/stowage"
@@ -202,6 +203,106 @@ func RunSuite(t *testing.T, client stowage.Client) {
 			MemoryID: "01JXXXXXXXXXXXXXXXXXXXXXXX", Action: "explode",
 		}); err == nil {
 			t.Error("ResolveMemory bad action: expected validation error, got nil")
+		}
+	})
+
+	// ── 11. Tier-A: topic upsert/delete (D-071) — identical on both impls ────
+	t.Run("topic_upsert_delete", func(t *testing.T) {
+		t.Parallel()
+		const key = "h4-suite-topic"
+		up, err := client.UpsertTopics(ctx, stowage.UpsertTopicsRequest{
+			Topics: []stowage.TopicUpsert{{Key: key, Description: "h4 topic"}},
+		})
+		if err != nil {
+			t.Fatalf("UpsertTopics: %v", err)
+		}
+		if up.Upserted != 1 {
+			t.Errorf("UpsertTopics: Upserted want 1 got %d", up.Upserted)
+		}
+		del, err := client.DeleteTopic(ctx, key)
+		if err != nil {
+			t.Fatalf("DeleteTopic: %v", err)
+		}
+		if del.Deleted != key {
+			t.Errorf("DeleteTopic: Deleted want %q got %q", key, del.Deleted)
+		}
+		if _, err := client.UpsertTopics(ctx, stowage.UpsertTopicsRequest{}); err == nil {
+			t.Error("UpsertTopics empty: expected error, got nil")
+		}
+		if _, err := client.DeleteTopic(ctx, ""); err == nil {
+			t.Error("DeleteTopic empty key: expected error, got nil")
+		}
+	})
+
+	// ── 12. Tier-A: buffer flush (D-071) ────────────────────────────────────
+	t.Run("flush_buffer", func(t *testing.T) {
+		t.Parallel()
+		resp, err := client.Flush(ctx, stowage.FlushRequest{Key: "h4-suite/flush", Trigger: "explicit"})
+		if err != nil {
+			t.Fatalf("Flush: %v", err)
+		}
+		if resp.Key != "h4-suite/flush" || resp.Trigger != "explicit" {
+			t.Errorf("Flush echo wrong: %+v", resp)
+		}
+		if _, err := client.Flush(ctx, stowage.FlushRequest{Key: "k", Trigger: "bogus"}); err == nil {
+			t.Error("Flush bad trigger: expected error, got nil")
+		}
+		if _, err := client.Flush(ctx, stowage.FlushRequest{Key: ""}); err == nil {
+			t.Error("Flush empty key: expected error, got nil")
+		}
+	})
+
+	// ── 13. Tier-A: branch fork/merge/discard (D-029, D-071) ─────────────────
+	t.Run("branch_lifecycle", func(t *testing.T) {
+		t.Parallel()
+		fork, err := client.ForkBranch(ctx, stowage.ForkBranchRequest{SessionID: "h4-suite-sess"})
+		if err != nil {
+			t.Fatalf("ForkBranch: %v", err)
+		}
+		if fork.BranchID == "" {
+			t.Fatal("ForkBranch: empty branch_id")
+		}
+		m, err := client.MergeBranch(ctx, fork.BranchID)
+		if err != nil {
+			t.Fatalf("MergeBranch: %v", err)
+		}
+		if m.Status != "merged" {
+			t.Errorf("MergeBranch: status want merged got %q", m.Status)
+		}
+		f2, err := client.ForkBranch(ctx, stowage.ForkBranchRequest{SessionID: "h4-suite-sess-2"})
+		if err != nil {
+			t.Fatalf("ForkBranch 2: %v", err)
+		}
+		d, err := client.DiscardBranch(ctx, f2.BranchID)
+		if err != nil {
+			t.Fatalf("DiscardBranch: %v", err)
+		}
+		if d.Status != "discarded" {
+			t.Errorf("DiscardBranch: status want discarded got %q", d.Status)
+		}
+		if _, err := client.ForkBranch(ctx, stowage.ForkBranchRequest{}); err == nil {
+			t.Error("ForkBranch empty session: expected error, got nil")
+		}
+	})
+
+	// ── 14. Tier-A: assert (D-071) — {SDK, MCP}; HTTP deliberately excluded ──
+	t.Run("assert_add", func(t *testing.T) {
+		t.Parallel()
+		resp, err := client.Assert(ctx, stowage.AssertRequest{
+			Action: "add", Content: "h4 asserted fact", Kind: "fact",
+		})
+		if err != nil {
+			// The HTTP surface deliberately omits assert (Tier A = {SDK, MCP}).
+			if errors.Is(err, stowage.ErrAssertHTTPUnsupported) {
+				return
+			}
+			t.Fatalf("Assert: %v", err)
+		}
+		if resp.MemoryID == "" {
+			t.Error("Assert add: empty memory_id")
+		}
+		if resp.Status != "active" {
+			t.Errorf("Assert add: status want active got %q", resp.Status)
 		}
 	})
 }

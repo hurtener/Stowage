@@ -131,6 +131,39 @@ func buildSchemas(name string) (inJSON, outJSON []byte, err error) {
 			return nil, nil, err
 		}
 		outJSON, err = marshal(out)
+
+	case "memory_flush":
+		b := tool.New[mcpserver.FlushInput, mcpserver.FlushOutput](name)
+		in, out, e := b.Schemas()
+		if e != nil {
+			return nil, nil, e
+		}
+		if inJSON, err = marshal(in); err != nil {
+			return nil, nil, err
+		}
+		outJSON, err = marshal(out)
+
+	case "memory_branch":
+		b := tool.New[mcpserver.BranchInput, mcpserver.BranchOutput](name)
+		in, out, e := b.Schemas()
+		if e != nil {
+			return nil, nil, e
+		}
+		if inJSON, err = marshal(in); err != nil {
+			return nil, nil, err
+		}
+		outJSON, err = marshal(out)
+
+	case "memory_grants":
+		b := tool.New[mcpserver.GrantsInput, mcpserver.GrantsOutput](name)
+		in, out, e := b.Schemas()
+		if e != nil {
+			return nil, nil, e
+		}
+		if inJSON, err = marshal(in); err != nil {
+			return nil, nil, err
+		}
+		outJSON, err = marshal(out)
 	}
 
 	return inJSON, outJSON, err
@@ -154,6 +187,9 @@ func TestSchemaGoldens(t *testing.T) {
 		"memory_get",
 		"memory_rollback",
 		"memory_resolve",
+		"memory_flush",
+		"memory_branch",
+		"memory_grants",
 	}
 
 	for _, name := range tools {

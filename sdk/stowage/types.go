@@ -204,6 +204,79 @@ type TopicsResponse struct {
 	Topics []TopicView `json:"topics"`
 }
 
+// ---- Tier-A control verbs (D-071) -------------------------------------------
+
+// TopicUpsert is one topic to upsert via UpsertTopics. Opting out of the
+// virtual default pack is an upsert of {Key: "pack:off"} (D-043).
+type TopicUpsert struct {
+	Key         string `json:"key"`
+	Description string `json:"description,omitempty"`
+	Status      string `json:"status,omitempty"` // defaults to "active"
+}
+
+// UpsertTopicsRequest is the request for UpsertTopics.
+type UpsertTopicsRequest struct {
+	Topics []TopicUpsert `json:"topics"`
+}
+
+// UpsertTopicsResponse is the response from UpsertTopics.
+type UpsertTopicsResponse struct {
+	Upserted int `json:"upserted"`
+}
+
+// DeleteTopicResponse is the response from DeleteTopic.
+type DeleteTopicResponse struct {
+	Deleted string `json:"deleted"`
+}
+
+// FlushRequest flushes a named buffer key (D-071). Trigger must be "explicit"
+// (default) or "session_end".
+type FlushRequest struct {
+	Key     string `json:"-"`
+	Trigger string `json:"trigger,omitempty"`
+}
+
+// FlushResponse is the response from Flush.
+type FlushResponse struct {
+	Key     string `json:"key"`
+	Trigger string `json:"trigger"`
+	Flushed bool   `json:"flushed"`
+}
+
+// ForkBranchRequest forks a new branch for a session (D-029). SessionID required.
+type ForkBranchRequest struct {
+	SessionID      string `json:"session_id"`
+	ParentBranchID string `json:"parent_branch_id,omitempty"`
+}
+
+// ForkBranchResponse is the response from ForkBranch.
+type ForkBranchResponse struct {
+	BranchID string `json:"branch_id"`
+}
+
+// BranchResponse is the response from MergeBranch / DiscardBranch.
+type BranchResponse struct {
+	BranchID string `json:"branch_id"`
+	Status   string `json:"status"`
+}
+
+// AssertRequest directly asserts a memory, bypassing the pipeline (D-071).
+// Action must be "add", "update", or "delete".
+type AssertRequest struct {
+	Action   string `json:"action"`
+	MemoryID string `json:"memory_id,omitempty"`
+	Content  string `json:"content,omitempty"`
+	Kind     string `json:"kind,omitempty"`
+	Context  string `json:"context,omitempty"`
+}
+
+// AssertResponse is the response from Assert.
+type AssertResponse struct {
+	MemoryID string `json:"memory_id"`
+	Action   string `json:"action"`
+	Status   string `json:"status"`
+}
+
 // ---- Memory / reversibility types (D-070) -----------------------------------
 
 // Memory mirrors the HTTP memoryJSON wire type. It is returned by Rollback and

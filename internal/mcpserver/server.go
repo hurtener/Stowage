@@ -11,6 +11,7 @@ import (
 	"github.com/hurtener/dockyard/runtime/tool"
 
 	"github.com/hurtener/stowage/internal/auth"
+	"github.com/hurtener/stowage/internal/grants"
 	"github.com/hurtener/stowage/internal/identity"
 	"github.com/hurtener/stowage/internal/pipeline"
 	"github.com/hurtener/stowage/internal/retrieval"
@@ -29,9 +30,13 @@ type Services struct {
 	Store      store.Store
 	Retriever  *retrieval.Retriever
 	TopicSvc   *topics.Service
+	GrantsSvc  *grants.Service
 	PipelineIn chan<- pipeline.Item
-	Log        *slog.Logger
-	ScopeFn    ScopeFn
+	// PipelineStage is the buffer stage, used by memory_flush and memory_branch
+	// (discard) — the shared control-verb core (D-071). May be nil in tests.
+	PipelineStage *pipeline.Stage
+	Log           *slog.Logger
+	ScopeFn       ScopeFn
 }
 
 // StdioScopeFn returns a ScopeFn that always resolves to a tenant-only scope
@@ -43,9 +48,10 @@ func StdioScopeFn(tenant string) ScopeFn {
 	}
 }
 
-// New creates a Dockyard *server.Server with all 10 Stowage MCP tools registered
-// (the original seven plus the D-070 reversibility trio: memory_get,
-// memory_rollback, memory_resolve).
+// New creates a Dockyard *server.Server with all 13 Stowage MCP tools registered:
+// the original seven, the D-070 reversibility trio (memory_get, memory_rollback,
+// memory_resolve), and the D-071 Tier control verbs (memory_flush, memory_branch,
+// and the Tier-B memory_grants).
 // It returns an error when any tool fails to register (type mismatch, missing
 // handler) — the caller must handle the error and exit non-zero (AGENTS.md §5).
 func New(info server.Info, svc *Services) (*server.Server, error) {
@@ -55,7 +61,7 @@ func New(info server.Info, svc *Services) (*server.Server, error) {
 	}
 
 	if err := tool.New[IngestInput, IngestOutput]("memory_ingest").
-		Describe("Ingest one or more verbatim interaction records into the caller's own Stowage memory scope. Contribute-mode (target_scope/contributor_user_id) is NOT yet honored on the MCP surface and is rejected with an error — use HTTP POST /v1/records for grant-gated contribute writes.").
+		Describe("Ingest one or more verbatim interaction records into the caller's own Stowage memory scope. Contribute-mode (target_scope + contributor_user_id) writes into a pool-owner's scope when a covering contribute grant exists; without one the request is rejected (D-071).").
 		Handler(makeIngestHandler(svc)).
 		Register(srv); err != nil {
 		return nil, err
@@ -121,6 +127,30 @@ func New(info server.Info, svc *Services) (*server.Server, error) {
 	if err := tool.New[ResolveInput, ResolveOutput]("memory_resolve").
 		Describe("Resolve a pending_confirmation memory: action=confirm promotes it to active (superseding any target); action=reject expires it (mirrors PATCH /v1/memories/{id}; D-065).").
 		Handler(makeResolveHandler(svc)).
+		Register(srv); err != nil {
+		return nil, err
+	}
+
+	// Tier-A control verbs (D-071) — single-user, mirroring the HTTP routes.
+	if err := tool.New[FlushInput, FlushOutput]("memory_flush").
+		Describe("Flush a named buffer key with trigger explicit|session_end (mirrors POST /v1/buffers/{key}/flush; D-071).").
+		Handler(makeFlushHandler(svc)).
+		Register(srv); err != nil {
+		return nil, err
+	}
+
+	if err := tool.New[BranchInput, BranchOutput]("memory_branch").
+		Describe("Manage session branches: action=fork creates a branch; merge marks it merged; discard marks it discarded and flushes its buffered turns without promoting them (mirrors POST /v1/branches; D-029).").
+		Handler(makeBranchHandler(svc)).
+		Register(srv); err != nil {
+		return nil, err
+	}
+
+	// Tier-B admin verb (D-071) — multi-user; matches the HTTP admin routes,
+	// deliberately ABSENT from the single-user SDK (D-067).
+	if err := tool.New[GrantsInput, GrantsOutput]("memory_grants").
+		Describe("Manage team-sharing groups and grants: create_group, list_groups, add_member, remove_member, list_members, create_grant, list_grants, revoke_grant (mirrors the HTTP /v1/admin/groups + /v1/scopes/grants routes; D-016).").
+		Handler(makeGrantsHandler(svc)).
 		Register(srv); err != nil {
 		return nil, err
 	}

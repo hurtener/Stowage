@@ -237,6 +237,104 @@ func (c *httpClient) ResolveMemory(ctx context.Context, req ResolveRequest) (Res
 	return resp, nil
 }
 
+// UpsertTopics implements Client via PUT /v1/topics (D-043/D-071).
+func (c *httpClient) UpsertTopics(ctx context.Context, req UpsertTopicsRequest) (UpsertTopicsResponse, error) {
+	if len(req.Topics) == 0 {
+		return UpsertTopicsResponse{}, errors.New("sdk: upsert_topics: topics must not be empty")
+	}
+	// The HTTP handler accepts a bare JSON array of topic objects.
+	var resp UpsertTopicsResponse
+	if err := c.do(ctx, http.MethodPut, "/v1/topics", req.Topics, &resp); err != nil {
+		return UpsertTopicsResponse{}, err
+	}
+	return resp, nil
+}
+
+// DeleteTopic implements Client via DELETE /v1/topics/{key} (D-043/D-071).
+func (c *httpClient) DeleteTopic(ctx context.Context, key string) (DeleteTopicResponse, error) {
+	if key == "" {
+		return DeleteTopicResponse{}, errors.New("sdk: delete_topic: key must not be empty")
+	}
+	var resp DeleteTopicResponse
+	if err := c.do(ctx, http.MethodDelete, "/v1/topics/"+url.PathEscape(key), nil, &resp); err != nil {
+		return DeleteTopicResponse{}, err
+	}
+	return resp, nil
+}
+
+// Flush implements Client via POST /v1/buffers/{key}/flush (D-071).
+func (c *httpClient) Flush(ctx context.Context, req FlushRequest) (FlushResponse, error) {
+	if req.Key == "" {
+		return FlushResponse{}, errors.New("sdk: flush: key must not be empty")
+	}
+	body := struct {
+		Trigger string `json:"trigger"`
+	}{Trigger: req.Trigger}
+	var resp FlushResponse
+	if err := c.do(ctx, http.MethodPost, "/v1/buffers/"+url.PathEscape(req.Key)+"/flush", body, &resp); err != nil {
+		return FlushResponse{}, err
+	}
+	return resp, nil
+}
+
+// branchHTTPRequest mirrors the POST /v1/branches wire format.
+type branchHTTPRequest struct {
+	Action         string `json:"action"`
+	SessionID      string `json:"session_id,omitempty"`
+	BranchID       string `json:"branch_id,omitempty"`
+	ParentBranchID string `json:"parent_branch_id,omitempty"`
+}
+
+// ForkBranch implements Client via POST /v1/branches (D-029/D-071).
+func (c *httpClient) ForkBranch(ctx context.Context, req ForkBranchRequest) (ForkBranchResponse, error) {
+	var resp ForkBranchResponse
+	if err := c.do(ctx, http.MethodPost, "/v1/branches", branchHTTPRequest{
+		Action: "fork", SessionID: req.SessionID, ParentBranchID: req.ParentBranchID,
+	}, &resp); err != nil {
+		return ForkBranchResponse{}, err
+	}
+	return resp, nil
+}
+
+// MergeBranch implements Client via POST /v1/branches (D-029/D-071).
+func (c *httpClient) MergeBranch(ctx context.Context, branchID string) (BranchResponse, error) {
+	if branchID == "" {
+		return BranchResponse{}, errors.New("sdk: merge_branch: branch_id must not be empty")
+	}
+	if err := c.do(ctx, http.MethodPost, "/v1/branches", branchHTTPRequest{
+		Action: "merge", BranchID: branchID,
+	}, nil); err != nil {
+		return BranchResponse{}, err
+	}
+	return BranchResponse{BranchID: branchID, Status: "merged"}, nil
+}
+
+// DiscardBranch implements Client via POST /v1/branches (D-029/D-071).
+func (c *httpClient) DiscardBranch(ctx context.Context, branchID string) (BranchResponse, error) {
+	if branchID == "" {
+		return BranchResponse{}, errors.New("sdk: discard_branch: branch_id must not be empty")
+	}
+	if err := c.do(ctx, http.MethodPost, "/v1/branches", branchHTTPRequest{
+		Action: "discard", BranchID: branchID,
+	}, nil); err != nil {
+		return BranchResponse{}, err
+	}
+	return BranchResponse{BranchID: branchID, Status: "discarded"}, nil
+}
+
+// Assert implements Client. memory_assert is a Tier-A verb reachable on
+// {SDK, MCP} only — the HTTP surface deliberately routes all writes through the
+// ingest pipeline and exposes no direct-assert route (D-071). Over the HTTP
+// transport this returns ErrAssertHTTPUnsupported; use an embedded client (or
+// the MCP memory_assert tool) for direct asserts.
+func (c *httpClient) Assert(_ context.Context, _ AssertRequest) (AssertResponse, error) {
+	return AssertResponse{}, ErrAssertHTTPUnsupported
+}
+
 // ErrPlaybookStub is returned by Playbook implementations while the
 // full playbook assembly is pending a future phase.
 var ErrPlaybookStub = errors.New("sdk: playbook is a stub in Phase 17; full assembly lands later")
+
+// ErrAssertHTTPUnsupported is returned by the HTTP client's Assert: memory_assert
+// is intentionally not exposed over HTTP (Tier A = {SDK, MCP} only; D-071).
+var ErrAssertHTTPUnsupported = errors.New("sdk: Assert is not available over HTTP; memory_assert is embedded/MCP-only (D-071)")
