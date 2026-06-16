@@ -325,6 +325,7 @@ MCP}; backend parity (sqlite↔Postgres) throughout.
 | h2 | Wave A correctness + honesty bundle (embedded config validation + D-030, gateway defaults, sqlite FTS sanitization, rune-safe drill-down, MCP contribute-mode fail-loud, doc honesty) | `sdk/stowage`, `internal/config`, `internal/store`, `internal/retrieval`, `internal/mcpserver` | §9.4, §9.1, §4.2, P1 | 02, 09, 17, 18 | D-069 |
 
 Wave A shipped: h1 (D-068, #28), h2 (D-069, #29), checkpoint (#30).
+Wave B shipped: h3 (D-070, #32), h4 (D-071, #33), checkpoint (#34).
 
 ### Wave B — mechanical re-homing / tiered surface-parity
 
@@ -336,6 +337,17 @@ Wave A shipped: h1 (D-068, #28), h2 (D-069, #29), checkpoint (#30).
 h4 shares the SDK `Client`/`http`/`embedded` trio + `mcpserver/server.go` with h3,
 so **h4 lands after h3** (sequential, file-collision per playbook §3). A Wave-B
 checkpoint audit (§17) gates Wave C.
+
+### Wave C — finish the half-shipped primitives
+
+| # | Phase | Owns | RFC | Deps | Decision |
+|---|-------|------|-----|------|----------|
+| h5 | Deterministic playbook assembly (LLM-free) — finish the stubbed `memory_playbook`/`Client.Playbook`/`GET /v1/playbook` across {SDK, MCP, HTTP} | `internal/playbook`, `internal/store`, `internal/api`, `internal/mcpserver`, `sdk/stowage` | §6a.3, §9.1-3 | 08, 10, 16, 17 | D-072 |
+
+Owner posture: **finish** (no deferrals); consumers on {SDK, MCP, HTTP} accommodated
+from the get-go. Reflection (§6a.1-2, the LLM write-side) stays roadmap Phase 19.
+Open question in the h5 plan: whether to add runtime API-key management to MCP as a
+small h6 (admin tier {HTTP, MCP}). A Wave-C checkpoint gates Wave D.
 
 Waves C (finish-or-defer half-shipped primitives, D-072) and D (decision-shaped
 RFC remainder: server deployment shape + facade, D-073) follow per D-067; each
