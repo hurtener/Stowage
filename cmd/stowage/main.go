@@ -458,12 +458,14 @@ func runMCP(args []string) {
 	}
 
 	svc := &mcpserver.Services{
-		Store:      stk.Store,
-		Retriever:  stk.Retriever,
-		TopicSvc:   stk.TopicSvc,
-		PipelineIn: p.In,
-		Log:        stk.Log,
-		ScopeFn:    scopeFn,
+		Store:         stk.Store,
+		Retriever:     stk.Retriever,
+		TopicSvc:      stk.TopicSvc,
+		GrantsSvc:     stk.GrantsSvc,
+		PipelineIn:    p.In,
+		PipelineStage: p.Stage,
+		Log:           stk.Log,
+		ScopeFn:       scopeFn,
 	}
 
 	srv, err := mcpserver.New(server.Info{

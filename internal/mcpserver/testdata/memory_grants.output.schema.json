@@ -1,0 +1,257 @@
+{
+  "type": "object",
+  "properties": {
+    "group": {
+      "type": [
+        "null",
+        "object"
+      ],
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "tenant_id": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "created_at": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "id",
+        "tenant_id",
+        "name",
+        "created_at"
+      ],
+      "additionalProperties": false
+    },
+    "groups": {
+      "type": [
+        "null",
+        "array"
+      ],
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "tenant_id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "created_at": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "tenant_id",
+          "name",
+          "created_at"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "member": {
+      "type": [
+        "null",
+        "object"
+      ],
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "group_id": {
+          "type": "string"
+        },
+        "user_id": {
+          "type": "string"
+        },
+        "tenant_id": {
+          "type": "string"
+        },
+        "created_at": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "id",
+        "group_id",
+        "user_id",
+        "tenant_id",
+        "created_at"
+      ],
+      "additionalProperties": false
+    },
+    "members": {
+      "type": [
+        "null",
+        "array"
+      ],
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "group_id": {
+            "type": "string"
+          },
+          "user_id": {
+            "type": "string"
+          },
+          "tenant_id": {
+            "type": "string"
+          },
+          "created_at": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "group_id",
+          "user_id",
+          "tenant_id",
+          "created_at"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "grant": {
+      "type": [
+        "null",
+        "object"
+      ],
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "tenant_id": {
+          "type": "string"
+        },
+        "project_id": {
+          "type": "string"
+        },
+        "user_id": {
+          "type": "string"
+        },
+        "session_id": {
+          "type": "string"
+        },
+        "group_id": {
+          "type": "string"
+        },
+        "access": {
+          "type": "string"
+        },
+        "topic_filter": {
+          "type": "string"
+        },
+        "kind_filter": {
+          "type": "string"
+        },
+        "zone_ceiling": {
+          "type": "string"
+        },
+        "redaction_profile": {
+          "type": "string"
+        },
+        "revoked_at": {
+          "type": "integer"
+        },
+        "created_at": {
+          "type": "integer"
+        },
+        "updated_at": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "id",
+        "tenant_id",
+        "group_id",
+        "access",
+        "zone_ceiling",
+        "created_at",
+        "updated_at"
+      ],
+      "additionalProperties": false
+    },
+    "grants": {
+      "type": [
+        "null",
+        "array"
+      ],
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "tenant_id": {
+            "type": "string"
+          },
+          "project_id": {
+            "type": "string"
+          },
+          "user_id": {
+            "type": "string"
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "group_id": {
+            "type": "string"
+          },
+          "access": {
+            "type": "string"
+          },
+          "topic_filter": {
+            "type": "string"
+          },
+          "kind_filter": {
+            "type": "string"
+          },
+          "zone_ceiling": {
+            "type": "string"
+          },
+          "redaction_profile": {
+            "type": "string"
+          },
+          "revoked_at": {
+            "type": "integer"
+          },
+          "created_at": {
+            "type": "integer"
+          },
+          "updated_at": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "tenant_id",
+          "group_id",
+          "access",
+          "zone_ceiling",
+          "created_at",
+          "updated_at"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "removed": {
+      "type": "boolean"
+    },
+    "revoked": {
+      "type": "string"
+    }
+  },
+  "additionalProperties": false
+}

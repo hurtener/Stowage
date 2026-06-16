@@ -1,6 +1,6 @@
 # Phase h4 — Tiered control-verb surface parity (topics/flush/branches/assert; grants/contribute)
 
-- **Status:** draft | approved | in-progress | shipped
+- **Status:** shipped
 - **Owning subsystem(s):** `sdk/stowage`, `internal/mcpserver`, `internal/pipeline` (Stage flush/branch already exist), `internal/grants`, `internal/api` (contribute core extraction)
 - **RFC sections:** §5.3 (grants/team sharing), §5.4 (topics), §5.5 (branches), §4.1 (buffers/flush), §9.1/§9.2/§9.3 (surfaces)
 - **Depends on phases:** h3 (shares the SDK `Client`/`http`/`embedded` trio + MCP server.go — MUST land after h3), 16 grants (D-016/D-059/D-060), 06 buffers, 05 branches (D-029), 07 topics (D-043)

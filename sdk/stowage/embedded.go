@@ -14,6 +14,7 @@ import (
 	"github.com/hurtener/stowage/internal/records"
 	"github.com/hurtener/stowage/internal/retrieval"
 	"github.com/hurtener/stowage/internal/store"
+	"github.com/hurtener/stowage/internal/topics"
 
 	// Register drivers so NewEmbedded works without manual blank-imports (sqlite
 	// default — D-022; mock gateway default; hnsw vindex).
@@ -583,6 +584,103 @@ func (c *embeddedClient) ResolveMemory(ctx context.Context, req ResolveRequest) 
 		c.invalidateScope()
 	}
 	return ResolveResponse{ID: res.ID, Status: res.Status}, nil
+}
+
+// UpsertTopics implements Client via the topics service core (D-043/D-071).
+func (c *embeddedClient) UpsertTopics(ctx context.Context, req UpsertTopicsRequest) (UpsertTopicsResponse, error) {
+	if len(req.Topics) == 0 {
+		return UpsertTopicsResponse{}, errors.New("sdk: upsert_topics: topics must not be empty")
+	}
+	items := make([]topics.TopicUpsert, len(req.Topics))
+	for i, t := range req.Topics {
+		items[i] = topics.TopicUpsert{Key: t.Key, Description: t.Description, Status: t.Status}
+	}
+	n, err := c.stack.TopicSvc.Upsert(ctx, c.scope, items)
+	if err != nil {
+		return UpsertTopicsResponse{}, fmt.Errorf("sdk: upsert_topics: %w", err)
+	}
+	return UpsertTopicsResponse{Upserted: n}, nil
+}
+
+// DeleteTopic implements Client via the topics service core (D-043/D-071).
+func (c *embeddedClient) DeleteTopic(ctx context.Context, key string) (DeleteTopicResponse, error) {
+	if key == "" {
+		return DeleteTopicResponse{}, errors.New("sdk: delete_topic: key must not be empty")
+	}
+	if err := c.stack.TopicSvc.Delete(ctx, c.scope, key); err != nil {
+		return DeleteTopicResponse{}, fmt.Errorf("sdk: delete_topic: %w", err)
+	}
+	return DeleteTopicResponse{Deleted: key}, nil
+}
+
+// Flush implements Client via the retained pipeline stage (D-071).
+func (c *embeddedClient) Flush(ctx context.Context, req FlushRequest) (FlushResponse, error) {
+	if req.Key == "" {
+		return FlushResponse{}, errors.New("sdk: flush: key must not be empty")
+	}
+	trigger := req.Trigger
+	switch trigger {
+	case "", pipeline.TriggerExplicit:
+		trigger = pipeline.TriggerExplicit
+	case pipeline.TriggerSessionEnd:
+		// valid
+	default:
+		return FlushResponse{}, errors.New("sdk: flush: trigger must be explicit or session_end")
+	}
+	flushed := false
+	if c.pl != nil && c.pl.Stage != nil {
+		if err := c.pl.Stage.FlushKey(ctx, c.scope, req.Key, trigger); err != nil {
+			return FlushResponse{}, fmt.Errorf("sdk: flush: %w", err)
+		}
+		flushed = true
+	}
+	return FlushResponse{Key: req.Key, Trigger: trigger, Flushed: flushed}, nil
+}
+
+// ForkBranch implements Client via the shared pipeline branch core (D-029/D-071).
+func (c *embeddedClient) ForkBranch(ctx context.Context, req ForkBranchRequest) (ForkBranchResponse, error) {
+	id, err := pipeline.ForkBranch(ctx, c.stack.Store, c.scope, req.SessionID, req.ParentBranchID)
+	if err != nil {
+		return ForkBranchResponse{}, fmt.Errorf("sdk: fork_branch: %w", err)
+	}
+	return ForkBranchResponse{BranchID: id}, nil
+}
+
+// MergeBranch implements Client via the shared pipeline branch core (D-029/D-071).
+func (c *embeddedClient) MergeBranch(ctx context.Context, branchID string) (BranchResponse, error) {
+	if err := pipeline.MergeBranch(ctx, c.stack.Store, c.scope, branchID); err != nil {
+		return BranchResponse{}, fmt.Errorf("sdk: merge_branch: %w", err)
+	}
+	return BranchResponse{BranchID: branchID, Status: "merged"}, nil
+}
+
+// DiscardBranch implements Client via the shared pipeline branch core; the
+// discard flush sets SkipPromotion (D-029/D-071).
+func (c *embeddedClient) DiscardBranch(ctx context.Context, branchID string) (BranchResponse, error) {
+	var stage *pipeline.Stage
+	if c.pl != nil {
+		stage = c.pl.Stage
+	}
+	if err := pipeline.DiscardBranch(ctx, c.stack.Store, stage, c.scope, branchID); err != nil {
+		return BranchResponse{}, fmt.Errorf("sdk: discard_branch: %w", err)
+	}
+	return BranchResponse{BranchID: branchID, Status: "discarded"}, nil
+}
+
+// Assert implements Client via the shared reconcile assert core (D-071).
+func (c *embeddedClient) Assert(ctx context.Context, req AssertRequest) (AssertResponse, error) {
+	res, err := reconcile.Assert(ctx, c.stack.Store, c.scope, reconcile.AssertParams{
+		Action:   req.Action,
+		MemoryID: req.MemoryID,
+		Content:  req.Content,
+		Kind:     req.Kind,
+		Context:  req.Context,
+	})
+	if err != nil {
+		return AssertResponse{}, fmt.Errorf("sdk: assert: %w", err)
+	}
+	c.invalidateScope()
+	return AssertResponse{MemoryID: res.MemoryID, Action: res.Action, Status: res.Status}, nil
 }
 
 // invalidateScope busts the retrieval cache for the client's scope after a

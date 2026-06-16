@@ -1,0 +1,16 @@
+{
+  "type": "object",
+  "properties": {
+    "branch_id": {
+      "type": "string"
+    },
+    "status": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "branch_id",
+    "status"
+  ],
+  "additionalProperties": false
+}

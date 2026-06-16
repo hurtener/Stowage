@@ -1,11 +1,12 @@
 // Package mcpserver implements the Stowage MCP tool surface over the Dockyard
 // runtime library (RFC §9.2, D-015, D-018, D-020, D-061).
 //
-// Ten typed tools mirror the HTTP v1 surfaces (the original seven plus the
-// D-070 reversibility trio: memory_get, memory_rollback, memory_resolve). Tool
-// handlers share the
-// same store/service code the HTTP handlers use — no business logic is
-// duplicated (AC-3). Schema goldens in testdata/ are the contract gate (D-061).
+// Thirteen typed tools mirror the HTTP v1 surfaces: the original seven, the
+// D-070 reversibility trio (memory_get, memory_rollback, memory_resolve), and the
+// D-071 Tier control verbs (memory_flush, memory_branch, and the Tier-B
+// memory_grants). Tool handlers share the same store/service core code the HTTP
+// handlers use — no business logic is duplicated (AC-3). Schema goldens in
+// testdata/ are the contract gate (D-061).
 package mcpserver
 
 // ─── memory_ingest ────────────────────────────────────────────────────────────
@@ -27,13 +28,14 @@ type IngestRecord struct {
 	BufferKey     string `json:"buffer_key,omitempty"`
 }
 
-// IngestTargetScope is the optional contribute-mode target scope.
+// IngestTargetScope is the optional contribute-mode target scope (D-059, D-071).
 //
-// NOTE (D-069, parity-lens BUG-2): contribute-mode is a multi-user, grant-gated
-// write that the MCP surface does NOT yet honor. Setting this field (or
-// ContributorUserID) on a memory_ingest call is rejected with an error rather
-// than silently mis-scoping into the caller's own pool. Full HTTP↔MCP honoring
-// lands in Wave B; for now use HTTP POST /v1/records for contribute writes.
+// Contribute-mode is now honored on the MCP surface: when TargetScope is set the
+// records are committed into the pool-owner's scope, subject to an active
+// contribute grant covering the caller (identified by ContributorUserID). The
+// grant-check + scope-override is the shared grants.AuthorizeContribute core that
+// the HTTP /v1/records path also uses, so the two surfaces cannot drift. Without
+// a covering grant the request is rejected (never silently mis-scoped).
 type IngestTargetScope struct {
 	ProjectID string `json:"project_id,omitempty"`
 	UserID    string `json:"user_id,omitempty"`
@@ -41,9 +43,8 @@ type IngestTargetScope struct {
 }
 
 // IngestInput is the memory_ingest tool input. Records ingest into the caller's
-// own scope. TargetScope/ContributorUserID (contribute-mode) are declared for
-// forward-compatibility but are NOT yet honored on MCP — setting either fails
-// loud (see IngestTargetScope; D-069).
+// own scope unless TargetScope is set (contribute-mode, D-059/D-071), in which
+// case they ingest into the pool-owner's scope under a covering contribute grant.
 type IngestInput struct {
 	Records           []IngestRecord     `json:"records"`
 	TargetScope       *IngestTargetScope `json:"target_scope,omitempty"`
@@ -208,6 +209,110 @@ type TopicsOutput struct {
 	Topics   []TopicView `json:"topics,omitempty"`
 	Upserted int         `json:"upserted,omitempty"`
 	Deleted  string      `json:"deleted,omitempty"`
+}
+
+// ─── memory_flush (D-071) ──────────────────────────────────────────────────────
+
+// FlushInput is the memory_flush tool input (mirrors POST /v1/buffers/{key}/flush).
+// Trigger must be "explicit" (default) or "session_end".
+type FlushInput struct {
+	Key     string `json:"key"`
+	Trigger string `json:"trigger,omitempty"`
+}
+
+// FlushOutput is the memory_flush tool output.
+type FlushOutput struct {
+	Key     string `json:"key"`
+	Trigger string `json:"trigger"`
+	Flushed bool   `json:"flushed"`
+}
+
+// ─── memory_branch (D-029, D-071) ──────────────────────────────────────────────
+
+// BranchInput is the memory_branch tool input. action must be "fork", "merge",
+// or "discard" (mirrors POST /v1/branches).
+type BranchInput struct {
+	Action         string `json:"action"`
+	SessionID      string `json:"session_id,omitempty"`       // required for fork
+	BranchID       string `json:"branch_id,omitempty"`        // required for merge/discard
+	ParentBranchID string `json:"parent_branch_id,omitempty"` // optional for fork
+}
+
+// BranchOutput is the memory_branch tool output.
+type BranchOutput struct {
+	BranchID string `json:"branch_id"`
+	Status   string `json:"status"`
+}
+
+// ─── memory_grants (Tier B — D-016, D-071) ─────────────────────────────────────
+
+// GrantsInput is the action-tagged memory_grants tool input. action ∈
+// {create_group, list_groups, add_member, remove_member, list_members,
+// create_grant, list_grants, revoke_grant}. This is a multi-user/admin verb
+// (Tier B): reachable on {HTTP, MCP} only, never the single-user SDK (D-067).
+type GrantsInput struct {
+	Action string `json:"action"`
+	// Group ops.
+	Name    string `json:"name,omitempty"`     // create_group
+	GroupID string `json:"group_id,omitempty"` // member ops + create_grant
+	UserID  string `json:"user_id,omitempty"`  // member ops + grant owner scope
+	// Grant owner-scope + grant fields.
+	ProjectID        string `json:"project_id,omitempty"`
+	SessionID        string `json:"session_id,omitempty"`
+	Access           string `json:"access,omitempty"` // read|contribute
+	TopicFilter      string `json:"topic_filter,omitempty"`
+	KindFilter       string `json:"kind_filter,omitempty"`
+	ZoneCeiling      string `json:"zone_ceiling,omitempty"` // public|work
+	RedactionProfile string `json:"redaction_profile,omitempty"`
+	GrantID          string `json:"grant_id,omitempty"` // revoke_grant
+}
+
+// GrantGroup mirrors the HTTP groupResponse wire shape.
+type GrantGroup struct {
+	ID        string `json:"id"`
+	TenantID  string `json:"tenant_id"`
+	Name      string `json:"name"`
+	CreatedAt int64  `json:"created_at"`
+}
+
+// GrantMember mirrors the HTTP memberResponse wire shape.
+type GrantMember struct {
+	ID        string `json:"id"`
+	GroupID   string `json:"group_id"`
+	UserID    string `json:"user_id"`
+	TenantID  string `json:"tenant_id"`
+	CreatedAt int64  `json:"created_at"`
+}
+
+// GrantRecord mirrors the HTTP grantResponse wire shape.
+type GrantRecord struct {
+	ID               string `json:"id"`
+	TenantID         string `json:"tenant_id"`
+	ProjectID        string `json:"project_id,omitempty"`
+	UserID           string `json:"user_id,omitempty"`
+	SessionID        string `json:"session_id,omitempty"`
+	GroupID          string `json:"group_id"`
+	Access           string `json:"access"`
+	TopicFilter      string `json:"topic_filter,omitempty"`
+	KindFilter       string `json:"kind_filter,omitempty"`
+	ZoneCeiling      string `json:"zone_ceiling"`
+	RedactionProfile string `json:"redaction_profile,omitempty"`
+	RevokedAt        int64  `json:"revoked_at,omitempty"`
+	CreatedAt        int64  `json:"created_at"`
+	UpdatedAt        int64  `json:"updated_at"`
+}
+
+// GrantsOutput is the memory_grants tool output; only the fields relevant to the
+// requested action are populated.
+type GrantsOutput struct {
+	Group   *GrantGroup   `json:"group,omitempty"`
+	Groups  []GrantGroup  `json:"groups,omitempty"`
+	Member  *GrantMember  `json:"member,omitempty"`
+	Members []GrantMember `json:"members,omitempty"`
+	Grant   *GrantRecord  `json:"grant,omitempty"`
+	Grants  []GrantRecord `json:"grants,omitempty"`
+	Removed bool          `json:"removed,omitempty"`
+	Revoked string        `json:"revoked,omitempty"`
 }
 
 // ─── memory reversibility tools (D-070) ───────────────────────────────────────

@@ -284,6 +284,50 @@ func (s *Service) CheckContributeGrant(ctx context.Context, callerScope identity
 	return ErrNotCovered
 }
 
+// ContributeContext is the validated result of a contribute-mode authorization.
+// It carries the pool-owner target scope fields that override each contributed
+// record's own scope so memories land in the right tenant/project/user pool.
+type ContributeContext struct {
+	TargetProject string
+	TargetUser    string
+	TargetSession string
+}
+
+// ApplyTo returns the effective (project, user, session) for a record under a
+// contribute write: each non-empty target field overrides the record's own
+// field. This is the scope-override half of the shared contribute core (D-071);
+// both the HTTP and MCP ingest paths call it so they cannot drift.
+func (c ContributeContext) ApplyTo(project, user, session string) (string, string, string) {
+	if c.TargetProject != "" {
+		project = c.TargetProject
+	}
+	if c.TargetUser != "" {
+		user = c.TargetUser
+	}
+	if c.TargetSession != "" {
+		session = c.TargetSession
+	}
+	return project, user, session
+}
+
+// AuthorizeContribute is the shared contribute-mode core (D-059, D-071): it
+// verifies the caller holds an active contribute grant covering target and
+// returns the scope-override context. The HTTP ingest handler and the MCP
+// memory_ingest handler both call this ONE function — the grant-check and the
+// scope-override live here so the two server surfaces cannot re-introduce the
+// silent-mis-scope class. Returns ErrNotCovered / ErrCrossTenantGrant on a
+// missing grant; callers map those to a 403/rejection.
+func (s *Service) AuthorizeContribute(ctx context.Context, callerScope, target identity.Scope, contributorUserID string) (ContributeContext, error) {
+	if err := s.CheckContributeGrant(ctx, callerScope, target, contributorUserID); err != nil {
+		return ContributeContext{}, err
+	}
+	return ContributeContext{
+		TargetProject: target.Project,
+		TargetUser:    target.User,
+		TargetSession: target.Session,
+	}, nil
+}
+
 // buildMemberGroupSet returns the set of group IDs the user belongs to in the tenant.
 func (s *Service) buildMemberGroupSet(ctx context.Context, tenantID, userID string) (map[string]bool, error) {
 	groups, err := s.st.ListGroups(ctx, identity.Scope{Tenant: tenantID})

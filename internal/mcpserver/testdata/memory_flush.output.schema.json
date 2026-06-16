@@ -1,0 +1,20 @@
+{
+  "type": "object",
+  "properties": {
+    "key": {
+      "type": "string"
+    },
+    "trigger": {
+      "type": "string"
+    },
+    "flushed": {
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "key",
+    "trigger",
+    "flushed"
+  ],
+  "additionalProperties": false
+}

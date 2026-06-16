@@ -4,11 +4,9 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
-	"time"
-
-	"github.com/oklog/ulid/v2"
 
 	"github.com/hurtener/stowage/internal/identity"
+	"github.com/hurtener/stowage/internal/pipeline"
 	"github.com/hurtener/stowage/internal/store"
 )
 
@@ -44,34 +42,29 @@ func (s *Server) handleBranches(w http.ResponseWriter, r *http.Request) {
 	authKey := keyFromContext(r.Context())
 	scope := identity.Scope{Tenant: authKey.TenantID}
 
+	// All three actions route through the shared pipeline branch core (D-071) so
+	// the HTTP, MCP, and SDK surfaces cannot drift; discard sets SkipPromotion via
+	// the branch-discard flush trigger (D-029).
 	switch req.Action {
 	case "fork":
 		if req.SessionID == "" {
 			respondJSON(w, http.StatusBadRequest, errBody("session_id is required for fork"))
 			return
 		}
-		now := time.Now().UnixMilli()
-		br := store.Branch{
-			ID:             ulid.Make().String(),
-			SessionID:      req.SessionID,
-			ParentBranchID: req.ParentBranchID,
-			Status:         "open",
-			CreatedAt:      now,
-			UpdatedAt:      now,
-		}
-		if err := s.st.Branches().Create(r.Context(), scope, br); err != nil {
+		id, err := pipeline.ForkBranch(r.Context(), s.st, scope, req.SessionID, req.ParentBranchID)
+		if err != nil {
 			s.log.ErrorContext(r.Context(), "api: branches: fork failed", "err", err)
 			respondJSON(w, http.StatusInternalServerError, errBody("store error"))
 			return
 		}
-		respondJSON(w, http.StatusCreated, forkResponse{BranchID: br.ID})
+		respondJSON(w, http.StatusCreated, forkResponse{BranchID: id})
 
 	case "merge":
 		if req.BranchID == "" {
 			respondJSON(w, http.StatusBadRequest, errBody("branch_id is required for merge"))
 			return
 		}
-		if err := s.st.Branches().SetStatus(r.Context(), scope, req.BranchID, "merged", time.Now().UnixMilli()); err != nil {
+		if err := pipeline.MergeBranch(r.Context(), s.st, scope, req.BranchID); err != nil {
 			if isNotFound(err) {
 				respondJSON(w, http.StatusNotFound, errBody("branch not found"))
 				return
@@ -87,7 +80,7 @@ func (s *Server) handleBranches(w http.ResponseWriter, r *http.Request) {
 			respondJSON(w, http.StatusBadRequest, errBody("branch_id is required for discard"))
 			return
 		}
-		if err := s.st.Branches().SetStatus(r.Context(), scope, req.BranchID, "discarded", time.Now().UnixMilli()); err != nil {
+		if err := pipeline.DiscardBranch(r.Context(), s.st, s.stage, scope, req.BranchID); err != nil {
 			if isNotFound(err) {
 				respondJSON(w, http.StatusNotFound, errBody("branch not found"))
 				return
@@ -95,10 +88,6 @@ func (s *Server) handleBranches(w http.ResponseWriter, r *http.Request) {
 			s.log.ErrorContext(r.Context(), "api: branches: discard failed", "err", err)
 			respondJSON(w, http.StatusInternalServerError, errBody("store error"))
 			return
-		}
-		// Phase 06: flush any buffers associated with this branch (fire-and-forget).
-		if s.stage != nil {
-			go s.stage.FlushBranch(r.Context(), req.BranchID)
 		}
 		respondJSON(w, http.StatusOK, struct{}{})
 

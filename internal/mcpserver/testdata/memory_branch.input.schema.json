@@ -1,0 +1,21 @@
+{
+  "type": "object",
+  "properties": {
+    "action": {
+      "type": "string"
+    },
+    "session_id": {
+      "type": "string"
+    },
+    "branch_id": {
+      "type": "string"
+    },
+    "parent_branch_id": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "action"
+  ],
+  "additionalProperties": false
+}

@@ -1,0 +1,45 @@
+{
+  "type": "object",
+  "properties": {
+    "action": {
+      "type": "string"
+    },
+    "name": {
+      "type": "string"
+    },
+    "group_id": {
+      "type": "string"
+    },
+    "user_id": {
+      "type": "string"
+    },
+    "project_id": {
+      "type": "string"
+    },
+    "session_id": {
+      "type": "string"
+    },
+    "access": {
+      "type": "string"
+    },
+    "topic_filter": {
+      "type": "string"
+    },
+    "kind_filter": {
+      "type": "string"
+    },
+    "zone_ceiling": {
+      "type": "string"
+    },
+    "redaction_profile": {
+      "type": "string"
+    },
+    "grant_id": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "action"
+  ],
+  "additionalProperties": false
+}
