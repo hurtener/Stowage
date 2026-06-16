@@ -10,6 +10,7 @@ package mcpserver
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/hurtener/stowage/internal/grants"
 	"github.com/hurtener/stowage/internal/identity"
@@ -86,7 +87,7 @@ func TestIngestContributeHonored(t *testing.T) {
 }
 
 func TestIngestContributeRejectedWithoutGrant(t *testing.T) {
-	svc, _, _ := newContributeServices(t)
+	svc, st, ch := newContributeServices(t)
 	ctx := context.Background()
 	h := makeIngestHandler(svc)
 
@@ -99,6 +100,20 @@ func TestIngestContributeRejectedWithoutGrant(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("contribute ingest without a grant: expected rejection, got nil")
+	}
+
+	// A rejected contribute must be fully inert (Wave-B checkpoint NIT): nothing
+	// enqueued onto the pipeline and nothing appended to the store — the reject
+	// happens before the durable Append, so neither side effect may occur.
+	if len(ch) != 0 {
+		t.Errorf("rejected contribute enqueued %d pipeline item(s); want 0", len(ch))
+	}
+	// ListUnprocessed scans every freshly-appended (processed_at==0) record across
+	// scopes; a rejected ingest must leave zero behind.
+	if recs, rerr := st.Records().ListUnprocessed(ctx, time.Now().Add(time.Hour).UnixMilli(), 10); rerr != nil {
+		t.Fatalf("Records().ListUnprocessed: %v", rerr)
+	} else if len(recs) != 0 {
+		t.Errorf("rejected contribute wrote %d record(s) to the store; want 0", len(recs))
 	}
 }
 

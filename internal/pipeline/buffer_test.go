@@ -124,6 +124,14 @@ func TestTriggerMatrix(t *testing.T) {
 	t.Parallel()
 
 	// Tight triggers so tests finish quickly.
+	//
+	// Note (2026-06-16, Wave-B checkpoint): the audit flagged a potential
+	// age-vs-count timing flake here but it did NOT reproduce under 110×-race.
+	// The latent margin is the gap between MaxAge (200ms) and TickBase (150ms): a
+	// "count"/"tokens" case must flush on its synchronous trigger well before the
+	// ~150–200ms age ticker fires, and the "age" case relies on that ticker. The
+	// margins are comfortable on CI today; if this ever flakes, widen MaxAge/
+	// TickBase rather than tightening — do not rewrite the matrix.
 	trig := pipeline.Triggers{Count: 3, Tokens: 50, MaxAge: 200 * time.Millisecond, TickBase: 150 * time.Millisecond}
 
 	cases := []struct {

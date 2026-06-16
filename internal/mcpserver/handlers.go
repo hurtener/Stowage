@@ -4,10 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"time"
 
 	"github.com/hurtener/dockyard/runtime/tool"
-	"github.com/oklog/ulid/v2"
 
 	"github.com/hurtener/stowage/internal/grants"
 	"github.com/hurtener/stowage/internal/identity"
@@ -16,6 +14,7 @@ import (
 	"github.com/hurtener/stowage/internal/records"
 	"github.com/hurtener/stowage/internal/retrieval"
 	"github.com/hurtener/stowage/internal/store"
+	"github.com/hurtener/stowage/internal/topics"
 )
 
 // ─── memory_ingest ────────────────────────────────────────────────────────────
@@ -409,6 +408,18 @@ func makeFeedbackHandler(svc *Services) tool.Handler[FeedbackInput, FeedbackOutp
 	}
 }
 
+// scopeInvalidator returns the retrieval-cache invalidator the reconcile core
+// uses to bust stale results after a content-changing commit (D-053; D-070
+// Wave-B checkpoint). It returns an untyped-nil interface when no retriever is
+// wired, so the core's nil check is safe. This is why MCP write verbs no longer
+// have to remember to invalidate — the core does it.
+func (s *Services) scopeInvalidator() reconcile.ScopeInvalidator {
+	if s.Retriever != nil {
+		return s.Retriever.Cache()
+	}
+	return nil
+}
+
 // ─── memory_assert ────────────────────────────────────────────────────────────
 
 func makeAssertHandler(svc *Services) tool.Handler[AssertInput, AssertOutput] {
@@ -425,7 +436,7 @@ func makeAssertHandler(svc *Services) tool.Handler[AssertInput, AssertOutput] {
 			Content:  in.Content,
 			Kind:     in.Kind,
 			Context:  in.Context,
-		})
+		}, svc.scopeInvalidator())
 		if err != nil {
 			return tool.Result[AssertOutput]{}, fmt.Errorf("memory_assert: %w", err)
 		}
@@ -511,7 +522,7 @@ func makeRollbackHandler(svc *Services) tool.Handler[RollbackInput, RollbackOutp
 		if in.MemoryID == "" {
 			return tool.Result[RollbackOutput]{}, fmt.Errorf("memory_rollback: memory_id must not be empty")
 		}
-		res, err := reconcile.Rollback(ctx, svc.Store, scope, in.MemoryID)
+		res, err := reconcile.Rollback(ctx, svc.Store, scope, in.MemoryID, svc.scopeInvalidator())
 		if err != nil {
 			return tool.Result[RollbackOutput]{}, fmt.Errorf("memory_rollback: %w", err)
 		}
@@ -541,7 +552,7 @@ func makeResolveHandler(svc *Services) tool.Handler[ResolveInput, ResolveOutput]
 		if in.Action != "confirm" && in.Action != "reject" {
 			return tool.Result[ResolveOutput]{}, fmt.Errorf("memory_resolve: action must be confirm or reject")
 		}
-		res, err := reconcile.Resolve(ctx, svc.Store, scope, in.MemoryID, reconcile.ConfirmAction(in.Action))
+		res, err := reconcile.Resolve(ctx, svc.Store, scope, in.MemoryID, reconcile.ConfirmAction(in.Action), svc.scopeInvalidator())
 		if err != nil {
 			return tool.Result[ResolveOutput]{}, fmt.Errorf("memory_resolve: %w", err)
 		}
@@ -588,42 +599,38 @@ func makeTopicsHandler(svc *Services) tool.Handler[TopicsInput, TopicsOutput] {
 			}, nil
 
 		case "upsert":
+			if svc.TopicSvc == nil {
+				return tool.Result[TopicsOutput]{}, fmt.Errorf("memory_topics: topic service not available")
+			}
 			if len(in.Topics) == 0 {
 				return tool.Result[TopicsOutput]{}, fmt.Errorf("memory_topics: topics array must not be empty for action=upsert")
 			}
-			now := time.Now().UnixMilli()
+			// Route through the shared topics.Service so active|paused validation is
+			// enforced identically to HTTP/SDK — one core, no per-surface drift
+			// (D-071, Wave-B checkpoint; the prior inline build skipped status
+			// validation).
+			upserts := make([]topics.TopicUpsert, len(in.Topics))
 			for i, t := range in.Topics {
-				if t.Key == "" {
-					return tool.Result[TopicsOutput]{}, fmt.Errorf("memory_topics: item[%d]: key must not be empty", i)
-				}
-				status := t.Status
-				if status == "" {
-					status = "active"
-				}
-				st := store.Topic{
-					ID:          ulid.Make().String(),
-					TenantID:    scope.Tenant,
-					Key:         t.Key,
-					Description: t.Description,
-					Status:      status,
-					CreatedAt:   now,
-					UpdatedAt:   now,
-				}
-				if err := svc.Store.Topics().Upsert(ctx, scope, st); err != nil {
-					return tool.Result[TopicsOutput]{}, fmt.Errorf("memory_topics: upsert item[%d]: %w", i, err)
-				}
+				upserts[i] = topics.TopicUpsert{Key: t.Key, Description: t.Description, Status: t.Status}
 			}
-			out := TopicsOutput{Upserted: len(in.Topics)}
+			n, err := svc.TopicSvc.Upsert(ctx, scope, upserts)
+			if err != nil {
+				return tool.Result[TopicsOutput]{}, fmt.Errorf("memory_topics: upsert: %w", err)
+			}
+			out := TopicsOutput{Upserted: n}
 			return tool.Result[TopicsOutput]{
-				Text:       fmt.Sprintf("Upserted %d topic(s)", len(in.Topics)),
+				Text:       fmt.Sprintf("Upserted %d topic(s)", n),
 				Structured: out,
 			}, nil
 
 		case "delete":
+			if svc.TopicSvc == nil {
+				return tool.Result[TopicsOutput]{}, fmt.Errorf("memory_topics: topic service not available")
+			}
 			if in.Key == "" {
 				return tool.Result[TopicsOutput]{}, fmt.Errorf("memory_topics: key must be set for action=delete")
 			}
-			if err := svc.Store.Topics().Delete(ctx, scope, in.Key); err != nil {
+			if err := svc.TopicSvc.Delete(ctx, scope, in.Key); err != nil {
 				return tool.Result[TopicsOutput]{}, fmt.Errorf("memory_topics: delete: %w", err)
 			}
 			out := TopicsOutput{Deleted: in.Key}

@@ -8,6 +8,7 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/hurtener/stowage/internal/store"
 	stowage "github.com/hurtener/stowage/sdk/stowage"
 )
 
@@ -168,9 +169,12 @@ func RunSuite(t *testing.T, client stowage.Client) {
 	// ── 8. GetMemory (D-070) — unknown id errors identically on both impls ───
 	t.Run("get_memory_unknown", func(t *testing.T) {
 		t.Parallel()
+		// Both impls surface an errors.Is-matchable store.ErrNotFound (the HTTP
+		// client maps the 404 back to the sentinel, D-070 Wave-B checkpoint), not
+		// just an opaque error.
 		_, err := client.GetMemory(ctx, "01JXXXXXXXXXXXXXXXXXXXXXXX")
-		if err == nil {
-			t.Error("GetMemory unknown id: expected error, got nil")
+		if !errors.Is(err, store.ErrNotFound) {
+			t.Errorf("GetMemory unknown id: got %v want errors.Is store.ErrNotFound", err)
 		}
 		// Empty id is a client-side validation error on both impls.
 		if _, err := client.GetMemory(ctx, ""); err == nil {
@@ -182,8 +186,8 @@ func RunSuite(t *testing.T, client stowage.Client) {
 	t.Run("rollback_unknown", func(t *testing.T) {
 		t.Parallel()
 		_, err := client.Rollback(ctx, stowage.RollbackRequest{MemoryID: "01JXXXXXXXXXXXXXXXXXXXXXXX"})
-		if err == nil {
-			t.Error("Rollback unknown id: expected error, got nil")
+		if !errors.Is(err, store.ErrNotFound) {
+			t.Errorf("Rollback unknown id: got %v want errors.Is store.ErrNotFound", err)
 		}
 		if _, err := client.Rollback(ctx, stowage.RollbackRequest{}); err == nil {
 			t.Error("Rollback empty id: expected validation error, got nil")
@@ -196,8 +200,8 @@ func RunSuite(t *testing.T, client stowage.Client) {
 		_, err := client.ResolveMemory(ctx, stowage.ResolveRequest{
 			MemoryID: "01JXXXXXXXXXXXXXXXXXXXXXXX", Action: "confirm",
 		})
-		if err == nil {
-			t.Error("ResolveMemory unknown id: expected error, got nil")
+		if !errors.Is(err, store.ErrNotFound) {
+			t.Errorf("ResolveMemory unknown id: got %v want errors.Is store.ErrNotFound", err)
 		}
 		if _, err := client.ResolveMemory(ctx, stowage.ResolveRequest{
 			MemoryID: "01JXXXXXXXXXXXXXXXXXXXXXXX", Action: "explode",

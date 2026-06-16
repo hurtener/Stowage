@@ -23,6 +23,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/oklog/ulid/v2"
@@ -30,6 +31,19 @@ import (
 	"github.com/hurtener/stowage/internal/identity"
 	"github.com/hurtener/stowage/internal/store"
 )
+
+// invalidateScopes busts the retrieval cache for scope on every non-nil
+// invalidator passed by a surface. Pushing invalidation into the reconcile core
+// (rather than each surface doing it after the call) means NO surface — HTTP,
+// MCP, or the embedded SDK — can forget it (D-053; D-070 Wave-B checkpoint).
+// It is variadic + nil-safe so callers pass their cache (or nothing) uniformly.
+func invalidateScopes(scope identity.Scope, invs []ScopeInvalidator) {
+	for _, inv := range invs {
+		if inv != nil {
+			inv.InvalidateScope(scope)
+		}
+	}
+}
 
 // ─── typed conflict errors ────────────────────────────────────────────────────
 
@@ -161,6 +175,12 @@ func GetMemory(ctx context.Context, st store.Store, scope identity.Scope, id str
 				SpanEnd:   p.SpanEnd,
 			})
 		}
+	} else {
+		// Non-fatal: the view is still returned with empty junctions, but the
+		// error is surfaced rather than silently swallowed (matches the Phase-18
+		// HTTP handler's slog warning; Wave-B checkpoint NIT).
+		slog.Default().WarnContext(ctx, "reconcile: get_memory junctions read failed",
+			"memory_id", id, "err", jerr)
 	}
 
 	view.SupersedesChain = walkSupersedesChain(ctx, st, scope, mem.SupersedesID, 10)
@@ -202,7 +222,22 @@ func walkSupersedesChain(ctx context.Context, st store.Store, scope identity.Sco
 // ErrDownstreamSupersede, ErrIncompleteSnapshots) on a guard violation. The
 // emitted memory.rolled_back event(s) carry the full pre-rollback prior state
 // so the inverse is itself reversible.
-func Rollback(ctx context.Context, st store.Store, scope identity.Scope, id string) (*RollbackResult, error) {
+//
+// A rollback always changes the active memory set, so on success the optional
+// ScopeInvalidator(s) are invalidated in the core (D-053) — every surface passes
+// its retrieval cache (or nothing) and none invalidates separately.
+func Rollback(ctx context.Context, st store.Store, scope identity.Scope, id string, inv ...ScopeInvalidator) (*RollbackResult, error) {
+	res, err := rollback(ctx, st, scope, id)
+	if err != nil {
+		return nil, err
+	}
+	invalidateScopes(scope, inv)
+	return res, nil
+}
+
+// rollback is the unexported reversibility core (invalidation-free); the
+// exported Rollback wraps it to invalidate the retrieval cache once on success.
+func rollback(ctx context.Context, st store.Store, scope identity.Scope, id string) (*RollbackResult, error) {
 	// Fetch current memory state (404 guard + pre-rollback snapshot source).
 	mem, err := st.Memories().Get(ctx, scope, id)
 	if err != nil {
@@ -453,7 +488,25 @@ func doCommitRollback(ctx context.Context, st store.Store, scope identity.Scope,
 // reject expires the parked memory. Returns store.ErrNotFound when id is absent,
 // ErrNotParked when the memory is not pending_confirmation, or a plain error for
 // an unrecognised action.
-func Resolve(ctx context.Context, st store.Store, scope identity.Scope, id string, action ConfirmAction) (*ResolveResult, error) {
+//
+// Confirm promotes a row into the active set, so on a confirm (res.Invalidate)
+// the optional ScopeInvalidator(s) are invalidated in the core (D-053); reject
+// only expires the parked row and never invalidates. Every surface passes its
+// cache (or nothing) and none invalidates separately.
+func Resolve(ctx context.Context, st store.Store, scope identity.Scope, id string, action ConfirmAction, inv ...ScopeInvalidator) (*ResolveResult, error) {
+	res, err := resolve(ctx, st, scope, id, action)
+	if err != nil {
+		return nil, err
+	}
+	if res.Invalidate {
+		invalidateScopes(scope, inv)
+	}
+	return res, nil
+}
+
+// resolve is the unexported confirm/reject core (invalidation-free); the
+// exported Resolve wraps it to invalidate the retrieval cache on a confirm.
+func resolve(ctx context.Context, st store.Store, scope identity.Scope, id string, action ConfirmAction) (*ResolveResult, error) {
 	mem, err := st.Memories().Get(ctx, scope, id)
 	if err != nil {
 		return nil, err

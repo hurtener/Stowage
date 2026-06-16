@@ -250,6 +250,14 @@ func runServeRollbackParity(t *testing.T) rollbackOutcome {
 	if !out.doubleConflict {
 		t.Errorf("serve double rollback: got %d want 409", status2)
 	}
+
+	// The SDK http client maps that 409 + stable code back to the typed conflict
+	// sentinel so it is errors.Is-matchable, exactly like the embedded client
+	// (Wave-B checkpoint: HTTP typed-error parity).
+	sdkClient := stowage.NewHTTP(ts.URL, plaintext)
+	if _, sdkErr := sdkClient.Rollback(ctx, stowage.RollbackRequest{MemoryID: revTargetID}); !errors.Is(sdkErr, reconcile.ErrAlreadyRolledBack) {
+		t.Errorf("serve SDK rollback conflict: got %v want errors.Is reconcile.ErrAlreadyRolledBack", sdkErr)
+	}
 	return out
 }
 

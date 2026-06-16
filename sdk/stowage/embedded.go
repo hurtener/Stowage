@@ -557,11 +557,12 @@ func (c *embeddedClient) Rollback(ctx context.Context, req RollbackRequest) (Mem
 	if req.MemoryID == "" {
 		return Memory{}, errors.New("sdk: rollback: memory_id must not be empty")
 	}
-	res, err := reconcile.Rollback(ctx, c.stack.Store, c.scope, req.MemoryID)
+	res, err := reconcile.Rollback(ctx, c.stack.Store, c.scope, req.MemoryID, c.scopeInvalidator())
 	if err != nil {
 		return Memory{}, fmt.Errorf("sdk: rollback: %w", err)
 	}
-	c.invalidateScope()
+	// Cache invalidation now happens inside reconcile.Rollback (D-053, Wave-B
+	// checkpoint) — the invalidator passed above is the single invalidation.
 	if res.Memory != nil {
 		return memoryToSDK(*res.Memory), nil
 	}
@@ -576,13 +577,12 @@ func (c *embeddedClient) ResolveMemory(ctx context.Context, req ResolveRequest) 
 	if req.Action != string(reconcile.ConfirmActionConfirm) && req.Action != string(reconcile.ConfirmActionReject) {
 		return ResolveResponse{}, errors.New("sdk: resolve_memory: action must be confirm or reject")
 	}
-	res, err := reconcile.Resolve(ctx, c.stack.Store, c.scope, req.MemoryID, reconcile.ConfirmAction(req.Action))
+	res, err := reconcile.Resolve(ctx, c.stack.Store, c.scope, req.MemoryID, reconcile.ConfirmAction(req.Action), c.scopeInvalidator())
 	if err != nil {
 		return ResolveResponse{}, fmt.Errorf("sdk: resolve_memory: %w", err)
 	}
-	if res.Invalidate {
-		c.invalidateScope()
-	}
+	// Cache invalidation (on confirm only) now happens inside reconcile.Resolve
+	// (D-053, Wave-B checkpoint) — the single invalidation.
 	return ResolveResponse{ID: res.ID, Status: res.Status}, nil
 }
 
@@ -675,21 +675,26 @@ func (c *embeddedClient) Assert(ctx context.Context, req AssertRequest) (AssertR
 		Content:  req.Content,
 		Kind:     req.Kind,
 		Context:  req.Context,
-	})
+	}, c.scopeInvalidator())
 	if err != nil {
 		return AssertResponse{}, fmt.Errorf("sdk: assert: %w", err)
 	}
-	c.invalidateScope()
+	// Cache invalidation now happens inside reconcile.Assert (D-053, Wave-B
+	// checkpoint) — the single invalidation.
 	return AssertResponse{MemoryID: res.MemoryID, Action: res.Action, Status: res.Status}, nil
 }
 
-// invalidateScope busts the retrieval cache for the client's scope after a
-// reversibility mutation (D-053), mirroring the HTTP handler. No-op when no
-// retriever is wired.
-func (c *embeddedClient) invalidateScope() {
+// scopeInvalidator returns the retrieval-cache invalidator the reconcile core
+// uses to bust stale results after a content-changing commit (D-053; D-070
+// Wave-B checkpoint). It returns an untyped-nil interface when no retriever is
+// wired, so the core's nil check is safe (a typed-nil *ResultCache would panic).
+// Invalidation lives in the core now, so the embedded SDK no longer invalidates
+// separately — exactly once, no double-invalidate.
+func (c *embeddedClient) scopeInvalidator() reconcile.ScopeInvalidator {
 	if c.stack != nil && c.stack.Retriever != nil {
-		c.stack.Retriever.Cache().InvalidateScope(c.scope)
+		return c.stack.Retriever.Cache()
 	}
+	return nil
 }
 
 // memoryToSDK maps a store.Memory to the SDK wire type.

@@ -2,14 +2,11 @@ package api
 
 import (
 	"encoding/json"
-	"fmt"
+	"errors"
 	"net/http"
-	"time"
-
-	"github.com/oklog/ulid/v2"
 
 	"github.com/hurtener/stowage/internal/identity"
-	"github.com/hurtener/stowage/internal/store"
+	"github.com/hurtener/stowage/internal/topics"
 )
 
 // topicInput is the per-item wire format for PUT /v1/topics.
@@ -74,6 +71,11 @@ func (s *Server) handleUpsertTopics(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if s.topicSvc == nil {
+		respondJSON(w, http.StatusServiceUnavailable, errBody("topics service not configured"))
+		return
+	}
+
 	var items []topicInput
 	dec := json.NewDecoder(r.Body)
 	dec.DisallowUnknownFields()
@@ -88,41 +90,30 @@ func (s *Server) handleUpsertTopics(w http.ResponseWriter, r *http.Request) {
 
 	authKey := keyFromContext(r.Context())
 	scope := identity.Scope{Tenant: authKey.TenantID}
-	now := time.Now().UnixMilli()
 
+	// Route through the shared topics.Service so active|paused validation is
+	// enforced on every surface — one core, no per-surface drift (D-071,
+	// Wave-B checkpoint). Validation failures map to 400, store errors to 500.
+	upserts := make([]topics.TopicUpsert, len(items))
 	for i, item := range items {
-		if item.Key == "" {
-			respondJSON(w, http.StatusBadRequest,
-				errBody(fmt.Sprintf("item[%d]: key must not be empty", i)))
-			return
-		}
-		status := item.Status
-		if status == "" {
-			status = "active"
-		}
-		if status != "active" && status != "paused" {
-			respondJSON(w, http.StatusBadRequest,
-				errBody(fmt.Sprintf("item[%d]: status must be active or paused", i)))
-			return
-		}
-		t := store.Topic{
-			ID:          ulid.Make().String(),
-			TenantID:    authKey.TenantID,
+		upserts[i] = topics.TopicUpsert{
 			Key:         item.Key,
 			Description: item.Description,
-			Status:      status,
-			CreatedAt:   now,
-			UpdatedAt:   now,
-		}
-		if err := s.st.Topics().Upsert(r.Context(), scope, t); err != nil {
-			s.log.ErrorContext(r.Context(), "api: topics: upsert failed",
-				"key", item.Key, "err", err)
-			respondJSON(w, http.StatusInternalServerError, errBody("store error"))
-			return
+			Status:      item.Status,
 		}
 	}
+	n, err := s.topicSvc.Upsert(r.Context(), scope, upserts)
+	if err != nil {
+		if errors.Is(err, topics.ErrInvalidTopic) {
+			respondJSON(w, http.StatusBadRequest, errBody(err.Error()))
+			return
+		}
+		s.log.ErrorContext(r.Context(), "api: topics: upsert failed", "err", err)
+		respondJSON(w, http.StatusInternalServerError, errBody("store error"))
+		return
+	}
 
-	respondJSON(w, http.StatusOK, map[string]int{"upserted": len(items)})
+	respondJSON(w, http.StatusOK, map[string]int{"upserted": n})
 }
 
 // handleDeleteTopic implements DELETE /v1/topics/{key}.
@@ -136,10 +127,16 @@ func (s *Server) handleDeleteTopic(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if s.topicSvc == nil {
+		respondJSON(w, http.StatusServiceUnavailable, errBody("topics service not configured"))
+		return
+	}
+
 	authKey := keyFromContext(r.Context())
 	scope := identity.Scope{Tenant: authKey.TenantID}
 
-	if err := s.st.Topics().Delete(r.Context(), scope, key); err != nil {
+	// Route through the shared topics.Service (D-071, Wave-B checkpoint).
+	if err := s.topicSvc.Delete(r.Context(), scope, key); err != nil {
 		if isNotFound(err) {
 			respondJSON(w, http.StatusNotFound, errBody("topic not found"))
 			return
