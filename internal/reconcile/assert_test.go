@@ -83,10 +83,10 @@ func TestAssert_DefaultsAndValidation(t *testing.T) {
 	}
 
 	cases := []reconcile.AssertParams{
-		{Action: ""},                  // missing action
-		{Action: "add"},               // add without content
-		{Action: "update"},            // update without memory_id
-		{Action: "delete"},            // delete without memory_id
+		{Action: ""},                    // missing action
+		{Action: "add"},                 // add without content
+		{Action: "update"},              // update without memory_id
+		{Action: "delete"},              // delete without memory_id
 		{Action: "bogus", Content: "y"}, // unknown action
 	}
 	for i, p := range cases {
