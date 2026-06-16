@@ -177,9 +177,12 @@ playbook with provenance and `Stub` absent. SKIP-graceful pre-build.
   Phase 21 retention — left as-is.
 - **Grants `RedactionProfile` application**: a stored-but-unapplied field for a later
   phase — left as-is.
-- **OPEN QUESTION for the owner — runtime API-key management on MCP.** Keys are
-  fully shipped on HTTP (D-030) but absent on MCP; per the tiered model (admin →
-  {HTTP, MCP}) this is a small parity gap, not a half-shipped primitive.
-  **Recommendation:** fold a `memory_keys` admin MCP tool into Wave C as a small
-  second phase (h6) so the admin consumer is accommodated like the others — OR keep
-  it a tiny standalone follow-up. Default: **include as h6** unless you say otherwise.
+- **Runtime API-key management — RESOLVED (owner, 2026-06-16): HTTP-only by
+  design.** Keys are fully shipped on HTTP (D-030); they are deliberately NOT
+  exposed on MCP. This is a **tier exception**, recorded so it is a conscious
+  choice, not drift: runtime key/credential management is an HTTP-admin-only
+  concern (operators provision keys through the HTTP admin surface), distinct from
+  *grants/team-sharing* management which remains {HTTP, MCP} (D-071). So the D-067
+  tiered model now reads: single-user → {SDK, MCP, HTTP}; team/grants admin →
+  {HTTP, MCP}; **key/credential admin → {HTTP} only**. No h6; Wave C is h5 alone.
+  (Recorded in D-072.)

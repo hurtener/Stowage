@@ -346,8 +346,9 @@ checkpoint audit (§17) gates Wave C.
 
 Owner posture: **finish** (no deferrals); consumers on {SDK, MCP, HTTP} accommodated
 from the get-go. Reflection (§6a.1-2, the LLM write-side) stays roadmap Phase 19.
-Open question in the h5 plan: whether to add runtime API-key management to MCP as a
-small h6 (admin tier {HTTP, MCP}). A Wave-C checkpoint gates Wave D.
+Wave C is **h5 alone** — runtime API-key management is HTTP-only by design (owner,
+2026-06-16; a recorded tier exception: key/credential admin → {HTTP} only, distinct
+from grants admin → {HTTP, MCP}). A Wave-C checkpoint gates Wave D.
 
 Waves C (finish-or-defer half-shipped primitives, D-072) and D (decision-shaped
 RFC remainder: server deployment shape + facade, D-073) follow per D-067; each
