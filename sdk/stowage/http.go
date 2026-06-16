@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"time"
 )
 
@@ -195,6 +196,45 @@ func (c *httpClient) Topics(ctx context.Context) (TopicsResponse, error) {
 // Playbook implements Client. Returns a stub in Phase 17.
 func (c *httpClient) Playbook(_ context.Context, _ PlaybookRequest) (PlaybookResponse, error) {
 	return PlaybookResponse{Entries: []any{}, Stub: true}, nil
+}
+
+// GetMemory implements Client via GET /v1/memories/{id} (D-070).
+func (c *httpClient) GetMemory(ctx context.Context, id string) (GetMemoryResponse, error) {
+	if id == "" {
+		return GetMemoryResponse{}, errors.New("sdk: get_memory: id must not be empty")
+	}
+	var resp GetMemoryResponse
+	if err := c.do(ctx, http.MethodGet, "/v1/memories/"+url.PathEscape(id), nil, &resp); err != nil {
+		return GetMemoryResponse{}, err
+	}
+	return resp, nil
+}
+
+// Rollback implements Client via POST /v1/memories/{id}/rollback (D-064/D-070).
+func (c *httpClient) Rollback(ctx context.Context, req RollbackRequest) (Memory, error) {
+	if req.MemoryID == "" {
+		return Memory{}, errors.New("sdk: rollback: memory_id must not be empty")
+	}
+	var resp Memory
+	if err := c.do(ctx, http.MethodPost, "/v1/memories/"+url.PathEscape(req.MemoryID)+"/rollback", nil, &resp); err != nil {
+		return Memory{}, err
+	}
+	return resp, nil
+}
+
+// ResolveMemory implements Client via PATCH /v1/memories/{id} (D-065/D-070).
+func (c *httpClient) ResolveMemory(ctx context.Context, req ResolveRequest) (ResolveResponse, error) {
+	if req.MemoryID == "" {
+		return ResolveResponse{}, errors.New("sdk: resolve_memory: memory_id must not be empty")
+	}
+	if req.Action != "confirm" && req.Action != "reject" {
+		return ResolveResponse{}, errors.New("sdk: resolve_memory: action must be confirm or reject")
+	}
+	var resp ResolveResponse
+	if err := c.do(ctx, http.MethodPatch, "/v1/memories/"+url.PathEscape(req.MemoryID), req, &resp); err != nil {
+		return ResolveResponse{}, err
+	}
+	return resp, nil
 }
 
 // ErrPlaybookStub is returned by Playbook implementations while the

@@ -1,6 +1,6 @@
 # Phase h3 — Reconciliation reversibility parity (rollback/confirm/reject/get across surfaces)
 
-- **Status:** draft | approved | in-progress | shipped
+- **Status:** in-progress
 - **Owning subsystem(s):** `internal/reconcile` (new exported core), `internal/api` (thin callers), `internal/mcpserver` (new tools), `sdk/stowage` (new Client methods)
 - **RFC sections:** §6 (reconciliation is reversible), §9.1 (HTTP), §9.2 (MCP), §9.3 (SDK)
 - **Depends on phases:** 15/18 rollback+confirmation (D-064, D-065), h1 (StartPipeline), h2 — all shipped

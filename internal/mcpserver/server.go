@@ -43,7 +43,9 @@ func StdioScopeFn(tenant string) ScopeFn {
 	}
 }
 
-// New creates a Dockyard *server.Server with all 7 Stowage MCP tools registered.
+// New creates a Dockyard *server.Server with all 10 Stowage MCP tools registered
+// (the original seven plus the D-070 reversibility trio: memory_get,
+// memory_rollback, memory_resolve).
 // It returns an error when any tool fails to register (type mismatch, missing
 // handler) — the caller must handle the error and exit non-zero (AGENTS.md §5).
 func New(info server.Info, svc *Services) (*server.Server, error) {
@@ -97,6 +99,28 @@ func New(info server.Info, svc *Services) (*server.Server, error) {
 	if err := tool.New[TopicsInput, TopicsOutput]("memory_topics").
 		Describe("Manage extraction topics: list, upsert, or delete (mirrors GET/PUT/DELETE /v1/topics).").
 		Handler(makeTopicsHandler(svc)).
+		Register(srv); err != nil {
+		return nil, err
+	}
+
+	// Reversibility tools (D-070) — single-purpose, mirroring the HTTP verbs.
+	if err := tool.New[GetInput, GetOutput]("memory_get").
+		Describe("Read a memory by id with its junctions and supersedes chain (mirrors GET /v1/memories/{id}).").
+		Handler(makeGetHandler(svc)).
+		Register(srv); err != nil {
+		return nil, err
+	}
+
+	if err := tool.New[RollbackInput, RollbackOutput]("memory_rollback").
+		Describe("Roll back (invert) the newest reconciliation event for a memory, restoring its prior state (mirrors POST /v1/memories/{id}/rollback; D-064).").
+		Handler(makeRollbackHandler(svc)).
+		Register(srv); err != nil {
+		return nil, err
+	}
+
+	if err := tool.New[ResolveInput, ResolveOutput]("memory_resolve").
+		Describe("Resolve a pending_confirmation memory: action=confirm promotes it to active (superseding any target); action=reject expires it (mirrors PATCH /v1/memories/{id}; D-065).").
+		Handler(makeResolveHandler(svc)).
 		Register(srv); err != nil {
 		return nil, err
 	}

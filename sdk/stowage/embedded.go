@@ -10,6 +10,7 @@ import (
 	"github.com/hurtener/stowage/internal/config"
 	"github.com/hurtener/stowage/internal/identity"
 	"github.com/hurtener/stowage/internal/pipeline"
+	"github.com/hurtener/stowage/internal/reconcile"
 	"github.com/hurtener/stowage/internal/records"
 	"github.com/hurtener/stowage/internal/retrieval"
 	"github.com/hurtener/stowage/internal/store"
@@ -524,4 +525,101 @@ func (c *embeddedClient) Topics(ctx context.Context) (TopicsResponse, error) {
 // Playbook implements Client. Stub in Phase 17.
 func (c *embeddedClient) Playbook(_ context.Context, _ PlaybookRequest) (PlaybookResponse, error) {
 	return PlaybookResponse{Entries: []any{}, Stub: true}, nil
+}
+
+// GetMemory implements Client via the reconcile core (D-070).
+func (c *embeddedClient) GetMemory(ctx context.Context, id string) (GetMemoryResponse, error) {
+	if id == "" {
+		return GetMemoryResponse{}, errors.New("sdk: get_memory: id must not be empty")
+	}
+	view, err := reconcile.GetMemory(ctx, c.stack.Store, c.scope, id)
+	if err != nil {
+		return GetMemoryResponse{}, fmt.Errorf("sdk: get_memory: %w", err)
+	}
+	resp := GetMemoryResponse{
+		Memory:          memoryToSDK(view.Memory),
+		Entities:        view.Entities,
+		Keywords:        view.Keywords,
+		Queries:         view.Queries,
+		SupersedesChain: view.SupersedesChain,
+	}
+	for _, p := range view.Provenance {
+		resp.Provenance = append(resp.Provenance, MemoryProvenanceRef{
+			RecordID: p.RecordID, SpanStart: p.SpanStart, SpanEnd: p.SpanEnd,
+		})
+	}
+	return resp, nil
+}
+
+// Rollback implements Client via the reconcile core (D-064/D-070).
+func (c *embeddedClient) Rollback(ctx context.Context, req RollbackRequest) (Memory, error) {
+	if req.MemoryID == "" {
+		return Memory{}, errors.New("sdk: rollback: memory_id must not be empty")
+	}
+	res, err := reconcile.Rollback(ctx, c.stack.Store, c.scope, req.MemoryID)
+	if err != nil {
+		return Memory{}, fmt.Errorf("sdk: rollback: %w", err)
+	}
+	c.invalidateScope()
+	if res.Memory != nil {
+		return memoryToSDK(*res.Memory), nil
+	}
+	return Memory{ID: res.ID}, nil
+}
+
+// ResolveMemory implements Client via the reconcile core (D-065/D-070).
+func (c *embeddedClient) ResolveMemory(ctx context.Context, req ResolveRequest) (ResolveResponse, error) {
+	if req.MemoryID == "" {
+		return ResolveResponse{}, errors.New("sdk: resolve_memory: memory_id must not be empty")
+	}
+	if req.Action != string(reconcile.ConfirmActionConfirm) && req.Action != string(reconcile.ConfirmActionReject) {
+		return ResolveResponse{}, errors.New("sdk: resolve_memory: action must be confirm or reject")
+	}
+	res, err := reconcile.Resolve(ctx, c.stack.Store, c.scope, req.MemoryID, reconcile.ConfirmAction(req.Action))
+	if err != nil {
+		return ResolveResponse{}, fmt.Errorf("sdk: resolve_memory: %w", err)
+	}
+	if res.Invalidate {
+		c.invalidateScope()
+	}
+	return ResolveResponse{ID: res.ID, Status: res.Status}, nil
+}
+
+// invalidateScope busts the retrieval cache for the client's scope after a
+// reversibility mutation (D-053), mirroring the HTTP handler. No-op when no
+// retriever is wired.
+func (c *embeddedClient) invalidateScope() {
+	if c.stack != nil && c.stack.Retriever != nil {
+		c.stack.Retriever.Cache().InvalidateScope(c.scope)
+	}
+}
+
+// memoryToSDK maps a store.Memory to the SDK wire type.
+func memoryToSDK(m store.Memory) Memory {
+	return Memory{
+		ID:             m.ID,
+		Kind:           m.Kind,
+		Content:        m.Content,
+		Context:        m.Context,
+		Status:         m.Status,
+		Importance:     m.Importance,
+		Confidence:     m.Confidence,
+		TrustSource:    m.TrustSource,
+		MatchCount:     m.MatchCount,
+		InjectCount:    m.InjectCount,
+		UseCount:       m.UseCount,
+		SaveCount:      m.SaveCount,
+		FailCount:      m.FailCount,
+		NoiseCount:     m.NoiseCount,
+		Stability:      m.Stability,
+		ValidFrom:      m.ValidFrom,
+		ValidUntil:     m.ValidUntil,
+		EpisodeID:      m.EpisodeID,
+		SupersedesID:   m.SupersedesID,
+		SupersededByID: m.SupersededByID,
+		PrivacyZone:    m.PrivacyZone,
+		ContentHash:    m.ContentHash,
+		CreatedAt:      m.CreatedAt,
+		UpdatedAt:      m.UpdatedAt,
+	}
 }

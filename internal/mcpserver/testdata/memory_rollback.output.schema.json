@@ -1,0 +1,103 @@
+{
+  "type": "object",
+  "properties": {
+    "memory": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "kind": {
+          "type": "string"
+        },
+        "content": {
+          "type": "string"
+        },
+        "context": {
+          "type": "string"
+        },
+        "status": {
+          "type": "string"
+        },
+        "importance": {
+          "type": "integer"
+        },
+        "confidence": {
+          "type": "number"
+        },
+        "trust_source": {
+          "type": "string"
+        },
+        "match_count": {
+          "type": "integer"
+        },
+        "inject_count": {
+          "type": "integer"
+        },
+        "use_count": {
+          "type": "integer"
+        },
+        "save_count": {
+          "type": "integer"
+        },
+        "fail_count": {
+          "type": "integer"
+        },
+        "noise_count": {
+          "type": "integer"
+        },
+        "stability": {
+          "type": "number"
+        },
+        "valid_from": {
+          "type": "integer"
+        },
+        "valid_until": {
+          "type": "integer"
+        },
+        "episode_id": {
+          "type": "string"
+        },
+        "supersedes_id": {
+          "type": "string"
+        },
+        "superseded_by_id": {
+          "type": "string"
+        },
+        "privacy_zone": {
+          "type": "string"
+        },
+        "content_hash": {
+          "type": "string"
+        },
+        "created_at": {
+          "type": "integer"
+        },
+        "updated_at": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "id",
+        "kind",
+        "content",
+        "status",
+        "importance",
+        "confidence",
+        "trust_source",
+        "match_count",
+        "inject_count",
+        "use_count",
+        "save_count",
+        "stability",
+        "created_at",
+        "updated_at"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "required": [
+    "memory"
+  ],
+  "additionalProperties": false
+}

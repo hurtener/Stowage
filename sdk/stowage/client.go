@@ -38,4 +38,18 @@ type Client interface {
 	// a future phase once playbook storage is wired. Returns Stub:true always
 	// until that phase ships.
 	Playbook(ctx context.Context, req PlaybookRequest) (PlaybookResponse, error)
+
+	// GetMemory reads a memory, its junctions, and its supersedes chain within
+	// the client's scope (D-070). Returns an error when the memory is absent.
+	GetMemory(ctx context.Context, id string) (GetMemoryResponse, error)
+
+	// Rollback inverts the newest reconciliation event for a memory (D-064),
+	// restoring its prior state. Returns the restored memory. A reversibility
+	// conflict (double-rollback, downstream supersede, missing snapshot) is
+	// returned as an error identical across surfaces.
+	Rollback(ctx context.Context, req RollbackRequest) (Memory, error)
+
+	// ResolveMemory confirms or rejects a pending_confirmation memory (D-065).
+	// confirm promotes it to active (superseding any target); reject expires it.
+	ResolveMemory(ctx context.Context, req ResolveRequest) (ResolveResponse, error)
 }

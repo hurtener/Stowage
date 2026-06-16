@@ -204,6 +204,72 @@ type TopicsResponse struct {
 	Topics []TopicView `json:"topics"`
 }
 
+// ---- Memory / reversibility types (D-070) -----------------------------------
+
+// Memory mirrors the HTTP memoryJSON wire type. It is returned by Rollback and
+// embedded in GetMemoryResponse. Field names are byte-identical to the v1 API.
+type Memory struct {
+	ID             string  `json:"id"`
+	Kind           string  `json:"kind"`
+	Content        string  `json:"content"`
+	Context        string  `json:"context,omitempty"`
+	Status         string  `json:"status"`
+	Importance     int     `json:"importance"`
+	Confidence     float64 `json:"confidence"`
+	TrustSource    string  `json:"trust_source"`
+	MatchCount     int64   `json:"match_count"`
+	InjectCount    int64   `json:"inject_count"`
+	UseCount       int64   `json:"use_count"`
+	SaveCount      int64   `json:"save_count"`
+	FailCount      int64   `json:"fail_count,omitempty"`
+	NoiseCount     int64   `json:"noise_count,omitempty"`
+	Stability      float64 `json:"stability"`
+	ValidFrom      int64   `json:"valid_from,omitempty"`
+	ValidUntil     int64   `json:"valid_until,omitempty"`
+	EpisodeID      string  `json:"episode_id,omitempty"`
+	SupersedesID   string  `json:"supersedes_id,omitempty"`
+	SupersededByID string  `json:"superseded_by_id,omitempty"`
+	PrivacyZone    string  `json:"privacy_zone,omitempty"`
+	ContentHash    string  `json:"content_hash,omitempty"`
+	CreatedAt      int64   `json:"created_at"`
+	UpdatedAt      int64   `json:"updated_at"`
+}
+
+// MemoryProvenanceRef is a compact provenance reference (mirrors provRefJSON).
+type MemoryProvenanceRef struct {
+	RecordID  string `json:"record_id"`
+	SpanStart int    `json:"span_start,omitempty"`
+	SpanEnd   int    `json:"span_end,omitempty"`
+}
+
+// GetMemoryResponse mirrors the HTTP memoryResponse for GET /v1/memories/{id}.
+type GetMemoryResponse struct {
+	Memory          Memory                `json:"memory"`
+	Entities        []string              `json:"entities"`
+	Keywords        []string              `json:"keywords"`
+	Queries         []string              `json:"queries"`
+	Provenance      []MemoryProvenanceRef `json:"provenance,omitempty"`
+	SupersedesChain []string              `json:"supersedes_chain,omitempty"`
+}
+
+// RollbackRequest identifies the memory to roll back (D-064).
+type RollbackRequest struct {
+	MemoryID string `json:"-"`
+}
+
+// ResolveRequest confirms or rejects a pending_confirmation memory (D-065).
+// Action must be "confirm" or "reject".
+type ResolveRequest struct {
+	MemoryID string `json:"-"`
+	Action   string `json:"action"`
+}
+
+// ResolveResponse is the result of ResolveMemory (mirrors the PATCH response).
+type ResolveResponse struct {
+	ID     string `json:"id"`
+	Status string `json:"status"`
+}
+
 // ---- Playbook types ---------------------------------------------------------
 
 // PlaybookRequest is the request for Playbook. Stub in Phase 17.
