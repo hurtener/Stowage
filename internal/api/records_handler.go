@@ -104,6 +104,15 @@ func (s *Server) handleIngest(w http.ResponseWriter, r *http.Request) {
 	// Caller must hold an active contribute grant (403 otherwise). Cross-tenant
 	// contribute is never allowed. The grant-check + scope-override live in
 	// grants.AuthorizeContribute so the HTTP and MCP ingest paths cannot drift.
+	// Contribute-guard parity (Wave-B checkpoint): a contributor_user_id without a
+	// target_scope is a malformed contribute request — reject it loudly rather
+	// than silently dropping the attribution and ingesting into the caller's own
+	// scope. The MCP memory_ingest handler enforces the identical rule.
+	if req.ContributorUserID != "" && req.TargetScope == nil {
+		respondJSON(w, http.StatusBadRequest, errBody("contributor_user_id requires target_scope"))
+		return
+	}
+
 	contributeMode := req.TargetScope != nil
 	var contribute grants.ContributeContext
 

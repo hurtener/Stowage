@@ -1236,6 +1236,41 @@ punch list was resolved in one chore PR. No new decision numbers consumed
    server fleet. New helper vocabulary (`ClampExcerpt`, `FillZeroDefaults`,
    `ftsMatchArg`, `TrySend`) added to `docs/glossary.md`.
 
+**Note (2026-06-16) — Wave-B checkpoint outcomes (`chore(checkpoint)`, gates
+Wave C).** The read-only Wave-B checkpoint audit (§17 / playbook §4.5) ran and
+its punch list (3 FAIL / 8 WARN / 3 NIT) was resolved in one chore PR. No new
+decision numbers consumed (D-072/D-073 stay reserved for Wave C/D). The
+content-changing fixes amend h3/h4 surface behavior and are recorded as dated
+notes under D-070 (cache-in-core + events Reason) and D-071 (topics single-core +
+contribute guard). Outcomes:
+
+1. **FAIL-1/2 fixed — MCP write verbs skipped D-053 cache invalidation.**
+   `memory_rollback`/`memory_resolve`/`memory_assert` committed via the reconcile
+   core then returned without busting the per-scope retrieval cache, so a
+   same-scope `memory_retrieve` served stale results for up to the 60 s TTL — a
+   cross-surface divergence from HTTP/SDK. Fixed by pushing invalidation INTO the
+   reconcile core (the durable one-core path; see D-070 note) so no surface can
+   forget; the per-surface invalidation in HTTP + SDK was removed so invalidation
+   happens exactly once.
+2. **FAIL-3 fixed — topics upsert/delete is now a single shared core.** MCP +
+   HTTP built topic rows inline and the MCP build skipped the `active|paused`
+   status validation `topics.Service` enforces. All three write surfaces now route
+   through `topics.Service.{Upsert,Delete}` (see D-071 note).
+3. **META-FIX — MCP surface added to parity coverage.** The h3/h4 parity suites
+   only compared embedded↔HTTP; `internal/mcpserver/parity_test.go` now proves
+   each MCP write (rollback/resolve-confirm/assert) busts the cache and that
+   `memory_topics` upsert rejects an invalid status — the tests that would have
+   caught FAIL-1..3.
+4. **WARNs.** Contribute guard aligned (HTTP now rejects `contributor_user_id`
+   without `target_scope`, matching MCP); SDK http client maps 409+code →
+   `*reconcile.ConflictError` and 404 → `store.ErrNotFound` so both impls are
+   `errors.Is`-matchable (suite asserts it); events Reason change documented
+   (D-070 note); stale `pipeline/branch.go` godoc corrected; phase-h3 Status →
+   shipped; `TestTriggerMatrix` flake annotated (did not reproduce 110×-race).
+5. **NITs.** `reconcile.GetMemory` junction-read error now logs a slog warning;
+   the MCP contribute-rejection test asserts zero records enqueued/written; the
+   glossary "Tiered surface parity" entry fixed (`memory_assert` → {SDK, MCP}).
+
 ## D-068 — `boot.StartPipeline` is the single post-boot live-wiring seam
 
 2026-06-13. D-067 Wave A, flagship correctness fix (Phase h1; plan
@@ -1398,6 +1433,34 @@ HTTP/MCP-only and land in h4 (D-071).
 in `reconcile` and now has a matching `parsePriorState` inverse colocated with
 the core that consumes it.
 
+**Note (2026-06-16) — Wave-B checkpoint: cache invalidation moved into the core,
++ events Reason prefix.** The checkpoint audit found the MCP reversibility verbs
+(`memory_rollback`/`memory_resolve`) and `memory_assert` skipped the D-053
+per-scope cache invalidation that the HTTP handlers and the embedded SDK
+performed after the call — so an MCP-driven write left a same-scope
+`memory_retrieve` serving stale cached results for up to 60 s (FAIL-1/2).
+
+Per the one-core principle, invalidation is now pushed INTO the reconcile core
+rather than left to each surface: `reconcile.Rollback`/`Resolve`/`Assert` take an
+optional, nil-safe `ScopeInvalidator` (variadic) and invalidate after a
+content-changing commit — Rollback and Assert always, Resolve only on a confirm
+(`res.Invalidate`, never on reject). All three surfaces now pass their retrieval
+cache (or an untyped-nil interface when no retriever is wired) and NO surface
+invalidates separately, so invalidation happens exactly once and no surface can
+forget it. Surfaces use a `scopeInvalidator()` helper that returns an untyped-nil
+interface (a typed-nil `*ResultCache` would panic on use). Proven by
+`internal/mcpserver/parity_test.go` (MCP CacheHit flips false after each write).
+
+**events/v1 Reason prefix (intended, documented).** When h3 lifted the rollback
+orchestration out of `internal/api` into `internal/reconcile`, the
+`memory.rolled_back` / `memory.superseded` event `Reason` strings changed from an
+`"api: …"` prefix to `"reconcile: …"` — correct, since the reconcile core now
+owns and emits them. The consumed event contract (type, subject_id, payload —
+the D-017 prior-state JSON, golden-locked by `TestMarshalPriorState_Golden`) is
+unchanged; only the human-readable Reason prefix moved to name the emitting core.
+This is recorded as an intended events/v1 change (CLAUDE.md §8), not a silent one;
+the convention is "Reason is prefixed by the package that emits the event."
+
 ## D-071 — Tiered control-verb surface parity (topics/flush/branches/assert; grants/contribute)
 
 **Status:** accepted (Phase h4, D-067 Wave B).
@@ -1456,3 +1519,23 @@ than one tool per verb. Schema goldens added under `internal/mcpserver/testdata/
 `-race`); MCP contribute honoring + rejection by `internal/mcpserver`
 (`contribute_test.go`, real store + grants service). A control-verb behavior change
 is now a single-site edit in its core.
+
+**Note (2026-06-16) — Wave-B checkpoint: topics single-core + contribute guard.**
+This entry originally noted "HTTP/MCP retain their pre-existing inline store calls
+(byte-identical construction; golden-locked)" for topic writes. The checkpoint
+audit found that the MCP inline build skipped the `active|paused` status
+validation `topics.Service` enforces — a Tier-A parity divergence (FAIL-3). That
+exception is now withdrawn: ALL three write surfaces (MCP + HTTP, SDK already did)
+route through `topics.Service.{Upsert,Delete}`, the single core. The service now
+wraps validation failures (empty key, bad status, empty set) with a
+`topics.ErrInvalidTopic` sentinel so the HTTP handler maps `errors.Is` →
+400 (validation) vs 500 (store error); the MCP handler surfaces the error as a
+tool error. MCP-surface validation is proven by `internal/mcpserver/parity_test.go`.
+
+**Contribute-guard parity.** The audit also found the HTTP `/v1/records` handler
+silently ignored `contributor_user_id` when `target_scope` was absent (dropping
+attribution and ingesting into the caller's own scope), while MCP rejected it.
+Both surfaces now reject loudly (HTTP 400 / MCP tool error) when
+`contributor_user_id` is set without `target_scope` — identical behavior. The MCP
+contribute-rejection test additionally asserts a rejected request is fully inert
+(zero records enqueued or written).

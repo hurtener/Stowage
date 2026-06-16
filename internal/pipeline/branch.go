@@ -55,9 +55,11 @@ func MergeBranch(ctx context.Context, st store.Store, scope identity.Scope, bran
 // DiscardBranch transitions a branch to "discarded" and flushes any buffers
 // associated with it using the branch-discard trigger (SkipPromotion=true, D-029).
 // Records remain readable (P1 fidelity). branchID is required. stage may be nil
-// (no buffers to flush). The flush is synchronous here so embedded/SDK callers
-// observe the SkipPromotion effect deterministically; the HTTP handler wraps it
-// in a goroutine for fire-and-forget semantics.
+// (no buffers to flush). The flush is synchronous here so every caller — the
+// embedded SDK, the MCP memory_branch tool, AND the HTTP branches handler —
+// observes the SkipPromotion effect deterministically; the HTTP handler calls
+// this core synchronously too (the prior `go FlushBranch` was removed in h4, which
+// also fixed a request-context-cancellation race; D-071).
 func DiscardBranch(ctx context.Context, st store.Store, stage *Stage, scope identity.Scope, branchID string) error {
 	if branchID == "" {
 		return fmt.Errorf("branch: branch_id is required for discard")

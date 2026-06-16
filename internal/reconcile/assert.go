@@ -39,7 +39,12 @@ type AssertResult struct {
 // Assert applies a direct add/update/delete to a memory within scope, bypassing
 // the ingestion pipeline. It is the shared core for the MCP memory_assert tool
 // and the embedded SDK Assert method (D-071).
-func Assert(ctx context.Context, st store.Store, scope identity.Scope, p AssertParams) (*AssertResult, error) {
+//
+// Every assert action changes the active memory set, so on success the optional
+// ScopeInvalidator(s) are invalidated in the core (D-053; D-070 Wave-B
+// checkpoint) — surfaces pass their retrieval cache (or nothing) and none
+// invalidates separately.
+func Assert(ctx context.Context, st store.Store, scope identity.Scope, p AssertParams, inv ...ScopeInvalidator) (*AssertResult, error) {
 	if p.Action == "" {
 		return nil, fmt.Errorf("assert: action must be set (add|update|delete)")
 	}
@@ -110,5 +115,6 @@ func Assert(ctx context.Context, st store.Store, scope identity.Scope, p AssertP
 		return nil, fmt.Errorf("assert: unknown action %q (want add|update|delete)", p.Action)
 	}
 
+	invalidateScopes(scope, inv)
 	return &AssertResult{MemoryID: memoryID, Action: p.Action, Status: status}, nil
 }

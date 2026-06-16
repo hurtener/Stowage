@@ -10,6 +10,9 @@ import (
 	"net/http"
 	"net/url"
 	"time"
+
+	"github.com/hurtener/stowage/internal/reconcile"
+	"github.com/hurtener/stowage/internal/store"
 )
 
 // httpClient implements Client via the Stowage HTTP API.
@@ -103,7 +106,7 @@ func (c *httpClient) do(ctx context.Context, method, path string, body, out any)
 
 	if resp.StatusCode >= 400 {
 		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return fmt.Errorf("sdk: %s %s: HTTP %d: %s", method, path, resp.StatusCode, string(raw))
+		return mapHTTPError(method, path, resp.StatusCode, raw)
 	}
 
 	if out != nil {
@@ -112,6 +115,29 @@ func (c *httpClient) do(ctx context.Context, method, path string, body, out any)
 		}
 	}
 	return nil
+}
+
+// mapHTTPError converts a non-2xx HTTP response into an error that is
+// errors.Is-matchable to the same sentinels the embedded client surfaces, so
+// both Client impls behave identically (D-070 Wave-B checkpoint). A 409 carries
+// the reconcile stable conflict code (e.g. "already_rolled_back") and maps back
+// to a *reconcile.ConflictError — errors.Is matches by code, so
+// errors.Is(err, reconcile.ErrAlreadyRolledBack) succeeds across the wire. A 404
+// maps to store.ErrNotFound. Everything else is an opaque transport error.
+func mapHTTPError(method, path string, status int, raw []byte) error {
+	switch status {
+	case http.StatusConflict:
+		var body struct {
+			Error string `json:"error"`
+			Code  string `json:"code"`
+		}
+		if err := json.Unmarshal(raw, &body); err == nil && body.Code != "" {
+			return &reconcile.ConflictError{Code: body.Code, Msg: body.Error}
+		}
+	case http.StatusNotFound:
+		return fmt.Errorf("sdk: %s %s: HTTP 404: %s: %w", method, path, string(raw), store.ErrNotFound)
+	}
+	return fmt.Errorf("sdk: %s %s: HTTP %d: %s", method, path, status, string(raw))
 }
 
 // Ingest implements Client.

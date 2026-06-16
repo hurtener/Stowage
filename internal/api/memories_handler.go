@@ -133,13 +133,14 @@ func (s *Server) handleRollbackMemory(w http.ResponseWriter, r *http.Request) {
 	scope := identity.Scope{Tenant: authKey.TenantID}
 	ctx := r.Context()
 
-	res, err := reconcile.Rollback(ctx, s.st, scope, id)
+	res, err := reconcile.Rollback(ctx, s.st, scope, id, s.scopeInvalidator())
 	if err != nil {
 		s.respondReconcileErr(w, ctx, "rollback", id, err)
 		return
 	}
 
-	s.invalidateScope(scope)
+	// Cache invalidation now happens inside reconcile.Rollback (D-053, Wave-B
+	// checkpoint) — passing s.scopeInvalidator() above is the single invalidation.
 	if res.Memory != nil {
 		respondJSON(w, http.StatusOK, memoryToJSON(res.Memory))
 		return
@@ -178,15 +179,14 @@ func (s *Server) handlePatchMemory(w http.ResponseWriter, r *http.Request) {
 	scope := identity.Scope{Tenant: authKey.TenantID}
 	ctx := r.Context()
 
-	res, err := reconcile.Resolve(ctx, s.st, scope, id, reconcile.ConfirmAction(req.Action))
+	res, err := reconcile.Resolve(ctx, s.st, scope, id, reconcile.ConfirmAction(req.Action), s.scopeInvalidator())
 	if err != nil {
 		s.respondReconcileErr(w, ctx, "patch memory", id, err)
 		return
 	}
 
-	if res.Invalidate {
-		s.invalidateScope(scope)
-	}
+	// Cache invalidation (on confirm only, per res.Invalidate) now happens inside
+	// reconcile.Resolve (D-053, Wave-B checkpoint) — the single invalidation.
 	respondJSON(w, http.StatusOK, map[string]string{"id": res.ID, "status": res.Status})
 }
 
@@ -248,11 +248,13 @@ func memoryToJSON(m *store.Memory) memoryJSON {
 	}
 }
 
-// invalidateScope bumps the scope's retrieval-cache generation counter so stale
-// results are not served after a rollback or confirm (D-053). No-op when no
-// retriever is wired.
-func (s *Server) invalidateScope(scope identity.Scope) {
+// scopeInvalidator returns the retrieval-cache invalidator the reconcile core
+// uses to bust stale results after a content-changing commit (D-053). It returns
+// an untyped-nil interface when no retriever is wired, so the core's nil check is
+// safe (a typed-nil *ResultCache would panic on use).
+func (s *Server) scopeInvalidator() reconcile.ScopeInvalidator {
 	if s.retriever != nil {
-		s.retriever.Cache().InvalidateScope(scope)
+		return s.retriever.Cache()
 	}
+	return nil
 }

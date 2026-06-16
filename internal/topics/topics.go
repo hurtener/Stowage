@@ -2,6 +2,7 @@ package topics
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"time"
@@ -11,6 +12,13 @@ import (
 	"github.com/hurtener/stowage/internal/identity"
 	"github.com/hurtener/stowage/internal/store"
 )
+
+// ErrInvalidTopic is the sentinel wrapping an Upsert/Delete validation failure
+// (empty key, bad status, empty item set). Surfaces map errors.Is(err,
+// ErrInvalidTopic) to a 400/bad-request response; anything else from the service
+// is a store error (500). Routing all surfaces through the service (D-071,
+// Wave-B checkpoint) means active|paused validation is enforced once, everywhere.
+var ErrInvalidTopic = errors.New("topics: invalid topic")
 
 // TopicView is the API-visible representation of one active topic. Source
 // distinguishes explicit (stored in TopicStore) from pack (virtual — D-043).
@@ -64,19 +72,19 @@ type TopicUpsert struct {
 // is an Upsert of {key: "pack:off"} (D-043). status defaults to "active".
 func (s *Service) Upsert(ctx context.Context, scope identity.Scope, items []TopicUpsert) (int, error) {
 	if len(items) == 0 {
-		return 0, fmt.Errorf("topics: upsert: items must not be empty")
+		return 0, fmt.Errorf("topics: upsert: items must not be empty: %w", ErrInvalidTopic)
 	}
 	now := time.Now().UnixMilli()
 	for i, item := range items {
 		if item.Key == "" {
-			return 0, fmt.Errorf("topics: upsert: item[%d]: key must not be empty", i)
+			return 0, fmt.Errorf("topics: upsert: item[%d]: key must not be empty: %w", i, ErrInvalidTopic)
 		}
 		status := item.Status
 		if status == "" {
 			status = "active"
 		}
 		if status != "active" && status != "paused" {
-			return 0, fmt.Errorf("topics: upsert: item[%d]: status must be active or paused", i)
+			return 0, fmt.Errorf("topics: upsert: item[%d]: status must be active or paused: %w", i, ErrInvalidTopic)
 		}
 		t := store.Topic{
 			ID:          ulid.Make().String(),
@@ -98,7 +106,7 @@ func (s *Service) Upsert(ctx context.Context, scope identity.Scope, items []Topi
 // (wrapped) when the key is absent.
 func (s *Service) Delete(ctx context.Context, scope identity.Scope, key string) error {
 	if key == "" {
-		return fmt.Errorf("topics: delete: key must not be empty")
+		return fmt.Errorf("topics: delete: key must not be empty: %w", ErrInvalidTopic)
 	}
 	if err := s.ts.Delete(ctx, scope, key); err != nil {
 		return fmt.Errorf("topics: delete: %w", err)

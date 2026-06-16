@@ -247,8 +247,9 @@ New terms land here in the same PR that introduces them (CLAUDE.md §14).
   panicking across the API/MCP boundary.
 - **Tiered surface parity** — the placement rule for control/management verbs
   (D-067, D-071): single-user verbs (topic write, buffer flush, branch
-  fork/merge/discard, `memory_assert`) are reachable on {SDK, MCP, HTTP};
-  multi-user/admin verbs (grants/group management, contribute-mode honoring) on
-  {HTTP, MCP} only — never the single-user embedded SDK. `memory_assert` is the
-  one single-user verb deliberately excluded from HTTP (writes stay pipeline-routed
-  there). Each verb has one shared core so the surfaces cannot drift.
+  fork/merge/discard) are reachable on {SDK, MCP, HTTP}; `memory_assert` is the
+  one single-user verb deliberately excluded from HTTP, so it reaches
+  {SDK (embedded), MCP} only (writes stay pipeline-routed on HTTP); multi-user/admin
+  verbs (grants/group management, contribute-mode honoring) reach {HTTP, MCP} only —
+  never the single-user embedded SDK. Each verb has one shared core so the
+  surfaces cannot drift.
