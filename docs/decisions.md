@@ -1348,3 +1348,52 @@ silent grant-gated mis-scope — each closed without new knobs.
 `clampExcerpt` copies in `internal/api` and `internal/mcpserver` (and their
 tests) were removed in favour of the shared `retrieval.ClampExcerpt`; the table
 test moved to `internal/retrieval`.
+
+## D-070 — Reconciliation reversibility (rollback/confirm/reject/get) owned by an exported `internal/reconcile` core
+
+**Status.** Accepted (Phase h3, D-067 Wave B). Pre-reserved by D-067.
+
+**Context.** Reconciliation reversibility (D-017/D-064) and pending-confirmation
+resolution (D-065) are binding single-user capabilities, but the orchestration
+lived entirely inside the Phase 18 HTTP handlers (`internal/api/memories_handler.go`):
+the newest-event inverse walk, the merge all-or-nothing path, the prior-state
+restore, and the 409 conflict guards. The parity lens (`docs/notes/parity-lens-findings.md`,
+Pattern P1) flagged "reconciliation rollback reachable only on the HTTP server
+path" — the embedded SDK and the MCP surface could not roll back or resolve at
+all, and any future re-implementation per surface would drift.
+
+**Decision.**
+1. The reversibility core is owned by `internal/reconcile` (new `rollback.go`):
+   `Rollback(ctx, store, scope, id) (*RollbackResult, error)`,
+   `Resolve(ctx, store, scope, id, ConfirmAction) (*ResolveResult, error)`, and
+   `GetMemory(ctx, store, scope, id) (*MemoryView, error)`, plus typed conflict
+   errors (`ErrAlreadyRolledBack`, `ErrNoPriorState`, `ErrInvalidPriorState`,
+   `ErrDownstreamSupersede`, `ErrIncompleteSnapshots`, `ErrNotParked`) carrying
+   the stable Phase-18 wire codes. The core rides the existing single-transaction
+   `Memories().Commit` unit (D-045) — no new transactional surface.
+2. The capability is reachable identically on **{SDK, MCP, HTTP}** (one core,
+   many thin surfaces — D-067): `internal/api` handlers are thin callers mapping
+   the typed errors to 404/409/200; `sdk/stowage` adds `GetMemory`/`Rollback`/
+   `ResolveMemory` on the `Client` (embedded calls the core on the stack, http
+   calls the existing routes); `internal/mcpserver` adds `memory_get`,
+   `memory_rollback`, `memory_resolve`.
+3. **Behavior-preserving re-homing.** The lift changed no behavior: the Phase 18
+   `internal/api` rollback/confirm/get tests pass UNMODIFIED, and a golden test
+   (`reconcile.TestMarshalPriorState_Golden`) pins the prior-state JSON so the
+   `memory.rolled_back` / `memory.superseded` payloads stay byte-identical. The
+   both-paths-identical bar is proven by `test/integration/reversibility_parity_test.go`
+   (embedded SDK ⇄ HTTP server, real sqlite, ≥1 conflict path, `-race`).
+
+**Surface-count note (against D-015/D-018).** The MCP tool count grows from 7 to
+10 (memory_get, memory_rollback, memory_resolve). Per D-015's small-surface
+discipline these are three single-purpose tools mirroring the HTTP verbs
+(GET / POST rollback / PATCH) rather than one overloaded `memory_admin` tool —
+each maps 1:1 to a core function. Schema goldens added under
+`internal/mcpserver/testdata/`. These are single-user verbs surfaced on the
+embedded SDK (tiered model, D-067); contribute/grant multi-user verbs remain
+HTTP/MCP-only and land in h4 (D-071).
+
+**Consequences.** A reversibility behavior change is now a single-site edit in
+`internal/reconcile`; the three surfaces cannot drift. `MarshalPriorState` stays
+in `reconcile` and now has a matching `parsePriorState` inverse colocated with
+the core that consumes it.

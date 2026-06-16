@@ -9,6 +9,7 @@ import (
 	"github.com/oklog/ulid/v2"
 
 	"github.com/hurtener/stowage/internal/pipeline"
+	"github.com/hurtener/stowage/internal/reconcile"
 	"github.com/hurtener/stowage/internal/records"
 	"github.com/hurtener/stowage/internal/retrieval"
 	"github.com/hurtener/stowage/internal/store"
@@ -460,6 +461,121 @@ func makeAssertHandler(svc *Services) tool.Handler[AssertInput, AssertOutput] {
 		out := AssertOutput{MemoryID: memoryID, Action: in.Action, Status: status}
 		return tool.Result[AssertOutput]{
 			Text:       fmt.Sprintf("Assert %s: memory_id=%s status=%s", in.Action, memoryID, status),
+			Structured: out,
+		}, nil
+	}
+}
+
+// ─── memory_get / memory_rollback / memory_resolve (D-070) ────────────────────
+
+// memoryToRecord maps a store.Memory to the MCP wire record.
+func memoryToRecord(m store.Memory) MemoryRecord {
+	return MemoryRecord{
+		ID:             m.ID,
+		Kind:           m.Kind,
+		Content:        m.Content,
+		Context:        m.Context,
+		Status:         m.Status,
+		Importance:     m.Importance,
+		Confidence:     m.Confidence,
+		TrustSource:    m.TrustSource,
+		MatchCount:     m.MatchCount,
+		InjectCount:    m.InjectCount,
+		UseCount:       m.UseCount,
+		SaveCount:      m.SaveCount,
+		FailCount:      m.FailCount,
+		NoiseCount:     m.NoiseCount,
+		Stability:      m.Stability,
+		ValidFrom:      m.ValidFrom,
+		ValidUntil:     m.ValidUntil,
+		EpisodeID:      m.EpisodeID,
+		SupersedesID:   m.SupersedesID,
+		SupersededByID: m.SupersededByID,
+		PrivacyZone:    m.PrivacyZone,
+		ContentHash:    m.ContentHash,
+		CreatedAt:      m.CreatedAt,
+		UpdatedAt:      m.UpdatedAt,
+	}
+}
+
+func makeGetHandler(svc *Services) tool.Handler[GetInput, GetOutput] {
+	return func(ctx context.Context, in GetInput) (tool.Result[GetOutput], error) {
+		scope, err := svc.ScopeFn(ctx)
+		if err != nil {
+			return tool.Result[GetOutput]{}, fmt.Errorf("memory_get: resolve scope: %w", err)
+		}
+		if in.MemoryID == "" {
+			return tool.Result[GetOutput]{}, fmt.Errorf("memory_get: memory_id must not be empty")
+		}
+		view, err := reconcile.GetMemory(ctx, svc.Store, scope, in.MemoryID)
+		if err != nil {
+			return tool.Result[GetOutput]{}, fmt.Errorf("memory_get: %w", err)
+		}
+		out := GetOutput{
+			Memory:          memoryToRecord(view.Memory),
+			Entities:        view.Entities,
+			Keywords:        view.Keywords,
+			Queries:         view.Queries,
+			SupersedesChain: view.SupersedesChain,
+		}
+		for _, p := range view.Provenance {
+			out.Provenance = append(out.Provenance, MemoryProvRef{
+				RecordID: p.RecordID, SpanStart: p.SpanStart, SpanEnd: p.SpanEnd,
+			})
+		}
+		return tool.Result[GetOutput]{
+			Text:       fmt.Sprintf("Memory %s (%s)", out.Memory.ID, out.Memory.Status),
+			Structured: out,
+		}, nil
+	}
+}
+
+func makeRollbackHandler(svc *Services) tool.Handler[RollbackInput, RollbackOutput] {
+	return func(ctx context.Context, in RollbackInput) (tool.Result[RollbackOutput], error) {
+		scope, err := svc.ScopeFn(ctx)
+		if err != nil {
+			return tool.Result[RollbackOutput]{}, fmt.Errorf("memory_rollback: resolve scope: %w", err)
+		}
+		if in.MemoryID == "" {
+			return tool.Result[RollbackOutput]{}, fmt.Errorf("memory_rollback: memory_id must not be empty")
+		}
+		res, err := reconcile.Rollback(ctx, svc.Store, scope, in.MemoryID)
+		if err != nil {
+			return tool.Result[RollbackOutput]{}, fmt.Errorf("memory_rollback: %w", err)
+		}
+		var rec MemoryRecord
+		if res.Memory != nil {
+			rec = memoryToRecord(*res.Memory)
+		} else {
+			rec = MemoryRecord{ID: res.ID}
+		}
+		out := RollbackOutput{Memory: rec}
+		return tool.Result[RollbackOutput]{
+			Text:       fmt.Sprintf("Rolled back memory %s (restored status=%s)", rec.ID, rec.Status),
+			Structured: out,
+		}, nil
+	}
+}
+
+func makeResolveHandler(svc *Services) tool.Handler[ResolveInput, ResolveOutput] {
+	return func(ctx context.Context, in ResolveInput) (tool.Result[ResolveOutput], error) {
+		scope, err := svc.ScopeFn(ctx)
+		if err != nil {
+			return tool.Result[ResolveOutput]{}, fmt.Errorf("memory_resolve: resolve scope: %w", err)
+		}
+		if in.MemoryID == "" {
+			return tool.Result[ResolveOutput]{}, fmt.Errorf("memory_resolve: memory_id must not be empty")
+		}
+		if in.Action != "confirm" && in.Action != "reject" {
+			return tool.Result[ResolveOutput]{}, fmt.Errorf("memory_resolve: action must be confirm or reject")
+		}
+		res, err := reconcile.Resolve(ctx, svc.Store, scope, in.MemoryID, reconcile.ConfirmAction(in.Action))
+		if err != nil {
+			return tool.Result[ResolveOutput]{}, fmt.Errorf("memory_resolve: %w", err)
+		}
+		out := ResolveOutput{ID: res.ID, Status: res.Status}
+		return tool.Result[ResolveOutput]{
+			Text:       fmt.Sprintf("Resolved memory %s via %s → %s", res.ID, in.Action, res.Status),
 			Structured: out,
 		}, nil
 	}

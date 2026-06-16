@@ -1,7 +1,9 @@
 // Package mcpserver implements the Stowage MCP tool surface over the Dockyard
 // runtime library (RFC §9.2, D-015, D-018, D-020, D-061).
 //
-// Seven typed tools mirror the seven HTTP v1 surfaces. Tool handlers share the
+// Ten typed tools mirror the HTTP v1 surfaces (the original seven plus the
+// D-070 reversibility trio: memory_get, memory_rollback, memory_resolve). Tool
+// handlers share the
 // same store/service code the HTTP handlers use — no business logic is
 // duplicated (AC-3). Schema goldens in testdata/ are the contract gate (D-061).
 package mcpserver
@@ -206,4 +208,86 @@ type TopicsOutput struct {
 	Topics   []TopicView `json:"topics,omitempty"`
 	Upserted int         `json:"upserted,omitempty"`
 	Deleted  string      `json:"deleted,omitempty"`
+}
+
+// ─── memory reversibility tools (D-070) ───────────────────────────────────────
+
+// MemoryRecord mirrors the HTTP memoryJSON / SDK Memory wire shape. Returned by
+// memory_get and memory_rollback.
+type MemoryRecord struct {
+	ID             string  `json:"id"`
+	Kind           string  `json:"kind"`
+	Content        string  `json:"content"`
+	Context        string  `json:"context,omitempty"`
+	Status         string  `json:"status"`
+	Importance     int     `json:"importance"`
+	Confidence     float64 `json:"confidence"`
+	TrustSource    string  `json:"trust_source"`
+	MatchCount     int64   `json:"match_count"`
+	InjectCount    int64   `json:"inject_count"`
+	UseCount       int64   `json:"use_count"`
+	SaveCount      int64   `json:"save_count"`
+	FailCount      int64   `json:"fail_count,omitempty"`
+	NoiseCount     int64   `json:"noise_count,omitempty"`
+	Stability      float64 `json:"stability"`
+	ValidFrom      int64   `json:"valid_from,omitempty"`
+	ValidUntil     int64   `json:"valid_until,omitempty"`
+	EpisodeID      string  `json:"episode_id,omitempty"`
+	SupersedesID   string  `json:"supersedes_id,omitempty"`
+	SupersededByID string  `json:"superseded_by_id,omitempty"`
+	PrivacyZone    string  `json:"privacy_zone,omitempty"`
+	ContentHash    string  `json:"content_hash,omitempty"`
+	CreatedAt      int64   `json:"created_at"`
+	UpdatedAt      int64   `json:"updated_at"`
+}
+
+// MemoryProvRef is a compact provenance reference in memory_get output.
+type MemoryProvRef struct {
+	RecordID  string `json:"record_id"`
+	SpanStart int    `json:"span_start,omitempty"`
+	SpanEnd   int    `json:"span_end,omitempty"`
+}
+
+// ─── memory_get ───────────────────────────────────────────────────────────────
+
+// GetInput is the memory_get tool input (mirrors HTTP GET /v1/memories/{id}).
+type GetInput struct {
+	MemoryID string `json:"memory_id"`
+}
+
+// GetOutput is the memory_get tool output.
+type GetOutput struct {
+	Memory          MemoryRecord    `json:"memory"`
+	Entities        []string        `json:"entities"`
+	Keywords        []string        `json:"keywords"`
+	Queries         []string        `json:"queries"`
+	Provenance      []MemoryProvRef `json:"provenance,omitempty"`
+	SupersedesChain []string        `json:"supersedes_chain,omitempty"`
+}
+
+// ─── memory_rollback ──────────────────────────────────────────────────────────
+
+// RollbackInput is the memory_rollback tool input (mirrors POST /v1/memories/{id}/rollback).
+type RollbackInput struct {
+	MemoryID string `json:"memory_id"`
+}
+
+// RollbackOutput is the memory_rollback tool output: the restored memory.
+type RollbackOutput struct {
+	Memory MemoryRecord `json:"memory"`
+}
+
+// ─── memory_resolve ───────────────────────────────────────────────────────────
+
+// ResolveInput is the memory_resolve tool input (mirrors PATCH /v1/memories/{id}).
+// Action must be "confirm" or "reject".
+type ResolveInput struct {
+	MemoryID string `json:"memory_id"`
+	Action   string `json:"action"`
+}
+
+// ResolveOutput is the memory_resolve tool output.
+type ResolveOutput struct {
+	ID     string `json:"id"`
+	Status string `json:"status"`
 }

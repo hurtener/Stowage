@@ -83,6 +83,18 @@ func (f *fakeClient) Playbook(_ context.Context, _ stowage.PlaybookRequest) (sto
 	return stowage.PlaybookResponse{Entries: []any{}, Stub: true}, nil
 }
 
+func (f *fakeClient) GetMemory(_ context.Context, id string) (stowage.GetMemoryResponse, error) {
+	return stowage.GetMemoryResponse{Memory: stowage.Memory{ID: id}}, nil
+}
+
+func (f *fakeClient) Rollback(_ context.Context, req stowage.RollbackRequest) (stowage.Memory, error) {
+	return stowage.Memory{ID: req.MemoryID}, nil
+}
+
+func (f *fakeClient) ResolveMemory(_ context.Context, req stowage.ResolveRequest) (stowage.ResolveResponse, error) {
+	return stowage.ResolveResponse{ID: req.MemoryID, Status: "active"}, nil
+}
+
 // ── Fake Harbor EventBus ─────────────────────────────────────────────────────
 
 // fakeSub is a simple in-memory subscription.

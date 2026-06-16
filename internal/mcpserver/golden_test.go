@@ -98,6 +98,39 @@ func buildSchemas(name string) (inJSON, outJSON []byte, err error) {
 			return nil, nil, err
 		}
 		outJSON, err = marshal(out)
+
+	case "memory_get":
+		b := tool.New[mcpserver.GetInput, mcpserver.GetOutput](name)
+		in, out, e := b.Schemas()
+		if e != nil {
+			return nil, nil, e
+		}
+		if inJSON, err = marshal(in); err != nil {
+			return nil, nil, err
+		}
+		outJSON, err = marshal(out)
+
+	case "memory_rollback":
+		b := tool.New[mcpserver.RollbackInput, mcpserver.RollbackOutput](name)
+		in, out, e := b.Schemas()
+		if e != nil {
+			return nil, nil, e
+		}
+		if inJSON, err = marshal(in); err != nil {
+			return nil, nil, err
+		}
+		outJSON, err = marshal(out)
+
+	case "memory_resolve":
+		b := tool.New[mcpserver.ResolveInput, mcpserver.ResolveOutput](name)
+		in, out, e := b.Schemas()
+		if e != nil {
+			return nil, nil, e
+		}
+		if inJSON, err = marshal(in); err != nil {
+			return nil, nil, err
+		}
+		outJSON, err = marshal(out)
 	}
 
 	return inJSON, outJSON, err
@@ -118,6 +151,9 @@ func TestSchemaGoldens(t *testing.T) {
 		"memory_feedback",
 		"memory_assert",
 		"memory_topics",
+		"memory_get",
+		"memory_rollback",
+		"memory_resolve",
 	}
 
 	for _, name := range tools {
