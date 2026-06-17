@@ -1796,3 +1796,52 @@ cross-encoder actually runs. Rerank stays **OFF** for the deterministic mock CI
 run (the toggle defaults off and CI never sets `STOWAGE_EVAL_GATEWAY`), so the
 committed CI baseline (`make eval-ci`) is unaffected. A fresh full-mode run on the
 new config is operator-run (needs `OPENROUTER_API_KEY`, not CI).
+
+## D-076 — Roadmap recut to v0.1 (launch after 27 + hardening); Phase 20 judged QA pulled ahead of Phase 19
+
+2026-06-17. Owner directive (supersedes the launch-scope framing of **D-033**;
+RFC §12/§15 amended in the same PR).
+
+**Launch scope.** v0.1 launches after **phases 01–27 + a terminal hardening
+gate**, not at Phase 21. The capabilities D-033 deferred to post-launch tracks —
+episodic & temporal (22–24), trust extensions (25–26), proactive (27) — are pulled
+**into** the v0.1 launch scope. The hardening & launch work (former Phase 21
+content: security pass, external docs, cross-compile matrix + checksums, public-repo
+audit, five-minute-rule smoke) runs **last, after Phase 27**, as the terminal v0.1
+gate. D-033's structural insight stands: the day-one schema (§5.0/D-024) already
+captures these features' unbackfillable signals, so folding them in costs nothing
+structurally — only sequencing changed. Phase *numbers* are kept as stable
+identifiers (no file renumber); the track framing in `docs/plans/README.md` is
+reframed accordingly. (Open item flagged for owner review: physical renumber vs
+stable-identifier reframing — this plan chose stable identifiers.)
+
+**Phase 20 before Phase 19.** Phase 20 (judged eval + competitor table) is pulled
+**ahead of** Phase 19 (reflection write-side): the judged headline number does not
+depend on reflection. Evidence — the last n=10 full run scored
+`answer_context_hit=0/10` while retrieval was excellent (right memory at rank 1
+nearly every question); every miss was a metric artifact (paraphrase, number form,
+or an answer needing a reasoning/aggregation step a reader supplies). The
+reader+judge is exactly what credits these.
+
+**The judged-QA metric.** `answer_quality` = (correct + ½·partial)/N, produced by an
+**opt-in, full-mode-only** path: a reader LLM answers from Stowage's retrieved
+context; an LLM judge grades the answer vs the gold answer semantically. The judge
+call is **JSON-schema-constrained through the gateway seam** (§10 — free-text JSON
+parsing of model output is forbidden; P5 — no provider SDK under `eval/`).
+`answer_quality` is the competitor-comparable launch figure, run on the
+`longmemeval_s` distractor haystack. The retrieval-only `answer_context_hit`
+(deterministic, now normalized for number-word + either-direction matches) stays the
+**CI gate metric** — LLM-free, never a paid call in CI; `make eval-ci` stays
+deterministic. The judged number is operator-run (needs `OPENROUTER_API_KEY`).
+
+**The reflection-dependent slice is carved out as Phase 20b.** The RFC §12 items
+that consume the reflection→playbook loop — the Harbor-fleet **gain harness**
+(memory-on vs off delta) and the **online-adaptation (ACE) scenarios** — are split
+out of Phase 20 and run **after Phase 19** ships reflection. Phase 20 proper is the
+reflection-independent core (judged QA + public suite + competitor table).
+
+Consequences: `docs/plans/phase-20-eval-finalization.md` is authored for the Phase
+20 core; Phase 19's reflection write-side remains next in roadmap order after Phase
+20; Phase 20b is a named follow-up gated on Phase 19; the eval report
+(`eval/REPORT.md`) with the judged `answer_quality` + competitor table remains the
+open-source launch gate (D-023/D-035), now shipping at the v0.1 (01–27) boundary.

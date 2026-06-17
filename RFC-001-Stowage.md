@@ -906,6 +906,18 @@ published benchmarks loses by default — mempalace's benchmark-led positioning
   competitors' published figures. Targets: SOTA or top-tier on each (D-023;
   reference points: mempalace publishes 98.4 % R@5 LongMemEval hybrid,
   88.9 % R@10 LoCoMo).
+  - **The judged-QA metric (the comparable axis).** Competitors' published
+    LongMemEval accuracy is *end-to-end QA*: a reader LLM answers from retrieved
+    context and an LLM judge grades the answer against the gold answer
+    semantically. Stowage's harness ships this as an **opt-in, full-mode-only**
+    path emitting `answer_quality` (correct + ½·partial / N); the judge call is
+    JSON-schema-constrained through the gateway seam (§10 — no free-text JSON
+    parsing of model output), so the comparison is like-for-like. The
+    retrieval-only `answer_context_hit` (deterministic, normalized for number-word
+    and either-direction matches) remains the CI gate metric (LLM-free, never a
+    paid call in CI). The judged number is produced by an operator run on the
+    `longmemeval_s` distractor haystack and is the headline launch figure
+    (Phase 20).
 - **Gain harness** (CL-Bench-inspired): scripted multi-session scenarios run
   twice — memory on vs. off — with a Harbor fleet as the agent loop (§10);
   reports the performance delta. Negative gain on the standard scenarios fails
@@ -959,29 +971,31 @@ published the same day as the code.
 
 ## 15. Phasing
 
-See `docs/plans/README.md`. The plan is split into a **launch track** and
-**post-launch tracks** (D-033 — the adversarial scope cut): launch contains
-every differentiator and the proof; the post-launch tracks contain capabilities
-whose unbackfillable signals are already captured by the day-one schema
-(§5.0), so deferring the features costs nothing structurally.
+See `docs/plans/README.md`. The plan was originally split into a **launch
+track** and **post-launch tracks** (D-033 — the adversarial scope cut). The
+**D-076 recut (2026-06-17)** folds the post-launch tracks into the launch
+scope: **launch = v0.1 = phases 01–27 + a terminal hardening gate** (the former
+Phase 21 content runs last, after Phase 27). The day-one schema (§5.0) is what
+makes this cheap — the deferred features' unbackfillable signals were captured
+from the first build regardless of when the features ship.
 
-**Launch track (v1.0):** W1 foundation (scaffold/CI; config + identity +
+**Launch track (v0.1):** W1 foundation (scaffold/CI; config + identity +
 runtime keys + profiles; the full day-one schema; gateway + bifrost), W2 write
 path (records/outcomes/branches, buffers, topic extraction incl. preference
 fragments, reconciliation + links), W3 read path (lanes + fusion + temporal
 filters, scoring + support summary, injections + feedback + citation handles +
 resolve, rerank + hot–warm cache + SLO + offline degradation), **W4 proof
 (the eval harness — benchmark gate in CI from here on)**, W5 lifecycle &
-sharing (sweeps, supersede + rollback, grants), W6 surfaces & launch (MCP on
-Dockyard, SDKs + zero-config wiring + embedded mode, reflection + playbooks,
-eval finalization + competitor report, hardening + release).
+sharing (sweeps, supersede + rollback, grants), W6 surfaces (MCP on Dockyard,
+SDKs + zero-config wiring + embedded mode, reflection + playbooks, eval
+finalization + competitor report incl. the judged-QA number), and — folded in
+by D-076 — episodic & temporal (episodes + narratives, episodic retrieval +
+aggregation, causal-link inference), trust extensions (claim verification,
+review queue, reasoning-trace export + audit hooks), and proactive (trigger
+engine + governance + tuning), then the **terminal hardening + release gate**.
 
-**Post-launch tracks:** v1.1 episodic & temporal (episodes + narratives,
-episodic retrieval + aggregation, causal-link inference); v1.2 trust
-extensions (claim verification, review queue, reasoning-trace export + audit
-hooks); v1.3 proactive (trigger engine + governance + tuning); backlog
-(temporal pattern mining, Stowage Console MCP App, managed-cloud control
-plane).
+**Backlog (no phase until pulled):** temporal pattern mining, Stowage Console
+MCP App, managed-cloud control plane.
 
 ---
 
