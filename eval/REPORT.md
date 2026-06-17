@@ -174,7 +174,8 @@ needs `OPENROUTER_API_KEY` — not CI):
 |---|---|
 | `STOWAGE_EVAL_GATEWAY` | `bifrost` |
 | `STOWAGE_EVAL_PROVIDER` | `openrouter` |
-| `STOWAGE_EVAL_BASE_URL` | `https://openrouter.ai/api/v1` |
+| `STOWAGE_EVAL_BASE_URL` (embed/complete) | `https://openrouter.ai/api` |
+| `STOWAGE_EVAL_RERANK_BASE_URL` (custom rerank provider) | `https://openrouter.ai/api/v1` |
 | `STOWAGE_EVAL_MODEL` (memory formation) | `inception/mercury-2` |
 | `STOWAGE_EVAL_EMBED_MODEL` / `STOWAGE_EVAL_EMBED_DIMS` | `perplexity/pplx-embed-v1-0.6b` / `1024` |
 | `STOWAGE_EVAL_RERANK_MODEL` | `cohere/rerank-4-fast` |

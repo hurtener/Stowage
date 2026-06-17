@@ -32,7 +32,14 @@ import (
 	"github.com/hurtener/stowage/internal/gateway"
 )
 
-const liveOpenRouterBase = "https://openrouter.ai/api/v1"
+// Bifrost's OpenRouter provider appends "/v1/…" to its base, so embed/complete
+// use ".../api"; the auto-wired Cohere-shape rerank provider appends the "/rerank"
+// path override, so it uses ".../api/v1" (→ /api/v1/rerank). These genuinely
+// differ — hence the separate rerank base (D-075).
+const (
+	liveOpenRouterBase       = "https://openrouter.ai/api"
+	liveOpenRouterRerankBase = "https://openrouter.ai/api/v1"
+)
 
 // liveKeyRef skips the test unless OPENROUTER_API_KEY is set, returning the
 // env.* reference the driver resolves (the key VALUE is never inlined).
@@ -115,14 +122,15 @@ func TestLiveBifrost_Rerank(t *testing.T) {
 	keyRef := liveKeyRef(t)
 
 	cfg := config.GatewayConfig{
-		Driver:      "bifrost",
-		Provider:    "openrouter",
-		BaseURL:     liveOpenRouterBase,
-		APIKey:      keyRef,
-		Model:       "inception/mercury-2",
-		EmbedModel:  liveEmbedModel(),
-		EmbedDims:   liveEmbedDims(),
-		RerankModel: liveRerankModel(),
+		Driver:        "bifrost",
+		Provider:      "openrouter",
+		BaseURL:       liveOpenRouterBase,
+		RerankBaseURL: liveOpenRouterRerankBase,
+		APIKey:        keyRef,
+		Model:         "inception/mercury-2",
+		EmbedModel:    liveEmbedModel(),
+		EmbedDims:     liveEmbedDims(),
+		RerankModel:   liveRerankModel(),
 	}
 	gw, err := gateway.Open(context.Background(), cfg, discardLog(), prometheus.NewRegistry())
 	if err != nil {

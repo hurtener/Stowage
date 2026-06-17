@@ -27,8 +27,14 @@ import (
 // (D-075): bifrost auto-wires a Cohere-shape custom provider so a single gateway
 // runs embed + complete + rerank on OpenRouter with one key.
 //
+// NOTE on base URLs (bifrost+openrouter): bifrost's OpenRouter provider appends
+// "/v1/…" to its base, so embed/complete use BASE_URL=.../api; the auto-wired
+// Cohere-shape rerank provider appends "/rerank", so it uses
+// RERANK_BASE_URL=.../api/v1 (→ /api/v1/rerank). They differ — set both.
+//
 //	STOWAGE_EVAL_GATEWAY=bifrost STOWAGE_EVAL_PROVIDER=openrouter \
-//	STOWAGE_EVAL_BASE_URL=https://openrouter.ai/api/v1 \
+//	STOWAGE_EVAL_BASE_URL=https://openrouter.ai/api \
+//	STOWAGE_EVAL_RERANK_BASE_URL=https://openrouter.ai/api/v1 \
 //	STOWAGE_EVAL_API_KEY_REF=env.OPENROUTER_API_KEY \
 //	STOWAGE_EVAL_MODEL=inception/mercury-2 \
 //	STOWAGE_EVAL_EMBED_MODEL=perplexity/pplx-embed-v1-0.6b STOWAGE_EVAL_EMBED_DIMS=1024 \

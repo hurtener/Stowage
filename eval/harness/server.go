@@ -119,7 +119,8 @@ func NewTestServer(t testing.TB, tenantID string) *TestServer {
 		cfg.Gateway.Driver = d
 		cfg.Gateway.Provider = os.Getenv("STOWAGE_EVAL_PROVIDER") // bifrost: required (D-049/D-075)
 		cfg.Gateway.BaseURL = os.Getenv("STOWAGE_EVAL_BASE_URL")
-		cfg.Gateway.APIKey = os.Getenv("STOWAGE_EVAL_API_KEY_REF") // env.VAR form
+		cfg.Gateway.RerankBaseURL = os.Getenv("STOWAGE_EVAL_RERANK_BASE_URL") // bifrost+openrouter: .../api/v1 (custom rerank provider), distinct from base_url .../api (D-075)
+		cfg.Gateway.APIKey = os.Getenv("STOWAGE_EVAL_API_KEY_REF")            // env.VAR form
 		cfg.Gateway.Model = os.Getenv("STOWAGE_EVAL_MODEL")
 		cfg.Gateway.EmbedModel = os.Getenv("STOWAGE_EVAL_EMBED_MODEL")
 		cfg.Gateway.RerankModel = os.Getenv("STOWAGE_EVAL_RERANK_MODEL") // empty → no rerank pass
