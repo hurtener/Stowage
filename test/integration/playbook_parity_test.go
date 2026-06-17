@@ -70,6 +70,21 @@ func seedPlaybookMemories(t *testing.T, cfg config.Config) {
 			t.Fatalf("seed insert %s: %v", s.id, err)
 		}
 	}
+
+	// Seed a provenance row on the top-ranked memory so the cross-surface parity
+	// comparison exercises the nested provenance array — the field most likely to
+	// drift across the three independently-declared wire structs (Wave-C
+	// checkpoint WARN). Provenance has a FK to records, so append the record first.
+	if err := st.Records().Append(ctx, scope, []store.Record{
+		{ID: "01RECAAAAAAAAAAAAAAAAAAAAA", Role: "user", Content: "Always write a failing test first.", OccurredAt: 1_000_000, CreatedAt: 1_000_000},
+	}); err != nil {
+		t.Fatalf("seed record: %v", err)
+	}
+	if err := st.Memories().AddProvenance(ctx, scope, []store.Provenance{
+		{ID: "01PROVAAAAAAAAAAAAAAAAAAAA", MemoryID: "01AAAAAAAAAAAAAAAAAAAAAAAA", RecordID: "01RECAAAAAAAAAAAAAAAAAAAAA", SpanStart: 0, SpanEnd: 7, TenantID: scope.Tenant, CreatedAt: 1_000_000},
+	}); err != nil {
+		t.Fatalf("seed provenance: %v", err)
+	}
 }
 
 // playbookConfig returns a shared-DSN config with a fixed profile so every leg

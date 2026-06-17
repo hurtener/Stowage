@@ -174,6 +174,34 @@ func TestAssembleBudgetNeverExceeded(t *testing.T) {
 	}
 }
 
+// TestAssembleSingleItemOverBudget pins the AC-4b edge the prompt called out: a
+// single item whose token cost exceeds the WHOLE budget is skipped (not packed),
+// so the budget is never exceeded and nothing is emitted (Wave-C checkpoint NIT).
+func TestAssembleSingleItemOverBudget(t *testing.T) {
+	st, cleanup := newTestStore(t)
+	defer cleanup()
+	scope := tenant("overbudget")
+	ctx := context.Background()
+
+	// ~200 chars ⇒ ~50 tokens, far above the 5-token budget.
+	big := strings.Repeat("abcd ", 40)
+	insertMem(t, st, scope, "01AAAAAAAAAAAAAAAAAAAAAAAA", "strategy", big, 10, 0, 0)
+
+	pb, err := playbook.Assemble(ctx, st, scope, playbook.Options{TokenBudget: 5})
+	if err != nil {
+		t.Fatalf("assemble: %v", err)
+	}
+	if pb.Budget.ItemsPacked != 0 {
+		t.Errorf("ItemsPacked = %d, want 0 (single item exceeds the whole budget)", pb.Budget.ItemsPacked)
+	}
+	if pb.Budget.TokensUsed != 0 {
+		t.Errorf("TokensUsed = %d, want 0", pb.Budget.TokensUsed)
+	}
+	if pb.Budget.TokensUsed > 5 {
+		t.Errorf("budget exceeded: used=%d budget=5", pb.Budget.TokensUsed)
+	}
+}
+
 // TestAssembleEmptyScope proves AC-4b's empty clause + the default-budget path.
 func TestAssembleEmptyScope(t *testing.T) {
 	st, cleanup := newTestStore(t)

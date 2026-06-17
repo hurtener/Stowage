@@ -4,11 +4,40 @@ import (
 	"go/parser"
 	"go/token"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
 )
+
+// TestPlaybookNoGatewayImport_Transitive hardens the §6 LLM-free guarantee
+// against an INDIRECT gateway pull (Wave-C checkpoint WARN): the AST check above
+// only sees direct imports, so a future `import ".../internal/retrieval"` (which
+// itself imports the gateway) would slip past it. This walks the full transitive
+// dependency graph via `go list -deps` and fails if ANY dependency is a gateway
+// package. CLAUDE.md §6 — playbook assembly must never reach the intelligence seam.
+func TestPlaybookNoGatewayImport_Transitive(t *testing.T) {
+	t.Parallel()
+	_, filename, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("runtime.Caller failed")
+	}
+	pkgDir := filepath.Dir(filename)
+
+	cmd := exec.Command("go", "list", "-deps", ".")
+	cmd.Dir = pkgDir
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("go list -deps: %v", err)
+	}
+	const gatewayPrefix = "github.com/hurtener/stowage/internal/gateway"
+	for _, dep := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		if strings.HasPrefix(strings.TrimSpace(dep), gatewayPrefix) {
+			t.Errorf("internal/playbook transitively depends on forbidden gateway package %q (CLAUDE.md §6 — playbook assembly is LLM-free)", dep)
+		}
+	}
+}
 
 // TestPlaybookNoGatewayImport is the CLAUDE.md §6 LLM-free lint for this package
 // (AC-1). It parses every non-test .go file in internal/playbook and fails if any
