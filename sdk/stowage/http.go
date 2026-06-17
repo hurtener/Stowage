@@ -219,9 +219,18 @@ func (c *httpClient) Topics(ctx context.Context) (TopicsResponse, error) {
 	return TopicsResponse{Topics: raw.Topics}, nil
 }
 
-// Playbook implements Client. Returns a stub in Phase 17.
-func (c *httpClient) Playbook(_ context.Context, _ PlaybookRequest) (PlaybookResponse, error) {
-	return PlaybookResponse{Entries: []any{}, Stub: true}, nil
+// Playbook implements Client via GET /v1/playbook (D-072). SessionID, when set,
+// is passed as the ?session_id= query param for session-affinity.
+func (c *httpClient) Playbook(ctx context.Context, req PlaybookRequest) (PlaybookResponse, error) {
+	path := "/v1/playbook"
+	if req.SessionID != "" {
+		path += "?session_id=" + url.QueryEscape(req.SessionID)
+	}
+	var resp PlaybookResponse
+	if err := c.do(ctx, http.MethodGet, path, nil, &resp); err != nil {
+		return PlaybookResponse{}, err
+	}
+	return resp, nil
 }
 
 // GetMemory implements Client via GET /v1/memories/{id} (D-070).
@@ -356,10 +365,6 @@ func (c *httpClient) DiscardBranch(ctx context.Context, branchID string) (Branch
 func (c *httpClient) Assert(_ context.Context, _ AssertRequest) (AssertResponse, error) {
 	return AssertResponse{}, ErrAssertHTTPUnsupported
 }
-
-// ErrPlaybookStub is returned by Playbook implementations while the
-// full playbook assembly is pending a future phase.
-var ErrPlaybookStub = errors.New("sdk: playbook is a stub in Phase 17; full assembly lands later")
 
 // ErrAssertHTTPUnsupported is returned by the HTTP client's Assert: memory_assert
 // is intentionally not exposed over HTTP (Tier A = {SDK, MCP} only; D-071).

@@ -108,17 +108,51 @@ type RetrieveOutput struct {
 	API            string          `json:"api"`
 }
 
-// ─── memory_playbook ─────────────────────────────────────────────────────────
+// ─── memory_playbook (D-072) ───────────────────────────────────────────────────
 
-// PlaybookInput is the memory_playbook tool input.
+// PlaybookInput is the memory_playbook tool input. SessionID, when set, narrows
+// assembly to a single session (session-affinity). The token budget is
+// profile-internal (D-034/D-042) — there is no client-supplied limit.
 type PlaybookInput struct {
-	Query string `json:"query"`
+	SessionID string `json:"session_id,omitempty"`
 }
 
-// PlaybookOutput is the memory_playbook tool output.
-// This tool is a stub placeholder for Phase 17.
+// PlaybookProvRef is a compact provenance span reference for P1 drill-down.
+type PlaybookProvRef struct {
+	RecordID  string `json:"record_id"`
+	SpanStart int    `json:"span_start,omitempty"`
+	SpanEnd   int    `json:"span_end,omitempty"`
+}
+
+// PlaybookItem is one ranked memory in a playbook section.
+type PlaybookItem struct {
+	MemoryID   string            `json:"memory_id"`
+	Kind       string            `json:"kind"`
+	Content    string            `json:"content"`
+	Score      float64           `json:"score"`
+	Provenance []PlaybookProvRef `json:"provenance,omitempty"`
+}
+
+// PlaybookSection groups the packed items of a single kind.
+type PlaybookSection struct {
+	Title string         `json:"title"`
+	Kind  string         `json:"kind"`
+	Items []PlaybookItem `json:"items"`
+}
+
+// PlaybookBudget reports how the token budget was spent.
+type PlaybookBudget struct {
+	TokenBudget int `json:"token_budget"`
+	TokensUsed  int `json:"tokens_used"`
+	ItemsTotal  int `json:"items_total"`
+	ItemsPacked int `json:"items_packed"`
+}
+
+// PlaybookOutput is the memory_playbook tool output: the deterministic,
+// sectioned, utility-ranked, budget-packed playbook (RFC §6a.3, D-072).
 type PlaybookOutput struct {
-	Error string `json:"error"`
+	Sections []PlaybookSection `json:"sections"`
+	Budget   PlaybookBudget    `json:"budget"`
 }
 
 // ─── memory_drilldown ────────────────────────────────────────────────────────

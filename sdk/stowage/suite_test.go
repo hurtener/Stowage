@@ -24,7 +24,7 @@ import (
 //  4. Feedback: response_id signal → applied ≥ 0
 //  5. Drilldown (citation): invalid citation → error, not panic
 //  6. ResolveCitations: unknown citation → found:false, no error
-//  7. Playbook: always returns stub in Phase 17
+//  7. Playbook: real assembly (D-072) — non-error response with a populated budget
 func RunSuite(t *testing.T, client stowage.Client) {
 	t.Helper()
 	ctx := context.Background()
@@ -155,14 +155,18 @@ func RunSuite(t *testing.T, client stowage.Client) {
 	})
 
 	// ── 7. Playbook ────────────────────────────────────────────────────────
-	t.Run("playbook_stub", func(t *testing.T) {
+	t.Run("playbook_real", func(t *testing.T) {
 		t.Parallel()
+		// Real assembly (D-072): a non-error response with a budget. The scope
+		// may have no playbook-kind memories under the suite's fixtures, so we
+		// assert shape, not non-empty sections. The default-profile budget is
+		// always populated.
 		resp, err := client.Playbook(ctx, stowage.PlaybookRequest{})
 		if err != nil {
 			t.Fatalf("Playbook error: %v", err)
 		}
-		if !resp.Stub {
-			t.Error("Playbook: expected Stub:true in Phase 17")
+		if resp.Budget.TokenBudget <= 0 {
+			t.Errorf("Playbook: budget not populated: %+v", resp.Budget)
 		}
 	})
 

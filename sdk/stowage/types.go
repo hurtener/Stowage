@@ -343,17 +343,50 @@ type ResolveResponse struct {
 	Status string `json:"status"`
 }
 
-// ---- Playbook types ---------------------------------------------------------
+// ---- Playbook types (D-072) -------------------------------------------------
 
-// PlaybookRequest is the request for Playbook. Stub in Phase 17.
+// PlaybookRequest is the request for Playbook. SessionID, when set, narrows
+// assembly to a single session (session-affinity). The token budget is
+// profile-internal (D-034/D-042) — there is no client-supplied limit.
 type PlaybookRequest struct {
 	SessionID string `json:"session_id,omitempty"`
-	Limit     int    `json:"limit,omitempty"`
 }
 
-// PlaybookResponse is the response from Playbook. Stub in Phase 17.
+// PlaybookProvenanceRef is a compact provenance span reference for P1 drill-down.
+type PlaybookProvenanceRef struct {
+	RecordID  string `json:"record_id"`
+	SpanStart int    `json:"span_start,omitempty"`
+	SpanEnd   int    `json:"span_end,omitempty"`
+}
+
+// PlaybookItem is one ranked memory in a playbook section.
+type PlaybookItem struct {
+	MemoryID   string                  `json:"memory_id"`
+	Kind       string                  `json:"kind"`
+	Content    string                  `json:"content"`
+	Score      float64                 `json:"score"`
+	Provenance []PlaybookProvenanceRef `json:"provenance,omitempty"`
+}
+
+// PlaybookSection groups the packed items of a single kind.
+type PlaybookSection struct {
+	Title string         `json:"title"`
+	Kind  string         `json:"kind"`
+	Items []PlaybookItem `json:"items"`
+}
+
+// PlaybookBudget reports how the token budget was spent.
+type PlaybookBudget struct {
+	TokenBudget int `json:"token_budget"`
+	TokensUsed  int `json:"tokens_used"`
+	ItemsTotal  int `json:"items_total"`
+	ItemsPacked int `json:"items_packed"`
+}
+
+// PlaybookResponse is the response from Playbook: the deterministic, sectioned,
+// utility-ranked, budget-packed view over the scope's strategy/failure_mode/
+// building-block memories (RFC §6a.3, D-072).
 type PlaybookResponse struct {
-	// Entries will be populated in a future phase.
-	Entries []any `json:"entries"`
-	Stub    bool  `json:"stub"` // true in Phase 17 — full assembly lands later
+	Sections []PlaybookSection `json:"sections"`
+	Budget   PlaybookBudget    `json:"budget"`
 }

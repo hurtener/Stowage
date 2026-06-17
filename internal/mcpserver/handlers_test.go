@@ -345,35 +345,48 @@ func TestHandlerRetrieve_WithSessionAndProfile(t *testing.T) {
 
 // ── memory_playbook ───────────────────────────────────────────────────────────
 
-func TestHandlerPlaybook_Stub(t *testing.T) {
+func TestHandlerPlaybook_Real(t *testing.T) {
 	svc := newHandlerServices(t)
+	svc.Profile = "assistant"
 	h := makePlaybookHandler(svc)
 	ctx := context.Background()
+	scope := testScope()
 
-	result, err := h(ctx, PlaybookInput{Query: "anything"})
+	// Seed an active strategy memory; assembly must surface it (no stub).
+	if err := svc.Store.Memories().Insert(ctx, scope, store.Memory{
+		ID: ulid.Make().String(), Kind: "strategy", Content: "Write tests first.",
+		Status: "active", Importance: 3, Confidence: 0.9, TrustSource: "llm_extracted",
+		Stability: 1.0, UseCount: 5, CreatedAt: 1, UpdatedAt: 1,
+	}); err != nil {
+		t.Fatalf("seed memory: %v", err)
+	}
+
+	result, err := h(ctx, PlaybookInput{})
 	if err != nil {
 		t.Fatalf("playbook: %v", err)
 	}
-	if result.Structured.Error == "" {
-		t.Error("stub must return non-empty Error field")
+	if len(result.Structured.Sections) != 1 || result.Structured.Sections[0].Kind != "strategy" {
+		t.Fatalf("expected one strategy section, got %+v", result.Structured.Sections)
+	}
+	if result.Structured.Budget.ItemsPacked != 1 {
+		t.Errorf("ItemsPacked = %d, want 1", result.Structured.Budget.ItemsPacked)
 	}
 	if result.Text == "" {
 		t.Error("Text must not be empty")
 	}
 }
 
-func TestHandlerPlaybook_EmptyQuery(t *testing.T) {
+func TestHandlerPlaybook_EmptyScope(t *testing.T) {
 	svc := newHandlerServices(t)
+	svc.Profile = "assistant"
 	h := makePlaybookHandler(svc)
-	ctx := context.Background()
 
-	// Stub ignores the input — should still return stub response.
-	result, err := h(ctx, PlaybookInput{Query: ""})
+	result, err := h(context.Background(), PlaybookInput{})
 	if err != nil {
-		t.Fatalf("playbook stub: %v", err)
+		t.Fatalf("playbook empty: %v", err)
 	}
-	if result.Structured.Error == "" {
-		t.Error("stub must return non-empty Error field")
+	if len(result.Structured.Sections) != 0 {
+		t.Errorf("empty scope returned %d sections, want 0", len(result.Structured.Sections))
 	}
 }
 

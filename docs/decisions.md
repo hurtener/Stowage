@@ -1539,3 +1539,66 @@ Both surfaces now reject loudly (HTTP 400 / MCP tool error) when
 `contributor_user_id` is set without `target_scope` — identical behavior. The MCP
 contribute-rejection test additionally asserts a rejected request is fully inert
 (zero records enqueued or written).
+
+## D-072 — Deterministic, LLM-free playbook assembly finished on {SDK, MCP, HTTP}
+
+**Status:** accepted (Phase h5, D-067 Wave C).
+
+**Context.** Phase 17 shipped the playbook surface as a placeholder: `Client.Playbook`
+returned `PlaybookResponse{Stub:true}` (guarded by `ErrPlaybookStub`), the MCP
+`memory_playbook` tool returned a "not implemented" error, and there was no
+`GET /v1/playbook` route. The deterministic assembly itself (RFC §6a.3) — the one
+genuinely half-shipped launch primitive — was never built. ACE (brief 05) requires
+the playbook to be a *deterministic view over itemized memories*, append-biased for
+host prompt-cache warmth, never a monolithic LLM rewrite (context-collapse defense).
+
+**Decision.**
+
+- **New `internal/playbook` package (LLM-free).** `Assemble(ctx, st, scope, opts)`
+  is a pure projection: it lists active `strategy`/`failure_mode`/`decision`/`gotcha`/
+  `pattern` memories in scope, scores each with the pure `internal/scoring` functions
+  (unit fused base ⇒ utility/decay only), greedy budget-packs by score (stable ULID
+  tiebreak, budget never exceeded), groups into kind-ordered sections, and attaches
+  provenance for P1 drill-down. It NEVER imports the gateway — enforced by
+  `TestPlaybookNoGatewayImport` (the CLAUDE.md §6 lint for the new package). Output is
+  byte-identical run-to-run and append-biased (a new lower-ranked memory appends at the
+  section tail, leaving the existing prefix stable — the ACE KV-cache property).
+- **New `Store.ListByKinds(ctx, scope, kinds)` seam method.** Active-only,
+  scope-enforced (P3 — no unscoped variant), ordered `(created_at, id)`. Implemented on
+  BOTH the sqlite and postgres drivers and proven by the shared conformance suite
+  (`MemoryListByKinds`, `MemoryListByKindsScopeIsolation`): kind filter, active-only,
+  scope isolation, empty-scope guard. It is a store *view* ranked by the playbook layer,
+  not a retrieval query.
+- **Profile-internal budget (D-034/D-042).** `config.PlaybookBudgetForProfile`
+  (assistant 2000 / coding-agent 3000 / fleet 4000) — no new top-level operator knob.
+- **Reachable identically on {SDK, MCP, HTTP}** (single-user READ verb, D-067 tier):
+  `GET /v1/playbook` (new route + handler), the embedded + HTTP SDK `Client.Playbook`,
+  and the MCP `memory_playbook` tool all call the one `playbook.Assemble` core and emit
+  the byte-identical wire envelope (`sections[]{title,kind,items[]{memory_id,kind,
+  content,score,provenance}}`, `budget`). Parity is proven by
+  `test/integration/playbook_parity_test.go` (embedded SDK ⇄ HTTP ⇄ MCP, real sqlite,
+  `-race`).
+- **Stubs removed.** `ErrPlaybookStub` and the `PlaybookResponse{Entries, Stub}` shape
+  are deleted; the MCP "not implemented" handler and `PlaybookOutput{Error}` are
+  replaced with the real typed contract (schema golden regenerated). The old shape only
+  ever returned `Stub:true` — no real consumer existed (the harbor adapter's
+  `stowage_playbook` tool is updated to the new sectioned shape in the same change).
+- **MCP tool count unchanged (13).** `memory_playbook` already existed as a stub; it is
+  now real. No new tool is added.
+
+**Deviation from the phase plan (documented).** The plan's `Options` sketch listed
+`TopicKeys` for topic restriction. Memories carry no topic-key column in the v1 schema
+(RFC §8.1), so a topic filter would be a dead knob (D-024); `Options` exposes only
+`SessionID` (session-affinity) and `TokenBudget`. Sections are grouped by kind.
+
+**Scope boundary (not a departure).** Reflection extraction + the re-reflection sweep
+(RFC §6a.1-2 — the LLM *write* side that produces `strategy`/`failure_mode` memories)
+remain roadmap Phase 19. This phase builds only the read/assembly path; it views
+whatever building-block memories already exist (via topic extraction + `memory_assert`).
+
+**Key/credential-admin tier exception (owner, 2026-06-16).** Recorded here so it is a
+conscious choice, not drift: runtime API-key/credential management is **HTTP-admin-only**
+by design (D-030) and deliberately NOT exposed on MCP — distinct from grants/team-sharing
+admin which stays {HTTP, MCP} (D-071). The D-067 tiered model now reads: single-user →
+{SDK, MCP, HTTP}; team/grants admin → {HTTP, MCP}; key/credential admin → {HTTP} only.
+No h6 — Wave C is h5 alone.

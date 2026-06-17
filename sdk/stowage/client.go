@@ -34,9 +34,10 @@ type Client interface {
 	// Topics lists the effective topics for the client's scope.
 	Topics(ctx context.Context) (TopicsResponse, error)
 
-	// Playbook returns a stub response in Phase 17; full assembly lands in
-	// a future phase once playbook storage is wired. Returns Stub:true always
-	// until that phase ships.
+	// Playbook returns the deterministic, sectioned, utility-ranked,
+	// budget-packed playbook for the client's scope (RFC §6a.3, D-072). It is
+	// LLM-free: assembly reads stored memories and the pure scoring functions
+	// only. SessionID, when set, narrows assembly to one session.
 	Playbook(ctx context.Context, req PlaybookRequest) (PlaybookResponse, error)
 
 	// GetMemory reads a memory, its junctions, and its supersedes chain within

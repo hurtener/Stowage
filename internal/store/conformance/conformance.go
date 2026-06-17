@@ -50,6 +50,8 @@ func Run(t *testing.T, factory Factory) {
 	t.Run("MemoryUpdate", func(t *testing.T) { testMemoryUpdate(t, factory) })
 	t.Run("MemorySetStatus", func(t *testing.T) { testMemorySetStatus(t, factory) })
 	t.Run("MemoryListByStatus", func(t *testing.T) { testMemoryListByStatus(t, factory) })
+	t.Run("MemoryListByKinds", func(t *testing.T) { testMemoryListByKinds(t, factory) })
+	t.Run("MemoryListByKindsScopeIsolation", func(t *testing.T) { testMemoryListByKindsScopeIsolation(t, factory) })
 	t.Run("MemoryListByStatusCursor", func(t *testing.T) { testMemoryListByStatusCursor(t, factory) })
 	t.Run("MemoryLinks", func(t *testing.T) { testMemoryLinks(t, factory) })
 	t.Run("MemoryLinksEmpty", func(t *testing.T) { testMemoryLinksEmpty(t, factory) })
@@ -581,6 +583,100 @@ func testMemoryListByStatus(t *testing.T, factory Factory) {
 	}
 	if len(got) != 3 {
 		t.Errorf("got %d want 3", len(got))
+	}
+}
+
+// testMemoryListByKinds proves the D-072 playbook view: active-only + kind
+// filter, with non-matching kinds and non-active statuses excluded.
+func testMemoryListByKinds(t *testing.T, factory Factory) {
+	t.Helper()
+	s, cleanup := factory()
+	defer cleanup()
+	ctx := context.Background()
+	scope := tenantScope("t-" + newID())
+
+	insert := func(kind, status string) string {
+		id := newID()
+		mem := store.Memory{
+			ID: id, Kind: kind, Content: kind + "-" + status,
+			Status: status, Confidence: 0.5, TrustSource: "llm_extracted", Stability: 1.0,
+			CreatedAt: nowMs(), UpdatedAt: nowMs(),
+		}
+		if err := s.Memories().Insert(ctx, scope, mem); err != nil {
+			t.Fatalf("Insert %s/%s: %v", kind, status, err)
+		}
+		return id
+	}
+
+	strategyID := insert("strategy", "active")
+	failureID := insert("failure_mode", "active")
+	insert("fact", "active")         // wrong kind — excluded
+	insert("strategy", "superseded") // right kind, wrong status — excluded
+	insert("gotcha", "active")       // a kind we don't request below — excluded
+
+	got, err := s.Memories().ListByKinds(ctx, scope, []string{"strategy", "failure_mode"})
+	if err != nil {
+		t.Fatalf("ListByKinds: %v", err)
+	}
+	gotIDs := map[string]bool{}
+	for _, m := range got {
+		gotIDs[m.ID] = true
+		if m.Status != "active" {
+			t.Errorf("ListByKinds returned non-active memory %s (status=%s)", m.ID, m.Status)
+		}
+		if m.Kind != "strategy" && m.Kind != "failure_mode" {
+			t.Errorf("ListByKinds returned out-of-filter kind %q", m.Kind)
+		}
+	}
+	if !gotIDs[strategyID] || !gotIDs[failureID] {
+		t.Errorf("ListByKinds missing expected active rows: got %v", gotIDs)
+	}
+	if len(got) != 2 {
+		t.Errorf("ListByKinds: got %d rows, want 2", len(got))
+	}
+
+	// Empty kinds → empty, non-error.
+	empty, err := s.Memories().ListByKinds(ctx, scope, nil)
+	if err != nil {
+		t.Fatalf("ListByKinds empty: %v", err)
+	}
+	if len(empty) != 0 {
+		t.Errorf("ListByKinds(nil): got %d rows, want 0", len(empty))
+	}
+}
+
+// testMemoryListByKindsScopeIsolation proves cross-scope rows are invisible (P3).
+func testMemoryListByKindsScopeIsolation(t *testing.T, factory Factory) {
+	t.Helper()
+	s, cleanup := factory()
+	defer cleanup()
+	ctx := context.Background()
+	tenant := "t-" + newID()
+	scopeA := mustScope(tenant, "p", "userA", "")
+	scopeB := mustScope(tenant, "p", "userB", "")
+
+	memA := store.Memory{
+		ID: newID(), Kind: "strategy", Content: "A-strategy", Status: "active",
+		Confidence: 0.5, TrustSource: "llm_extracted", Stability: 1.0,
+		CreatedAt: nowMs(), UpdatedAt: nowMs(),
+	}
+	if err := s.Memories().Insert(ctx, scopeA, memA); err != nil {
+		t.Fatalf("Insert A: %v", err)
+	}
+
+	got, err := s.Memories().ListByKinds(ctx, scopeB, []string{"strategy"})
+	if err != nil {
+		t.Fatalf("ListByKinds B: %v", err)
+	}
+	for _, m := range got {
+		if m.ID == memA.ID {
+			t.Fatalf("scope isolation breach: user B saw user A's memory %s", memA.ID)
+		}
+	}
+
+	// Empty-scope guard: tenant required (P3 fails closed).
+	if _, err := s.Memories().ListByKinds(ctx, identity.Scope{}, []string{"strategy"}); !errors.Is(err, store.ErrScopeRequired) {
+		t.Errorf("ListByKinds empty scope: got %v want ErrScopeRequired", err)
 	}
 }
 

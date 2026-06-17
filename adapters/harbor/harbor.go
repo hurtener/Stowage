@@ -107,7 +107,7 @@ func Tools(client stowage.Client) []harbortools.ToolDescriptor {
 		harbortools.WithSideEffect(harbortools.SideEffectRead),
 	)
 	mustRegister(cat, "stowage_playbook", playbookFn(client),
-		harbortools.WithDescription("Return the memory playbook for the current session (stub in Phase 17)."),
+		harbortools.WithDescription("Return the deterministic, sectioned, utility-ranked memory playbook (strategies, failure modes, building blocks) for this agent's scope; session_id narrows to one session."),
 		harbortools.WithSideEffect(harbortools.SideEffectRead),
 	)
 
@@ -194,11 +194,10 @@ type topicsOut struct {
 
 type playbookIn struct {
 	SessionID string `json:"session_id,omitempty"`
-	Limit     int    `json:"limit,omitempty"`
 }
 type playbookOut struct {
-	Entries []any `json:"entries"`
-	Stub    bool  `json:"stub"`
+	Sections []stowage.PlaybookSection `json:"sections"`
+	Budget   stowage.PlaybookBudget    `json:"budget"`
 }
 
 // ---- Tool handler factories -------------------------------------------------
@@ -313,12 +312,12 @@ func topicsFn(client stowage.Client) func(context.Context, topicsIn) (topicsOut,
 func playbookFn(client stowage.Client) func(context.Context, playbookIn) (playbookOut, error) {
 	return func(ctx context.Context, in playbookIn) (playbookOut, error) {
 		resp, err := client.Playbook(ctx, stowage.PlaybookRequest{
-			SessionID: in.SessionID, Limit: in.Limit,
+			SessionID: in.SessionID,
 		})
 		if err != nil {
 			return playbookOut{}, err
 		}
-		return playbookOut{Entries: resp.Entries, Stub: resp.Stub}, nil
+		return playbookOut{Sections: resp.Sections, Budget: resp.Budget}, nil
 	}
 }
 

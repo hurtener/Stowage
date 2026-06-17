@@ -65,6 +65,12 @@ New terms land here in the same PR that introduces them (CLAUDE.md §14).
 - **Playbook** — the deterministic, sectioned, budget-packed context view over
   a scope's strategy/failure-mode memories (`GET /v1/playbook`); evolves only
   through delta reconciliation, never LLM rewrite (context-collapse defense).
+- **Playbook assembly** — the deterministic, LLM-free `internal/playbook.Assemble`
+  procedure (D-072): list active `strategy`/`failure_mode`/building-block memories
+  in scope (`Store.ListByKinds`), rank within sections by the pure `internal/scoring`
+  utility/decay functions with a stable ULID tiebreak, greedy budget-pack to the
+  profile-internal token budget, and attach provenance. Append-biased / prefix-stable
+  so a host re-fetch keeps its prompt cache warm (ACE's KV-hit property, RFC §6a.3).
 - **Context collapse** — the degradation ACE documents when an accumulated
   context is monolithically rewritten by an LLM; the reason playbook assembly
   contains no LLM call.

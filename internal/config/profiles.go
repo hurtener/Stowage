@@ -51,3 +51,30 @@ func BufferTriggersForProfile(profile string) BufferTriggers {
 		return BufferTriggers{Count: 12, Tokens: 1500, MaxAge: 90 * time.Second}
 	}
 }
+
+// PlaybookBudgetForProfile returns the deterministic playbook token budget for
+// the named profile (D-072). Like the buffer triggers above, this is a
+// profile-internal constant — NOT an operator-tunable top-level config knob
+// (D-034 knob guardrail). It bounds how much of a scope's strategy/failure_mode/
+// building-block memory the assembled playbook packs; the eval harness re-tunes
+// it later with real data (D-035). Unknown profiles fall back to "assistant".
+//
+// Budget defaults (token estimate, ≈4 chars/token):
+//
+//	| assistant | coding-agent | fleet |
+//	|-----------|--------------|-------|
+//	|      2000 |         3000 |  4000 |
+//
+// The coding-agent budget is larger because coding playbooks (strategies +
+// gotchas) are denser and benefit from a fuller injected context; fleet is
+// larger still for multi-agent supervisory contexts.
+func PlaybookBudgetForProfile(profile string) int {
+	switch profile {
+	case "coding-agent":
+		return 3000
+	case "fleet":
+		return 4000
+	default: // "assistant" and fallback
+		return 2000
+	}
+}

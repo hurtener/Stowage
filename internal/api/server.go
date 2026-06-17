@@ -39,6 +39,7 @@ type Server struct {
 	st      store.Store
 	log     *slog.Logger
 	cfg     config.ServerConfig
+	profile string // active config profile — selects the profile-internal playbook budget (D-072/D-042)
 	httpSrv *http.Server
 
 	// pipeline is the bounded channel signalling the buffer stage.
@@ -94,6 +95,7 @@ func New(cfg *config.Config, st store.Store, log *slog.Logger, reg *prometheus.R
 		st:            st,
 		log:           log,
 		cfg:           cfg.Server,
+		profile:       cfg.Profile,
 		pipeline:      make(chan pipeline.Item, pipelineCap),
 		maxBodyB:      cfg.Server.MaxBodyBytes,
 		ingestTotal:   ingestTotal,
@@ -126,6 +128,9 @@ func New(cfg *config.Config, st store.Store, log *slog.Logger, reg *prometheus.R
 
 	// Retrieval — four-lane RRF retrieval (Phase 09).
 	mux.HandleFunc("POST /v1/retrieve", srv.authMiddleware(srv.handleRetrieve, false))
+
+	// Playbook — deterministic, LLM-free playbook assembly (Phase h5, D-072).
+	mux.HandleFunc("GET /v1/playbook", srv.authMiddleware(srv.handlePlaybook, false))
 
 	// Phase 11: drill-down, feedback, and citation resolution.
 	mux.HandleFunc("POST /v1/drilldown", srv.authMiddleware(srv.handleDrilldown, false))

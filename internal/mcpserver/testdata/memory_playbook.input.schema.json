@@ -1,12 +1,9 @@
 {
   "type": "object",
   "properties": {
-    "query": {
+    "session_id": {
       "type": "string"
     }
   },
-  "required": [
-    "query"
-  ],
   "additionalProperties": false
 }

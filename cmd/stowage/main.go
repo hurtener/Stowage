@@ -466,6 +466,7 @@ func runMCP(args []string) {
 		PipelineStage: p.Stage,
 		Log:           stk.Log,
 		ScopeFn:       scopeFn,
+		Profile:       cfg.Profile,
 	}
 
 	srv, err := mcpserver.New(server.Info{

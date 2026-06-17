@@ -1,12 +1,111 @@
 {
   "type": "object",
   "properties": {
-    "error": {
-      "type": "string"
+    "sections": {
+      "type": [
+        "null",
+        "array"
+      ],
+      "items": {
+        "type": "object",
+        "properties": {
+          "title": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "items": {
+            "type": [
+              "null",
+              "array"
+            ],
+            "items": {
+              "type": "object",
+              "properties": {
+                "memory_id": {
+                  "type": "string"
+                },
+                "kind": {
+                  "type": "string"
+                },
+                "content": {
+                  "type": "string"
+                },
+                "score": {
+                  "type": "number"
+                },
+                "provenance": {
+                  "type": [
+                    "null",
+                    "array"
+                  ],
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "record_id": {
+                        "type": "string"
+                      },
+                      "span_start": {
+                        "type": "integer"
+                      },
+                      "span_end": {
+                        "type": "integer"
+                      }
+                    },
+                    "required": [
+                      "record_id"
+                    ],
+                    "additionalProperties": false
+                  }
+                }
+              },
+              "required": [
+                "memory_id",
+                "kind",
+                "content",
+                "score"
+              ],
+              "additionalProperties": false
+            }
+          }
+        },
+        "required": [
+          "title",
+          "kind",
+          "items"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "budget": {
+      "type": "object",
+      "properties": {
+        "token_budget": {
+          "type": "integer"
+        },
+        "tokens_used": {
+          "type": "integer"
+        },
+        "items_total": {
+          "type": "integer"
+        },
+        "items_packed": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "token_budget",
+        "tokens_used",
+        "items_total",
+        "items_packed"
+      ],
+      "additionalProperties": false
     }
   },
   "required": [
-    "error"
+    "sections",
+    "budget"
   ],
   "additionalProperties": false
 }
