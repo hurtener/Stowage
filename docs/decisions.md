@@ -1271,6 +1271,29 @@ contribute guard). Outcomes:
    the MCP contribute-rejection test asserts zero records enqueued/written; the
    glossary "Tiered surface parity" entry fixed (`memory_assert` → {SDK, MCP}).
 
+**Note (2026-06-16) — Wave-C checkpoint outcomes (`chore(checkpoint)`, gates
+Wave D).** The read-only Wave-C checkpoint audit (§17 / playbook §4.5) over h5
+(D-072) came back **0 FAIL / 3 WARN / 2 NIT** — the cleanest boundary yet: h5 was
+empirically confirmed LLM-free (transitively, via `go list -deps`), deterministic,
+budget-bounded, scope-enforced on both drivers, and byte-identical across {SDK,
+HTTP, MCP} and {sqlite, Postgres}. No new decision numbers consumed (D-073 stays
+reserved for Wave D). Hardening applied in one chore PR:
+
+1. **WARN — §6 no-gateway lint hardened to transitive.** The AST check saw only
+   direct imports; added `TestPlaybookNoGatewayImport_Transitive` (walks
+   `go list -deps`) so an indirect gateway pull through another package is caught.
+2. **WARN — playbook parity test now seeds provenance.** The all-surfaces parity
+   comparison previously left `Provenance` nil (omitempty), so the nested array —
+   three independently-declared wire structs, the likeliest drift site — was
+   unproven; a provenance row is now seeded so the byte-comparison exercises it.
+3. **NIT — single-item-over-budget edge pinned** by `TestAssembleSingleItemOverBudget`
+   (one item costing more than the whole budget → 0 packed, 0 tokens used).
+4. **NIT — stale CLI usage text** dropped the `(lands in Phase NN)` suffixes from the
+   shipped `serve`/`mcp`/`eval` commands in `cmd/stowage`.
+5. **WARN (housekeeping, no code) — the local `main` working checkout was stale**
+   (session-start commit); all program work was done in fresh worktrees branched
+   from `origin/main`, so nothing is affected. Flagged to the owner to fast-forward.
+
 ## D-068 — `boot.StartPipeline` is the single post-boot live-wiring seam
 
 2026-06-13. D-067 Wave A, flagship correctness fix (Phase h1; plan

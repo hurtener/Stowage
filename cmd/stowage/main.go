@@ -45,10 +45,10 @@ Usage:
 
 Commands:
   config    configuration utilities (explain)
-  serve     run the HTTP memory service        (lands in Phase 05)
-  mcp       run the MCP tool server            (lands in Phase 16)
+  serve     run the HTTP memory service
+  mcp       run the MCP tool server
   migrate   apply store schema migrations
-  eval      run the evaluation harness         (lands in Phase 13)
+  eval      run the evaluation harness
   version   print the build version
 `
 
