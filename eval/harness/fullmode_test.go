@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -84,6 +85,14 @@ func TestFullMode(t *testing.T) {
 	runner := NewRunner(srv, RunConfig{EnableRerank: os.Getenv("STOWAGE_EVAL_RERANK_MODEL") != ""})
 
 	ctx := context.Background()
+
+	// Fail fast on a bad/unreachable gateway. A bad key otherwise 401s on every
+	// call and the settle loop grinds ~10 min before the test times out (REPORT.md
+	// wart). Probe validates reachability + model/dims in seconds.
+	if err := srv.Gateway().Probe(ctx); err != nil {
+		t.Fatalf("gateway probe failed — check STOWAGE_EVAL_* / OPENROUTER_API_KEY: %v", err)
+	}
+
 	start := time.Now()
 	for id := range need {
 		c, ok := convByID[id]
@@ -115,6 +124,13 @@ func TestFullMode(t *testing.T) {
 	t.Logf("pipeline quiescent: %d active memories from %d conversations", srv.ActiveMemoryCount(ctx), len(need))
 	time.Sleep(10 * time.Second) // embed backfill settle
 
+	// Opt-in judged-QA mode (Phase 20, D-076): a reader answers from the retrieved
+	// context and an LLM judge grades it vs the gold answer. Reader+judge share the
+	// configured gateway model. Never in CI (STOWAGE_EVAL_GATEWAY gates full mode).
+	judged := os.Getenv("STOWAGE_EVAL_JUDGE") != ""
+	var verdicts []string
+	consecJudgeErr := 0
+
 	results := make([]QuestionResult, 0, len(questions))
 	for _, q := range questions {
 		qr, err := runner.scoreQuestion(ctx, QuestionFixture{
@@ -126,9 +142,32 @@ func TestFullMode(t *testing.T) {
 		if err != nil {
 			t.Fatalf("score %s: %v", q.ID, err)
 		}
+		if judged {
+			jr, jerr := JudgeQuestion(ctx, srv.Gateway(), q.Text, q.Expected.Answer, qr.Items)
+			if jerr != nil {
+				consecJudgeErr++
+				t.Logf("judge %s failed (%d consecutive): %v", q.ID, consecJudgeErr, jerr)
+				// Fail fast: 5 consecutive judge errors means the gateway/model is
+				// broken — don't burn the rest of the run.
+				if consecJudgeErr >= 5 {
+					t.Fatalf("judged-QA aborted after %d consecutive gateway errors: %v", consecJudgeErr, jerr)
+				}
+			} else {
+				consecJudgeErr = 0
+				qr.ReaderAnswer = jr.Answer
+				qr.JudgeVerdict = jr.Verdict
+				qr.JudgeJustification = jr.Justification
+				verdicts = append(verdicts, jr.Verdict)
+			}
+		}
 		results = append(results, qr)
 	}
 	scores := ComputeScores(results)
+	if judged && len(verdicts) > 0 {
+		quality, n := JudgedQuality(verdicts)
+		scores.AnswerQuality = &quality
+		scores.JudgedCount = n
+	}
 
 	outDir, _ := filepath.Abs("../../eval/results")
 	_ = os.MkdirAll(outDir, 0o750)
@@ -142,9 +181,21 @@ func TestFullMode(t *testing.T) {
 	for _, r := range results {
 		_ = enc.Encode(r)
 	}
-	_ = enc.Encode(map[string]any{"summary": scores, "wall_time_sec": time.Since(start).Seconds(), "dataset": "longmemeval_s_cleaned", "n": len(questions)})
-	t.Logf("FULL-MODE n=%d answer_context_hit=%.4f (%d/%d) p50=%.0fms p95=%.0fms results=%s",
-		len(questions), scores.AnswerContextHit, scores.HitCount, scores.TotalQuestions, scores.P50LatencyMs, scores.P95LatencyMs, out)
+	// Honest dataset label: the fetcher defaults to the oracle variant; the
+	// distractor haystack is selected via STOWAGE_EVAL_LONGMEMEVAL_URL (…_s.json).
+	datasetLabel := "longmemeval_oracle_cleaned"
+	if strings.Contains(os.Getenv("STOWAGE_EVAL_LONGMEMEVAL_URL"), "_s") {
+		datasetLabel = "longmemeval_s_cleaned"
+	}
+	summary := map[string]any{"summary": scores, "wall_time_sec": time.Since(start).Seconds(), "dataset": datasetLabel, "n": len(questions)}
+	_ = enc.Encode(summary)
+
+	quality := "n/a (judging off)"
+	if scores.AnswerQuality != nil {
+		quality = fmt.Sprintf("%.4f (%d judged)", *scores.AnswerQuality, scores.JudgedCount)
+	}
+	t.Logf("FULL-MODE n=%d dataset=%s answer_context_hit=%.4f (%d/%d) answer_quality=%s p50=%.0fms p95=%.0fms results=%s",
+		len(questions), datasetLabel, scores.AnswerContextHit, scores.HitCount, scores.TotalQuestions, quality, scores.P50LatencyMs, scores.P95LatencyMs, out)
 }
 
 func toFixture(c datasets.Conversation) ConvFixture {

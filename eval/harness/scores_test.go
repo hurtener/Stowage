@@ -31,3 +31,45 @@ func TestAnswerContextHit_ShortAnswerTokenBoundary(t *testing.T) {
 		})
 	}
 }
+
+// TestAnswerContextHit_Normalization covers the Phase 20 deterministic layers:
+// number-word equivalence (both directions) and either-direction phrase match.
+// Crucially it re-pins that the new phrase layer does NOT reopen the f/2.8
+// artifact (single-number golds stay on the token-boundary path).
+func TestAnswerContextHit_Normalization(t *testing.T) {
+	cases := []struct {
+		name     string
+		contents []string
+		expected string
+		want     bool
+	}{
+		// Number-word equivalence (form mismatch the retriever can't fix).
+		{"word gold matches digit content", []string{"User completed 5 painting classes."}, "five", true},
+		{"digit gold matches word content", []string{"User completed five painting classes."}, "5", true},
+		{"ordinal word gold matches digit", []string{"It was their 2 appointment that month."}, "second", true},
+		{"number word absent is a miss", []string{"User completed three classes."}, "five", false},
+		// Either-direction phrase match (point-of-view / article noise).
+		{"my vs the bed", []string{"User keeps old sneakers under the bed."}, "under my bed", true},
+		{"the vs my bed", []string{"User keeps sneakers under my bed."}, "under the bed", true},
+		{"phrase absent is a miss", []string{"User stores sneakers in the closet."}, "under my bed", false},
+		// Guards: reasoning gaps are NOT credited (that is the judge's job).
+		{"sum is not credited", []string{"User added 17 postcards, then 8 more."}, "25", false},
+		// Guard: the phrase layer must not reopen the f/2.8 artifact.
+		{"single number still not inside f/2.8", []string{"Sony 24-70mm f/2.8 lens."}, "2", false},
+		{"single number word not loosely matched", []string{"Sony 24-70mm f/2.8 lens."}, "two", false},
+		// Guard: number-word variants are TOKENS — no substring matching inside
+		// larger words or compound numbers (the adversarial-review blocker).
+		{"digit gold not inside the word weight", []string{"User wants to lose weight this year."}, "8", false},
+		{"digit gold not inside compound twenty-five", []string{"User owns twenty-five books."}, "5", false},
+		{"digit gold not inside eighty", []string{"The user turned eighty last month."}, "8", false},
+		{"number-word gold not inside eighteen", []string{"User has eighteen cousins."}, "eight", false},
+		{"number-word gold matches on a real boundary", []string{"User owns eight cats."}, "eight", true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := AnswerContextHit(tc.contents, tc.expected); got != tc.want {
+				t.Errorf("AnswerContextHit(%q, %q) = %v, want %v", tc.contents, tc.expected, got, tc.want)
+			}
+		})
+	}
+}

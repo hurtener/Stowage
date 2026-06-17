@@ -306,6 +306,13 @@ func (s *TestServer) Scope() identity.Scope {
 	return identity.Scope{Tenant: s.TenantID}
 }
 
+// Gateway returns the live gateway. In full mode this is the real provider; the
+// judged-QA path (reader + LLM judge — Phase 20) drives the reader/judge through
+// it. Its completion model is pinned at construction (STOWAGE_EVAL_MODEL).
+func (s *TestServer) Gateway() gateway.Gateway {
+	return s.gw
+}
+
 // PushExtractionScript queues a single JSON extraction response entry into the
 // mock gateway's in-process script queue. The extraction stage's Complete() call
 // consumes from this queue before falling back to the lazy file, so calling
