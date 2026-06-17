@@ -1625,3 +1625,58 @@ by design (D-030) and deliberately NOT exposed on MCP — distinct from grants/t
 admin which stays {HTTP, MCP} (D-071). The D-067 tiered model now reads: single-user →
 {SDK, MCP, HTTP}; team/grants admin → {HTTP, MCP}; key/credential admin → {HTTP} only.
 No h6 — Wave C is h5 alone.
+
+## D-073 — Server deployment shape + the one-core/tiered-surfaces invariant (Wave D; closes D-067)
+
+2026-06-17. The decision-shaped close of the productionization program (D-067).
+Wave D is an RFC amendment, not an implementation phase: it ratifies the server
+deployment shape and codifies the invariants Waves A–C established so future
+phases inherit them. Amends RFC §9.2 (deployment shape) + adds RFC §9.5 (one
+logic core, thin tiered surfaces); adds the matching binding rule to CLAUDE.md §6
+(mirrored to AGENTS.md).
+
+**Decision 1 — deployment shape (owner, 2026-06-17): one process, both surfaces.**
+A single Stowage **server** deployment is one process exposing BOTH the HTTP API
+and the MCP-over-HTTP surface over one `boot.Stack` + one `boot.StartPipeline` —
+one result cache, one lifecycle sweep set, no cross-process cache-staleness.
+`stowage mcp` over **stdio** stays a separate lightweight single-host mode;
+`sdk/stowage` in-process embeds the same stack with no daemon. Rejected: the
+status-quo two-process shape (separate `serve` + `mcp`), whose per-process
+in-memory caches can serve reads that are stale relative to the other process's
+writes (the D-053 scope-generation counter is in-process) and which doubles the
+lifecycle sweep set (tolerated only via D-057 advisory locks). **Follow-up
+(named, not yet built):** a small implementation phase to co-mount the MCP-HTTP
+handler onto `stowage serve` over the shared stack; until it lands, operators run
+the two processes and accept the documented cache-coherence caveat.
+
+**Decision 2 — codify "one logic core, thin tiered surfaces" (D-067 program
+outcome).** Every capability is implemented once in the core/service layer;
+`sdk/stowage`, `internal/api`, and `internal/mcpserver` are thin callers, and a
+capability's side effects (cache invalidation, validation, events) live in the
+core so no surface can omit them. Reachability is tiered: single-user (incl.
+playbook) → {SDK, HTTP, MCP}; team/grants admin → {HTTP, MCP}; key/credential
+admin → {HTTP} only; backend → {sqlite, Postgres}. A new capability ships on all
+its tier's surfaces in the same PR with a parity test that includes MCP. The
+invariant is held by mechanical seams: `boot.StartPipeline`, core-owned cache
+invalidation (`reconcile`), single-core reversibility/topics/contribute, the
+`internal/playbook` transitive no-gateway lint, and MCP-inclusive surface-parity
+tests.
+
+**Program close.** D-067 Wave A (D-068 flagship `StartPipeline` + MCP pipeline
+parity; D-069 embedded correctness/honesty), Wave B (D-070 reversibility parity;
+D-071 tiered control-verb parity), Wave C (D-072 deterministic playbook assembly),
+and three read-only checkpoint audits (gates between waves) are all shipped. The
+"same code, same seams" gap the parity lens opened is closed: every single-user
+capability — including reversibility and the playbook — is reachable and
+behaves identically across {SDK, HTTP, MCP} and {sqlite, Postgres}; the
+multi-user/admin tiers are reached on their designated surfaces with the SDK
+single-user boundary test-enforced. **Explicitly deferred (recorded, not drift):**
+reflection extraction + the re-reflection sweep (§6a.1-2 → Phase 19); playbook
+topic-grouping (needs a memory↔topic schema link → RFC §8.1 amendment); the DSAR
+retention cascade (→ Phase 21); grants `RedactionProfile` application (later);
+and the co-mount implementation follow-up named in Decision 1.
+
+**Consequences.** The deployment shape and the one-core/tiered invariant are now
+binding (RFC §9.2/§9.5, CLAUDE.md §6). Future phases extend the core and inherit
+all-surface reachability + parity testing by default, rather than re-discovering
+the drift the program corrected.

@@ -250,10 +250,19 @@ These enforce P1–P5 (§1). They are binding on every phase.
 - **One intelligence seam (P5).** No package outside `internal/gateway` imports an
   LLM/embedding provider SDK or constructs provider HTTP requests. New providers
   are new gateway drivers.
+- **One logic core, thin tiered surfaces (D-067 / D-073).** Every capability is
+  implemented once in the core/service layer; the surfaces — `sdk/stowage` (SDK),
+  `internal/api` (HTTP), `internal/mcpserver` (MCP) — are thin callers, and a
+  capability's side effects (cache invalidation, validation, events) live in the
+  core so no surface can omit them. A new capability ships on **all of its tier's
+  surfaces in the same PR** with a parity test (MCP included). Tiers: single-user
+  (incl. playbook) → {SDK, HTTP, MCP}; team/grants admin → {HTTP, MCP}; key/
+  credential admin → {HTTP} only; backend → {sqlite, Postgres}. Logic stranded in
+  one surface, or drift between surfaces, is the bug (RFC §9.5).
 - **Playbook assembly is LLM-free.** `internal/playbook` never calls the
   gateway — evolution happens only through delta reconciliation (RFC §6a,
   ACE's context-collapse defense). A gateway import there fails review and the
-  Phase 18 lint test.
+  `internal/playbook` transitive no-gateway lint test (D-072).
 - **Reconciliation is reversible.** Destructive ops (update/merge/supersede)
   must be invertible from their events (D-017); a reconciliation change that
   breaks rollback round-trips is wrong.
