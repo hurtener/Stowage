@@ -375,5 +375,13 @@ inherit the REST `WriteTimeout`/middleware; the shared stack+pipeline is what
 delivers the D-073 cache-coherence win. Default `server.mcp_listen` empty = serve
 unchanged (open question in the h6 plan: opt-in vs on-by-default).
 
-**Program complete (D-067).** Waves A (h1/h2), B (h3/h4), C (h5) + three
+**Program complete (D-067).**
+
+### Post-program follow-ups
+
+| # | Phase | Owns | Decision |
+|---|-------|------|----------|
+| h6 | Co-mount MCP-over-HTTP onto `stowage serve` (one process, both surfaces) | `cmd/stowage`, `internal/config` | D-074 |
+| h7 | bifrost custom-provider rerank (full OpenRouter stack) + benchmark rebase to cheaper models | `internal/gateway/bifrost`, `eval/harness` | D-075 |
+ Waves A (h1/h2), B (h3/h4), C (h5) + three
 checkpoint audits shipped; the "same code, same seams" parity gap is closed.
