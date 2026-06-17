@@ -28,8 +28,22 @@ The launch track contains every differentiator and the proof. Post-launch
 tracks contain capabilities whose unbackfillable signals are already captured
 by the day-one schema — deferring the feature costs nothing structurally.
 
-**Launch = v1.0 = phases 01–21.** Open-source gate: the eval report
-(`eval/REPORT.md`) with public-benchmark comparison ships the same day.
+**Launch = v0.1 = phases 01–27 + terminal hardening (D-076).** The owner recut
+the roadmap (2026-06-17): we do **not** launch at Phase 21. The capabilities
+previously deferred to post-launch tracks (episodes/temporal 22–24, trust
+extensions 25–26, proactive 27) are pulled **into** the v0.1 launch scope; the
+hardening & launch work (former Phase 21 content) runs **last, after Phase 27**,
+as the terminal v0.1 gate. Open-source gate (unchanged): the eval report
+(`eval/REPORT.md`) with the public-benchmark comparison table ships the same day,
+carrying the judged-QA number (`answer_quality` — Phase 20).
+
+> **Recut sequencing (D-076).** Phase 20 (judged eval + competitor table) is
+> pulled **ahead of** Phase 19 (reflection write-side): the judged headline number
+> does not depend on reflection. The RFC §12 gain-fleet + online-adaptation slice
+> that *does* consume the reflection→playbook loop is carved out as **Phase 20b**,
+> running after Phase 19. Open item for review: whether to physically renumber the
+> phase files, or keep the numbers as stable identifiers with this track reframing
+> (this plan keeps the numbers stable).
 
 ## Launch track
 
@@ -100,7 +114,12 @@ extensions; *chain cycle caps* reduce to the depth cap above because
 rollback unwinds newest-first one step at a time. Executed phases 19–21
 match table slots 19–21.
 
-## Post-launch tracks
+## Pulled into v0.1 (formerly post-launch tracks — D-076)
+
+> These three tracks (episodic/temporal, trust extensions, proactive) were the
+> D-033 post-launch deferral. The D-076 recut pulls them **into** the v0.1 launch
+> scope: phases 22–27 ship before the terminal hardening gate. The `v1.x` labels
+> below are retained only as the original capability grouping.
 
 ### v1.1 — Episodic & temporal
 
@@ -277,15 +296,28 @@ deterministic assembly (**OQ-6**); `GET /v1/playbook`. **Criteria:** playbook
 package provably gateway-free (lint test); golden-stable output; fleet-loop
 integration test.
 
-### Phase 20 — Eval finalization + competitor report
-Full gain harness on a Harbor fleet; online-adaptation scenarios; final runs
-of the public suite; **comparison table vs published competitor numbers**
-(Mem0, Zep, Letta, mempalace, Engram where public); `eval/REPORT.md` — the
-launch artifact. **Criteria:** positive gain; SOTA or top-tier on the public
-suite or a documented decision to hold launch (D-023); report fully
-reproducible.
+### Phase 20 — Eval finalization: judged QA + competitor report
+**Pulled ahead of Phase 19 (D-076).** Adds the **judged-QA mode** — an opt-in,
+full-mode-only reader LLM answers from retrieved context and an LLM judge grades it
+against the gold answer semantically, emitting `answer_quality` (the
+competitor-comparable metric) alongside the retrieval-only `answer_context_hit`;
+plus a deterministic normalization pass (number-word + either-direction) on
+`answer_context_hit`, the `longmemeval_s` distractor haystack, final public-suite
+runs, and the **comparison table vs published competitor numbers** (Mem0, Zep,
+Letta, mempalace, Engram where public) in `eval/REPORT.md` — the launch artifact.
+The CI mock gate stays deterministic, LLM-free, string-match-only. Plan:
+`phase-20-eval-finalization.md`. **Criteria:** the binding list in that plan
+(judged `answer_quality` on `longmemeval_s`; CI gate unaffected; schema-constrained
+judge; reproducible report). SOTA/top-tier or a documented hold (D-023).
 
-### Phase 21 — Hardening & launch
+### Phase 20b — Gain-fleet + online-adaptation (post-Phase-19)
+The RFC §12 slice that consumes the reflection→playbook loop, carved out of Phase
+20 by D-076 and run after Phase 19 ships reflection: the full gain harness on a
+Harbor fleet (memory-on vs memory-off delta) and the ACE online-adaptation
+scenarios. **Criteria:** positive gain on the standard scenarios; compounding
+improvement across sequential tasks.
+
+### Hardening & launch (terminal v0.1 gate — runs after Phase 27; former Phase 21)
 Security pass; docs for an external audience; CHANGELOG; cross-compile matrix
 + checksums; public-repo audit (license per OQ-5, full-history forbidden-names
 sweep); **five-minute-rule smoke** (fresh machine → one env var → first memory
@@ -293,7 +325,7 @@ stored and retrieved in < 5 min, scripted). **Criteria:** §13/§14 checklists
 repo-wide; CGo-free artifacts darwin/linux × amd64/arm64; history-wide
 drift-audit green; five-minute smoke green.
 
-### Phases 22–27 (post-launch) — summaries
+### Phases 22–27 (v0.1 launch scope — D-076) — summaries
 Detail plans are authored when each track is pulled. 22 episodes & narratives
 (heuristic-first boundaries — **OQ-8**; provenance-complete narratives;
 idempotent re-detection). 23 episodic retrieval (contrast with outcome diff;
