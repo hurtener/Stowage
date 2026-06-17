@@ -259,3 +259,9 @@ New terms land here in the same PR that introduces them (CLAUDE.md §14).
   verbs (grants/group management, contribute-mode honoring) reach {HTTP, MCP} only —
   never the single-user embedded SDK. Each verb has one shared core so the
   surfaces cannot drift.
+- **Co-mounted server** — one `stowage serve` process serving both the HTTP API
+  and MCP-over-HTTP over a single `boot.Stack` + `boot.StartPipeline` — one
+  cache, one pipeline, no cross-process staleness (D-073/D-074). Enabled by the
+  opt-in `server.mcp_listen` knob (a second listener); empty keeps `serve`
+  single-surface. Two listeners (not one path-prefixed port) because MCP streams
+  and must not inherit the REST `WriteTimeout`/middleware.

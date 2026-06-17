@@ -10,6 +10,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"strconv"
 	"strings"
@@ -53,7 +54,16 @@ type Config struct {
 
 // ServerConfig holds HTTP server tuning.
 type ServerConfig struct {
-	Listen       string `yaml:"listen"`
+	Listen string `yaml:"listen"`
+	// MCPListen, when non-empty (e.g. ":8081"), makes `stowage serve` co-mount
+	// the MCP-over-HTTP surface on this second listener over the SAME
+	// boot.Stack + StartPipeline as the HTTP API — one result cache, one
+	// pipeline, no cross-process staleness (D-073/D-074). Empty (the default)
+	// keeps `stowage serve` single-surface (HTTP API only), binding exactly one
+	// port — the zero-config shape is unchanged. Two listeners (not a
+	// path-prefixed single port) because MCP streams and must not inherit the
+	// REST WriteTimeout/middleware.
+	MCPListen    string `yaml:"mcp_listen"`     // default "" (opt-in)
 	ReadTimeout  int    `yaml:"read_timeout"`   // seconds; default 10
 	WriteTimeout int    `yaml:"write_timeout"`  // seconds; default 20
 	IdleTimeout  int    `yaml:"idle_timeout"`   // seconds; default 60
@@ -98,6 +108,7 @@ type TelemetryConfig struct {
 var allKeys = []string{
 	"profile",
 	"server.listen",
+	"server.mcp_listen",
 	"server.read_timeout",
 	"server.write_timeout",
 	"server.idle_timeout",
@@ -135,6 +146,7 @@ var envKeys = []struct {
 }{
 	{"STOWAGE_PROFILE", "profile"},
 	{"STOWAGE_SERVER_LISTEN", "server.listen"},
+	{"STOWAGE_SERVER_MCP_LISTEN", "server.mcp_listen"},
 	{"STOWAGE_SERVER_READ_TIMEOUT", "server.read_timeout"},
 	{"STOWAGE_SERVER_WRITE_TIMEOUT", "server.write_timeout"},
 	{"STOWAGE_SERVER_IDLE_TIMEOUT", "server.idle_timeout"},
@@ -161,6 +173,7 @@ func Defaults() *Config {
 		Profile: "assistant",
 		Server: ServerConfig{
 			Listen:       ":7160",
+			MCPListen:    "", // opt-in: empty keeps `stowage serve` single-surface (D-074)
 			ReadTimeout:  10,
 			WriteTimeout: 20,
 			IdleTimeout:  60,
@@ -348,6 +361,20 @@ func (c *Config) Validate() error {
 		errs = append(errs, errors.New("config.server.listen: must not be empty"))
 	}
 
+	// server.mcp_listen is opt-in (default ""). When set it must be a valid
+	// host:port, and must not collide with the HTTP API listener — co-mount uses
+	// TWO listeners over one stack (D-074).
+	if c.Server.MCPListen != "" {
+		if _, port, err := net.SplitHostPort(c.Server.MCPListen); err != nil {
+			errs = append(errs, fmt.Errorf("config.server.mcp_listen: invalid host:port %q: %w", c.Server.MCPListen, err))
+		} else if p, perr := strconv.Atoi(port); perr != nil || p < 1 || p > 65535 {
+			errs = append(errs, fmt.Errorf("config.server.mcp_listen: invalid port %q (want 1-65535)", port))
+		}
+		if c.Server.MCPListen == c.Server.Listen {
+			errs = append(errs, fmt.Errorf("config.server.mcp_listen: must differ from server.listen %q (co-mount binds two separate ports)", c.Server.Listen))
+		}
+	}
+
 	validStoreDrivers := map[string]bool{"sqlite": true, "postgres": true}
 	if !validStoreDrivers[c.Store.Driver] {
 		errs = append(errs, fmt.Errorf("config.store.driver: unknown driver %q", c.Store.Driver))
@@ -490,6 +517,8 @@ func (c *Config) getByPath(path string) string {
 		return c.Profile
 	case "server.listen":
 		return c.Server.Listen
+	case "server.mcp_listen":
+		return c.Server.MCPListen
 	case "server.read_timeout":
 		return strconv.Itoa(c.Server.ReadTimeout)
 	case "server.write_timeout":
@@ -540,6 +569,8 @@ func (c *Config) setByPath(path, value string) error {
 		c.Profile = value
 	case "server.listen":
 		c.Server.Listen = value
+	case "server.mcp_listen":
+		c.Server.MCPListen = value
 	case "server.read_timeout":
 		n, err := strconv.Atoi(value)
 		if err != nil {

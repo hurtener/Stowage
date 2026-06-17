@@ -505,6 +505,71 @@ func TestGatewayProviderEnvOverride(t *testing.T) {
 	}
 }
 
+// TestMCPListenDefaultEmpty verifies server.mcp_listen defaults to empty (opt-in,
+// D-074) and the default config validates.
+func TestMCPListenDefaultEmpty(t *testing.T) {
+	clearStowageEnv(t)
+	cfg := config.Defaults()
+	if cfg.Server.MCPListen != "" {
+		t.Errorf("Server.MCPListen = %q, want empty (opt-in default)", cfg.Server.MCPListen)
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Errorf("Defaults().Validate() with empty mcp_listen: %v", err)
+	}
+}
+
+// TestMCPListenValidation table-tests server.mcp_listen validation (D-074):
+// empty ok, a valid host:port ok, a malformed/colliding addr fails.
+func TestMCPListenValidation(t *testing.T) {
+	clearStowageEnv(t)
+	tests := []struct {
+		name    string
+		listen  string // server.listen (api); default :7160 when empty
+		mcp     string
+		wantErr bool
+	}{
+		{name: "empty is ok", mcp: "", wantErr: false},
+		{name: "port-only ok", mcp: ":8081", wantErr: false},
+		{name: "host:port ok", mcp: "127.0.0.1:8081", wantErr: false},
+		{name: "no port fails", mcp: "notaport", wantErr: true},
+		{name: "non-numeric port fails", mcp: ":abc", wantErr: true},
+		{name: "port out of range fails", mcp: ":99999", wantErr: true},
+		{name: "collision with server.listen fails", listen: ":8081", mcp: ":8081", wantErr: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := config.Defaults()
+			if tt.listen != "" {
+				cfg.Server.Listen = tt.listen
+			}
+			cfg.Server.MCPListen = tt.mcp
+			err := cfg.Validate()
+			if tt.wantErr && err == nil {
+				t.Fatalf("Validate() = nil, want error for mcp_listen=%q", tt.mcp)
+			}
+			if !tt.wantErr && err != nil {
+				t.Fatalf("Validate() = %v, want nil for mcp_listen=%q", err, tt.mcp)
+			}
+			if tt.wantErr && err != nil && !strings.Contains(err.Error(), "config.server.mcp_listen") {
+				t.Errorf("error %q does not contain key path config.server.mcp_listen", err.Error())
+			}
+		})
+	}
+}
+
+// TestMCPListenEnvOverride verifies STOWAGE_SERVER_MCP_LISTEN overrides config.
+func TestMCPListenEnvOverride(t *testing.T) {
+	clearStowageEnv(t)
+	t.Setenv("STOWAGE_SERVER_MCP_LISTEN", ":8081")
+	cfg, err := config.Load(context.Background(), "")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Server.MCPListen != ":8081" {
+		t.Errorf("Server.MCPListen = %q, want %q", cfg.Server.MCPListen, ":8081")
+	}
+}
+
 func writeTmpFile(t *testing.T, data []byte) string {
 	t.Helper()
 	f, err := os.CreateTemp(t.TempDir(), "stowage-cfg-*.yaml")
