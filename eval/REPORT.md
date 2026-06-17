@@ -157,3 +157,33 @@ post-fix and the lexical + queries lanes are load-bearing there
 
 **Action:** Phase 20 re-runs n=10/n=50 with the real gateway post-BUG-4 and
 replaces the ⚠️-flagged rows with corrected figures.
+
+## Full-mode config rebase to bifrost (2026-06-17, D-075)
+
+The full-mode benchmark is rebased off `openaicompat` onto the **bifrost** driver,
+which now runs the *whole* OpenRouter stack — embed + complete + **rerank** — on
+one key. bifrost's built-in `openrouter` provider does not implement rerank, so
+the driver auto-wires a Cohere-shape custom provider (`BaseProviderType=Cohere`,
+path `/rerank`, same key/base) for the rerank pass (verified live:
+`cohere/rerank-4-fast` returns real sorted scores over `…/api/v1/rerank`).
+
+Documented full-mode config (run via the `fullmode_test.go` header; operator-run,
+needs `OPENROUTER_API_KEY` — not CI):
+
+| Knob | Value |
+|---|---|
+| `STOWAGE_EVAL_GATEWAY` | `bifrost` |
+| `STOWAGE_EVAL_PROVIDER` | `openrouter` |
+| `STOWAGE_EVAL_BASE_URL` (embed/complete) | `https://openrouter.ai/api` |
+| `STOWAGE_EVAL_RERANK_BASE_URL` (custom rerank provider) | `https://openrouter.ai/api/v1` |
+| `STOWAGE_EVAL_MODEL` (memory formation) | `inception/mercury-2` |
+| `STOWAGE_EVAL_EMBED_MODEL` / `STOWAGE_EVAL_EMBED_DIMS` | `perplexity/pplx-embed-v1-0.6b` / `1024` |
+| `STOWAGE_EVAL_RERANK_MODEL` | `cohere/rerank-4-fast` |
+
+Rerank is **ENABLED** in full mode: the harness retriever is wired with
+`WithRerankModel` and the runner issues `precise`-profile retrieves so the
+cross-encoder actually runs (`DegradedRerank` surfaced if the provider is
+unreachable). The CI mock gate (`make eval-ci`) leaves rerank OFF and is
+unaffected. A fresh full-mode run on this config is recorded by the operator
+(needs the key); model deltas vs. the prior gemini-based runs are noted with that
+run.

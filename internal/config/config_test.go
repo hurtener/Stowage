@@ -570,6 +570,65 @@ func TestMCPListenEnvOverride(t *testing.T) {
 	}
 }
 
+// TestRerankBaseURLDefaultEmpty verifies gateway.rerank_base_url defaults empty
+// (→ reuse base_url) and the default config validates (D-075/D-034).
+func TestRerankBaseURLDefaultEmpty(t *testing.T) {
+	clearStowageEnv(t)
+	cfg := config.Defaults()
+	if cfg.Gateway.RerankBaseURL != "" {
+		t.Errorf("Gateway.RerankBaseURL = %q, want empty (opt-in default)", cfg.Gateway.RerankBaseURL)
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Errorf("Defaults().Validate() with empty rerank_base_url: %v", err)
+	}
+}
+
+// TestRerankBaseURLValidation table-tests gateway.rerank_base_url validation
+// (D-075): empty ok, a valid absolute URL ok, a malformed/relative value fails.
+func TestRerankBaseURLValidation(t *testing.T) {
+	clearStowageEnv(t)
+	tests := []struct {
+		name    string
+		url     string
+		wantErr bool
+	}{
+		{name: "empty is ok", url: "", wantErr: false},
+		{name: "https url ok", url: "https://openrouter.ai/api/v1", wantErr: false},
+		{name: "http localhost ok", url: "http://127.0.0.1:8080/v1", wantErr: false},
+		{name: "no scheme fails", url: "openrouter.ai/api/v1", wantErr: true},
+		{name: "scheme without host fails", url: "https://", wantErr: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := config.Defaults()
+			cfg.Gateway.RerankBaseURL = tt.url
+			err := cfg.Validate()
+			if tt.wantErr && err == nil {
+				t.Fatalf("Validate() = nil, want error for rerank_base_url=%q", tt.url)
+			}
+			if !tt.wantErr && err != nil {
+				t.Fatalf("Validate() = %v, want nil for rerank_base_url=%q", err, tt.url)
+			}
+			if tt.wantErr && err != nil && !strings.Contains(err.Error(), "config.gateway.rerank_base_url") {
+				t.Errorf("error %q does not contain key path config.gateway.rerank_base_url", err.Error())
+			}
+		})
+	}
+}
+
+// TestRerankBaseURLEnvOverride verifies STOWAGE_GATEWAY_RERANK_BASE_URL overrides config.
+func TestRerankBaseURLEnvOverride(t *testing.T) {
+	clearStowageEnv(t)
+	t.Setenv("STOWAGE_GATEWAY_RERANK_BASE_URL", "https://rerank.example.com/v1")
+	cfg, err := config.Load(context.Background(), "")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Gateway.RerankBaseURL != "https://rerank.example.com/v1" {
+		t.Errorf("Gateway.RerankBaseURL = %q, want %q", cfg.Gateway.RerankBaseURL, "https://rerank.example.com/v1")
+	}
+}
+
 func writeTmpFile(t *testing.T, data []byte) string {
 	t.Helper()
 	f, err := os.CreateTemp(t.TempDir(), "stowage-cfg-*.yaml")

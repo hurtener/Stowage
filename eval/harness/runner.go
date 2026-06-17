@@ -38,6 +38,12 @@ type RunConfig struct {
 	CapLimitToOne bool
 	// RetrieveLimit is the number of results to fetch per question. Default 5.
 	RetrieveLimit int
+	// EnableRerank, when true, issues retrieve requests with the "precise"
+	// profile so the cross-encoder rerank pass runs (D-075). Default OFF — the
+	// deterministic mock CI run must NOT rerank (it would call a model and shift
+	// scores); full mode turns it ON, paired with the harness retriever's
+	// WithRerankModel wiring in NewTestServer.
+	EnableRerank bool
 }
 
 // RunResult is the result of one CI eval run.
@@ -237,9 +243,18 @@ func (r *Runner) scoreQuestion(ctx context.Context, q QuestionFixture) (Question
 		Query        string `json:"query"`
 		Limit        int    `json:"limit"`
 		IncludeLanes bool   `json:"include_lanes"`
+		Profile      string `json:"profile,omitempty"`
 	}
 	type retrieveResp struct {
 		Items []retrieveItem `json:"items"`
+	}
+
+	// The precise profile (EnableRerank) is what runs the cross-encoder rerank
+	// pass; the harness retriever is wired with WithRerankModel only in full mode
+	// (D-075). CI/mock leaves this empty → balanced profile, no rerank.
+	profile := ""
+	if r.cfg.EnableRerank {
+		profile = "precise"
 	}
 
 	// The limit cap is an explicit, opt-in degradation, decoupled from the lane
@@ -255,6 +270,7 @@ func (r *Runner) scoreQuestion(ctx context.Context, q QuestionFixture) (Question
 		Query:        q.Text,
 		Limit:        limit,
 		IncludeLanes: true,
+		Profile:      profile,
 	})
 	latency := time.Since(start)
 

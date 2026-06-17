@@ -1,6 +1,6 @@
 # Phase h7 — bifrost custom-provider rerank (full OpenRouter stack) + benchmark rebase
 
-- **Status:** draft | approved | in-progress | shipped
+- **Status:** shipped
 - **Owning subsystem(s):** `internal/gateway/bifrost` (account + driver), `internal/config` (validation/docs), `eval/harness` (bench rebase)
 - **RFC sections:** §7 (gateway seam, one intelligence seam P5), §12 (eval/benchmark)
 - **Depends on phases:** 04/09c gateway (D-040, D-049) — shipped

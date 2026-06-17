@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -94,6 +95,10 @@ type GatewayConfig struct {
 	EmbedModel  string `yaml:"embed_model"`
 	EmbedDims   int    `yaml:"embed_dims"`
 	RerankModel string `yaml:"rerank_model"` // cross-encoder model for the precise-profile rerank pass (Phase 12)
+	// RerankBaseURL optionally overrides base_url as the host the bifrost driver's
+	// auto-wired Cohere-shape rerank provider POSTs to, for the rare case rerank
+	// lives on a different host than embed/complete (D-075). Empty → use base_url.
+	RerankBaseURL string `yaml:"rerank_base_url"`
 }
 
 // TelemetryConfig controls logging and metrics.
@@ -124,6 +129,7 @@ var allKeys = []string{
 	"gateway.embed_model",
 	"gateway.embed_dims",
 	"gateway.rerank_model",
+	"gateway.rerank_base_url",
 	"telemetry.log_level",
 	"telemetry.log_format",
 	"telemetry.metrics_listen",
@@ -161,6 +167,7 @@ var envKeys = []struct {
 	{"STOWAGE_GATEWAY_EMBED_MODEL", "gateway.embed_model"},
 	{"STOWAGE_GATEWAY_EMBED_DIMS", "gateway.embed_dims"},
 	{"STOWAGE_GATEWAY_RERANK_MODEL", "gateway.rerank_model"},
+	{"STOWAGE_GATEWAY_RERANK_BASE_URL", "gateway.rerank_base_url"},
 	{"STOWAGE_TELEMETRY_LOG_LEVEL", "telemetry.log_level"},
 	{"STOWAGE_TELEMETRY_LOG_FORMAT", "telemetry.log_format"},
 	{"STOWAGE_TELEMETRY_METRICS_LISTEN", "telemetry.metrics_listen"},
@@ -187,13 +194,14 @@ func Defaults() *Config {
 			Driver: "hnsw", // default: HNSW (D-048; owner directive — 100k brute ceiling too low)
 		},
 		Gateway: GatewayConfig{ //nolint:gosec // G101: api_key holds an env-var *name* (reference), not a credential
-			Driver:      "mock",
-			BaseURL:     "",
-			APIKey:      "env.STOWAGE_GATEWAY_API_KEY",
-			Model:       "claude-3-5-haiku-20241022",
-			EmbedModel:  "voyage-3-lite",
-			EmbedDims:   512,
-			RerankModel: "cohere/rerank-4-fast",
+			Driver:        "mock",
+			BaseURL:       "",
+			APIKey:        "env.STOWAGE_GATEWAY_API_KEY",
+			Model:         "claude-3-5-haiku-20241022",
+			EmbedModel:    "voyage-3-lite",
+			EmbedDims:     512,
+			RerankModel:   "cohere/rerank-4-fast",
+			RerankBaseURL: "", // empty → reuse base_url for the auto-wired rerank provider (D-075)
 		},
 		Telemetry: TelemetryConfig{
 			LogLevel:      "info",
@@ -401,6 +409,14 @@ func (c *Config) Validate() error {
 		errs = append(errs, errors.New("config.gateway.api_key: must use env.VAR indirection"))
 	}
 
+	// gateway.rerank_base_url is optional (default empty → reuse base_url); when
+	// set it must be an absolute URL with scheme + host (D-075/D-034).
+	if c.Gateway.RerankBaseURL != "" {
+		if u, perr := url.Parse(c.Gateway.RerankBaseURL); perr != nil || u.Scheme == "" || u.Host == "" {
+			errs = append(errs, fmt.Errorf("config.gateway.rerank_base_url: invalid URL %q (want e.g. https://openrouter.ai/api/v1)", c.Gateway.RerankBaseURL))
+		}
+	}
+
 	validLogLevels := map[string]bool{"debug": true, "info": true, "warn": true, "error": true}
 	if !validLogLevels[c.Telemetry.LogLevel] {
 		errs = append(errs, fmt.Errorf("config.telemetry.log_level: unknown level %q", c.Telemetry.LogLevel))
@@ -549,6 +565,8 @@ func (c *Config) getByPath(path string) string {
 		return strconv.Itoa(c.Gateway.EmbedDims)
 	case "gateway.rerank_model":
 		return c.Gateway.RerankModel
+	case "gateway.rerank_base_url":
+		return c.Gateway.RerankBaseURL
 	case "telemetry.log_level":
 		return c.Telemetry.LogLevel
 	case "telemetry.log_format":
@@ -621,6 +639,8 @@ func (c *Config) setByPath(path, value string) error {
 		c.Gateway.EmbedDims = n
 	case "gateway.rerank_model":
 		c.Gateway.RerankModel = value
+	case "gateway.rerank_base_url":
+		c.Gateway.RerankBaseURL = value
 	case "telemetry.log_level":
 		c.Telemetry.LogLevel = value
 	case "telemetry.log_format":

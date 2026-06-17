@@ -1741,3 +1741,58 @@ surface; (2) the `preflight` target now fails if ANY smoke exits non-zero
 "preflight FAILED"). **Recommendation (not done here — flagged for the owner):**
 add a smoke/preflight job to CI so smoke drift is caught at the CI gate, not only
 the local pre-commit hook.
+
+## D-075 — bifrost auto-wires a Cohere-shape custom rerank provider (full OpenRouter stack); benchmark rebased onto bifrost
+
+2026-06-17. Phase h7. Closes the gap proven during investigation: bifrost's
+built-in `openrouter` provider does not implement rerank, but a Bifrost **custom
+provider** (`BaseProviderType: Cohere`, `RequestPathOverrides{rerank: "/rerank"}`)
+reranks against OpenRouter's `…/api/v1/rerank` successfully (verified live
+2026-06-17: `cohere/rerank-4-fast` returned real sorted scores). All provider
+wiring stays in `internal/gateway` (P5/D-067/RFC §9.5); the openaicompat driver
+(D-040) and its rerank live test remain valid.
+
+**Decision.** When `gateway.driver=bifrost`, `gateway.rerank_model` is set, AND
+the primary `gateway.provider` is **not** native-rerank, the bifrost `Account`
+ALSO exposes a synthetic custom provider `stowage-rerank`
+(`internal/gateway/bifrost/account.go`): `GetConfiguredProviders` →
+`[primary, stowage-rerank]`; `GetConfigForProvider("stowage-rerank")` → a
+`ProviderConfig` with `CustomProviderConfig{BaseProviderType: Cohere,
+AllowedRequests{Rerank: true}, RequestPathOverrides{RerankRequest: "/rerank"}}`
+and `NetworkConfig.BaseURL = rerank_base_url || base_url`;
+`GetKeysForProvider("stowage-rerank")` → the same key with the REQUIRED wildcard
+`Models: {"*"}` (an empty Models yields "no keys found that support model"). One
+Bifrost `Account` legitimately exposes multiple providers, so embed/complete route
+to the primary and rerank routes to the custom one under one client+key. The
+`Driver` records a `rerankProvider` field (== `stowage-rerank` when auto-wired,
+else the primary) and sets `bfReq.Provider = d.rerankProvider` in `Rerank`;
+embed/complete are unchanged. Metering + the circuit breaker still apply (the
+custom rerank flows through the same `Driver.Rerank`).
+
+**Native-rerank set** (no custom provider added — rerank routes to the primary):
+`{cohere, vllm, bedrock, vertex}` (`isNativeRerankProvider`).
+
+**Never silent / graceful degradation (D-036/AC-3).** The auto-wire is logged at
+boot (info level: provider name + base URL + path + base_provider_type +
+rerank_model; NEVER the key). On a backend without a Cohere-shape `/rerank` the
+call errors → the existing `DegradedRerank` path, not a panic.
+
+**One knob (D-034).** `gateway.rerank_base_url`, default **empty (→ reuse
+`base_url`)** — for the rare case rerank lives on a different host than
+embed/complete. Validated as an absolute URL (scheme + host) when set; surfaced by
+`config explain`; documented on `GatewayConfig.RerankBaseURL`;
+`STOWAGE_GATEWAY_RERANK_BASE_URL` env override; same-PR smoke
+(`scripts/smoke/phase-h7.sh`). The `/rerank` path is a constant for the auto-wired
+Cohere-shape provider, not a knob.
+
+**Benchmark rebase.** The full-mode eval (`eval/harness`) is rebased off
+`openaicompat` onto **bifrost** + the operator's cheaper models: provider
+`openrouter`, memory-formation model `inception/mercury-2`, embed
+`perplexity/pplx-embed-v1-0.6b` @ 1024 dims, rerank `cohere/rerank-4-fast`. The
+harness now honors `STOWAGE_EVAL_PROVIDER`/`STOWAGE_EVAL_RERANK_MODEL` and wires
+the retriever with `WithRerankModel` in full mode, and the runner issues
+`precise`-profile retrieves (new `RunConfig.EnableRerank` toggle) so the
+cross-encoder actually runs. Rerank stays **OFF** for the deterministic mock CI
+run (the toggle defaults off and CI never sets `STOWAGE_EVAL_GATEWAY`), so the
+committed CI baseline (`make eval-ci`) is unaffected. A fresh full-mode run on the
+new config is operator-run (needs `OPENROUTER_API_KEY`, not CI).
