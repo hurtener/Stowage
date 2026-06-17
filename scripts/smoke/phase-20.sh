@@ -7,7 +7,9 @@
 #   AC-2  normalization (number-word + either-direction) is pure + table-tested.
 #   AC-1  the CI eval gate is unaffected (deterministic, mock, string-match).
 #   AC-3  the judged path is opt-in (gated on STOWAGE_EVAL_JUDGE).
-#   AC-4  the judge is schema-constrained; no free-text JSON parsing of model output.
+#   AC-4  the reader+judge Complete calls are JSON-schema-constrained (§10). The
+#         validated resp.JSON IS unmarshaled (the correct gateway-caller idiom —
+#         not free-text parsing); the invariant is that a Schema is always set.
 #   AC-5  no provider SDK is imported under eval/ (P5).
 #   AC-7  the full-mode build compiles under -tags=fullmode.
 #   AC-6  (if shipped) `stowage eval fetch --variant` is accepted / bad rejected.
@@ -32,11 +34,17 @@ else
   ok "AC-5: no provider SDK under eval/ — reader/judge route through the gateway seam"
 fi
 
-# ── AC-4: judge is schema-constrained, no free-text JSON parse of model output ──
-if grep -q 'json.Unmarshal' eval/harness/judge.go 2>/dev/null; then
-  failc "AC-4: judge.go parses model output as free-text JSON (forbidden — §10)"
+# ── AC-4: reader+judge Complete calls are JSON-schema-constrained (§10) ─────────
+# gateway.Complete REQUIRES a schema and returns validated JSON; unmarshaling that
+# validated resp.JSON is the standard idiom (extract.go/reconcile.go do the same),
+# NOT free-text parsing. The invariant we assert: both calls set a Schema.
+schema_calls=$(grep -c 'Schema:' eval/harness/judge.go 2>/dev/null); schema_calls=${schema_calls:-0}
+if grep -q 'readerSchema' eval/harness/judge.go 2>/dev/null \
+   && grep -q 'judgeSchema' eval/harness/judge.go 2>/dev/null \
+   && [ "$schema_calls" -ge 2 ]; then
+  ok "AC-4: reader+judge Complete calls are schema-constrained (§10)"
 else
-  ok "AC-4: judge.go does not free-text-parse model output"
+  failc "AC-4: judge.go does not schema-constrain both Complete calls (Schema: x$schema_calls)"
 fi
 
 # ── AC-3: judged path is opt-in (gated on STOWAGE_EVAL_JUDGE) ────────────────────
