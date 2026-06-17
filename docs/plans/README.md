@@ -360,9 +360,20 @@ the **server deployment shape** (one process exposes both HTTP + MCP over one
 2026-06-17) and codifies the **one logic core, thin tiered surfaces** invariant +
 the three-tier capability matrix the program proved (RFC §9.2/§9.5, CLAUDE.md §6).
 Named follow-up: a small phase to co-mount the MCP-HTTP handler onto `stowage
-serve`. Deferred (recorded): reflection §6a.1-2 → Phase 19; playbook
+serve` (h6 below). Deferred (recorded): reflection §6a.1-2 → Phase 19; playbook
 topic-grouping → schema amendment; DSAR → Phase 21; grants RedactionProfile →
 later.
+
+### Wave D follow-up — co-mount (D-073 Decision 1 implementation)
+
+| # | Phase | Owns | RFC | Deps | Decision |
+|---|-------|------|-----|------|----------|
+| h6 | Co-mount MCP-over-HTTP onto `stowage serve` — one process, both surfaces, one `boot.Stack`+`StartPipeline` (two listeners, shared stack; new `server.mcp_listen` knob) | `cmd/stowage`, `internal/config` | §9.2, §9.5 | h1, h3-h5 | D-074 |
+
+Two listeners (not a single path-prefixed port) because MCP streams and must not
+inherit the REST `WriteTimeout`/middleware; the shared stack+pipeline is what
+delivers the D-073 cache-coherence win. Default `server.mcp_listen` empty = serve
+unchanged (open question in the h6 plan: opt-in vs on-by-default).
 
 **Program complete (D-067).** Waves A (h1/h2), B (h3/h4), C (h5) + three
 checkpoint audits shipped; the "same code, same seams" parity gap is closed.
