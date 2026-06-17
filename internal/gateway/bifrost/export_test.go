@@ -31,3 +31,23 @@ func KnownProvidersHuman() string { return knownProvidersHuman() }
 func NewAccount(cfg config.GatewayConfig) (*Account, error) {
 	return newAccount(cfg)
 }
+
+// CustomRerankProviderName exports the synthetic rerank provider name for tests.
+func CustomRerankProviderName() bfschemas.ModelProvider { return customRerankProvider }
+
+// CustomRerank reports whether the account auto-wired the Cohere-shape rerank
+// provider (test accessor for the unexported field).
+func (a *Account) CustomRerank() bool { return a.customRerank }
+
+// RerankProviderName returns the provider rerank routes to (Account accessor).
+func (a *Account) RerankProviderName() bfschemas.ModelProvider { return a.rerankProvider }
+
+// RerankBaseURL returns the base URL of the auto-wired rerank provider (test
+// accessor); empty unless a custom rerank provider is wired.
+func (a *Account) RerankBaseURL() string { return a.rerankBaseURL }
+
+// RerankProviderName returns the provider the Driver routes rerank to.
+func (d *Driver) RerankProviderName() bfschemas.ModelProvider { return d.rerankProvider }
+
+// IsNativeRerankProvider exports the native-rerank gate for tests.
+func IsNativeRerankProvider(p bfschemas.ModelProvider) bool { return isNativeRerankProvider(p) }

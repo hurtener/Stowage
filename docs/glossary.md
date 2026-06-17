@@ -265,3 +265,10 @@ New terms land here in the same PR that introduces them (CLAUDE.md §14).
   opt-in `server.mcp_listen` knob (a second listener); empty keeps `serve`
   single-surface. Two listeners (not one path-prefixed port) because MCP streams
   and must not inherit the REST `WriteTimeout`/middleware.
+- **Auto-wired rerank provider** — a synthetic Bifrost custom provider
+  (`stowage-rerank`, `BaseProviderType=Cohere`, request path `/rerank`, same
+  key/base) the bifrost driver adds so a non-native-rerank primary (e.g.
+  OpenRouter) can serve the cross-encoder rerank over its Cohere-shape
+  `…/api/v1/rerank` (D-075). Wired iff `gateway.rerank_model` is set and the
+  primary `gateway.provider` is not in the native-rerank set
+  `{cohere, vllm, bedrock, vertex}`; embed/complete keep routing to the primary.

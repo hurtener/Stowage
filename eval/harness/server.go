@@ -18,9 +18,11 @@
 //   - The lifecycle profile parks the mutating sweeps (decay/dedupe/rollup at
 //     24h) and runs only a fast re-enqueue sweep (3s) for burst recovery, so CI
 //     stays deterministic. StartPipeline hardcodes lifecycle.DefaultProfile().
-//   - The retriever is built WITHOUT the rerank model / grants wiring that
-//     boot.Open applies, so the mock-gateway scores stay stable against the
-//     committed CI baseline.
+//   - The retriever is built WITHOUT the grants wiring boot.Open applies. The
+//     rerank model is wired ONLY in full mode (STOWAGE_EVAL_GATEWAY set +
+//     STOWAGE_EVAL_RERANK_MODEL), where the runner issues precise-profile
+//     retrieves so the cross-encoder runs (D-075); the mock CI run leaves rerank
+//     OFF so its scores stay stable against the committed CI baseline.
 //
 // This divergence is intentional and tracked. TestHarnessStageParity asserts the
 // harness keeps wiring the same logical stages boot.StartPipeline does, so a new
@@ -115,10 +117,12 @@ func NewTestServer(t testing.TB, tenantID string) *TestServer {
 	// driver + models via env. ci mode never sets these.
 	if d := os.Getenv("STOWAGE_EVAL_GATEWAY"); d != "" {
 		cfg.Gateway.Driver = d
+		cfg.Gateway.Provider = os.Getenv("STOWAGE_EVAL_PROVIDER") // bifrost: required (D-049/D-075)
 		cfg.Gateway.BaseURL = os.Getenv("STOWAGE_EVAL_BASE_URL")
 		cfg.Gateway.APIKey = os.Getenv("STOWAGE_EVAL_API_KEY_REF") // env.VAR form
 		cfg.Gateway.Model = os.Getenv("STOWAGE_EVAL_MODEL")
 		cfg.Gateway.EmbedModel = os.Getenv("STOWAGE_EVAL_EMBED_MODEL")
+		cfg.Gateway.RerankModel = os.Getenv("STOWAGE_EVAL_RERANK_MODEL") // empty → no rerank pass
 		if v := os.Getenv("STOWAGE_EVAL_EMBED_DIMS"); v != "" {
 			if n, err := strconv.Atoi(v); err == nil {
 				cfg.Gateway.EmbedDims = n
@@ -202,6 +206,14 @@ func NewTestServer(t testing.TB, tenantID string) *TestServer {
 	embedder.Start(ctx)
 
 	retriever := retrieval.NewWithInjections(st.Memories(), st.Records(), vi, gw, st.Injections(), log)
+	// Full-mode rerank wiring (D-075): when a real gateway + rerank model are
+	// configured, wire the cross-encoder so the precise-profile retrieve (the
+	// runner sets profile=precise when RunConfig.EnableRerank) actually reranks.
+	// The CI/mock run never sets STOWAGE_EVAL_GATEWAY, so rerank stays OFF and the
+	// committed deterministic baseline is unaffected.
+	if os.Getenv("STOWAGE_EVAL_GATEWAY") != "" && cfg.Gateway.RerankModel != "" {
+		retriever = retriever.WithRerankModel(cfg.Gateway.RerankModel)
+	}
 	srv.SetRetriever(retriever)
 
 	reconcileStage := reconcile.New(

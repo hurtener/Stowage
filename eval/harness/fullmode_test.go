@@ -15,17 +15,24 @@ import (
 
 	"github.com/hurtener/stowage/eval/datasets"
 	"github.com/hurtener/stowage/eval/datasets/longmemeval"
-	_ "github.com/hurtener/stowage/internal/gateway/openaicompat" // full mode uses the real HTTP driver
+	_ "github.com/hurtener/stowage/internal/gateway/bifrost"      // full mode: bifrost runs the whole OpenRouter stack incl. rerank (D-075)
+	_ "github.com/hurtener/stowage/internal/gateway/openaicompat" // still a valid driver (selectable via STOWAGE_EVAL_GATEWAY)
 )
 
 // TestFullMode runs a public-dataset slice through the REAL pipeline (live
 // gateway from STOWAGE_EVAL_* envs) and writes per-question results to
 // eval/results/. Operator-triggered: make eval-full (never CI).
 //
-//	STOWAGE_EVAL_GATEWAY=openaicompat STOWAGE_EVAL_BASE_URL=https://openrouter.ai/api/v1 \
-//	STOWAGE_EVAL_API_KEY_REF=env.STOWAGE_TEST_OPENROUTER_KEY \
-//	STOWAGE_EVAL_MODEL=google/gemini-3.5-flash \
-//	STOWAGE_EVAL_EMBED_MODEL=google/gemini-embedding-2 STOWAGE_EVAL_EMBED_DIMS=3072 \
+// Rebased onto bifrost + the operator's cheaper models with rerank ENABLED
+// (D-075): bifrost auto-wires a Cohere-shape custom provider so a single gateway
+// runs embed + complete + rerank on OpenRouter with one key.
+//
+//	STOWAGE_EVAL_GATEWAY=bifrost STOWAGE_EVAL_PROVIDER=openrouter \
+//	STOWAGE_EVAL_BASE_URL=https://openrouter.ai/api/v1 \
+//	STOWAGE_EVAL_API_KEY_REF=env.OPENROUTER_API_KEY \
+//	STOWAGE_EVAL_MODEL=inception/mercury-2 \
+//	STOWAGE_EVAL_EMBED_MODEL=perplexity/pplx-embed-v1-0.6b STOWAGE_EVAL_EMBED_DIMS=1024 \
+//	STOWAGE_EVAL_RERANK_MODEL=cohere/rerank-4-fast \
 //	STOWAGE_EVAL_LIMIT=10 go test -tags=fullmode -run TestFullMode -timeout 90m ./eval/harness/
 func TestFullMode(t *testing.T) {
 	if os.Getenv("STOWAGE_EVAL_GATEWAY") == "" {
@@ -64,7 +71,11 @@ func TestFullMode(t *testing.T) {
 	}
 
 	srv := NewTestServer(t, "eval-full")
-	runner := NewRunner(srv, RunConfig{})
+	// Rerank ENABLED in full mode (D-075): the runner issues precise-profile
+	// retrieves so the cross-encoder pass runs against the bifrost-wired rerank
+	// model. Disable via STOWAGE_EVAL_RERANK_MODEL="" (then the harness skips the
+	// WithRerankModel wiring and precise just runs without a rerank model).
+	runner := NewRunner(srv, RunConfig{EnableRerank: os.Getenv("STOWAGE_EVAL_RERANK_MODEL") != ""})
 
 	ctx := context.Background()
 	start := time.Now()

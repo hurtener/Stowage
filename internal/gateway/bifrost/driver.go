@@ -40,14 +40,19 @@ type bifrostClient interface {
 // and dispatches per-request goroutines). The closed flag is atomic.Bool for
 // idempotent Close. Per-call state lives on the call stack / ctx.
 type Driver struct {
-	client   bifrostClient
+	client bifrostClient
+	// provider is the primary provider for embed + complete (and native rerank).
 	provider bfschemas.ModelProvider
-	cfg      config.GatewayConfig
-	log      *slog.Logger
-	meter    gateway.Meter
-	breaker  *gateway.CircuitBreaker
-	bat      *gateway.Batcher
-	cache    *gateway.EmbedCache
+	// rerankProvider is the provider rerank requests route to: == provider for a
+	// native-rerank primary (or no rerank model configured), == the auto-wired
+	// customRerankProvider when the Cohere-shape custom provider is wired (D-075).
+	rerankProvider bfschemas.ModelProvider
+	cfg            config.GatewayConfig
+	log            *slog.Logger
+	meter          gateway.Meter
+	breaker        *gateway.CircuitBreaker
+	bat            *gateway.Batcher
+	cache          *gateway.EmbedCache
 
 	closed atomic.Bool
 }
@@ -73,6 +78,19 @@ func open(
 	if err != nil {
 		return nil, fmt.Errorf("bifrost: Init: %w", err)
 	}
+
+	// Never silent (D-075/AC-3): when the Cohere-shape custom rerank provider is
+	// auto-wired, log it at boot — name, base URL, and path, NEVER the key.
+	if account.customRerank {
+		log.LogAttrs(ctx, slog.LevelInfo, "bifrost: auto-wired custom rerank provider",
+			slog.String("provider", string(account.rerankProvider)),
+			slog.String("base_provider_type", string(bfschemas.Cohere)),
+			slog.String("base_url", account.rerankBaseURL),
+			slog.String("path", customRerankPath),
+			slog.String("rerank_model", cfg.RerankModel),
+		)
+	}
+
 	return newDriverWithClient(inner, account.provider, cfg, log, prom), nil //nolint:contextcheck // batcher uses background ctx for long-lived worker goroutines
 }
 
@@ -86,13 +104,14 @@ func newDriverWithClient(
 	prom *prometheus.Registry,
 ) *Driver {
 	d := &Driver{
-		client:   client,
-		provider: provider,
-		cfg:      cfg,
-		log:      log,
-		meter:    gateway.NewPromMeter(log, prom),
-		breaker:  gateway.NewCircuitBreaker(),
-		cache:    gateway.NewEmbedCache(0),
+		client:         client,
+		provider:       provider,
+		rerankProvider: rerankProviderFor(provider, cfg),
+		cfg:            cfg,
+		log:            log,
+		meter:          gateway.NewPromMeter(log, prom),
+		breaker:        gateway.NewCircuitBreaker(),
+		cache:          gateway.NewEmbedCache(0),
 	}
 	d.bat = gateway.NewBatcher(d.embedBatch, d.meter, cfg.EmbedModel) //nolint:contextcheck // batcher uses background ctx for async dispatch
 	return d
@@ -266,7 +285,7 @@ func (d *Driver) Rerank(ctx context.Context, req gateway.RerankRequest) (gateway
 	}
 
 	bfReq := &bfschemas.BifrostRerankRequest{
-		Provider:  d.provider,
+		Provider:  d.rerankProvider,
 		Model:     d.cfg.RerankModel,
 		Query:     req.Query,
 		Documents: docs,
