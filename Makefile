@@ -46,7 +46,8 @@ check-mirror:
 	@diff -q AGENTS.md CLAUDE.md && echo "mirror OK"
 
 preflight: build check-mirror drift-audit
-	@for s in scripts/smoke/phase-*.sh; do [ -e "$$s" ] || continue; bash "$$s"; done
+	@rc=0; for s in scripts/smoke/phase-*.sh; do [ -e "$$s" ] || continue; bash "$$s" || rc=1; done; \
+	  if [ "$$rc" -ne 0 ]; then echo "preflight FAILED — a smoke script reported failure"; exit 1; fi
 	@echo "preflight OK"
 
 install-hooks:

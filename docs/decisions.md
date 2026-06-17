@@ -1726,3 +1726,18 @@ can send on a closed channel (no panic across the boundary). `-race`-proven in
 **Consequences.** Operators get the canonical single-process both-surfaces shape
 with one config line; the two-process shape (with its documented cross-process
 staleness caveat) remains available by simply not setting the knob.
+
+**Note (2026-06-17) — gate-integrity repair surfaced by h6 (§4.4).** Implementing
+h6 surfaced that `scripts/smoke/phase-16.sh` had asserted exactly 7 MCP tools and
+was FAILING (exit 2) since h3/h4 grew the surface to 13 — yet `make preflight`
+still reported "preflight OK". Root cause: the `preflight` smoke loop (`Makefile`)
+ran each `scripts/smoke/phase-*.sh` **without checking its exit code** (no
+`set -e`, no `|| rc=1`), silently tolerating a failing smoke; and CI
+(`.github/workflows/ci.yml`) does not run preflight/smokes at all (build/vet/test/
+coverage/eval-ci/check-mirror/drift-audit only), so the drift was invisible
+end-to-end. Fixed here: (1) phase-16.sh updated to the current canonical 13-tool
+surface; (2) the `preflight` target now fails if ANY smoke exits non-zero
+(verified — a deliberately broken smoke makes `make preflight` exit non-zero with
+"preflight FAILED"). **Recommendation (not done here — flagged for the owner):**
+add a smoke/preflight job to CI so smoke drift is caught at the CI gate, not only
+the local pre-commit hook.
