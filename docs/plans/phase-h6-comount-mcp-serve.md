@@ -85,12 +85,11 @@ docs/plans/README.md ; docs/glossary.md ; example config
 |-----|---------|-------|
 | `server.mcp_listen` | `""` (off) | When set (e.g. `:8081`), `stowage serve` also serves MCP-over-HTTP on this address over the same stack. Empty = single-surface serve (unchanged zero-config). Placed in all three profiles; surfaced by `stowage config explain`; documented in the example config (D-034). |
 
-**OPEN QUESTION for the owner — the default.** Recommendation: **default empty
-(opt-in)** so zero-config `stowage serve` keeps binding exactly one port (no
-surprise second bound port), and the canonical both-surfaces shape is one
-documented config line. Alternative: a default port (on-by-default) to make the
-canonical shape the literal default. Default chosen: **opt-in (empty)** unless you
-say otherwise — recorded before implementation.
+**RESOLVED (owner, 2026-06-17): default empty (opt-in).** Zero-config `stowage
+serve` keeps binding exactly one port (HTTP API only) — no surprise second bound
+port, no behavior change for existing single-port deployments. Operators enable
+the canonical both-surfaces shape with one config line (`server.mcp_listen:
+":8081"`); the canonical shape is documented, not forced. Cleared to build.
 
 ## Acceptance criteria (binding)
 
