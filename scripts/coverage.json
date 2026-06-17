@@ -18,6 +18,7 @@
   "github.com/hurtener/stowage/internal/mcpserver": 80,
   "github.com/hurtener/stowage/internal/lifecycle": 85,
   "github.com/hurtener/stowage/internal/pipeline": 80,
+  "github.com/hurtener/stowage/internal/playbook": 80,
   "github.com/hurtener/stowage/internal/reconcile": 85,
   "github.com/hurtener/stowage/internal/records": 85,
   "github.com/hurtener/stowage/internal/retrieval": 85,

@@ -7,9 +7,11 @@ import (
 
 	"github.com/hurtener/dockyard/runtime/tool"
 
+	"github.com/hurtener/stowage/internal/config"
 	"github.com/hurtener/stowage/internal/grants"
 	"github.com/hurtener/stowage/internal/identity"
 	"github.com/hurtener/stowage/internal/pipeline"
+	"github.com/hurtener/stowage/internal/playbook"
 	"github.com/hurtener/stowage/internal/reconcile"
 	"github.com/hurtener/stowage/internal/records"
 	"github.com/hurtener/stowage/internal/retrieval"
@@ -231,15 +233,57 @@ func makeRetrieveHandler(svc *Services) tool.Handler[RetrieveInput, RetrieveOutp
 
 // ─── memory_playbook ─────────────────────────────────────────────────────────
 
-func makePlaybookHandler(_ *Services) tool.Handler[PlaybookInput, PlaybookOutput] {
-	return func(_ context.Context, _ PlaybookInput) (tool.Result[PlaybookOutput], error) {
-		// Stub: lands in Phase 17.
-		out := PlaybookOutput{Error: "memory_playbook: not implemented — lands in Phase 17"}
+func makePlaybookHandler(svc *Services) tool.Handler[PlaybookInput, PlaybookOutput] {
+	return func(ctx context.Context, in PlaybookInput) (tool.Result[PlaybookOutput], error) {
+		scope, err := svc.ScopeFn(ctx)
+		if err != nil {
+			return tool.Result[PlaybookOutput]{}, fmt.Errorf("memory_playbook: resolve scope: %w", err)
+		}
+
+		// LLM-free assembly core (D-072) — identical to GET /v1/playbook + the
+		// embedded SDK Playbook. The token budget is profile-internal (D-042).
+		pb, err := playbook.Assemble(ctx, svc.Store, scope, playbook.Options{
+			SessionID:   in.SessionID,
+			TokenBudget: config.PlaybookBudgetForProfile(svc.Profile),
+		})
+		if err != nil {
+			return tool.Result[PlaybookOutput]{}, fmt.Errorf("memory_playbook: %w", err)
+		}
+
+		out := playbookToOutput(pb)
 		return tool.Result[PlaybookOutput]{
-			Text:       out.Error,
+			Text:       fmt.Sprintf("Playbook: %d section(s), %d item(s) packed (%d/%d tokens)", len(out.Sections), pb.Budget.ItemsPacked, pb.Budget.TokensUsed, pb.Budget.TokenBudget),
 			Structured: out,
 		}, nil
 	}
+}
+
+// playbookToOutput maps the assembled playbook onto the MCP wire type. Shared
+// shape with the HTTP + SDK surfaces so all three are byte-identical (AC-5).
+func playbookToOutput(pb *playbook.Playbook) PlaybookOutput {
+	out := PlaybookOutput{
+		Sections: make([]PlaybookSection, 0, len(pb.Sections)),
+		Budget: PlaybookBudget{
+			TokenBudget: pb.Budget.TokenBudget,
+			TokensUsed:  pb.Budget.TokensUsed,
+			ItemsTotal:  pb.Budget.ItemsTotal,
+			ItemsPacked: pb.Budget.ItemsPacked,
+		},
+	}
+	for _, sec := range pb.Sections {
+		ms := PlaybookSection{Title: sec.Title, Kind: sec.Kind, Items: make([]PlaybookItem, 0, len(sec.Items))}
+		for _, it := range sec.Items {
+			mi := PlaybookItem{MemoryID: it.MemoryID, Kind: it.Kind, Content: it.Content, Score: it.Score}
+			for _, p := range it.Provenance {
+				mi.Provenance = append(mi.Provenance, PlaybookProvRef{
+					RecordID: p.RecordID, SpanStart: p.SpanStart, SpanEnd: p.SpanEnd,
+				})
+			}
+			ms.Items = append(ms.Items, mi)
+		}
+		out.Sections = append(out.Sections, ms)
+	}
+	return out
 }
 
 // ─── memory_drilldown ────────────────────────────────────────────────────────

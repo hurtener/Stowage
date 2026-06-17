@@ -37,6 +37,9 @@ type Services struct {
 	PipelineStage *pipeline.Stage
 	Log           *slog.Logger
 	ScopeFn       ScopeFn
+	// Profile is the active config profile — selects the profile-internal
+	// playbook token budget for memory_playbook (D-072/D-042).
+	Profile string
 }
 
 // StdioScopeFn returns a ScopeFn that always resolves to a tenant-only scope
@@ -75,7 +78,7 @@ func New(info server.Info, svc *Services) (*server.Server, error) {
 	}
 
 	if err := tool.New[PlaybookInput, PlaybookOutput]("memory_playbook").
-		Describe("Look up the extraction playbook for a query (stub — lands in Phase 17).").
+		Describe("Assemble the deterministic, sectioned, utility-ranked, budget-packed memory playbook for the caller's scope: strategy and failure_mode memories first, then decision/gotcha/pattern building blocks, with provenance. LLM-free (mirrors GET /v1/playbook; D-072). session_id narrows to one session.").
 		Handler(makePlaybookHandler(svc)).
 		Register(srv); err != nil {
 		return nil, err

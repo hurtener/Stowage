@@ -206,6 +206,17 @@ type MemoryStore interface {
 	// all siblings that were merged into a common digest (Phase 18, D-064).
 	// Returns an empty slice (not ErrNotFound) when none exist.
 	ListSupersededBy(ctx context.Context, scope identity.Scope, supersederID string) ([]Memory, error)
+
+	// ListByKinds returns the active memories in scope whose kind is one of
+	// kinds, ordered by (created_at, id) ascending for a stable, reproducible
+	// result. It is the store view backing deterministic playbook assembly
+	// (internal/playbook, D-072): ranking happens in the playbook layer from the
+	// utility counters, so this method ranks nothing — it just returns the
+	// candidate set. Active-only and scope-enforced (P3); there is no unscoped
+	// variant. An empty kinds slice returns an empty slice (not an error). Not
+	// paginated: the playbook kinds are a bounded per-scope set the caller
+	// budget-packs.
+	ListByKinds(ctx context.Context, scope identity.Scope, kinds []string) ([]Memory, error)
 }
 
 // TopicStore manages extraction magnets (RFC §4.1, D-007).

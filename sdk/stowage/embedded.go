@@ -10,6 +10,7 @@ import (
 	"github.com/hurtener/stowage/internal/config"
 	"github.com/hurtener/stowage/internal/identity"
 	"github.com/hurtener/stowage/internal/pipeline"
+	"github.com/hurtener/stowage/internal/playbook"
 	"github.com/hurtener/stowage/internal/reconcile"
 	"github.com/hurtener/stowage/internal/records"
 	"github.com/hurtener/stowage/internal/retrieval"
@@ -33,6 +34,9 @@ import (
 type embeddedClient struct {
 	stack *boot.Stack
 	scope identity.Scope
+	// profile is the active config profile — selects the profile-internal
+	// playbook token budget (D-072/D-042).
+	profile string
 	// pl is the live derivation system started by boot.StartPipeline. Ingest
 	// enqueues onto pl.In; pl.Stage is retained for the flush/branch control
 	// verbs Wave B surfaces on the SDK. Safe for concurrent use after construction.
@@ -135,9 +139,10 @@ func NewEmbedded(parentCtx context.Context, cfg config.Config, opts ...Option) (
 	}
 
 	client := &embeddedClient{
-		stack: stk,
-		scope: identity.Scope{Tenant: o.tenantID},
-		pl:    p,
+		stack:   stk,
+		scope:   identity.Scope{Tenant: o.tenantID},
+		profile: cfg.Profile,
+		pl:      p,
 	}
 
 	closer := func(ctx context.Context) error {
@@ -523,9 +528,47 @@ func (c *embeddedClient) Topics(ctx context.Context) (TopicsResponse, error) {
 	return TopicsResponse{Topics: out}, nil
 }
 
-// Playbook implements Client. Stub in Phase 17.
-func (c *embeddedClient) Playbook(_ context.Context, _ PlaybookRequest) (PlaybookResponse, error) {
-	return PlaybookResponse{Entries: []any{}, Stub: true}, nil
+// Playbook implements Client via the LLM-free playbook assembly core (D-072).
+// The token budget is profile-internal (config.PlaybookBudgetForProfile); the
+// assembly never calls the gateway.
+func (c *embeddedClient) Playbook(ctx context.Context, req PlaybookRequest) (PlaybookResponse, error) {
+	pb, err := playbook.Assemble(ctx, c.stack.Store, c.scope, playbook.Options{
+		SessionID:   req.SessionID,
+		TokenBudget: config.PlaybookBudgetForProfile(c.profile),
+	})
+	if err != nil {
+		return PlaybookResponse{}, fmt.Errorf("sdk: playbook: %w", err)
+	}
+	return playbookToSDK(pb), nil
+}
+
+// playbookToSDK maps the assembled playbook onto the SDK wire type. The JSON
+// field names are byte-identical to the HTTP envelope so both impls return the
+// same shape (parity_test + AC-5).
+func playbookToSDK(pb *playbook.Playbook) PlaybookResponse {
+	out := PlaybookResponse{
+		Sections: make([]PlaybookSection, 0, len(pb.Sections)),
+		Budget: PlaybookBudget{
+			TokenBudget: pb.Budget.TokenBudget,
+			TokensUsed:  pb.Budget.TokensUsed,
+			ItemsTotal:  pb.Budget.ItemsTotal,
+			ItemsPacked: pb.Budget.ItemsPacked,
+		},
+	}
+	for _, sec := range pb.Sections {
+		ss := PlaybookSection{Title: sec.Title, Kind: sec.Kind, Items: make([]PlaybookItem, 0, len(sec.Items))}
+		for _, it := range sec.Items {
+			si := PlaybookItem{MemoryID: it.MemoryID, Kind: it.Kind, Content: it.Content, Score: it.Score}
+			for _, p := range it.Provenance {
+				si.Provenance = append(si.Provenance, PlaybookProvenanceRef{
+					RecordID: p.RecordID, SpanStart: p.SpanStart, SpanEnd: p.SpanEnd,
+				})
+			}
+			ss.Items = append(ss.Items, si)
+		}
+		out.Sections = append(out.Sections, ss)
+	}
+	return out
 }
 
 // GetMemory implements Client via the reconcile core (D-070).

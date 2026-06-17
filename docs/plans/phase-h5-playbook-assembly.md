@@ -1,6 +1,6 @@
 # Phase h5 — Deterministic playbook assembly (finish the stubbed primitive, all surfaces)
 
-- **Status:** draft | approved | in-progress | shipped
+- **Status:** shipped
 - **Owning subsystem(s):** `internal/playbook` (new, LLM-free), `internal/store` (a scoped list-by-kinds seam method), `internal/api`, `internal/mcpserver`, `sdk/stowage`
 - **RFC sections:** §6a.3 (deterministic playbook assembly — no LLM), §9.1/§9.2/§9.3 (surfaces), §4.2 (scoring reuse)
 - **Depends on phases:** 08 reconcile (strategy/failure_mode kinds), 10 scoring (pure utility/decay fns), 16/17 surfaces — all shipped
@@ -30,7 +30,12 @@ surface (`ErrPlaybookStub` is deleted).
 
 ## Findings I'm departing from
 
-- None. **Scope boundary (not a departure — explicit):** §6a pieces 1–2
+- **`Options.TopicKeys` dropped (implementation deviation, D-072).** The design block
+  sketched `Options{SessionID, TopicKeys, TokenBudget}`. Memories carry no topic-key
+  column in the v1 schema (RFC §8.1), so a topic filter would be a dead knob (D-024).
+  Shipped `Options` exposes `SessionID` (session-affinity) + `TokenBudget` only; sections
+  are grouped by kind. Recorded in D-072.
+- **Scope boundary (not a departure — explicit):** §6a pieces 1–2
   (outcome-aware *reflection extraction* + the multi-epoch re-reflection sweep —
   the LLM **write** side that *produces* `strategy`/`failure_mode` memories) are
   roadmap **Phase 19**, OUT of scope here. The assembly is useful without them: it

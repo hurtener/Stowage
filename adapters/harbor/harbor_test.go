@@ -80,7 +80,13 @@ func (f *fakeClient) Topics(_ context.Context) (stowage.TopicsResponse, error) {
 }
 
 func (f *fakeClient) Playbook(_ context.Context, _ stowage.PlaybookRequest) (stowage.PlaybookResponse, error) {
-	return stowage.PlaybookResponse{Entries: []any{}, Stub: true}, nil
+	return stowage.PlaybookResponse{
+		Sections: []stowage.PlaybookSection{{
+			Title: "Strategies", Kind: "strategy",
+			Items: []stowage.PlaybookItem{{MemoryID: "m1", Kind: "strategy", Content: "fake", Score: 1.0}},
+		}},
+		Budget: stowage.PlaybookBudget{TokenBudget: 2000, TokensUsed: 1, ItemsTotal: 1, ItemsPacked: 1},
+	}, nil
 }
 
 func (f *fakeClient) GetMemory(_ context.Context, id string) (stowage.GetMemoryResponse, error) {
