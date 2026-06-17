@@ -350,6 +350,19 @@ Wave C is **h5 alone** — runtime API-key management is HTTP-only by design (ow
 2026-06-16; a recorded tier exception: key/credential admin → {HTTP} only, distinct
 from grants admin → {HTTP, MCP}). A Wave-C checkpoint gates Wave D.
 
-Waves C (finish-or-defer half-shipped primitives, D-072) and D (decision-shaped
-RFC remainder: server deployment shape + facade, D-073) follow per D-067; each
-wave's plans are authored before implementation and gated by a checkpoint audit.
+Wave C shipped: h5 (D-072, #36), checkpoint (#37).
+
+### Wave D — decision-shaped RFC remainder (closes the program)
+
+Wave D is an **RFC amendment, not an implementation phase** (D-073): it ratifies
+the **server deployment shape** (one process exposes both HTTP + MCP over one
+`boot.Stack` + `boot.StartPipeline`; stdio MCP a separate lightweight mode — owner,
+2026-06-17) and codifies the **one logic core, thin tiered surfaces** invariant +
+the three-tier capability matrix the program proved (RFC §9.2/§9.5, CLAUDE.md §6).
+Named follow-up: a small phase to co-mount the MCP-HTTP handler onto `stowage
+serve`. Deferred (recorded): reflection §6a.1-2 → Phase 19; playbook
+topic-grouping → schema amendment; DSAR → Phase 21; grants RedactionProfile →
+later.
+
+**Program complete (D-067).** Waves A (h1/h2), B (h3/h4), C (h5) + three
+checkpoint audits shipped; the "same code, same seams" parity gap is closed.

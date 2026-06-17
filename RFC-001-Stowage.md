@@ -744,6 +744,15 @@ Post-v1, the operator console (browse memories, walk supersede chains, drill
 provenance, edit topics/grants, watch the event stream) ships as a **Dockyard
 MCP App** rendered inline in the host's chat surface.
 
+**Deployment shape (D-073).** A single Stowage **server** deployment is **one
+process** that exposes both the HTTP API and the MCP-over-HTTP surface over one
+`boot.Stack` and one live pipeline (`boot.StartPipeline`) — one result cache, one
+lifecycle sweep set, no cross-process cache-staleness. Consumers reach the *same*
+running stack through HTTP, MCP, or a combination. `stowage mcp` over **stdio**
+remains a separate lightweight mode for a single embedded host, and `sdk/stowage`
+in-process mode (§9.3) embeds the same stack with no daemon at all. Both server
+surfaces are thin callers over one logic core (§9.5).
+
 ### 9.3 Go SDK
 
 `sdk/stowage` — typed client over HTTP plus an in-process mode (embed the whole
@@ -785,6 +794,36 @@ five minutes. Binding rules:
 - **The knob guardrail.** Every new knob ships in the same PR with: a tuned
   default, a placement in every profile, docs, and a justification for why a
   profile can't absorb it. Knobs are a cost, not a feature.
+
+---
+
+### 9.5 One logic core, thin tiered surfaces (D-067 / D-073)
+
+The same code, same seams promise (§2) is enforced by a single rule: **every
+capability is implemented once in the core/service layer; the surfaces — the Go
+SDK (`sdk/stowage`), the HTTP API, and the MCP tools — are thin callers.** A
+capability (and its side effects — cache invalidation, validation, events) living
+in one surface's handler instead of the core is drift, and drift between surfaces
+is the bug. The productionization program (D-067) established this after finding
+the flagship pipeline, reversibility, cache-invalidation, and topic-validation
+logic stranded in individual surfaces.
+
+Reachability is **tiered** by who the capability serves:
+
+| Tier | Capabilities | Reachable on |
+|------|--------------|--------------|
+| **Single-user** | ingest, retrieve, drilldown, feedback, citations, topics R/W, rollback, confirm/reject, buffer flush, branches, `memory_assert`, playbook — and the pipeline + lifecycle | **SDK + HTTP + MCP** |
+| **Team / grants admin** | group & grant create/list/revoke, contribute-mode | **HTTP + MCP** (not the SDK — embedded is single-user) |
+| **Key / credential admin** | runtime API-key create/list/rotate/revoke | **HTTP** only |
+| **Backend** | every `Store` capability | **sqlite + Postgres** (shared conformance) |
+
+The invariant is held by mechanical seams, not convention: `boot.StartPipeline`
+(one post-boot wiring for serve/mcp/embedded), core-owned cache invalidation
+(`reconcile` busts the scope cache so no surface can forget), single-core
+reversibility/topics/contribute, the `internal/playbook` transitive no-gateway
+lint, and **surface-parity tests that include MCP** (the gap that once let drift
+through). A new capability ships on all of its tier's surfaces *in the same PR*,
+with a parity test asserting identical behavior.
 
 ---
 
