@@ -1,10 +1,15 @@
 #!/usr/bin/env bash
-# Phase 16 smoke test: MCP server registers and exposes 7 typed tools.
+# Phase 16 smoke test: MCP server registers and exposes the typed tool surface.
+#
+# Phase 16 shipped the original seven tools; phases 17/h4/h5 grew the surface to
+# thirteen (the D-070 reversibility trio + the D-071 tiered control verbs). This
+# smoke tracks the CURRENT canonical surface so it keeps passing across phases
+# (kept honest in the h6 PR — §4.4 same-PR repair).
 #
 # Starts stowage mcp --stdio with a temp SQLite store and mock gateway,
 # sends JSON-RPC initialize → tools/list over the stdio pipe, and verifies:
-#   - exactly 7 tools are returned
-#   - all 7 expected names are present
+#   - exactly 13 tools are returned
+#   - all 13 expected names are present
 #
 # Mirrors the other phase smoke scripts: temp DB + config, CGo-free build,
 # background server killed after session.
@@ -115,7 +120,7 @@ else
   NAMES=""
 fi
 
-WANT=7
+WANT=13
 if [ "$TOOL_COUNT" -eq "$WANT" ]; then
   ok "tools/list returned exactly $WANT tools (AC-1)"
 else
@@ -123,18 +128,25 @@ else
   echo "tools/list response: $TOOLS_LINE" >&2
 fi
 
-# Verify the 7 expected names (only when jq is available).
+# Verify the 13 expected names (only when jq is available). Sorted to match the
+# `sort` applied to NAMES above.
 if command -v jq &>/dev/null && [ -n "$NAMES" ]; then
   EXPECTED="memory_assert
+memory_branch
 memory_drilldown
 memory_feedback
+memory_flush
+memory_get
+memory_grants
 memory_ingest
 memory_playbook
+memory_resolve
 memory_retrieve
+memory_rollback
 memory_topics"
 
   if [ "$NAMES" = "$EXPECTED" ]; then
-    ok "all 7 tool names match expected names (AC-1)"
+    ok "all $WANT tool names match expected names (AC-1)"
   else
     failc "tool names mismatch (AC-1)"
     printf 'expected:\n%s\ngot:\n%s\n' "$EXPECTED" "$NAMES" >&2

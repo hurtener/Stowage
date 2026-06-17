@@ -1,6 +1,6 @@
 # Phase h6 — Co-mount MCP-over-HTTP onto `stowage serve` (one process, both surfaces, one stack)
 
-- **Status:** draft | approved | in-progress | shipped
+- **Status:** shipped
 - **Owning subsystem(s):** `cmd/stowage` (runServe), `internal/config` (one new knob), `internal/mcpserver` (reused as-is), `internal/api` (unchanged)
 - **RFC sections:** §9.2 (deployment shape — the canonical one-process server), §9.5 (one logic core, thin tiered surfaces)
 - **Depends on phases:** h1 (`boot.StartPipeline`), h3/h4 (the MCP surface), h5 — all shipped

@@ -1680,3 +1680,64 @@ and the co-mount implementation follow-up named in Decision 1.
 binding (RFC §9.2/§9.5, CLAUDE.md §6). Future phases extend the core and inherit
 all-surface reachability + parity testing by default, rather than re-discovering
 the drift the program corrected.
+
+## D-074 — `stowage serve` co-mounts MCP-over-HTTP on a second listener over the shared stack (D-073 follow-up)
+
+2026-06-17. Phase h6. Implements the co-mount follow-up named (not built) in
+D-073 Decision 1 — the canonical one-process/both-surfaces deployment shape
+(RFC §9.2/§9.5). Pure process wiring; no capability is re-implemented.
+
+**Decision.** `stowage serve` optionally co-mounts the MCP-over-HTTP surface on a
+SECOND listener over the SAME `boot.Stack` + `boot.StartPipeline` as the HTTP API
+— one result cache (`stk.Retriever`), one ingest channel (`p.In`), one buffer
+stage (`p.Stage`), one lifecycle sweep set. A write via the HTTP surface is
+therefore immediately reflected by an MCP retrieve with no stale window (the
+D-073 cache-coherence win is structural, not a sync protocol). The co-mounted MCP
+is the SAME `internal/mcpserver` handlers (h3/h4/h5) — `ScopeFn = CtxScopeFn()`,
+tenant from the authenticated key via `KeyringMiddleware` over the store keyring.
+
+**One knob (D-034).** `server.mcp_listen`, default **empty (opt-in)**. Empty keeps
+`stowage serve` single-surface (HTTP API only), binding exactly one port — the
+zero-config shape is unchanged, no surprise second bound port for existing
+deployments. Set (e.g. `:8081`) enables the canonical both-surfaces shape with one
+config line. Validated as a host:port distinct from `server.listen`; surfaced by
+`config explain`; documented on the `ServerConfig.MCPListen` field; same-PR smoke
+(`scripts/smoke/phase-h6.sh`). It is a boot/listen concern, so — like
+`server.listen` — it is a top-level default applying to all profiles, not a
+profile-override map entry.
+
+**Two listeners, not one path-prefixed port.** Rejected mounting MCP under the
+api `http.Server` (e.g. `/mcp`): the api server sets a REST-correct `WriteTimeout`
+and a body-limit + request-logging middleware chain, whereas the MCP HTTP
+transport streams and deliberately runs with NO `WriteTimeout` (only
+`ReadHeaderTimeout`), so a shared port would let `WriteTimeout` truncate MCP
+streams and wrap MCP in REST middleware. The shared `Stack`+`Pipeline` (not a
+shared port) is what delivers cache-coherence.
+
+**Shutdown order (h1 ingress-before-Drain invariant).** On signal, BOTH listeners
+are shut down — `srv.Shutdown(ctx)` AND `mcpHTTP.Shutdown(ctx)`, both awaited —
+BEFORE `p.Drain(ctx)` closes the ingest channel, so no in-flight REST/MCP handler
+can send on a closed channel (no panic across the boundary). `-race`-proven in
+`test/integration/comount_test.go`.
+
+**Unchanged.** `stowage mcp` (stdio + standalone `--http`) is untouched. When
+`server.mcp_listen` is empty, `runServe` binds exactly one port as before.
+
+**Consequences.** Operators get the canonical single-process both-surfaces shape
+with one config line; the two-process shape (with its documented cross-process
+staleness caveat) remains available by simply not setting the knob.
+
+**Note (2026-06-17) — gate-integrity repair surfaced by h6 (§4.4).** Implementing
+h6 surfaced that `scripts/smoke/phase-16.sh` had asserted exactly 7 MCP tools and
+was FAILING (exit 2) since h3/h4 grew the surface to 13 — yet `make preflight`
+still reported "preflight OK". Root cause: the `preflight` smoke loop (`Makefile`)
+ran each `scripts/smoke/phase-*.sh` **without checking its exit code** (no
+`set -e`, no `|| rc=1`), silently tolerating a failing smoke; and CI
+(`.github/workflows/ci.yml`) does not run preflight/smokes at all (build/vet/test/
+coverage/eval-ci/check-mirror/drift-audit only), so the drift was invisible
+end-to-end. Fixed here: (1) phase-16.sh updated to the current canonical 13-tool
+surface; (2) the `preflight` target now fails if ANY smoke exits non-zero
+(verified — a deliberately broken smoke makes `make preflight` exit non-zero with
+"preflight FAILED"). **Recommendation (not done here — flagged for the owner):**
+add a smoke/preflight job to CI so smoke drift is caught at the CI gate, not only
+the local pre-commit hook.

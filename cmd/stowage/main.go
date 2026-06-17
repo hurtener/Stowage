@@ -569,10 +569,14 @@ Flags:
 //     single canonical post-boot wiring shared with
 //     `stowage mcp` and the SDK (D-068)
 //  5. srv.Set*             — wire the HTTP surface onto the live system
-//  6. ListenAndServe       — start accepting connections
+//  6. (optional) mcpserver — when cfg.Server.MCPListen != "", co-mount the
+//     MCP-over-HTTP surface on a SECOND listener over the SAME stk + p (one
+//     cache, one pipeline — the D-073/D-074 canonical both-surfaces shape)
+//  7. ListenAndServe       — start accepting connections on both listeners
 //
 // Graceful shutdown on SIGTERM/SIGINT:
-//  1. api.Shutdown — stop accepting HTTP (no further ingest enqueues)
+//  1. api.Shutdown (+ mcpHTTP.Shutdown when co-mounted) — stop accepting on both
+//     listeners, await in-flight handlers (no further ingest enqueues)
 //  2. p.Drain      — stop sweeps + backfill, close channel, drain the stages
 //  3. stk.Close    — retriever/gateway/store close (via defer)
 func runServe(args []string) {
@@ -650,6 +654,50 @@ func runServe(args []string) {
 	srv.SetRetriever(stk.Retriever)
 	srv.SetGrantsService(stk.GrantsSvc)
 
+	// Optional co-mounted MCP-over-HTTP surface (D-074). When server.mcp_listen
+	// is set, serve the SAME mcpserver handlers (h3/h4/h5) over the SAME
+	// stk + p — one result cache, one pipeline, no cross-process staleness
+	// (the D-073 canonical one-process/both-surfaces shape). Built here, before
+	// the listeners start, so a build error exits before any port binds. A
+	// SEPARATE http.Server (not a path-prefix on the api listener) because MCP
+	// streams and must NOT inherit the REST WriteTimeout/middleware — so it sets
+	// only ReadHeaderTimeout, mirroring `stowage mcp --http`. mcpHTTP stays nil
+	// when the knob is empty: `stowage serve` then binds exactly one port,
+	// unchanged.
+	var mcpHTTP *http.Server
+	if cfg.Server.MCPListen != "" {
+		mcpSvc := &mcpserver.Services{
+			Store:         stk.Store,
+			Retriever:     stk.Retriever,
+			TopicSvc:      stk.TopicSvc,
+			GrantsSvc:     stk.GrantsSvc,
+			PipelineIn:    p.In,    // SAME ingest channel as the HTTP API
+			PipelineStage: p.Stage, // SAME buffer stage (flush/branch control)
+			Log:           stk.Log,
+			ScopeFn:       mcpserver.CtxScopeFn(), // tenant from the authenticated key
+			Profile:       cfg.Profile,
+		}
+		mcpSrv, mcpErr := mcpserver.New(server.Info{
+			Name:    "stowage",
+			Title:   "Stowage Memory MCP Server",
+			Version: version.Version,
+		}, mcpSvc)
+		if mcpErr != nil {
+			stk.Log.Error("stowage serve: create mcp server", "err", mcpErr)
+			os.Exit(1)
+		}
+		mcpHandler, hErr := mcpSrv.HTTPHandler(nil)
+		if hErr != nil {
+			stk.Log.Error("stowage serve: mcp http handler", "err", hErr)
+			os.Exit(1)
+		}
+		mcpHTTP = &http.Server{
+			Addr:              cfg.Server.MCPListen,
+			Handler:           mcpserver.KeyringMiddleware(stk.Store.Keys(), mcpHandler),
+			ReadHeaderTimeout: 10 * time.Second, // no WriteTimeout — MCP streams
+		}
+	}
+
 	// Start HTTP server in a goroutine.
 	servErr := make(chan error, 1)
 	go func() {
@@ -657,6 +705,17 @@ func runServe(args []string) {
 			servErr <- listenErr
 		}
 	}()
+
+	// Start the co-mounted MCP listener in a goroutine; surface listen errors
+	// the same way as the api one.
+	if mcpHTTP != nil {
+		go func() {
+			if listenErr := mcpHTTP.ListenAndServe(); listenErr != nil && !errors.Is(listenErr, http.ErrServerClosed) {
+				servErr <- listenErr
+			}
+		}()
+		stk.Log.Info("stowage serve: mcp co-mounted", "addr", cfg.Server.MCPListen)
+	}
 
 	stk.Log.Info("stowage serve: ready", "addr", cfg.Server.Listen)
 
@@ -673,14 +732,25 @@ func runServe(args []string) {
 	}
 
 	// Graceful shutdown:
-	//  1. api.Shutdown — stop accepting HTTP; no further ingest enqueues possible.
+	//  1. api.Shutdown + mcpHTTP.Shutdown — stop accepting on BOTH listeners and
+	//     await in-flight handlers; once both return, no surface can enqueue ingest.
 	//  2. p.Drain      — stop sweeps + backfill (the ingest-channel producers),
 	//                    close the channel, then drain buffer → extract → reconcile.
 	//  3. stk.Close (deferred above) — retriever.Close, gateway.Close, store.Close
+	//
+	// Both listeners MUST be fully shut down BEFORE p.Drain closes the ingest
+	// channel — otherwise an in-flight MCP/REST handler could enqueue onto a
+	// closed channel (a send on a closed channel, a panic across the boundary;
+	// the h1 ingress-before-Drain invariant).
 	shutdownCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	if err := srv.Shutdown(shutdownCtx); err != nil {
 		stk.Log.Error("stowage serve: shutdown", "err", err)
+	}
+	if mcpHTTP != nil {
+		if err := mcpHTTP.Shutdown(shutdownCtx); err != nil {
+			stk.Log.Error("stowage serve: mcp shutdown", "err", err)
+		}
 	}
 	if err := p.Drain(shutdownCtx); err != nil {
 		stk.Log.Error("stowage serve: drain pipeline", "err", err)
