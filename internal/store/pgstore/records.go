@@ -229,6 +229,47 @@ func (r *recordStore) GetMany(ctx context.Context, scope identity.Scope, ids []s
 	return out, nil
 }
 
+// ListByOutcome returns scope's records whose outcome ∈ outcomes and occurred_at
+// > since, grouped into trajectories by (session_id, branch_id, occurred_at, id),
+// capped at limit. Scope-parameterized (P3). Used by the reflection sweep.
+func (r *recordStore) ListByOutcome(ctx context.Context, scope identity.Scope, outcomes []string, since int64, limit int) ([]store.Record, error) {
+	if len(outcomes) == 0 {
+		return nil, nil
+	}
+	whereClause, args, next, err := buildScopeWhere(scope, 1)
+	if err != nil {
+		return nil, err
+	}
+	placeholders := make([]string, len(outcomes))
+	for i, o := range outcomes {
+		placeholders[i] = fmt.Sprintf("$%d", next+i)
+		args = append(args, o)
+	}
+	sinceN := next + len(outcomes)
+	limitN := sinceN + 1
+	args = append(args, since, limit)
+	q := `SELECT id, tenant_id, COALESCE(project_id,''), COALESCE(user_id,''), COALESCE(session_id,''),
+	       branch_id, role, content, source_agent, response_id, outcome, outcome_detail,
+	       token_estimate, occurred_at, created_at, processed_at
+	  FROM records WHERE ` + whereClause +
+		` AND outcome IN (` + strings.Join(placeholders, ",") + `)` +
+		fmt.Sprintf(` AND occurred_at > $%d ORDER BY session_id ASC, branch_id ASC, occurred_at ASC, id ASC LIMIT $%d`, sinceN, limitN) //nolint:gosec
+	rows, err := r.s.pool.Query(ctx, q, args...)
+	if err != nil {
+		return nil, fmt.Errorf("pgstore: list by outcome: %w", err)
+	}
+	defer rows.Close()
+	var out []store.Record
+	for rows.Next() {
+		rec, err := scanRecord(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, *rec)
+	}
+	return out, rows.Err()
+}
+
 type rowScanner interface {
 	Scan(dest ...interface{}) error
 }

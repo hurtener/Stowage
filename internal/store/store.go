@@ -96,6 +96,14 @@ type RecordStore interface {
 	// silently omitted. Order matches the order of ids. Used by the drill-down
 	// path to batch-fetch verbatim records for provenance spans (Phase 11).
 	GetMany(ctx context.Context, scope identity.Scope, ids []string) ([]Record, error)
+
+	// ListByOutcome returns scope's records whose outcome is in outcomes and
+	// whose occurred_at is strictly greater than since (unix millis), ordered by
+	// (session_id, branch_id, occurred_at, id) ascending so rows group into
+	// trajectories, capped at limit. Scope-parameterized (P3) — there is no
+	// unscoped variant. An empty outcomes slice returns no rows. Used by the
+	// reflection sweep to read outcome-tagged trajectories (Phase 19, D-077).
+	ListByOutcome(ctx context.Context, scope identity.Scope, outcomes []string, since int64, limit int) ([]Record, error)
 }
 
 // MemoryStore is the abstraction layer (RFC §5, D-006, D-008, D-024).

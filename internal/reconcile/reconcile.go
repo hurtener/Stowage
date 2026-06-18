@@ -181,12 +181,19 @@ func (r *ReconcileStage) processCandidate(ctx context.Context, scope identity.Sc
 		return nil
 	}
 
-	// Step 3: Find structural neighbors.
-	neighbors, err := r.mem.FindNeighbors(ctx, scope, store.NeighborQuery{
+	// Step 3: Find structural neighbors. Reflection candidates (strategy /
+	// failure_mode) restrict the neighbor search to reflection kinds so a strategy
+	// can only dedupe/update/supersede another reflection memory — never a fact
+	// (D-077 #5). Topic candidates leave Kinds empty (all kinds), as before.
+	nq := store.NeighborQuery{
 		Entities: c.Entities,
 		Keywords: c.Keywords,
 		Limit:    neighborLimit,
-	})
+	}
+	if pipeline.IsReflectionKind(c.Kind) {
+		nq.Kinds = pipeline.ReflectionKindList()
+	}
+	neighbors, err := r.mem.FindNeighbors(ctx, scope, nq)
 	if err != nil {
 		return fmt.Errorf("reconcile: FindNeighbors: %w", err)
 	}
@@ -730,6 +737,17 @@ func nowMs() int64 {
 }
 
 func candidateToMemory(c pipeline.Candidate, normalized, hash, status string) store.Memory {
+	// Server-set provenance/seed (D-077 #4): reflection candidates carry
+	// "llm_reflected" + a seed stability; topic candidates leave them zero and
+	// inherit the defaults below.
+	trust := c.TrustSource
+	if trust == "" {
+		trust = "llm_extracted"
+	}
+	stability := c.Stability
+	if stability == 0 {
+		stability = 1.0
+	}
 	return store.Memory{
 		ID:          ulid.Make().String(),
 		Kind:        c.Kind,
@@ -738,8 +756,8 @@ func candidateToMemory(c pipeline.Candidate, normalized, hash, status string) st
 		Status:      status,
 		Importance:  c.Importance,
 		Confidence:  c.Confidence,
-		TrustSource: "llm_extracted",
-		Stability:   1.0,
+		TrustSource: trust,
+		Stability:   stability,
 		ContentHash: hash,
 	}
 }

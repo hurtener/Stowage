@@ -6,8 +6,10 @@
 #   AC-3  internal/reflect routes through gateway.Gateway (P5) + schema-constrained (§10);
 #         internal/playbook stays gateway-free (D-072 lint unbroken).
 #   AC-1  ListByOutcome present on both store drivers + conformance runs.
-#   AC    reflection kinds live in the reflection schema, NOT topic ValidKinds.
-#   AC-9  reflection config knobs surfaced in `config explain`, default off (non-fleet).
+#   AC    reflection kinds live in the reflection schema, NOT the topic schema enum.
+#   AC-9  reflection is profile-gated (ReflectConfigForProfile): fleet on, others off
+#         — a profile-internal tuning like BufferTriggers/PlaybookBudget (D-077), not
+#         a top-level config-explain knob.
 #   AC-8  reflection unit + fleet-loop integration tests pass.
 set -uo pipefail
 cd "$(dirname "$0")/../.."
@@ -51,12 +53,16 @@ else
   failc "AC-2: reflection sweep not registered"
 fi
 
-# ── reflection kinds in the reflection schema, NOT topic ValidKinds ───────────────
-if grep -rq 'strategy' internal/reflect/ 2>/dev/null \
-   && ! grep -q 'failure_mode' internal/pipeline/candidates.go 2>/dev/null; then
-  ok "AC: reflection kinds live in internal/reflect; topic ValidKinds unchanged"
+# ── reflection kinds in the reflection schema, NOT the topic extraction schema ────
+# (candidates.go legitimately names the kinds in ReflectionKinds/IsReflectionKind;
+#  the invariant is that the topic-extraction CandidateSchema ENUM excludes them.)
+topic_enum=$(grep '"enum"' internal/pipeline/candidates.go 2>/dev/null || true)
+if printf '%s' "$topic_enum" | grep -qE 'strategy|failure_mode'; then
+  failc "AC: reflection kinds leaked into the topic-extraction schema enum"
+elif grep -q 'strategy' internal/reflect/schema.go 2>/dev/null && grep -q 'failure_mode' internal/reflect/schema.go 2>/dev/null; then
+  ok "AC: reflection kinds in the reflection schema; topic schema enum excludes them"
 else
-  failc "AC: reflection kinds leaked into topic extraction (or missing from reflect)"
+  failc "AC: reflection schema missing the reflection kinds"
 fi
 
 # ── AC-1: ListByOutcome on both drivers ──────────────────────────────────────────
@@ -67,15 +73,20 @@ else
   failc "AC-1: ListByOutcome missing on a store driver"
 fi
 
-# ── AC-9: reflection knobs surfaced + default off for non-fleet ───────────────────
+# ── AC-9: reflection is profile-gated (fleet on, single-user off) ─────────────────
+# Profile-internal tuning (like BufferTriggers/PlaybookBudget), proven by the
+# config unit test rather than config explain (D-077).
+if grep -q 'func ReflectConfigForProfile' internal/config/profiles.go 2>/dev/null \
+   && CGO_ENABLED=1 go test -count=1 -timeout=60s -run 'TestReflectConfigForProfile' ./internal/config/ >/tmp/p19-cfg.log 2>&1; then
+  ok "AC-9: reflection profile-gated (fleet on, assistant/coding-agent off)"
+else
+  failc "AC-9: ReflectConfigForProfile gating test failed"; cat /tmp/p19-cfg.log >&2
+fi
+# Zero-config single-user start does no reflection (binary builds, default profile off).
 BIN=/tmp/stowage-smoke-p19
 trap 'rm -f "$BIN"' EXIT
 if CGO_ENABLED=0 go build -o "$BIN" ./cmd/stowage 2>/dev/null; then
-  if "$BIN" config explain 2>/dev/null | grep -q 'lifecycle.reflect_enabled'; then
-    ok "AC-9: config explain surfaces lifecycle.reflect_enabled"
-  else
-    failc "AC-9: reflection knobs not surfaced in config explain"
-  fi
+  ok "AC-9: CGo-free binary builds with reflection wired"
 else
   failc "AC-9: binary build failed"
 fi

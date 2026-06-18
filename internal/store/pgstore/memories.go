@@ -479,6 +479,16 @@ func (m *memoryStore) FindNeighbors(ctx context.Context, scope identity.Scope, q
 	}
 
 	allArgs := append(cteArgs, scopeArgs...) //nolint:gocritic
+
+	// Optional kind filter (NeighborQuery.Kinds): reflection candidates restrict
+	// neighbors to reflection kinds so a strategy cannot dedupe/supersede a fact
+	// (D-077 #5). Empty Kinds = all kinds (the topic-extraction default).
+	kindClause := ""
+	if len(q.Kinds) > 0 {
+		kindClause = fmt.Sprintf(" AND m.kind = ANY($%d)", next)
+		allArgs = append(allArgs, q.Kinds) // pgx handles []string as text[]
+		next++
+	}
 	allArgs = append(allArgs, limit)
 
 	qStr := `WITH overlap AS (
@@ -489,7 +499,7 @@ func (m *memoryStore) FindNeighbors(ctx context.Context, scope identity.Scope, q
 	SELECT ` + memorySelectCols + `
 	FROM memories m
 	JOIN overlap o ON o.memory_id = m.id
-	WHERE ` + scopeWhere + ` AND m.status = 'active'
+	WHERE ` + scopeWhere + ` AND m.status = 'active'` + kindClause + `
 	ORDER BY o.cnt DESC, m.created_at DESC
 	LIMIT $` + strconv.Itoa(next) //nolint:gosec
 

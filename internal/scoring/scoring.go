@@ -385,7 +385,9 @@ func trustMultiplierFor(trustSource string) float64 {
 		return trustMultAgreedUpon
 	case "agent_suggested":
 		return trustMultAgentSuggested
-	case "llm_extracted":
+	case "llm_extracted", "llm_reflected":
+		// Reflection products are LLM-derived (no user confirmation) — same trust
+		// multiplier as llm_extracted (D-077).
 		return trustMultLLMExtracted
 	default:
 		return trustMultAgentSuggested

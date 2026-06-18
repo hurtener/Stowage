@@ -52,6 +52,36 @@ func BufferTriggersForProfile(profile string) BufferTriggers {
 	}
 }
 
+// ReflectConfig holds the per-profile reflection-sweep tuning (Phase 19, D-077).
+// Like BufferTriggers and PlaybookBudget above, these are profile-internal
+// constants — NOT operator-tunable top-level config knobs — tuned per profile and
+// re-tuned by the eval harness (D-035). Reflection is the fleet-learning loop, so
+// it is ENABLED only on the fleet profile by default; single-user profiles
+// (assistant, coding-agent) keep it off so zero-config single-user start does no
+// reflection gateway calls (D-034 zero-config invariant preserved).
+type ReflectConfig struct {
+	Enabled    bool          // wire the reflection sweep at all
+	Interval   time.Duration // sweep cadence (jittered)
+	BatchSize  int           // max outcome-tagged records per scope per sweep
+	EpochEvery int           // every Nth interval re-reflects the wider trailing window
+}
+
+// ReflectConfigForProfile returns the reflection-sweep tuning for the named
+// profile. Unknown profiles fall back to "assistant" (off).
+//
+//	| profile      | enabled | interval | batch | epoch_every |
+//	|--------------|---------|----------|-------|-------------|
+//	| assistant    |   off   |   30m    |  200  |      8      |
+//	| coding-agent |   off   |   30m    |  200  |      8      |
+//	| fleet        |   ON    |   30m    |  200  |      8      |
+func ReflectConfigForProfile(profile string) ReflectConfig {
+	rc := ReflectConfig{Enabled: false, Interval: 30 * time.Minute, BatchSize: 200, EpochEvery: 8}
+	if profile == "fleet" {
+		rc.Enabled = true
+	}
+	return rc
+}
+
 // PlaybookBudgetForProfile returns the deterministic playbook token budget for
 // the named profile (D-072). Like the buffer triggers above, this is a
 // profile-internal constant — NOT an operator-tunable top-level config knob
