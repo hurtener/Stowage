@@ -24,6 +24,9 @@
     },
     "k": {
       "type": "integer"
+    },
+    "arc_of": {
+      "type": "string"
     }
   },
   "additionalProperties": false

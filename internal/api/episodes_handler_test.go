@@ -113,6 +113,52 @@ func TestEpisodes_GetByID_Window_Missing(t *testing.T) {
 	}
 }
 
+// TestEpisodes_Arc proves GET /v1/episodes?arc_of= returns the threaded arc (D-081).
+func TestEpisodes_Arc(t *testing.T) {
+	t.Parallel()
+	_, ts, st := newTopicsTestServer(t)
+	tenant := "tenant-episodes-arc"
+	_, agentKey := mustCreateAgentKey(t, st, tenant)
+	ctx := context.Background()
+	scope := identity.Scope{Tenant: tenant}
+	mk := func(epID, narrID, content string, start int64) {
+		if err := st.Memories().Insert(ctx, scope, store.Memory{
+			ID: narrID, Kind: "narrative", Content: content, Status: "active", Importance: 3,
+			Confidence: 0.8, TrustSource: "episodic", Stability: 1.0, EpisodeID: epID, CreatedAt: start, UpdatedAt: start,
+		}); err != nil {
+			t.Fatalf("narr: %v", err)
+		}
+		if err := st.Episodes().CreateEpisode(ctx, scope, store.Episode{
+			ID: epID, SessionID: epID + "-s", Title: epID, Status: "closed", Outcome: "success",
+			StartedAt: start, EndedAt: start + 100, NarrativeMemoryID: narrID, CreatedAt: start, UpdatedAt: start,
+		}); err != nil {
+			t.Fatalf("ep: %v", err)
+		}
+	}
+	mk("01EPARCONEAAAAAAAAAAAAAAAA", "01NARCONEAAAAAAAAAAAAAAAAA", "shipped the launch", 1000)
+	mk("01EPARCTWOAAAAAAAAAAAAAAAA", "01NARCTWOAAAAAAAAAAAAAAAAA", "continued the launch", 2000)
+	if err := st.Memories().InsertLinks(ctx, scope, []store.Link{{
+		ID: "01LARCAAAAAAAAAAAAAAAAAAAA", TenantID: tenant, FromMemory: "01NARCONEAAAAAAAAAAAAAAAAA",
+		ToMemory: "01NARCTWOAAAAAAAAAAAAAAAAA", Type: "relates_to", Source: "inferred", Confidence: 0.7, CreatedAt: 3000,
+	}}); err != nil {
+		t.Fatalf("link: %v", err)
+	}
+
+	resp, err := doRequest(t, http.MethodGet, ts.URL+"/v1/episodes?arc_of=01EPARCONEAAAAAAAAAAAAAAAA", nil, agentKey)
+	if err != nil {
+		t.Fatalf("GET arc: %v", err)
+	}
+	defer drainClose(resp.Body)
+	var body episodesBody
+	_ = json.NewDecoder(resp.Body).Decode(&body)
+	if resp.StatusCode != http.StatusOK || len(body.Episodes) != 2 {
+		t.Fatalf("arc: want 200 + 2 episodes, got %d / %d", resp.StatusCode, len(body.Episodes))
+	}
+	if body.Episodes[0].ID != "01EPARCTWOAAAAAAAAAAAAAAAA" || body.Episodes[1].ID != "01EPARCONEAAAAAAAAAAAAAAAA" {
+		t.Errorf("arc order wrong: %+v", body.Episodes)
+	}
+}
+
 // TestEpisodes_SimilarNoRetriever proves ?similar_to= returns 200 empty+degraded
 // when no retriever is wired (graceful degradation, D-036/D-082).
 func TestEpisodes_SimilarNoRetriever(t *testing.T) {

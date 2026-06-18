@@ -125,6 +125,13 @@ New terms land here in the same PR that introduces them (CLAUDE.md §14).
 - **Episodic retrieval** — reading episodes + their narratives through the
   `memory_episodes` capability (list / get / time-window), deterministic and
   LLM-free (Phase 23, D-080); the §6b read side over Phase-22 episodes.
+- **Arc (living episode)** — a cross-session group of episodes about the same effort
+  ("the billing migration"), formed by `relates_to` edges between their narrative
+  memories; read via `memory_episodes` `arc_of` (Phase 24b, D-081).
+- **Episode threading** — the gateway-free, off-by-default lifecycle sweep that
+  clusters recent narrated episodes into arcs by narrative content word-set overlap ∧
+  temporal proximity ∧ `(project,user)` continuity (Phase 24b, D-081); enablement is
+  eval-gated.
 - **Episode contrast** — surfacing the most similar past episode and comparing
   outcomes against the current situation.
 - **Similar-episode contrast** — ranking the scope's past episodes by

@@ -572,6 +572,18 @@ func (c *embeddedClient) Episodes(ctx context.Context, req EpisodesRequest) (Epi
 		}
 		return out, nil
 	}
+	// arc_of: return the episode's cross-session arc (§6b threading, D-081).
+	if req.ArcOf != "" {
+		views, err := episodes.Arc(ctx, c.stack.Store, c.scope, req.ArcOf)
+		if err != nil {
+			return EpisodesResponse{}, fmt.Errorf("sdk: episodes arc: %w", err)
+		}
+		out := EpisodesResponse{Episodes: make([]Episode, 0, len(views))}
+		for _, v := range views {
+			out.Episodes = append(out.Episodes, episodeToSDK(v))
+		}
+		return out, nil
+	}
 	res, err := episodes.List(ctx, c.stack.Store, c.scope, episodes.ListOptions{
 		Limit: req.Limit, Cursor: req.Cursor, SessionID: req.SessionID, From: req.From, Until: req.Until,
 	})

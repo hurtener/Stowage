@@ -129,7 +129,7 @@ match table slots 19–21.
 | 23 | Episodic retrieval | `memory_episodes` (list/get/window) across {SDK,HTTP,MCP}; deterministic | §6b |
 | 23b | Similar-episode contrast | `memory_episodes` `similar_to` (vector-over-narratives nearest-episode contrast) across {SDK,HTTP,MCP}, degraded-safe — D-082. **LLM window-synthesis deferred** (deterministic window list already serves the §6b structured summary; pulled on an eval signal) | §6b |
 | 24 | Causal links | inferred `led_to` edges (schema-constrained, confidence-gated, inferred once at narration) + the gateway-free `memory_causal` "why" traversal across {SDK,HTTP,MCP} — D-083 | §5.6, §6b |
-| 24b | Episode threading (PROPOSED) | group session-episodes into cross-session **arcs** (a "living episode") via narrative-vector clustering + entity/temporal overlap; deterministic grouping, optional arc summary. Pulled only on an episodic-eval win — **D-081 (proposed)** | §6b |
+| 24b | Episode threading | gateway-free sweep groups session-episodes into cross-session **arcs** via `relates_to` edges between narratives (content bigram-Jaccard ∧ temporal ∧ project/user); read via `memory_episodes` `arc_of` across {SDK,HTTP,MCP}. **Mechanism shipped OFF by default**; enablement eval-gated — **D-081 (ratified)** | §6b |
 
 ### v1.2 — Trust extensions
 

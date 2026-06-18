@@ -96,6 +96,15 @@ type EpisodeConfig struct {
 	// (Phase 24, D-083). Profile-internal (like the intervals above — NOT a top-level
 	// operator knob); the eval harness re-tunes it with real data (D-035).
 	CausalMinConfidence float64
+
+	// Episode threading (Phase 24b, D-081). Profile-internal; OFF BY DEFAULT —
+	// enablement is gated on an episodic-eval win (D-035). The eval re-tunes the
+	// overlap/window thresholds before any profile turns it on.
+	ThreadingEnabled bool
+	ThreadInterval   time.Duration
+	ThreadMinOverlap float64
+	ThreadWindow     time.Duration
+	ThreadBatchSize  int
 }
 
 // EpisodeConfigForProfile returns the episode-sweep tuning for the named profile.
@@ -105,6 +114,10 @@ func EpisodeConfigForProfile(profile string) EpisodeConfig {
 	ec := EpisodeConfig{
 		Enabled: false, DetectInterval: 15 * time.Minute, NarrateInterval: 15 * time.Minute,
 		IdleWindow: 30 * time.Minute, GapSplit: 0, CausalMinConfidence: 0.6,
+		// Threading ships OFF in every profile (D-081 eval-gate); thresholds are the
+		// conservative defaults the eval will re-tune before enablement.
+		ThreadingEnabled: false, ThreadInterval: 30 * time.Minute, ThreadMinOverlap: 0.3,
+		ThreadWindow: 30 * 24 * time.Hour, ThreadBatchSize: 50,
 	}
 	if profile == "assistant" || profile == "fleet" {
 		ec.Enabled = true

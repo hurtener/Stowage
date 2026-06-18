@@ -261,6 +261,9 @@ func (c *httpClient) Episodes(ctx context.Context, req EpisodesRequest) (Episode
 	if req.K > 0 {
 		v.Set("k", strconv.Itoa(req.K))
 	}
+	if req.ArcOf != "" {
+		v.Set("arc_of", req.ArcOf)
+	}
 	path := "/v1/episodes"
 	if enc := v.Encode(); enc != "" {
 		path += "?" + enc

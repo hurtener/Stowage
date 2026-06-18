@@ -64,6 +64,41 @@ func seedEpisodes(t *testing.T, cfg config.Config) {
 	}
 }
 
+// seedEpisodeArc adds a third narrated episode (e3) and threads it to e1 via a
+// relates_to edge between their narrative memories, so arc_of(e1) returns {e1, e3} —
+// a non-trivial, byte-identical arc across surfaces (Phase 24b, D-081).
+func seedEpisodeArc(t *testing.T, cfg config.Config) {
+	t.Helper()
+	ctx := context.Background()
+	st, err := store.Open(ctx, cfg.Store)
+	if err != nil {
+		t.Fatalf("seed arc: open: %v", err)
+	}
+	defer func() { _ = st.Close(ctx) }()
+	scope := identity.Scope{Tenant: episodesTenant}
+	if err := st.Memories().Insert(ctx, scope, store.Memory{
+		ID: "01NARRTHREEAAAAAAAAAAAAAAA", Kind: "narrative", Content: "Continued the launch, tightened the lock.",
+		Context: "Launch", Status: "active", Importance: 3, Confidence: 0.8, TrustSource: "episodic",
+		Stability: 1.0, EpisodeID: "01EPTHREEAAAAAAAAAAAAAAAAA", CreatedAt: 1_500_000, UpdatedAt: 1_500_000,
+	}); err != nil {
+		t.Fatalf("seed arc narrative: %v", err)
+	}
+	if err := st.Episodes().CreateEpisode(ctx, scope, store.Episode{
+		ID: "01EPTHREEAAAAAAAAAAAAAAAAA", SessionID: "sess-3", Title: "Launch cont.", Status: "closed",
+		Outcome: "success", StartedAt: 1_500_000, EndedAt: 1_500_500, NarrativeMemoryID: "01NARRTHREEAAAAAAAAAAAAAAA",
+		CreatedAt: 1_500_000, UpdatedAt: 1_500_000,
+	}); err != nil {
+		t.Fatalf("seed e3: %v", err)
+	}
+	if err := st.Memories().InsertLinks(ctx, scope, []store.Link{{
+		ID: "01LINKTHREADAAAAAAAAAAAAAA", TenantID: episodesTenant,
+		FromMemory: "01NARRAAAAAAAAAAAAAAAAAAAA", ToMemory: "01NARRTHREEAAAAAAAAAAAAAAA",
+		Type: "relates_to", Source: "inferred", Confidence: 0.7, CreatedAt: 1_600_000,
+	}}); err != nil {
+		t.Fatalf("seed thread link: %v", err)
+	}
+}
+
 // seedEpisodeVectors embeds e1's narrative (mock gateway, deterministic) and
 // upserts it into the shared store's vector BLOBs, so every surface's hnsw index
 // rebuilds the same vector and the similar_to path is non-trivially correct +
@@ -254,6 +289,36 @@ func TestEpisodesParity_Similar(t *testing.T) {
 	}
 	if emb.Episodes[0].Narrative != "Planned and shipped the launch under a lock." {
 		t.Errorf("similar: e1 narrative not attached: %q", emb.Episodes[0].Narrative)
+	}
+}
+
+// TestEpisodesParity_Arc is the Phase-24b threading parity bar (D-081): a seeded
+// arc_of query is BYTE IDENTICAL across embedded/HTTP/MCP and returns the seed + the
+// threaded episode (deterministic — no gateway in the read).
+func TestEpisodesParity_Arc(t *testing.T) {
+	cfg := baseConfig(t)
+	cfg.Profile = "assistant"
+	seedEpisodes(t, cfg)
+	seedEpisodeArc(t, cfg)
+
+	emb := episodesEmbedded(t, cfg, stowage.EpisodesRequest{ArcOf: "01EPONEAAAAAAAAAAAAAAAAAAA"})
+	htp := episodesHTTP(t, cfg, stowage.EpisodesRequest{ArcOf: "01EPONEAAAAAAAAAAAAAAAAAAA"})
+	mcp := episodesMCP(t, cfg, mcpserver.EpisodesInput{ArcOf: "01EPONEAAAAAAAAAAAAAAAAAAA"})
+
+	embJSON := canonicalJSON(t, emb)
+	if embJSON != canonicalJSON(t, htp) {
+		t.Errorf("arc: embedded vs HTTP diverge:\n embedded=%s\n     http=%s", embJSON, canonicalJSON(t, htp))
+	}
+	if embJSON != canonicalJSON(t, mcp) {
+		t.Errorf("arc: embedded vs MCP diverge:\n embedded=%s\n      mcp=%s", embJSON, canonicalJSON(t, mcp))
+	}
+
+	// Non-trivially correct: the arc is {e1, e3}, most-recent-first (e3 then e1).
+	if len(emb.Episodes) != 2 {
+		t.Fatalf("expected a 2-episode arc, got %d: %+v", len(emb.Episodes), emb.Episodes)
+	}
+	if emb.Episodes[0].ID != "01EPTHREEAAAAAAAAAAAAAAAAA" || emb.Episodes[1].ID != "01EPONEAAAAAAAAAAAAAAAAAAA" {
+		t.Errorf("arc order wrong: %+v", emb.Episodes)
 	}
 }
 

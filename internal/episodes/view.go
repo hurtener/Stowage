@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 
 	"github.com/hurtener/stowage/internal/identity"
 	"github.com/hurtener/stowage/internal/store"
@@ -61,6 +62,106 @@ func Similar(ctx context.Context, st store.Store, searcher NarrativeSearcher, sc
 		views = append(views, v)
 	}
 	return views, degraded, nil
+}
+
+// maxArcNodes caps an arc traversal (resource guard).
+const maxArcNodes = 200
+
+// Arc returns the episodes threaded to episodeID — its cross-session arc (Phase 24b,
+// D-081), including the seed, most-recent-first. It walks relates_to edges between the
+// episodes' narrative memories (BFS, cycle-safe, capped) and maps each connected
+// narrative back to its episode. Deterministic and gateway-free. An absent seed ⇒
+// empty; an unarrated/unthreaded seed ⇒ just the seed.
+func Arc(ctx context.Context, st store.Store, scope identity.Scope, episodeID string) ([]EpisodeView, error) {
+	seed, err := st.Episodes().GetEpisode(ctx, scope, episodeID)
+	if errors.Is(err, store.ErrNotFound) {
+		return []EpisodeView{}, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("episodes: arc: get seed: %w", err)
+	}
+
+	// Collect episode ids in the arc, starting with the seed. BFS over relates_to
+	// edges between narrative memories.
+	epIDs := []string{seed.ID}
+	seenEp := map[string]bool{seed.ID: true}
+
+	if seed.NarrativeMemoryID != "" {
+		seenNarr := map[string]bool{seed.NarrativeMemoryID: true}
+		queue := []string{seed.NarrativeMemoryID}
+		for len(queue) > 0 && len(epIDs) < maxArcNodes {
+			narrID := queue[0]
+			queue = queue[1:]
+			neighbors, lerr := relatedNarratives(ctx, st, scope, narrID)
+			if lerr != nil {
+				return nil, lerr
+			}
+			for _, nID := range neighbors {
+				if seenNarr[nID] {
+					continue
+				}
+				seenNarr[nID] = true
+				mem, gerr := st.Memories().Get(ctx, scope, nID)
+				if gerr != nil || mem == nil || mem.Status != "active" || mem.EpisodeID == "" {
+					continue // narrative gone/non-active/unlinked — skip
+				}
+				if !seenEp[mem.EpisodeID] {
+					seenEp[mem.EpisodeID] = true
+					epIDs = append(epIDs, mem.EpisodeID)
+				}
+				queue = append(queue, nID)
+			}
+		}
+	}
+
+	// Load each episode + narrative; then sort most-recent-first.
+	views := make([]EpisodeView, 0, len(epIDs))
+	for _, id := range epIDs {
+		ep, gerr := st.Episodes().GetEpisode(ctx, scope, id)
+		if errors.Is(gerr, store.ErrNotFound) {
+			continue
+		}
+		if gerr != nil {
+			return nil, fmt.Errorf("episodes: arc: load %s: %w", id, gerr)
+		}
+		v, terr := toView(ctx, st, scope, *ep)
+		if terr != nil {
+			return nil, terr
+		}
+		views = append(views, v)
+	}
+	sort.SliceStable(views, func(i, j int) bool {
+		if views[i].StartedAt != views[j].StartedAt {
+			return views[i].StartedAt > views[j].StartedAt
+		}
+		return views[i].ID > views[j].ID
+	})
+	return views, nil
+}
+
+// relatedNarratives returns the narrative memory ids linked to narrID by a relates_to
+// edge in either direction.
+func relatedNarratives(ctx context.Context, st store.Store, scope identity.Scope, narrID string) ([]string, error) {
+	fromLinks, err := st.Memories().ListLinks(ctx, scope, narrID, "")
+	if err != nil {
+		return nil, fmt.Errorf("episodes: arc: list links from %s: %w", narrID, err)
+	}
+	toLinks, err := st.Memories().ListLinks(ctx, scope, "", narrID)
+	if err != nil {
+		return nil, fmt.Errorf("episodes: arc: list links to %s: %w", narrID, err)
+	}
+	var out []string
+	for _, l := range fromLinks {
+		if l.Type == "relates_to" && l.ToMemory != narrID {
+			out = append(out, l.ToMemory)
+		}
+	}
+	for _, l := range toLinks {
+		if l.Type == "relates_to" && l.FromMemory != narrID {
+			out = append(out, l.FromMemory)
+		}
+	}
+	return out, nil
 }
 
 // ListOptions filters/paginates an episode list.

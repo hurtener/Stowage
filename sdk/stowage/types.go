@@ -405,6 +405,9 @@ type EpisodesRequest struct {
 	// similarity to this text (§6b contrast, Phase 23b); K caps the results.
 	SimilarTo string
 	K         int
+	// ArcOf, when set, returns the cross-session arc of the given episode id —
+	// the episodes threaded to it via relates_to edges (§6b threading, Phase 24b).
+	ArcOf string
 }
 
 // Episode is one episode + its narrative.
