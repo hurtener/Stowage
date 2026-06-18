@@ -947,6 +947,16 @@ func makeEpisodesHandler(svc *Services) tool.Handler[EpisodesInput, EpisodesOutp
 				out.Episodes = append(out.Episodes, episodeToItem(v))
 			}
 			out.Degraded = degraded
+		case in.ArcOf != "":
+			// Cross-session arc of an episode (§6b threading, D-081).
+			views, aerr := episodes.Arc(ctx, svc.Store, scope, in.ArcOf)
+			if aerr != nil {
+				return tool.Result[EpisodesOutput]{}, fmt.Errorf("memory_episodes: %w", aerr)
+			}
+			out.Episodes = make([]EpisodeItem, 0, len(views))
+			for _, v := range views {
+				out.Episodes = append(out.Episodes, episodeToItem(v))
+			}
 		default:
 			res, lerr := episodes.List(ctx, svc.Store, scope, episodes.ListOptions{
 				Limit: in.Limit, Cursor: in.Cursor, SessionID: in.SessionID, From: in.From, Until: in.Until,

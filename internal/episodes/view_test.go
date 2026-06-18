@@ -153,3 +153,99 @@ func TestSimilar(t *testing.T) {
 		t.Errorf("expected searcher error to propagate")
 	}
 }
+
+// --- Phase 24b: Arc (cross-session threading, D-081) -------------------------
+
+func arcSeed(t *testing.T, st store.Store, scope identity.Scope, epID, narrID string, start int64) {
+	t.Helper()
+	ctx := context.Background()
+	if err := st.Memories().Insert(ctx, scope, store.Memory{
+		ID: narrID, Kind: "narrative", Content: "narr " + epID, Status: "active",
+		Importance: 3, Confidence: 0.8, TrustSource: "episodic", Stability: 1.0,
+		EpisodeID: epID, CreatedAt: start, UpdatedAt: start,
+	}); err != nil {
+		t.Fatalf("insert narrative: %v", err)
+	}
+	if err := st.Episodes().CreateEpisode(ctx, scope, store.Episode{
+		ID: epID, SessionID: epID + "-s", Title: epID, Status: "closed", Outcome: "success",
+		StartedAt: start, EndedAt: start + 100, NarrativeMemoryID: narrID, CreatedAt: start, UpdatedAt: start,
+	}); err != nil {
+		t.Fatalf("create episode: %v", err)
+	}
+}
+
+func arcLink(t *testing.T, st store.Store, scope identity.Scope, from, to string) {
+	t.Helper()
+	if err := st.Memories().InsertLinks(context.Background(), scope, []store.Link{{
+		ID: "lnk-" + from + "-" + to, TenantID: scope.Tenant, FromMemory: from, ToMemory: to,
+		Type: "relates_to", Source: "inferred", Confidence: 0.5, CreatedAt: 1,
+	}}); err != nil {
+		t.Fatalf("link: %v", err)
+	}
+}
+
+func TestArc(t *testing.T) {
+	ctx := context.Background()
+	st := openStore(t)
+	scope := identity.Scope{Tenant: "arc-t"}
+
+	// A — B — C chain (transitive arc) + D unthreaded.
+	arcSeed(t, st, scope, "A", "nA", 100)
+	arcSeed(t, st, scope, "B", "nB", 300)
+	arcSeed(t, st, scope, "C", "nC", 200)
+	arcSeed(t, st, scope, "D", "nD", 50)
+	arcLink(t, st, scope, "nA", "nB")
+	arcLink(t, st, scope, "nB", "nC")
+
+	got, err := Arc(ctx, st, scope, "A")
+	if err != nil {
+		t.Fatalf("Arc: %v", err)
+	}
+	ids := map[string]bool{}
+	for _, v := range got {
+		ids[v.ID] = true
+	}
+	if len(got) != 3 || !ids["A"] || !ids["B"] || !ids["C"] {
+		t.Fatalf("arc of A should be {A,B,C}, got %+v", got)
+	}
+	// Most-recent-first by StartedAt: B(300), C(200), A(100).
+	if got[0].ID != "B" || got[1].ID != "C" || got[2].ID != "A" {
+		t.Errorf("arc order wrong: %+v", got)
+	}
+	if ids["D"] {
+		t.Error("unthreaded episode D leaked into the arc")
+	}
+
+	// Unthreaded seed ⇒ just itself.
+	d, _ := Arc(ctx, st, scope, "D")
+	if len(d) != 1 || d[0].ID != "D" {
+		t.Errorf("arc of unthreaded D should be [D], got %+v", d)
+	}
+
+	// Missing seed ⇒ empty.
+	if m, _ := Arc(ctx, st, scope, "nope"); len(m) != 0 {
+		t.Errorf("arc of missing seed should be empty, got %+v", m)
+	}
+
+	// Cross-tenant isolation.
+	if x, _ := Arc(ctx, st, identity.Scope{Tenant: "other"}, "A"); len(x) != 0 {
+		t.Errorf("cross-tenant arc leak: %+v", x)
+	}
+}
+
+func TestArc_NonActiveNarrativeSkipped(t *testing.T) {
+	ctx := context.Background()
+	st := openStore(t)
+	scope := identity.Scope{Tenant: "arc-t2"}
+	arcSeed(t, st, scope, "A", "nA", 100)
+	arcSeed(t, st, scope, "B", "nB", 200)
+	arcLink(t, st, scope, "nA", "nB")
+	// Supersede B's narrative → B must drop out of the arc.
+	if err := st.Memories().SetStatus(ctx, scope, "nB", "superseded", 300); err != nil {
+		t.Fatalf("set status: %v", err)
+	}
+	got, _ := Arc(ctx, st, scope, "A")
+	if len(got) != 1 || got[0].ID != "A" {
+		t.Errorf("non-active narrative B must be skipped, got %+v", got)
+	}
+}

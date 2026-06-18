@@ -170,6 +170,9 @@ type EpisodesInput struct {
 	// result count (default 5). The deterministic list path is unaffected.
 	SimilarTo string `json:"similar_to,omitempty"`
 	K         int    `json:"k,omitempty"`
+	// ArcOf, when set, returns the cross-session arc of the given episode id — the
+	// episodes threaded to it via relates_to edges (§6b threading, Phase 24b/D-081).
+	ArcOf string `json:"arc_of,omitempty"`
 }
 
 // EpisodeItem is one episode + its narrative (byte-identical to the HTTP/SDK shape).

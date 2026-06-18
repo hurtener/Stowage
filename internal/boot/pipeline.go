@@ -171,6 +171,11 @@ func StartPipeline(ctx context.Context, stk *Stack, cfg config.Config) (*Pipelin
 	lcProfile.EpisodeIdleWindow = episodeCfg.IdleWindow
 	lcProfile.EpisodeGapSplit = episodeCfg.GapSplit
 	lcProfile.CausalMinConfidence = episodeCfg.CausalMinConfidence
+	lcProfile.ThreadingEnabled = episodeCfg.ThreadingEnabled
+	lcProfile.ThreadInterval = episodeCfg.ThreadInterval
+	lcProfile.ThreadMinOverlap = episodeCfg.ThreadMinOverlap
+	lcProfile.ThreadWindow = episodeCfg.ThreadWindow
+	lcProfile.ThreadBatchSize = episodeCfg.ThreadBatchSize
 	lc := lifecycle.New(stk.Store, stk.Log, lcProfile, ch)
 	if reflectCfg.Enabled {
 		// Wire the reflection sweep: it calls the gateway and emits into the

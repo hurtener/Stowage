@@ -1983,13 +1983,36 @@ need a fake-embedder harness), and they add a gateway/vindex dependency to an
 otherwise always-available, gateway-free read path. The deterministic surface here is
 the foundation they build on.
 
-## D-081 — Episode threading: group session-episodes into cross-session arcs (PROPOSED — backlog, not ratified)
+## D-081 — Episode threading: group session-episodes into cross-session arcs (RATIFIED, Phase 24b)
 
-> **Status: PROPOSED / backlog — NOT a settled decision.** Captured for the record
-> (owner request, 2026-06-18). The decisions log is otherwise settled-only; this
-> entry is a sketch that ratifies only when the phase is pulled. The number D-081 is
-> **reserved** for this proposal — if other work settles first it takes the next free
-> number and this stays D-081 until ratified or withdrawn. Roadmap stub: Phase 24b.
+> **Status: RATIFIED 2026-06-18 (Phase 24b).** The mechanism ships; broad *enablement*
+> stays eval-gated (see "Ratified shape" at the end). The original proposal sketch is
+> retained below for the record.
+
+**Ratified shape (Phase 24b).** Episode threading ships as a **gateway-free lifecycle
+sweep** (`runThreadEpisodes`, sibling to detect/narrate, advisory-locked + jittered)
+that groups recent narrated episodes of the same `(project,user)`, within a temporal
+window, whose narrative **content word-set Jaccard** (distinct content words, topical — not
+character-bigram, which saturates on any prose) ≥ `ThreadMinOverlap`, by writing a
+canonical `relates_to` edge between their **narrative memories** (`source="inferred"`)
++ an `episode.threaded` event — **no new table or
+column** (the `links` table + `relates_to` are day-one; narratives are memories), no
+RFC §8.1 amendment. Idempotent (skip already-linked pairs), reversible (derived edges
+over immutable episodes). Fork-1 resolved to **edges, not a container** (no `arcs`
+table). Clustering signal v1 = content word-set Jaccard ∧ temporal window ∧
+`(project,user)`; **narrative-vector similarity is a future signal** (narratives carry
+no entity/keyword junctions, so content-Jaccard is the conservative gateway-free start).
+The read is `episodes.Arc` (deterministic, gateway-free BFS over `relates_to`,
+active-only, capped), exposed as a `memory_episodes` **`arc_of`** query across {SDK,
+HTTP, MCP} (D-067; no new MCP tool) with a byte-identical parity test. Threading tuning
+is **profile-internal** (`EpisodeConfig.Threading*`), and the sweep ships **OFF by
+default in every profile** — broad enablement is gated on an episodic-eval win
+(cross-session QA / resumption; D-035). So Phase 24b lands the *mechanism*; turning it
+on in production is the eval's call.
+
+---
+
+**Original proposal (pre-ratification sketch, retained for the record):**
 
 **Problem.** Phase 22 detects an episode as one *closed session* (structural +
 temporal-gap heuristic, D-079). But the unit a user actually reasons about is the

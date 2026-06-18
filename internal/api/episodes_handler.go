@@ -81,6 +81,22 @@ func (s *Server) handleEpisodes(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// arc_of: return the cross-session arc of an episode (§6b threading, D-081).
+	if seed := q.Get("arc_of"); seed != "" {
+		views, err := episodes.Arc(r.Context(), s.st, scope, seed)
+		if err != nil {
+			s.log.ErrorContext(r.Context(), "api: episodes: arc failed", "err", err)
+			respondJSON(w, http.StatusInternalServerError, errBody("episode arc failed"))
+			return
+		}
+		out := episodesResponseJSON{Episodes: make([]episodeViewJSON, 0, len(views))}
+		for _, v := range views {
+			out.Episodes = append(out.Episodes, episodeToJSON(v))
+		}
+		respondJSON(w, http.StatusOK, out)
+		return
+	}
+
 	res, err := episodes.List(r.Context(), s.st, scope, episodes.ListOptions{
 		Limit:     atoiDefault(q.Get("limit"), 0),
 		Cursor:    q.Get("cursor"),

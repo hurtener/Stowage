@@ -71,6 +71,15 @@ type Profile struct {
 	// Causal inference (Phase 24, D-083). Runs as a sub-step of narration when a
 	// gateway is wired. CausalMinConfidence gates which inferred led_to edges persist.
 	CausalMinConfidence float64 // min gateway-reported confidence to persist an edge; default 0.6
+
+	// Episode threading (Phase 24b, D-081). A gateway-free sweep that groups
+	// cross-session episodes into arcs via relates_to edges. OFF BY DEFAULT —
+	// enablement is gated on an episodic-eval win (D-035).
+	ThreadingEnabled bool          // master switch; default false
+	ThreadInterval   time.Duration // sweep cadence; default 30m
+	ThreadMinOverlap float64       // entity/keyword Jaccard threshold to thread two episodes; default 0.3
+	ThreadWindow     time.Duration // max temporal gap between threaded episodes; default 30 days
+	ThreadBatchSize  int           // recent narrated episodes scanned per tenant per sweep; default 50
 }
 
 // DefaultProfile returns the profile with sensible production defaults.
@@ -105,6 +114,12 @@ func DefaultProfile() Profile {
 		EpisodeBatchSize:       100,
 
 		CausalMinConfidence: 0.6,
+
+		ThreadingEnabled: false,
+		ThreadInterval:   30 * time.Minute,
+		ThreadMinOverlap: 0.3,
+		ThreadWindow:     30 * 24 * time.Hour,
+		ThreadBatchSize:  50,
 	}
 }
 
@@ -140,6 +155,14 @@ func (m *Manager) SetEpisodes(gw gateway.Gateway) {
 
 func (m *Manager) episodesOn() bool {
 	return m.episodesEnabled && m.gw != nil && m.profile.EpisodeDetectInterval > 0
+}
+
+// threadingOn reports whether the episode-threading sweep is active (Phase 24b,
+// D-081). It is gateway-free, so it only requires episodes detected/narrated to exist
+// (episodesEnabled) and the master switch; it does NOT need a gateway handle. Off by
+// default — enablement is eval-gated.
+func (m *Manager) threadingOn() bool {
+	return m.episodesEnabled && m.profile.ThreadingEnabled && m.profile.ThreadInterval > 0
 }
 
 // SetReflection wires the reflection sweep's dependencies: the gateway it calls
@@ -230,6 +253,18 @@ func New(st store.Store, log *slog.Logger, profile Profile, ingest chan<- pipeli
 	if p.CausalMinConfidence <= 0 || p.CausalMinConfidence > 1 {
 		p.CausalMinConfidence = 0.6
 	}
+	if p.ThreadInterval <= 0 {
+		p.ThreadInterval = 30 * time.Minute
+	}
+	if p.ThreadMinOverlap <= 0 || p.ThreadMinOverlap > 1 {
+		p.ThreadMinOverlap = 0.3
+	}
+	if p.ThreadWindow <= 0 {
+		p.ThreadWindow = 30 * 24 * time.Hour
+	}
+	if p.ThreadBatchSize <= 0 {
+		p.ThreadBatchSize = 50
+	}
 	return &Manager{
 		st:      st,
 		log:     log.With("subsystem", "lifecycle"),
@@ -252,6 +287,9 @@ func (m *Manager) Start(ctx context.Context) {
 	if m.episodesOn() {
 		m.startSweep(ctx, "episode-detect", m.profile.EpisodeDetectInterval, m.runDetectEpisodes)
 		m.startSweep(ctx, "episode-narrate", m.profile.EpisodeNarrateInterval, m.runNarrateEpisodes)
+	}
+	if m.threadingOn() {
+		m.startSweep(ctx, "episode-thread", m.profile.ThreadInterval, m.runThreadEpisodes)
 	}
 }
 
@@ -305,5 +343,8 @@ func (m *Manager) RunForce(ctx context.Context) {
 	if m.episodesOn() {
 		m.runDetectEpisodes(ctx)
 		m.runNarrateEpisodes(ctx)
+	}
+	if m.threadingOn() {
+		m.runThreadEpisodes(ctx)
 	}
 }
