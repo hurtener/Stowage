@@ -1898,3 +1898,32 @@ its predecessor is rollback-reversible (D-017).
 default **off** except the fleet profile (the fleet-learning loop is fleet-first);
 zero-config start unaffected. The Phase 20b gain-fleet harness measures whether the
 loop actually compounds.
+
+## D-078 — Gain harness uses the eval reader as the agent-loop stand-in; gain is an operator-run release gate
+
+2026-06-18. Phase 20b (RFC §12) ships the gain harness and the online-adaptation
+measurement.
+
+**Harbor substitution.** RFC §12 specifies the gain harness uses "a Harbor fleet as
+the agent loop." Harbor is a **separate codebase** (the ecosystem's agent framework)
+and is not a dependency of this repo, so the gain harness instead uses the **Phase-20
+eval reader as the stand-in agent loop**: each scenario's eval question is answered
+by the reader with retrieved memory context (**on**) and with none (**off**), and the
+Phase-20 judge scores both. `gain = quality(on) − quality(off)` where
+`quality(correct)=1, partial=0.5, incorrect=0`. This measures the RFC's quantity
+(does memory improve the agent's answer?) without coupling eval to Harbor's wire
+protocol; a Harbor-driven runner can later replace the reader behind the same
+`GainResult` contract.
+
+**Release gate.** Mean aggregate gain ≥ 0 on the standard scenarios is a release gate
+(RFC §12: negative gain fails release), asserted in the **operator-run** full-mode
+path (`STOWAGE_EVAL_GAIN=1`) — never in CI (no paid LLM in CI). The deterministic CI
+tests cover the pure scoring/aggregation and a fakeGateway on-vs-off delta.
+
+**Online adaptation.** Sequential outcome-tagged tasks run through the **Phase-19
+reflection→playbook loop**: between tasks the reflection sweep distills strategies
+and the assembled playbook is injected into the next task's reader context; the
+quality trajectory across tasks is the compounding signal (ACE). This is **reported,
+not release-gated** — the gain delta is the gate. Both runs are opt-in, full-mode,
+operator-run; `make eval-ci` is unaffected. No new config knob (eval env vars only;
+D-034 not applicable).

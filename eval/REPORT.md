@@ -252,3 +252,41 @@ unreachable). The CI mock gate (`make eval-ci`) leaves rerank OFF and is
 unaffected. A fresh full-mode run on this config is recorded by the operator
 (needs the key); model deltas vs. the prior gemini-based runs are noted with that
 run.
+
+## Gain harness + online adaptation (Phase 20b, D-078)
+
+The gain harness measures whether memory improves task completion. Each scenario
+(`eval/gain/scenarios/*.json`) is answered by the Phase-20 reader+judge twice — once
+with the retrieved memory context (**memory-ON**) and once with none
+(**memory-OFF**) — and `gain = quality(on) − quality(off)` (`quality(correct)=1,
+partial=½, incorrect=0`). The reader is the stand-in agent loop (Harbor is a separate
+codebase, not a dependency — D-078). **Mean aggregate gain ≥ 0 on the standard
+scenarios is a release gate** (RFC §12: negative gain fails release), asserted in the
+operator-run path — never CI.
+
+The online-adaptation harness (`eval/gain/adapt/*.json`) runs sequential tasks
+through the Phase-19 reflection→playbook loop: between tasks the reflection sweep
+distills strategies and the assembled playbook is injected into the next task's
+reader context; the per-task quality trajectory (delta = last − first) is the
+compounding signal (ACE). Reported, not gated.
+
+### Reproduce (operator-run, needs `OPENROUTER_API_KEY`; never CI)
+
+```
+set -a; source .env; set +a
+STOWAGE_EVAL_GATEWAY=bifrost STOWAGE_EVAL_PROVIDER=openrouter \
+  STOWAGE_EVAL_BASE_URL=https://openrouter.ai/api \
+  STOWAGE_EVAL_RERANK_BASE_URL=https://openrouter.ai/api/v1 \
+  STOWAGE_EVAL_API_KEY_REF=env.OPENROUTER_API_KEY \
+  STOWAGE_EVAL_MODEL=inception/mercury-2 \
+  STOWAGE_EVAL_EMBED_MODEL=perplexity/pplx-embed-v1-0.6b STOWAGE_EVAL_EMBED_DIMS=1024 \
+  STOWAGE_EVAL_RERANK_MODEL=cohere/rerank-4-fast \
+  STOWAGE_EVAL_GAIN=1 \
+  go test -tags=fullmode -run 'TestGainMode|TestAdaptMode' -v -timeout 60m ./eval/harness/
+```
+
+Results (per-scenario gain + the aggregate summary; adaptation trajectories) are
+written to `eval/results/gain-n*.jsonl` and `eval/results/adapt-n*.jsonl`. The
+deterministic CI tests (`make eval-ci` + the harness unit tests) cover the scoring,
+aggregation, and loop wiring with no model; the headline gain number is **pending an
+operator run** (one command above).

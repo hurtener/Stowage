@@ -48,7 +48,15 @@ New terms land here in the same PR that introduces them (CLAUDE.md §14).
 - **Gateway** — the single intelligence seam (`internal/gateway`) through which
   every embedding and LLM call flows; drivers: `bifrost`, `mock`.
 - **Gain** — the performance delta an agent shows with memory on vs. off (the
-  CL-Bench-derived release metric).
+  CL-Bench-derived release metric). Measured by the gain harness (Phase 20b,
+  D-078): each scenario is run through the reader+judge once with retrieved memory
+  context and once with none; `gain = quality_on − quality_off`. Mean gain ≥ 0 is
+  an operator-run release gate.
+- **Online adaptation** — measuring compounding improvement across a sequential
+  task run as the reflection→playbook loop accumulates strategies between tasks
+  (ACE; Phase 20b, reported not gated).
+- **Memory-on / memory-off** — the two conditions of a gain run: the reader answers
+  with retrieved memory context vs with none.
 - **Sweep** — a scheduled in-process lifecycle job (decay, dedupe, rollup,
   re-enqueue); jittered, idempotent, singleflight.
 - **Re-enqueue sweep** — crash recovery: records past their processing deadline
