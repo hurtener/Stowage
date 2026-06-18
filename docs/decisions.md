@@ -1845,3 +1845,56 @@ Consequences: `docs/plans/phase-20-eval-finalization.md` is authored for the Pha
 20; Phase 20b is a named follow-up gated on Phase 19; the eval report
 (`eval/REPORT.md`) with the judged `answer_quality` + competitor table remains the
 open-source launch gate (D-023/D-035), now shipping at the v0.1 (01–27) boundary.
+
+## D-077 — Reflection write-side is a sweep-driven stage feeding the existing reconcile core
+
+2026-06-17. Phase 19 implements the ACE reflection write-side (RFC §6a.1-2; the
+deterministic playbook *read* side already shipped via D-072). Settles the eight
+design decisions surfaced by the seam map (plan: `phase-19-reflection.md`).
+
+**Architecture.** Reflection is a **lifecycle sweep**, not a per-buffer-flush mode
+beside topic extraction. It reads outcome-tagged records from the store, assembles
+trajectories, calls the gateway to distill `strategy`/`failure_mode` candidates, and
+emits `pipeline.CandidateBatch` into the **unchanged** reconcile stage — so reflection
+memories dedupe/update/supersede under the same trust gates as any candidate. (RFC
+§6a.2 says "alongside topic extraction"; we depart because outcome is not on the
+in-flight `pipeline.Item`/`FlushedBuffer` and a trajectory spans multiple flushes —
+the RFC itself runs multi-epoch reflection as a sweep. Departure recorded here.)
+
+**The eight resolutions.** (1) **Trigger:** sweep-only, fed by already-ingested
+outcomes — no new caller surface (a forced run uses the existing
+`STOWAGE_SWEEP_FORCE`/`RunForce`). (2) **Trajectory:** outcome-tagged records grouped
+by `(session_id, branch_id)` with a terminal outcome, ordered by `occurred_at`,
+success/failure contrast. (3) **Prompt/schema:** a dedicated reflection prompt +
+schema + reflection-only kind enum in a new `internal/reflect` package; the topic
+`ValidKinds` is NOT widened (topic extraction can never emit reflection kinds and
+vice-versa). (4) **Seed weights:** applied in the reflection candidate constructor
+(per-kind seed importance/stability; `TrustSource:"llm_reflected"`, distinct from
+`llm_extracted`) — rather than retrofitting kind-aware scoring across the engine
+(RFC §338's "default scoring weights" interpreted as constructor seeds). (5)
+**Cross-kind supersede:** reflection reconciliation restricts neighbors to
+`Kinds:["strategy","failure_mode"]` so a strategy cannot supersede a fact. (6)
+**Re-reflection idempotency:** per-scope watermark (last reflected `occurred_at`) +
+an epoch counter via the existing `job_markers` table; reconcile content-hash +
+near-dup pre-filters guarantee re-runs add nothing; every Nth sweep re-reflects a
+wider trailing window as the playbook matures. (7) **Wiring:** one reconcile core,
+two producers (extract + reflection) via a fan-in merge in `boot.StartPipeline`; the
+eval-harness `server.go` reference wiring + `stageparity_test.go` updated to match.
+(8) **Links:** reflection reuses the existing `reconciler` link source (no
+link-schema change); reflection origin is visible via the `llm_reflected` trust
+source.
+
+**Schema budget (D-024).** No new table/column: the `outcome`/`occurred_at` columns
+exist since the day-one schema; Phase 19 adds only a forward-only **index**
+(`idx_records_tenant_outcome_occurred`) backing the new scope-parameterized
+`RecordStore.ListByOutcome` (both drivers, conformance-tested). No RFC amendment
+needed.
+
+**Lifecycle (P4).** Reflection memories decay/supersede/quarantine like other
+derived memories (verbatim records untouched — P1); a refined strategy superseding
+its predecessor is rollback-reversible (D-017).
+
+**Knobs (D-034).** `lifecycle.reflect_{enabled,interval,batch_size,epoch_every}`,
+default **off** except the fleet profile (the fleet-learning loop is fleet-first);
+zero-config start unaffected. The Phase 20b gain-fleet harness measures whether the
+loop actually compounds.
