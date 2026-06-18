@@ -285,6 +285,15 @@ type ReviewOutput struct {
 	Status     string       `json:"status,omitempty"`
 }
 
+// ─── memory_trace (D-086) ──────────────────────────────────────────────────────
+
+// TraceInput is the memory_trace tool input: the response_id whose reasoning trace to
+// export. The output is a traces.Bundle (the trace + optional ed25519 signature) —
+// byte-identical to GET /v1/traces/{response_id} and the SDK TraceResponse.
+type TraceInput struct {
+	ResponseID string `json:"response_id"`
+}
+
 // ─── memory_drilldown ────────────────────────────────────────────────────────
 
 // DrilldownInput is the memory_drilldown tool input (mirrors HTTP POST /v1/drilldown).

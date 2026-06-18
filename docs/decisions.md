@@ -2210,3 +2210,37 @@ clean. Fixed in the `chore(checkpoint)` PR:
 - **`links` has no `UNIQUE(from_memory,to_memory,type)`.** Idempotency rests on the
   app-level `ListLinks` pre-check + advisory locks (verified correct today); a partial
   unique index would be defense-in-depth.
+
+## D-086 — Reasoning traces: reconstructed on demand, retention = source rows, ed25519-signed export (OQ-10 settled)
+
+2026-06-18. Phase 26 (RFC §6c) ships reasoning-trace export and settles OQ-10.
+
+**Reconstructed on demand, never stored.** A trace is assembled read-only from the
+day-one tables (`internal/traces.Reconstruct`): for a `response_id`, the injections
+(`ListByResponse`) → per injected memory its kind/content/status + drill-down
+provenance spans (`GetJunctions` + record excerpts) + typed out-links (`ListLinks`),
+plus the query + verification verdicts from response-keyed events. Because no trace is
+persisted, **OQ-10's "retention class" is exactly the retention of the source
+injections/events/records** — there is no separate trace store, retention column, or
+sweep; the retention/DSAR cascade over the day-one tables governs traces for free.
+
+**Two unbackfillable §6c signals now captured (D-024), schema-neutrally.** The query
+text and verify verdicts were not in the day-one tables; both are written to `events`
+keyed by `response_id` (event `SubjectID = response_id`, payload JSON — no new
+table/column): `retrieve.query` is emitted on the **async** injection-writer path
+(zero added retrieve latency, P2-respecting); `verify.verdict` is emitted by a new
+`trust.VerifyClaim` core (resolve + verify + capture) that all three verify surfaces
+now call (D-067 consolidation).
+
+**Signed export.** `memory_trace` (`GET /v1/traces/{response_id}` + MCP + SDK,
+single-user tier) returns a bundle: the trace + an optional **ed25519** detached
+signature over the canonical trace JSON + the public key (CGo-free stdlib). The
+signing key is operator-provided and env-indirected — config `trace.signing_key`
+(an `env.VAR` ref to a base64 32-byte seed, D-030; validated fail-loud at boot);
+empty ⇒ `signed:false`, bundle still returned (dev/zero-config). Per-export
+`generated_at` (and the signature over it) are not byte-identical across surfaces; the
+parity test compares the reconstructed content (timestamp zeroed) + that all surfaces
+sign with the same key. `internal/traces` imports no gateway (deterministic read).
+
+**No new schema.** Reconstruction reuses injections/events/records/provenance/links;
+capture rides the events JSON payload. No table/column added; no RFC §8.1 amendment.

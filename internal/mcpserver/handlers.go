@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/hurtener/dockyard/runtime/tool"
 
@@ -19,6 +20,7 @@ import (
 	"github.com/hurtener/stowage/internal/retrieval"
 	"github.com/hurtener/stowage/internal/store"
 	"github.com/hurtener/stowage/internal/topics"
+	"github.com/hurtener/stowage/internal/traces"
 	"github.com/hurtener/stowage/internal/trust"
 )
 
@@ -1041,11 +1043,7 @@ func makeVerifyHandler(svc *Services) tool.Handler[VerifyInput, VerifyOutput] {
 		if in.Claim == "" {
 			return tool.Result[VerifyOutput]{}, fmt.Errorf("memory_verify: claim is required")
 		}
-		cited, err := trust.ResolveCited(ctx, svc.Store, scope, in.Citations)
-		if err != nil {
-			return tool.Result[VerifyOutput]{}, fmt.Errorf("memory_verify: %w", err)
-		}
-		v, err := trust.Verify(ctx, svc.Gateway, in.Claim, cited)
+		v, err := trust.VerifyClaim(ctx, svc.Store, svc.Gateway, scope, in.Claim, in.Citations)
 		if err != nil {
 			return tool.Result[VerifyOutput]{}, fmt.Errorf("memory_verify: %w", err)
 		}
@@ -1091,5 +1089,34 @@ func makeReviewHandler(svc *Services) tool.Handler[ReviewInput, ReviewOutput] {
 		default:
 			return tool.Result[ReviewOutput]{}, fmt.Errorf("memory_review: action must be list|approve|reject")
 		}
+	}
+}
+
+// ─── memory_trace (Phase 26, D-086) ───────────────────────────────────────────
+
+// makeTraceHandler implements memory_trace (RFC §6c): reconstruct the reasoning trace
+// for a response_id from the day-one tables and return it as an optionally
+// ed25519-signed bundle. Mirrors GET /v1/traces/{response_id} + SDK Trace.
+func makeTraceHandler(svc *Services) tool.Handler[TraceInput, traces.Bundle] {
+	return func(ctx context.Context, in TraceInput) (tool.Result[traces.Bundle], error) {
+		scope, err := svc.ScopeFn(ctx)
+		if err != nil {
+			return tool.Result[traces.Bundle]{}, fmt.Errorf("memory_trace: resolve scope: %w", err)
+		}
+		if in.ResponseID == "" {
+			return tool.Result[traces.Bundle]{}, fmt.Errorf("memory_trace: response_id is required")
+		}
+		tr, rerr := traces.Reconstruct(ctx, svc.Store, scope, in.ResponseID, time.Now().UnixMilli())
+		if rerr != nil {
+			return tool.Result[traces.Bundle]{}, fmt.Errorf("memory_trace: %w", rerr)
+		}
+		bundle, serr := traces.Sign(tr, svc.TraceSigner)
+		if serr != nil {
+			return tool.Result[traces.Bundle]{}, fmt.Errorf("memory_trace: %w", serr)
+		}
+		return tool.Result[traces.Bundle]{
+			Text:       fmt.Sprintf("Trace: %d items, %d verdicts (signed=%v)", len(bundle.Trace.Items), len(bundle.Trace.Verdicts), bundle.Signed),
+			Structured: bundle,
+		}, nil
 	}
 }

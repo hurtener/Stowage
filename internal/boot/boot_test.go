@@ -5,6 +5,7 @@ package boot_test
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"log/slog"
 	"path/filepath"
@@ -210,5 +211,33 @@ func TestBoot_Close_Idempotent(t *testing.T) {
 	// Second close: closers slice is nil, loop body never runs — must be safe.
 	if err := stk.Close(bg); err != nil {
 		t.Errorf("second Close: %v", err)
+	}
+}
+
+// TestBoot_Open_TraceSigner verifies the Phase-26 trace-signing-key resolution: a
+// valid env-ref'd ed25519 seed yields a non-nil TraceSigner; a malformed seed fails
+// boot loud (D-086).
+func TestBoot_Open_TraceSigner(t *testing.T) {
+	// Valid 32-byte seed (base64) → signer wired.
+	seed := make([]byte, 32)
+	seed[0] = 7
+	t.Setenv("STOWAGE_TEST_TRACE_SEED", base64.StdEncoding.EncodeToString(seed))
+	cfg := validCfg(t)
+	cfg.Trace.SigningKey = "env.STOWAGE_TEST_TRACE_SEED"
+	stk, err := boot.Open(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("Open with valid signing key: %v", err)
+	}
+	defer func() { _ = stk.Close(context.Background()) }()
+	if stk.TraceSigner == nil {
+		t.Error("expected a non-nil TraceSigner when trace.signing_key is set")
+	}
+
+	// Malformed seed → boot fails loud.
+	t.Setenv("STOWAGE_TEST_BAD_SEED", "not-base64!!")
+	bad := validCfg(t)
+	bad.Trace.SigningKey = "env.STOWAGE_TEST_BAD_SEED"
+	if _, err := boot.Open(context.Background(), bad); err == nil {
+		t.Error("expected boot to fail on a malformed trace signing key")
 	}
 }

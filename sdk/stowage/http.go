@@ -344,6 +344,18 @@ func (c *httpClient) Review(ctx context.Context, req ReviewRequest) (ReviewRespo
 	}
 }
 
+// Trace implements Client via GET /v1/traces/{response_id} (D-086).
+func (c *httpClient) Trace(ctx context.Context, req TraceRequest) (TraceResponse, error) {
+	if req.ResponseID == "" {
+		return TraceResponse{}, errors.New("sdk: trace: response_id must not be empty")
+	}
+	var resp TraceResponse
+	if err := c.do(ctx, http.MethodGet, "/v1/traces/"+url.PathEscape(req.ResponseID), nil, &resp); err != nil {
+		return TraceResponse{}, err
+	}
+	return resp, nil
+}
+
 // GetMemory implements Client via GET /v1/memories/{id} (D-070).
 func (c *httpClient) GetMemory(ctx context.Context, id string) (GetMemoryResponse, error) {
 	if id == "" {

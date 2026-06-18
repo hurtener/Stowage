@@ -28,6 +28,11 @@ func (c *Config) displayValue(key string) string {
 	if !secretKeyPaths[key] {
 		return raw
 	}
+	// An optional secret left empty (e.g. trace.signing_key default) is simply unset —
+	// show it as empty, not redacted (there is nothing to hide).
+	if raw == "" {
+		return ""
+	}
 	// Secret: show the env-ref and whether the env var is currently set.
 	if !strings.HasPrefix(raw, "env.") {
 		// Should not happen after Validate, but be safe.

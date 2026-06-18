@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/hurtener/stowage/internal/boot"
 	"github.com/hurtener/stowage/internal/causal"
@@ -18,6 +19,7 @@ import (
 	"github.com/hurtener/stowage/internal/retrieval"
 	"github.com/hurtener/stowage/internal/store"
 	"github.com/hurtener/stowage/internal/topics"
+	"github.com/hurtener/stowage/internal/traces"
 	"github.com/hurtener/stowage/internal/trust"
 
 	// Register drivers so NewEmbedded works without manual blank-imports (sqlite
@@ -827,11 +829,7 @@ func (c *embeddedClient) Verify(ctx context.Context, req VerifyRequest) (VerifyR
 	if req.Claim == "" {
 		return VerifyResponse{}, errors.New("sdk: verify: claim must not be empty")
 	}
-	cited, err := trust.ResolveCited(ctx, c.stack.Store, c.scope, req.Citations)
-	if err != nil {
-		return VerifyResponse{}, fmt.Errorf("sdk: verify: %w", err)
-	}
-	v, err := trust.Verify(ctx, c.stack.Gateway, req.Claim, cited)
+	v, err := trust.VerifyClaim(ctx, c.stack.Store, c.stack.Gateway, c.scope, req.Claim, req.Citations)
 	if err != nil {
 		return VerifyResponse{}, fmt.Errorf("sdk: verify: %w", err)
 	}
@@ -863,6 +861,49 @@ func (c *embeddedClient) Review(ctx context.Context, req ReviewRequest) (ReviewR
 	default:
 		return ReviewResponse{}, errors.New("sdk: review: action must be list, approve, or reject")
 	}
+}
+
+// Trace implements Client via the gateway-free trace reconstruction + signing core (D-086).
+func (c *embeddedClient) Trace(ctx context.Context, req TraceRequest) (TraceResponse, error) {
+	if req.ResponseID == "" {
+		return TraceResponse{}, errors.New("sdk: trace: response_id must not be empty")
+	}
+	tr, err := traces.Reconstruct(ctx, c.stack.Store, c.scope, req.ResponseID, time.Now().UnixMilli())
+	if err != nil {
+		return TraceResponse{}, fmt.Errorf("sdk: trace: %w", err)
+	}
+	b, err := traces.Sign(tr, c.stack.TraceSigner)
+	if err != nil {
+		return TraceResponse{}, fmt.Errorf("sdk: trace: %w", err)
+	}
+	return bundleToSDK(b), nil
+}
+
+// bundleToSDK maps the internal trace bundle onto the SDK wire type (byte-identical
+// JSON to the HTTP/MCP envelopes — the parity bar).
+func bundleToSDK(b traces.Bundle) TraceResponse {
+	tr := Trace{
+		ResponseID: b.Trace.ResponseID, Query: b.Trace.Query, Support: b.Trace.Support,
+		Degraded: b.Trace.Degraded, GeneratedAt: b.Trace.GeneratedAt,
+		Items: make([]TraceItem, 0, len(b.Trace.Items)),
+	}
+	for _, it := range b.Trace.Items {
+		item := TraceItem{
+			MemoryID: it.MemoryID, Kind: it.Kind, Content: it.Content, Status: it.Status,
+			Rank: it.Rank, Score: it.Score, Lane: it.Lane, WasCited: it.WasCited, Feedback: it.Feedback,
+		}
+		for _, p := range it.Provenance {
+			item.Provenance = append(item.Provenance, TraceSpan{RecordID: p.RecordID, SpanStart: p.SpanStart, SpanEnd: p.SpanEnd, Excerpt: p.Excerpt})
+		}
+		for _, l := range it.Links {
+			item.Links = append(item.Links, TraceLink{To: l.To, Type: l.Type, Confidence: l.Confidence})
+		}
+		tr.Items = append(tr.Items, item)
+	}
+	for _, v := range b.Trace.Verdicts {
+		tr.Verdicts = append(tr.Verdicts, TraceVerdict{Claim: v.Claim, Verdict: v.Verdict, Confidence: v.Confidence, Degraded: v.Degraded})
+	}
+	return TraceResponse{Trace: tr, Signed: b.Signed, Algorithm: b.Algorithm, PublicKey: b.PublicKey, Signature: b.Signature}
 }
 
 // scopeInvalidator returns the retrieval-cache invalidator the reconcile core

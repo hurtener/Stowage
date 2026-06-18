@@ -35,6 +35,7 @@ package boot
 
 import (
 	"context"
+	"crypto/ed25519"
 	"errors"
 	"fmt"
 	"time"
@@ -51,6 +52,7 @@ import (
 	"github.com/hurtener/stowage/internal/store"
 	"github.com/hurtener/stowage/internal/telemetry"
 	"github.com/hurtener/stowage/internal/topics"
+	"github.com/hurtener/stowage/internal/traces"
 	"github.com/hurtener/stowage/internal/vindex"
 )
 
@@ -73,6 +75,10 @@ type Stack struct {
 	Retriever *retrieval.Retriever
 	TopicSvc  *topics.Service
 	GrantsSvc *grants.Service
+
+	// TraceSigner is the ed25519 key for signing reasoning-trace exports (Phase 26,
+	// D-086). nil when trace.signing_key is unset (bundles returned unsigned).
+	TraceSigner ed25519.PrivateKey
 
 	closers []func(context.Context) error
 }
@@ -150,6 +156,7 @@ func Open(ctx context.Context, cfg *config.Config) (*Stack, error) {
 		s.Store.Injections(), s.Log,
 	)
 	s.Retriever.WithRerankModel(cfg.Gateway.RerankModel)
+	s.Retriever.WithEventCapture(s.Store.Events()) // Phase 26: async retrieve.query trace capture
 	s.Retriever.SetGrants(s.Store.Grants())
 	s.closers = append(s.closers, func(context.Context) error {
 		s.Retriever.Close() // drains injection writer goroutine
@@ -161,6 +168,21 @@ func Open(ctx context.Context, cfg *config.Config) (*Stack, error) {
 
 	// 8. Grants service — group/grant management and zone-ceiling enforcement.
 	s.GrantsSvc = grants.New(s.Store.Grants(), s.Store.Events(), s.Log)
+
+	// 9. Trace signing key (Phase 26, D-086). Optional: empty ⇒ unsigned exports.
+	// When set, the config holds an env.VAR ref to a base64 ed25519 seed (D-030);
+	// resolve + parse fail-loud (Validate already enforced the env. prefix).
+	if cfg.Trace.SigningKey != "" {
+		seed, rerr := config.ResolveEnvRef(cfg.Trace.SigningKey)
+		if rerr != nil {
+			return nil, fmt.Errorf("boot: trace.signing_key: %w", rerr)
+		}
+		signer, perr := traces.ParseSigningKey(seed)
+		if perr != nil {
+			return nil, fmt.Errorf("boot: trace.signing_key: %w", perr)
+		}
+		s.TraceSigner = signer
+	}
 
 	return s, nil
 }

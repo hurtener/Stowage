@@ -43,13 +43,7 @@ func (s *Server) handleVerify(w http.ResponseWriter, r *http.Request) {
 		respondJSON(w, http.StatusBadRequest, errBody("claim must be set"))
 		return
 	}
-	cited, err := trust.ResolveCited(r.Context(), s.st, scope, req.Citations)
-	if err != nil {
-		s.log.ErrorContext(r.Context(), "api: verify: resolve cited failed", "err", err)
-		respondJSON(w, http.StatusInternalServerError, errBody("verify resolve failed"))
-		return
-	}
-	v, err := trust.Verify(r.Context(), s.gw, req.Claim, cited)
+	v, err := trust.VerifyClaim(r.Context(), s.st, s.gw, scope, req.Claim, req.Citations)
 	if err != nil {
 		s.log.ErrorContext(r.Context(), "api: verify failed", "err", err)
 		respondJSON(w, http.StatusInternalServerError, errBody("verify failed"))

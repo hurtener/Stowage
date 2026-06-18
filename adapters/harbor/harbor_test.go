@@ -109,6 +109,10 @@ func (f *fakeClient) Review(_ context.Context, _ stowage.ReviewRequest) (stowage
 	return stowage.ReviewResponse{}, nil
 }
 
+func (f *fakeClient) Trace(_ context.Context, req stowage.TraceRequest) (stowage.TraceResponse, error) {
+	return stowage.TraceResponse{Trace: stowage.Trace{ResponseID: req.ResponseID}}, nil
+}
+
 func (f *fakeClient) Rollback(_ context.Context, req stowage.RollbackRequest) (stowage.Memory, error) {
 	return stowage.Memory{ID: req.MemoryID}, nil
 }

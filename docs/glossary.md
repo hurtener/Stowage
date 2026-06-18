@@ -138,6 +138,13 @@ New terms land here in the same PR that introduces them (CLAUDE.md §14).
 - **Review queue** — the scope-level hold for `pending_review` memories (uncited agent
   assertions): listed and approved (→active) or rejected (→quarantined) via
   `memory_review` (Phase 25, D-084).
+- **Reasoning trace** — the read-only, per-`response_id` memory-into-conclusion chain
+  (query, injected memories, drill-down spans, typed links, verification verdicts)
+  reconstructed on demand from the day-one tables; exported as a signed bundle via
+  `memory_trace` (Phase 26, §6c, D-086).
+- **Trace bundle** — a reasoning trace plus an optional ed25519 detached signature +
+  public key for third-party audit verification; unsigned when no signing key is
+  configured (Phase 26, D-086).
 - **Episode contrast** — surfacing the most similar past episode and comparing
   outcomes against the current situation.
 - **Similar-episode contrast** — ranking the scope's past episodes by

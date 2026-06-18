@@ -16,10 +16,13 @@ const (
 	injectionWriterCap = 512
 )
 
-// injBatch is one enqueue unit: a batch of rows for one Retrieve call.
+// injBatch is one enqueue unit: a batch of rows for one Retrieve call, plus an
+// optional response-keyed query event (Phase 26 trace capture, D-086) written in the
+// same async pass so retrieve latency is unchanged.
 type injBatch struct {
 	scope identity.Scope
 	rows  []store.Injection
+	query *store.Event
 }
 
 // InjectionWriter is the bounded async writer for injection rows (D-025, D-051).
@@ -32,6 +35,7 @@ type injBatch struct {
 // P2: Retrieve never blocks waiting for the injection write to complete.
 type InjectionWriter struct {
 	inj       store.InjectionStore
+	events    store.EventStore // optional (Phase 26 trace capture); nil ⇒ no query events
 	ch        chan injBatch
 	done      chan struct{}
 	closeOnce sync.Once
@@ -57,14 +61,20 @@ func NewInjectionWriter(inj store.InjectionStore, log *slog.Logger) *InjectionWr
 	return w
 }
 
-// Enqueue non-blockingly enqueues a batch for the given scope.
-// Drops the batch (incrementing Drops) when the channel is full.
-func (w *InjectionWriter) Enqueue(scope identity.Scope, rows []store.Injection) {
-	if len(rows) == 0 {
+// SetEventStore enables Phase-26 trace capture: when set, an enqueued query event is
+// written (async) alongside the injection rows. Call once at construction, before any
+// Enqueue — not safe to call concurrently with Enqueue.
+func (w *InjectionWriter) SetEventStore(es store.EventStore) { w.events = es }
+
+// Enqueue non-blockingly enqueues a batch for the given scope, with an optional
+// response-keyed query event (nil to skip). Drops the batch (incrementing Drops) when
+// the channel is full.
+func (w *InjectionWriter) Enqueue(scope identity.Scope, rows []store.Injection, queryEvent *store.Event) {
+	if len(rows) == 0 && queryEvent == nil {
 		return
 	}
 	select {
-	case w.ch <- injBatch{scope: scope, rows: rows}:
+	case w.ch <- injBatch{scope: scope, rows: rows, query: queryEvent}:
 	default:
 		w.drops.Add(1)
 		w.log.Warn("injection writer: channel full — batch dropped",
@@ -97,8 +107,17 @@ func (w *InjectionWriter) loop() {
 				continue
 			}
 		}
-		if err := w.inj.Append(context.Background(), b.scope, b.rows); err != nil { //nolint:contextcheck
-			w.log.Warn("injection writer: Append failed", "err", err)
+		if len(b.rows) > 0 {
+			if err := w.inj.Append(context.Background(), b.scope, b.rows); err != nil { //nolint:contextcheck
+				w.log.Warn("injection writer: Append failed", "err", err)
+			}
+		}
+		// Phase-26 trace capture: persist the response-keyed query event (best-effort,
+		// off the retrieve request path). Only when an event store is wired.
+		if b.query != nil && w.events != nil {
+			if err := w.events.Emit(context.Background(), b.scope, *b.query); err != nil { //nolint:contextcheck
+				w.log.Warn("injection writer: query event emit failed", "err", err)
+			}
 		}
 	}
 }

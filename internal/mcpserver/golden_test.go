@@ -9,6 +9,7 @@ import (
 	"github.com/hurtener/dockyard/runtime/tool"
 
 	"github.com/hurtener/stowage/internal/mcpserver"
+	"github.com/hurtener/stowage/internal/traces"
 )
 
 // buildSchemas extracts the JSON Schema bytes for the named tool.
@@ -90,6 +91,17 @@ func buildSchemas(name string) (inJSON, outJSON []byte, err error) {
 
 	case "memory_review":
 		b := tool.New[mcpserver.ReviewInput, mcpserver.ReviewOutput](name)
+		in, out, e := b.Schemas()
+		if e != nil {
+			return nil, nil, e
+		}
+		if inJSON, err = marshal(in); err != nil {
+			return nil, nil, err
+		}
+		outJSON, err = marshal(out)
+
+	case "memory_trace":
+		b := tool.New[mcpserver.TraceInput, traces.Bundle](name)
 		in, out, e := b.Schemas()
 		if e != nil {
 			return nil, nil, e
@@ -228,6 +240,7 @@ func TestSchemaGoldens(t *testing.T) {
 		"memory_causal",
 		"memory_verify",
 		"memory_review",
+		"memory_trace",
 		"memory_drilldown",
 		"memory_feedback",
 		"memory_assert",

@@ -325,6 +325,73 @@ type ReviewResponse struct {
 	Status     string       `json:"status,omitempty"`
 }
 
+// ---- Reasoning traces (Phase 26, RFC §6c, D-086) -----------------------------
+
+// TraceRequest exports the reasoning trace for a response_id.
+type TraceRequest struct {
+	ResponseID string `json:"response_id"`
+}
+
+// TraceSpan is one drill-down provenance span.
+type TraceSpan struct {
+	RecordID  string `json:"record_id"`
+	SpanStart int    `json:"span_start,omitempty"`
+	SpanEnd   int    `json:"span_end,omitempty"`
+	Excerpt   string `json:"excerpt,omitempty"`
+}
+
+// TraceLink is one typed edge out of an injected memory.
+type TraceLink struct {
+	To         string  `json:"to"`
+	Type       string  `json:"type"`
+	Confidence float64 `json:"confidence,omitempty"`
+}
+
+// TraceItem is one injected memory and its chain.
+type TraceItem struct {
+	MemoryID   string      `json:"memory_id"`
+	Kind       string      `json:"kind"`
+	Content    string      `json:"content"`
+	Status     string      `json:"status"`
+	Rank       int         `json:"rank"`
+	Score      float64     `json:"score"`
+	Lane       string      `json:"lane,omitempty"`
+	WasCited   bool        `json:"was_cited,omitempty"`
+	Feedback   string      `json:"feedback,omitempty"`
+	Provenance []TraceSpan `json:"provenance,omitempty"`
+	Links      []TraceLink `json:"links,omitempty"`
+}
+
+// TraceVerdict is one verification verdict run against the response.
+type TraceVerdict struct {
+	Claim      string  `json:"claim"`
+	Verdict    string  `json:"verdict"`
+	Confidence float64 `json:"confidence,omitempty"`
+	Degraded   bool    `json:"degraded,omitempty"`
+}
+
+// Trace is the full reasoning chain for one response_id.
+type Trace struct {
+	ResponseID  string         `json:"response_id"`
+	Query       string         `json:"query,omitempty"`
+	Support     string         `json:"support,omitempty"`
+	Degraded    bool           `json:"degraded,omitempty"`
+	Items       []TraceItem    `json:"items"`
+	Verdicts    []TraceVerdict `json:"verdicts,omitempty"`
+	GeneratedAt int64          `json:"generated_at"`
+}
+
+// TraceResponse is the exported bundle: the trace plus an optional ed25519 detached
+// signature + public key for third-party audit verification (signed:false when the
+// server has no signing key configured).
+type TraceResponse struct {
+	Trace     Trace  `json:"trace"`
+	Signed    bool   `json:"signed"`
+	Algorithm string `json:"algorithm,omitempty"`
+	PublicKey string `json:"public_key,omitempty"`
+	Signature string `json:"signature,omitempty"`
+}
+
 // ---- Memory / reversibility types (D-070) -----------------------------------
 
 // Memory mirrors the HTTP memoryJSON wire type. It is returned by Rollback and

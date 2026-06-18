@@ -10,6 +10,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"time"
+
+	"github.com/oklog/ulid/v2"
 
 	"github.com/hurtener/stowage/internal/gateway"
 	"github.com/hurtener/stowage/internal/identity"
@@ -113,6 +116,83 @@ func Verify(ctx context.Context, gw gateway.Gateway, claim string, cited []Cited
 		vo.Verdict = VerdictUnclear
 	}
 	return Verdict{Verdict: vo.Verdict, Confidence: vo.Confidence, Explanation: vo.Explanation}, nil
+}
+
+// VerifyClaim is the full claim-verification core the surfaces call (D-067): it
+// resolves the citation handles, runs the entailment check, and — for the reasoning
+// trace (Phase 26, D-086) — captures the verdict as a verify.verdict event keyed by
+// the response_id the citations belong to. Degraded-safe (gateway failure ⇒
+// unclear+degraded, no error). The capture is best-effort and never fails the verify.
+func VerifyClaim(ctx context.Context, st store.Store, gw gateway.Gateway, scope identity.Scope, claim string, citations []string) (Verdict, error) {
+	cited, responseID, err := resolveCitedWithResponse(ctx, st, scope, citations)
+	if err != nil {
+		return Verdict{}, err
+	}
+	v, err := Verify(ctx, gw, claim, cited)
+	if err != nil {
+		return Verdict{}, err
+	}
+	if responseID != "" {
+		emitVerdictEvent(ctx, st, scope, responseID, claim, v)
+	}
+	return v, nil
+}
+
+// resolveCitedWithResponse resolves citations to memories AND returns the response_id
+// the citations belong to (the first resolvable injection's ResponseID), for trace
+// capture. Scope-enforced (P3).
+func resolveCitedWithResponse(ctx context.Context, st store.Store, scope identity.Scope, citations []string) ([]CitedMemory, string, error) {
+	memIDs := make([]string, 0, len(citations))
+	seen := make(map[string]bool)
+	responseID := ""
+	for _, c := range citations {
+		inj, err := st.Injections().Get(ctx, scope, c)
+		if err != nil {
+			continue
+		}
+		// The verdict is captured against the FIRST resolvable citation's response
+		// (citations of one verify call normally belong to one response). If a caller
+		// mixes citations from several responses, only the first response's trace
+		// records the verdict — an accepted, documented simplification (D-086).
+		if responseID == "" {
+			responseID = inj.ResponseID
+		}
+		if !seen[inj.MemoryID] {
+			seen[inj.MemoryID] = true
+			memIDs = append(memIDs, inj.MemoryID)
+		}
+	}
+	if len(memIDs) == 0 {
+		return nil, responseID, nil
+	}
+	mems, err := st.Memories().GetMany(ctx, scope, memIDs)
+	if err != nil {
+		return nil, "", fmt.Errorf("trust: resolve cited: %w", err)
+	}
+	out := make([]CitedMemory, 0, len(mems))
+	for _, m := range mems {
+		out = append(out, CitedMemory{ID: m.ID, Content: m.Content})
+	}
+	return out, responseID, nil
+}
+
+// emitVerdictEvent persists the verdict for the reasoning trace (Phase 26, D-086):
+// a verify.verdict event keyed by response_id. Best-effort.
+func emitVerdictEvent(ctx context.Context, st store.Store, scope identity.Scope, responseID, claim string, v Verdict) {
+	payload, err := json.Marshal(struct {
+		Claim      string  `json:"claim"`
+		Verdict    string  `json:"verdict"`
+		Confidence float64 `json:"confidence"`
+		Degraded   bool    `json:"degraded"`
+	}{Claim: claim, Verdict: v.Verdict, Confidence: v.Confidence, Degraded: v.Degraded})
+	if err != nil {
+		return
+	}
+	_ = st.Events().Emit(ctx, scope, store.Event{
+		ID: ulid.Make().String(), TenantID: scope.Tenant, ProjectID: scope.Project, UserID: scope.User,
+		Type: "verify.verdict", SubjectID: responseID, Reason: "verify: verdict captured for the reasoning trace",
+		Payload: string(payload), CreatedAt: time.Now().UnixMilli(),
+	})
 }
 
 // ResolveCited resolves citation handles (injection IDs, §5.7) to the cited memories,

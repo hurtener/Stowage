@@ -99,4 +99,10 @@ type Client interface {
 	// Review lists the scope's pending_review memories (uncited agent assertions) and
 	// approves (→active) or rejects (→quarantined) them (RFC §6c, D-084).
 	Review(ctx context.Context, req ReviewRequest) (ReviewResponse, error)
+
+	// Trace exports the reasoning trace for a response_id (RFC §6c, D-086): the
+	// memory-into-conclusion chain (query, injected memories, drill-down spans, typed
+	// links, verification verdicts) reconstructed from the day-one tables, as an
+	// optionally ed25519-signed bundle. Deterministic and LLM-free.
+	Trace(ctx context.Context, req TraceRequest) (TraceResponse, error)
 }
