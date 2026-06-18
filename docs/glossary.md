@@ -115,6 +115,9 @@ New terms land here in the same PR that introduces them (CLAUDE.md §14).
   path of decisions, not a vague summary.
 - **Causal link** — a `caused_by`/`led_to` typed edge between decision
   memories, explicit or inferred through episode narratives.
+- **Episodic retrieval** — reading episodes + their narratives through the
+  `memory_episodes` capability (list / get / time-window), deterministic and
+  LLM-free (Phase 23, D-080); the §6b read side over Phase-22 episodes.
 - **Episode contrast** — surfacing the most similar past episode and comparing
   outcomes against the current situation.
 - **Branch** — a session fork for exploration; working memories merge on

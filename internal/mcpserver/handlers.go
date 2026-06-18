@@ -8,6 +8,7 @@ import (
 	"github.com/hurtener/dockyard/runtime/tool"
 
 	"github.com/hurtener/stowage/internal/config"
+	"github.com/hurtener/stowage/internal/episodes"
 	"github.com/hurtener/stowage/internal/grants"
 	"github.com/hurtener/stowage/internal/identity"
 	"github.com/hurtener/stowage/internal/pipeline"
@@ -905,4 +906,51 @@ func makeGrantsHandler(svc *Services) tool.Handler[GrantsInput, GrantsOutput] {
 
 func grantsResult(out GrantsOutput, text string) tool.Result[GrantsOutput] {
 	return tool.Result[GrantsOutput]{Text: text, Structured: out}
+}
+
+// makeEpisodesHandler implements memory_episodes (RFC §6b, D-080): the
+// deterministic, LLM-free episodic-retrieval read (mirrors GET /v1/episodes + the
+// embedded SDK Episodes). ID returns one episode; else a list narrowed by
+// session/window. Scope resolved via svc.ScopeFn.
+func makeEpisodesHandler(svc *Services) tool.Handler[EpisodesInput, EpisodesOutput] {
+	return func(ctx context.Context, in EpisodesInput) (tool.Result[EpisodesOutput], error) {
+		scope, err := svc.ScopeFn(ctx)
+		if err != nil {
+			return tool.Result[EpisodesOutput]{}, fmt.Errorf("memory_episodes: resolve scope: %w", err)
+		}
+		var out EpisodesOutput
+		if in.ID != "" {
+			v, gerr := episodes.Get(ctx, svc.Store, scope, in.ID)
+			if errors.Is(gerr, store.ErrNotFound) {
+				out.Episodes = []EpisodeItem{}
+			} else if gerr != nil {
+				return tool.Result[EpisodesOutput]{}, fmt.Errorf("memory_episodes: %w", gerr)
+			} else {
+				out.Episodes = []EpisodeItem{episodeToItem(*v)}
+			}
+		} else {
+			res, lerr := episodes.List(ctx, svc.Store, scope, episodes.ListOptions{
+				Limit: in.Limit, Cursor: in.Cursor, SessionID: in.SessionID, From: in.From, Until: in.Until,
+			})
+			if lerr != nil {
+				return tool.Result[EpisodesOutput]{}, fmt.Errorf("memory_episodes: %w", lerr)
+			}
+			out.Episodes = make([]EpisodeItem, 0, len(res.Episodes))
+			for _, v := range res.Episodes {
+				out.Episodes = append(out.Episodes, episodeToItem(v))
+			}
+			out.NextCursor = res.NextCursor
+		}
+		return tool.Result[EpisodesOutput]{
+			Text:       fmt.Sprintf("Episodes: %d returned", len(out.Episodes)),
+			Structured: out,
+		}, nil
+	}
+}
+
+func episodeToItem(v episodes.EpisodeView) EpisodeItem {
+	return EpisodeItem{
+		ID: v.ID, SessionID: v.SessionID, Title: v.Title, Status: v.Status, Outcome: v.Outcome,
+		StartedAt: v.StartedAt, EndedAt: v.EndedAt, NarrativeMemoryID: v.NarrativeMemoryID, Narrative: v.Narrative,
+	}
 }

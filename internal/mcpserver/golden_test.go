@@ -55,6 +55,17 @@ func buildSchemas(name string) (inJSON, outJSON []byte, err error) {
 		}
 		outJSON, err = marshal(out)
 
+	case "memory_episodes":
+		b := tool.New[mcpserver.EpisodesInput, mcpserver.EpisodesOutput](name)
+		in, out, e := b.Schemas()
+		if e != nil {
+			return nil, nil, e
+		}
+		if inJSON, err = marshal(in); err != nil {
+			return nil, nil, err
+		}
+		outJSON, err = marshal(out)
+
 	case "memory_drilldown":
 		b := tool.New[mcpserver.DrilldownInput, mcpserver.DrilldownOutput](name)
 		in, out, e := b.Schemas()
@@ -180,6 +191,7 @@ func TestSchemaGoldens(t *testing.T) {
 		"memory_ingest",
 		"memory_retrieve",
 		"memory_playbook",
+		"memory_episodes",
 		"memory_drilldown",
 		"memory_feedback",
 		"memory_assert",

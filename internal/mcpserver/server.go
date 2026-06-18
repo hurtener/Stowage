@@ -84,6 +84,13 @@ func New(info server.Info, svc *Services) (*server.Server, error) {
 		return nil, err
 	}
 
+	if err := tool.New[EpisodesInput, EpisodesOutput]("memory_episodes").
+		Describe("Read the caller's episodes + their narratives (mirrors GET /v1/episodes; RFC §6b, D-080): most-recent-first list, or one episode when id is set, narrowed by session_id and the [from,until] time window. Deterministic + LLM-free.").
+		Handler(makeEpisodesHandler(svc)).
+		Register(srv); err != nil {
+		return nil, err
+	}
+
 	if err := tool.New[DrilldownInput, DrilldownOutput]("memory_drilldown").
 		Describe("Drill down into the provenance spans of a memory or citation (mirrors POST /v1/drilldown).").
 		Handler(makeDrilldownHandler(svc)).

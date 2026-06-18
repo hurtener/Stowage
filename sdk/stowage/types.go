@@ -390,3 +390,34 @@ type PlaybookResponse struct {
 	Sections []PlaybookSection `json:"sections"`
 	Budget   PlaybookBudget    `json:"budget"`
 }
+
+// EpisodesRequest reads episodes (RFC §6b, D-080). ID returns one episode; else a
+// most-recent-first list, narrowed by SessionID and the [From,Until] window (unix
+// millis; 0 = unbounded). Limit/Cursor paginate the unfiltered list.
+type EpisodesRequest struct {
+	ID        string
+	Limit     int
+	Cursor    string
+	SessionID string
+	From      int64
+	Until     int64
+}
+
+// Episode is one episode + its narrative.
+type Episode struct {
+	ID                string `json:"id"`
+	SessionID         string `json:"session_id"`
+	Title             string `json:"title"`
+	Status            string `json:"status"`
+	Outcome           string `json:"outcome,omitempty"`
+	StartedAt         int64  `json:"started_at"`
+	EndedAt           int64  `json:"ended_at"`
+	NarrativeMemoryID string `json:"narrative_memory_id,omitempty"`
+	Narrative         string `json:"narrative,omitempty"`
+}
+
+// EpisodesResponse is the episodic-retrieval envelope.
+type EpisodesResponse struct {
+	Episodes   []Episode `json:"episodes"`
+	NextCursor string    `json:"next_cursor,omitempty"`
+}

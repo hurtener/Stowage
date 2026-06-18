@@ -132,6 +132,9 @@ func New(cfg *config.Config, st store.Store, log *slog.Logger, reg *prometheus.R
 	// Playbook — deterministic, LLM-free playbook assembly (Phase h5, D-072).
 	mux.HandleFunc("GET /v1/playbook", srv.authMiddleware(srv.handlePlaybook, false))
 
+	// Phase 23: episodic retrieval (RFC §6b, D-080).
+	mux.HandleFunc("GET /v1/episodes", srv.authMiddleware(srv.handleEpisodes, false))
+
 	// Phase 11: drill-down, feedback, and citation resolution.
 	mux.HandleFunc("POST /v1/drilldown", srv.authMiddleware(srv.handleDrilldown, false))
 	mux.HandleFunc("POST /v1/feedback", srv.authMiddleware(srv.handleFeedback, false))

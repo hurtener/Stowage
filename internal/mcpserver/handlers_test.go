@@ -1078,3 +1078,54 @@ func TestKeyringMiddleware_EmptyKeys(t *testing.T) {
 		t.Errorf("expected 403, got %d", rr.Code)
 	}
 }
+
+// ── memory_episodes (D-080) ────────────────────────────────────────────────────
+
+func TestHandlerEpisodes_ListGetMissing(t *testing.T) {
+	svc := newHandlerServices(t)
+	h := makeEpisodesHandler(svc)
+	ctx := context.Background()
+	scope := testScope()
+
+	if err := svc.Store.Memories().Insert(ctx, scope, store.Memory{
+		ID: "01NARRMCPAAAAAAAAAAAAAAAAA", Kind: "narrative", Content: "the mcp episode story",
+		Status: "active", Importance: 3, Confidence: 0.8, TrustSource: "episodic", Stability: 1.0,
+		EpisodeID: "01EPMCPONEAAAAAAAAAAAAAAAA", CreatedAt: 1, UpdatedAt: 1,
+	}); err != nil {
+		t.Fatalf("seed narrative: %v", err)
+	}
+	if err := svc.Store.Episodes().CreateEpisode(ctx, scope, store.Episode{
+		ID: "01EPMCPONEAAAAAAAAAAAAAAAA", SessionID: "s1", Title: "Ep", Status: "closed",
+		Outcome: "success", StartedAt: 10, EndedAt: 20, NarrativeMemoryID: "01NARRMCPAAAAAAAAAAAAAAAAA",
+		CreatedAt: 10, UpdatedAt: 10,
+	}); err != nil {
+		t.Fatalf("seed episode: %v", err)
+	}
+
+	// list
+	res, err := h(ctx, EpisodesInput{})
+	if err != nil {
+		t.Fatalf("episodes list: %v", err)
+	}
+	if len(res.Structured.Episodes) != 1 || res.Structured.Episodes[0].Narrative != "the mcp episode story" {
+		t.Fatalf("unexpected list: %+v", res.Structured.Episodes)
+	}
+	if res.Text == "" {
+		t.Error("Text must not be empty")
+	}
+
+	// get-one
+	got, err := h(ctx, EpisodesInput{ID: "01EPMCPONEAAAAAAAAAAAAAAAA"})
+	if err != nil || len(got.Structured.Episodes) != 1 {
+		t.Fatalf("get-one: %v / %d", err, len(got.Structured.Episodes))
+	}
+
+	// missing id → empty list, no error (parity with HTTP/embedded).
+	miss, err := h(ctx, EpisodesInput{ID: "01MISSINGAAAAAAAAAAAAAAAAA"})
+	if err != nil {
+		t.Fatalf("missing: unexpected error %v", err)
+	}
+	if len(miss.Structured.Episodes) != 0 {
+		t.Errorf("missing id should yield empty list, got %d", len(miss.Structured.Episodes))
+	}
+}

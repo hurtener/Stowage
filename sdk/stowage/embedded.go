@@ -8,6 +8,7 @@ import (
 
 	"github.com/hurtener/stowage/internal/boot"
 	"github.com/hurtener/stowage/internal/config"
+	"github.com/hurtener/stowage/internal/episodes"
 	"github.com/hurtener/stowage/internal/identity"
 	"github.com/hurtener/stowage/internal/pipeline"
 	"github.com/hurtener/stowage/internal/playbook"
@@ -540,6 +541,38 @@ func (c *embeddedClient) Playbook(ctx context.Context, req PlaybookRequest) (Pla
 		return PlaybookResponse{}, fmt.Errorf("sdk: playbook: %w", err)
 	}
 	return playbookToSDK(pb), nil
+}
+
+// Episodes implements Client via the LLM-free episodic-retrieval core (D-080).
+func (c *embeddedClient) Episodes(ctx context.Context, req EpisodesRequest) (EpisodesResponse, error) {
+	if req.ID != "" {
+		v, err := episodes.Get(ctx, c.stack.Store, c.scope, req.ID)
+		if errors.Is(err, store.ErrNotFound) {
+			return EpisodesResponse{Episodes: []Episode{}}, nil
+		}
+		if err != nil {
+			return EpisodesResponse{}, fmt.Errorf("sdk: episodes get: %w", err)
+		}
+		return EpisodesResponse{Episodes: []Episode{episodeToSDK(*v)}}, nil
+	}
+	res, err := episodes.List(ctx, c.stack.Store, c.scope, episodes.ListOptions{
+		Limit: req.Limit, Cursor: req.Cursor, SessionID: req.SessionID, From: req.From, Until: req.Until,
+	})
+	if err != nil {
+		return EpisodesResponse{}, fmt.Errorf("sdk: episodes list: %w", err)
+	}
+	out := EpisodesResponse{Episodes: make([]Episode, 0, len(res.Episodes)), NextCursor: res.NextCursor}
+	for _, v := range res.Episodes {
+		out.Episodes = append(out.Episodes, episodeToSDK(v))
+	}
+	return out, nil
+}
+
+func episodeToSDK(v episodes.EpisodeView) Episode {
+	return Episode{
+		ID: v.ID, SessionID: v.SessionID, Title: v.Title, Status: v.Status, Outcome: v.Outcome,
+		StartedAt: v.StartedAt, EndedAt: v.EndedAt, NarrativeMemoryID: v.NarrativeMemoryID, Narrative: v.Narrative,
+	}
 }
 
 // playbookToSDK maps the assembled playbook onto the SDK wire type. The JSON

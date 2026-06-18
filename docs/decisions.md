@@ -1956,3 +1956,29 @@ episode via a **schema-constrained** gateway call (§10) through the gateway sea
 narrated episodes are skipped; a forced re-run dedups on content hash. Both sweeps
 follow the Phase-19 reflection pattern (advisory locks, jitter, profile-gated, off by
 zero-config default); narration gateway calls are metered/evented.
+
+## D-080 — Episodic retrieval: deterministic memory_episodes capability across the tiered surfaces; similar-episode + synthesis deferred
+
+2026-06-18. Phase 23 (RFC §6b) ships the episodic *read* side over the Phase-22
+episodes.
+
+**Deterministic memory_episodes capability.** A new gateway-free `internal/episodes`
+view core (`List` + `Get`, mirroring `playbook.Assemble`) is exposed as one
+single-user capability on all three surfaces (D-067): `GET /v1/episodes` (HTTP), the
+`memory_episodes` MCP tool, and `Client.Episodes` (SDK HTTP + embedded). Input
+`{limit?, cursor?, from?, until?, session_id?, id?}`; output `{episodes, next_cursor}`,
+each episode carrying its narrative content + `narrative_memory_id` (for `/v1/drilldown`).
+A byte-identical cross-surface parity test (mirroring the playbook parity test) is the
+mechanical anti-drift guard. The `[from,until]` window returns a scope's episode
+narratives for a period — the §6b cross-episode "structured summary, never a raw
+fragment dump." Reuses the Phase-22 `EpisodeStore` (`ListEpisodes`/`GetEpisode`); no
+new store surface, no config knob (read-only). Scope-parameterized (P3): a tenant key
+sees the tenant's episodes; session/window narrow in-service.
+
+**Deferred to Phase 23b.** Similar-episode contrast (vector search over narrative
+memories, kind-filtered via `vindex.Filter{Kinds:["narrative"]}`) and
+gateway-synthesized window summaries are deferred: their output is non-deterministic
+and cannot share the byte-identical parity bar that gates the tiered surfaces (they
+need a fake-embedder harness), and they add a gateway/vindex dependency to an
+otherwise always-available, gateway-free read path. The deterministic surface here is
+the foundation they build on.
