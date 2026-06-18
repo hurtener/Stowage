@@ -1018,6 +1018,58 @@ func (m *memoryStore) ListByKinds(ctx context.Context, scope identity.Scope, kin
 	return out, nil
 }
 
+// ListMemoriesByRecords returns active memories whose provenance references any of
+// recordIDs, optionally filtered to kinds. DISTINCT by id, scope-enforced (P3),
+// ordered (created_at, id) ASC. Backs Phase-24 causal candidate gathering.
+func (m *memoryStore) ListMemoriesByRecords(ctx context.Context, scope identity.Scope, recordIDs []string, kinds []string) ([]store.Memory, error) {
+	if len(recordIDs) == 0 {
+		return []store.Memory{}, nil
+	}
+	whereClause, args, err := buildScopeWhere(scope)
+	if err != nil {
+		return nil, err
+	}
+	whereClause += " AND status = 'active'"
+	if len(kinds) > 0 {
+		kph := make([]string, len(kinds))
+		for i, k := range kinds {
+			kph[i] = "?"
+			args = append(args, k)
+		}
+		whereClause += " AND kind IN (" + strings.Join(kph, ",") + ")"
+	}
+	// Reverse-provenance subquery: scope provenance by tenant too (belt-and-suspenders;
+	// the outer scope already restricts to tenant memories).
+	rph := make([]string, len(recordIDs))
+	for i, rid := range recordIDs {
+		rph[i] = "?"
+		args = append(args, rid)
+	}
+	args = append(args, scope.Tenant)
+	whereClause += " AND id IN (SELECT memory_id FROM provenance WHERE record_id IN (" +
+		strings.Join(rph, ",") + ") AND tenant_id = ?)"
+
+	q := `SELECT ` + memorySelectCols + ` FROM memories WHERE ` + whereClause + ` ORDER BY created_at ASC, id ASC` //nolint:gosec
+	rows, err := m.s.rdb.QueryContext(ctx, q, args...)
+	if err != nil {
+		return nil, fmt.Errorf("sqlitestore: list memories by records: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	out := make([]store.Memory, 0)
+	for rows.Next() {
+		mem, err := scanMemory(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, *mem)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // SetValidUntil sets the valid_until field of a memory (unix millis).
 // A value of 0 clears the field. Used by the decay sweep (D-058).
 func (m *memoryStore) SetValidUntil(ctx context.Context, scope identity.Scope, id string, validUntil int64) error {

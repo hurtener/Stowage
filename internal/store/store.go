@@ -263,6 +263,16 @@ type MemoryStore interface {
 	// paginated: the playbook kinds are a bounded per-scope set the caller
 	// budget-packs.
 	ListByKinds(ctx context.Context, scope identity.Scope, kinds []string) ([]Memory, error)
+
+	// ListMemoriesByRecords returns the active memories in scope whose provenance
+	// references any of recordIDs, optionally narrowed to kinds (empty = any kind).
+	// It is the reverse of GetJunctions (record → memories) and backs Phase-24
+	// causal inference: gathering an episode's decision-class memories from the
+	// episode's records. Results are DISTINCT by memory id, ordered by (created_at,
+	// id) ascending for a stable result. Active-only and scope-enforced (P3); there
+	// is no unscoped variant. An empty recordIDs slice returns an empty slice (not an
+	// error). Not paginated: the per-episode record set is bounded.
+	ListMemoriesByRecords(ctx context.Context, scope identity.Scope, recordIDs []string, kinds []string) ([]Memory, error)
 }
 
 // TopicStore manages extraction magnets (RFC §4.1, D-007).

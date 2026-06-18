@@ -193,6 +193,49 @@ type EpisodesOutput struct {
 	Degraded   bool          `json:"degraded,omitempty"`
 }
 
+// ─── memory_causal (D-083) ─────────────────────────────────────────────────────
+
+// CausalInput is the memory_causal tool input (RFC §5.6/§6b). Direction ∈
+// {backward (causes; default), forward (effects), both}; Depth bounds the hops.
+type CausalInput struct {
+	MemoryID  string `json:"memory_id"`
+	Direction string `json:"direction,omitempty"`
+	Depth     int    `json:"depth,omitempty"`
+}
+
+// CausalProvRefItem is a compact provenance span for P1 drill-down at a node.
+type CausalProvRefItem struct {
+	RecordID  string `json:"record_id"`
+	SpanStart int    `json:"span_start,omitempty"`
+	SpanEnd   int    `json:"span_end,omitempty"`
+}
+
+// CausalNodeItem is one memory in the causal graph (byte-identical to HTTP/SDK).
+type CausalNodeItem struct {
+	MemoryID   string              `json:"memory_id"`
+	Kind       string              `json:"kind"`
+	Content    string              `json:"content"`
+	Context    string              `json:"context,omitempty"`
+	EpisodeID  string              `json:"episode_id,omitempty"`
+	Provenance []CausalProvRefItem `json:"provenance,omitempty"`
+}
+
+// CausalEdgeItem is a canonical cause→effect edge.
+type CausalEdgeItem struct {
+	From       string  `json:"from"`
+	To         string  `json:"to"`
+	Type       string  `json:"type"`
+	Confidence float64 `json:"confidence"`
+}
+
+// CausalOutput is the memory_causal tool output.
+type CausalOutput struct {
+	Root      string           `json:"root"`
+	Nodes     []CausalNodeItem `json:"nodes"`
+	Edges     []CausalEdgeItem `json:"edges"`
+	Truncated bool             `json:"truncated,omitempty"`
+}
+
 // ─── memory_drilldown ────────────────────────────────────────────────────────
 
 // DrilldownInput is the memory_drilldown tool input (mirrors HTTP POST /v1/drilldown).

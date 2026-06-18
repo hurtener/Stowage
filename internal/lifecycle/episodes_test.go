@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -97,6 +98,148 @@ func TestEpisodeSweeps_DetectNarrate(t *testing.T) {
 	if len(eps) != 1 {
 		t.Errorf("expected 1 episode, got %d", len(eps))
 	}
+}
+
+// causalGateway returns the narrative for the narrate Complete call and a scripted
+// led_to proposal (0→1) for the inference call (distinguished by the prompt).
+type causalGateway struct {
+	narrateCalls int
+	inferCalls   int
+}
+
+func (g *causalGateway) Complete(_ context.Context, req gateway.CompleteRequest) (gateway.CompleteResponse, error) {
+	user := ""
+	if len(req.Messages) > 0 {
+		user = req.Messages[0].Content
+	}
+	if strings.Contains(user, "Decisions:") {
+		g.inferCalls++
+		return gateway.CompleteResponse{JSON: json.RawMessage(`{"links":[{"from_idx":0,"to_idx":1,"confidence":0.9,"reason":"the first decision led to the second"}]}`)}, nil
+	}
+	g.narrateCalls++
+	return gateway.CompleteResponse{JSON: json.RawMessage(`{"title":"Deploy episode","narrative":"Decided to deploy v2, which led to enabling the lock."}`)}, nil
+}
+func (g *causalGateway) Embed(context.Context, gateway.EmbedRequest) (gateway.EmbedResponse, error) {
+	return gateway.EmbedResponse{}, nil
+}
+func (g *causalGateway) Probe(context.Context) error { return nil }
+func (g *causalGateway) Close(context.Context) error { return nil }
+func (g *causalGateway) Rerank(context.Context, gateway.RerankRequest) (gateway.RerankResponse, error) {
+	return gateway.RerankResponse{}, nil
+}
+
+// TestEpisodeSweeps_CausalInference: narration infers a led_to edge between the
+// episode's decision memories, atomically + once (Phase 24, D-083).
+func TestEpisodeSweeps_CausalInference(t *testing.T) {
+	st, cleanup := newTestStore(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	scope := identity.Scope{Tenant: "cz-t", Project: "p", User: "u", Session: "s1"}
+	old := time.Now().Add(-10 * time.Second).UnixMilli()
+	if err := st.Records().Append(ctx, scope, []store.Record{
+		{ID: "cz-r1", BranchID: "main", Role: "user", Content: "decide to deploy v2", OccurredAt: old, CreatedAt: old},
+		{ID: "cz-r2", BranchID: "main", Role: "tool", Content: "enabled the lock", Outcome: "success", OccurredAt: old + 100, CreatedAt: old + 100},
+	}); err != nil {
+		t.Fatalf("append: %v", err)
+	}
+	// Seed two decision memories with provenance to the session's records, ordered by
+	// created_at so cands[0]=A, cands[1]=B (the inference returns 0→1).
+	tenant := identity.Scope{Tenant: "cz-t"}
+	mkDecision := func(id, content, recID string, created int64) {
+		if err := st.Memories().Insert(ctx, scope, store.Memory{
+			ID: id, Kind: "decision", Content: content, Status: "active",
+			Confidence: 0.8, TrustSource: "llm_extracted", Stability: 1.0, CreatedAt: created, UpdatedAt: created,
+		}); err != nil {
+			t.Fatalf("insert %s: %v", id, err)
+		}
+		if err := st.Memories().AddProvenance(ctx, scope, []store.Provenance{{
+			ID: "pv-" + id, MemoryID: id, RecordID: recID, TenantID: scope.Tenant, CreatedAt: created,
+		}}); err != nil {
+			t.Fatalf("prov %s: %v", id, err)
+		}
+	}
+	mkDecision("cz-mA", "deploy v2", "cz-r1", old+1)
+	mkDecision("cz-mB", "enable the lock", "cz-r2", old+2)
+
+	gw := &causalGateway{}
+	mgr := episodeManager(t, st, gw)
+	mgr.RunForce(ctx)
+	mgr.RunForce(ctx) // idempotent: narration (and thus inference) runs once
+
+	links, err := st.Memories().ListLinks(ctx, tenant, "cz-mA", "")
+	if err != nil {
+		t.Fatalf("list links: %v", err)
+	}
+	var led []store.Link
+	for _, l := range links {
+		if l.Type == "led_to" && l.Source == "inferred" {
+			led = append(led, l)
+		}
+	}
+	if len(led) != 1 {
+		t.Fatalf("expected exactly 1 inferred led_to edge, got %d: %+v", len(led), links)
+	}
+	if led[0].FromMemory != "cz-mA" || led[0].ToMemory != "cz-mB" || led[0].Confidence != 0.9 {
+		t.Errorf("edge wrong: %+v", led[0])
+	}
+	if g := gw.inferCalls; g != 1 {
+		t.Errorf("expected exactly 1 inference call across 2 sweeps, got %d", g)
+	}
+	// Audit event emitted.
+	evs, _ := st.Events().ListBySubject(ctx, tenant, "cz-mA", 10)
+	found := false
+	for _, e := range evs {
+		if e.Type == "causal.inferred" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("expected a causal.inferred audit event")
+	}
+}
+
+// TestEpisodeSweeps_CausalBelowThreshold: a low-confidence proposal is gated out.
+func TestEpisodeSweeps_CausalBelowThreshold(t *testing.T) {
+	st, cleanup := newTestStore(t)
+	defer cleanup()
+	ctx := context.Background()
+	scope := identity.Scope{Tenant: "cz2", Project: "p", User: "u", Session: "s1"}
+	old := time.Now().Add(-10 * time.Second).UnixMilli()
+	_ = st.Records().Append(ctx, scope, []store.Record{
+		{ID: "c2-r1", BranchID: "main", Role: "user", Content: "a", OccurredAt: old, CreatedAt: old},
+	})
+	for i, id := range []string{"c2-mA", "c2-mB"} {
+		_ = st.Memories().Insert(ctx, scope, store.Memory{ID: id, Kind: "decision", Content: id, Status: "active", Confidence: 0.8, TrustSource: "llm_extracted", Stability: 1.0, CreatedAt: old + int64(i) + 1, UpdatedAt: old + int64(i) + 1})
+		_ = st.Memories().AddProvenance(ctx, scope, []store.Provenance{{ID: "pv2-" + id, MemoryID: id, RecordID: "c2-r1", TenantID: scope.Tenant, CreatedAt: old}})
+	}
+	// Gateway proposes a 0.3-confidence edge (below the 0.6 default).
+	gw := &lowConfGateway{}
+	episodeManager(t, st, gw).RunForce(ctx)
+
+	links, _ := st.Memories().ListLinks(ctx, identity.Scope{Tenant: "cz2"}, "c2-mA", "")
+	for _, l := range links {
+		if l.Source == "inferred" {
+			t.Errorf("low-confidence edge should be gated out, got %+v", l)
+		}
+	}
+}
+
+type lowConfGateway struct{}
+
+func (g *lowConfGateway) Complete(_ context.Context, req gateway.CompleteRequest) (gateway.CompleteResponse, error) {
+	if len(req.Messages) > 0 && strings.Contains(req.Messages[0].Content, "Decisions:") {
+		return gateway.CompleteResponse{JSON: json.RawMessage(`{"links":[{"from_idx":0,"to_idx":1,"confidence":0.3,"reason":"weak"}]}`)}, nil
+	}
+	return gateway.CompleteResponse{JSON: json.RawMessage(`{"title":"T","narrative":"n"}`)}, nil
+}
+func (g *lowConfGateway) Embed(context.Context, gateway.EmbedRequest) (gateway.EmbedResponse, error) {
+	return gateway.EmbedResponse{}, nil
+}
+func (g *lowConfGateway) Probe(context.Context) error { return nil }
+func (g *lowConfGateway) Close(context.Context) error { return nil }
+func (g *lowConfGateway) Rerank(context.Context, gateway.RerankRequest) (gateway.RerankResponse, error) {
+	return gateway.RerankResponse{}, nil
 }
 
 // TestEpisodeSweeps_OpenSessionNotDetected: a session with recent activity (not

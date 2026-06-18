@@ -91,6 +91,13 @@ func New(info server.Info, svc *Services) (*server.Server, error) {
 		return nil, err
 	}
 
+	if err := tool.New[CausalInput, CausalOutput]("memory_causal").
+		Describe("Walk the causal graph from a memory (mirrors GET /v1/causal; RFC §5.6/§6b, D-083): backward to its causes ('why did this happen'), forward to its effects, or both, with provenance at every hop. Deterministic + LLM-free.").
+		Handler(makeCausalHandler(svc)).
+		Register(srv); err != nil {
+		return nil, err
+	}
+
 	if err := tool.New[DrilldownInput, DrilldownOutput]("memory_drilldown").
 		Describe("Drill down into the provenance spans of a memory or citation (mirrors POST /v1/drilldown).").
 		Handler(makeDrilldownHandler(svc)).

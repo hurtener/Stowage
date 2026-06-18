@@ -45,6 +45,11 @@ type Client interface {
 	// SessionID and the [From,Until] time window. Deterministic and LLM-free.
 	Episodes(ctx context.Context, req EpisodesRequest) (EpisodesResponse, error)
 
+	// Causal walks the causal graph from a memory (RFC §5.6/§6b, D-083): backward
+	// to its causes ("why did this happen"), forward to its effects, or both, with
+	// provenance at every hop. Deterministic and LLM-free.
+	Causal(ctx context.Context, req CausalRequest) (CausalResponse, error)
+
 	// GetMemory reads a memory, its junctions, and its supersedes chain within
 	// the client's scope (D-070). Returns an error when the memory is absent.
 	GetMemory(ctx context.Context, id string) (GetMemoryResponse, error)

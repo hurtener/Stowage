@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/hurtener/stowage/internal/boot"
+	"github.com/hurtener/stowage/internal/causal"
 	"github.com/hurtener/stowage/internal/config"
 	"github.com/hurtener/stowage/internal/episodes"
 	"github.com/hurtener/stowage/internal/identity"
@@ -590,6 +591,36 @@ func episodeToSDK(v episodes.EpisodeView) Episode {
 		StartedAt: v.StartedAt, EndedAt: v.EndedAt, NarrativeMemoryID: v.NarrativeMemoryID, Narrative: v.Narrative,
 		Score: v.Score,
 	}
+}
+
+// Causal implements Client via the gateway-free causal-traversal core (D-083).
+func (c *embeddedClient) Causal(ctx context.Context, req CausalRequest) (CausalResponse, error) {
+	if req.MemoryID == "" {
+		return CausalResponse{}, errors.New("sdk: causal: memory_id must not be empty")
+	}
+	g, err := causal.Traverse(ctx, c.stack.Store, c.scope, req.MemoryID, causal.Direction(req.Direction), req.Depth)
+	if err != nil {
+		return CausalResponse{}, fmt.Errorf("sdk: causal: %w", err)
+	}
+	return causalGraphToSDK(g), nil
+}
+
+// causalGraphToSDK maps the traversal graph onto the SDK wire type (byte-identical
+// JSON to the HTTP/MCP envelopes — parity bar).
+func causalGraphToSDK(g causal.Graph) CausalResponse {
+	out := CausalResponse{Root: g.Root, Truncated: g.Truncated,
+		Nodes: make([]CausalNode, 0, len(g.Nodes)), Edges: make([]CausalEdge, 0, len(g.Edges))}
+	for _, n := range g.Nodes {
+		cn := CausalNode{MemoryID: n.MemoryID, Kind: n.Kind, Content: n.Content, Context: n.Context, EpisodeID: n.EpisodeID}
+		for _, p := range n.Provenance {
+			cn.Provenance = append(cn.Provenance, CausalProvRef{RecordID: p.RecordID, SpanStart: p.SpanStart, SpanEnd: p.SpanEnd})
+		}
+		out.Nodes = append(out.Nodes, cn)
+	}
+	for _, e := range g.Edges {
+		out.Edges = append(out.Edges, CausalEdge{From: e.From, To: e.To, Type: e.Type, Confidence: e.Confidence})
+	}
+	return out
 }
 
 // playbookToSDK maps the assembled playbook onto the SDK wire type. The JSON

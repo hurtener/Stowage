@@ -272,6 +272,26 @@ func (c *httpClient) Episodes(ctx context.Context, req EpisodesRequest) (Episode
 	return resp, nil
 }
 
+// Causal implements Client via GET /v1/causal (D-083).
+func (c *httpClient) Causal(ctx context.Context, req CausalRequest) (CausalResponse, error) {
+	if req.MemoryID == "" {
+		return CausalResponse{}, errors.New("sdk: causal: memory_id must not be empty")
+	}
+	v := url.Values{}
+	v.Set("memory_id", req.MemoryID)
+	if req.Direction != "" {
+		v.Set("direction", req.Direction)
+	}
+	if req.Depth > 0 {
+		v.Set("depth", strconv.Itoa(req.Depth))
+	}
+	var resp CausalResponse
+	if err := c.do(ctx, http.MethodGet, "/v1/causal?"+v.Encode(), nil, &resp); err != nil {
+		return CausalResponse{}, err
+	}
+	return resp, nil
+}
+
 // GetMemory implements Client via GET /v1/memories/{id} (D-070).
 func (c *httpClient) GetMemory(ctx context.Context, id string) (GetMemoryResponse, error) {
 	if id == "" {

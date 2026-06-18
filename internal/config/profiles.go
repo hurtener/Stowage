@@ -92,6 +92,10 @@ type EpisodeConfig struct {
 	NarrateInterval time.Duration
 	IdleWindow      time.Duration // a session idle this long is "closed"
 	GapSplit        time.Duration // intra-session gap that splits an episode; 0 = off (v1)
+	// CausalMinConfidence gates which inferred led_to edges persist during narration
+	// (Phase 24, D-083). Profile-internal (like the intervals above — NOT a top-level
+	// operator knob); the eval harness re-tunes it with real data (D-035).
+	CausalMinConfidence float64
 }
 
 // EpisodeConfigForProfile returns the episode-sweep tuning for the named profile.
@@ -100,7 +104,7 @@ type EpisodeConfig struct {
 func EpisodeConfigForProfile(profile string) EpisodeConfig {
 	ec := EpisodeConfig{
 		Enabled: false, DetectInterval: 15 * time.Minute, NarrateInterval: 15 * time.Minute,
-		IdleWindow: 30 * time.Minute, GapSplit: 0,
+		IdleWindow: 30 * time.Minute, GapSplit: 0, CausalMinConfidence: 0.6,
 	}
 	if profile == "assistant" || profile == "fleet" {
 		ec.Enabled = true

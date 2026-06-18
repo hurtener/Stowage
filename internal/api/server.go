@@ -135,6 +135,9 @@ func New(cfg *config.Config, st store.Store, log *slog.Logger, reg *prometheus.R
 	// Phase 23: episodic retrieval (RFC §6b, D-080).
 	mux.HandleFunc("GET /v1/episodes", srv.authMiddleware(srv.handleEpisodes, false))
 
+	// Phase 24: causal why-traversal (RFC §5.6/§6b, D-083).
+	mux.HandleFunc("GET /v1/causal", srv.authMiddleware(srv.handleCausal, false))
+
 	// Phase 11: drill-down, feedback, and citation resolution.
 	mux.HandleFunc("POST /v1/drilldown", srv.authMiddleware(srv.handleDrilldown, false))
 	mux.HandleFunc("POST /v1/feedback", srv.authMiddleware(srv.handleFeedback, false))
