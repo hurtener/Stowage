@@ -1982,3 +1982,52 @@ and cannot share the byte-identical parity bar that gates the tiered surfaces (t
 need a fake-embedder harness), and they add a gateway/vindex dependency to an
 otherwise always-available, gateway-free read path. The deterministic surface here is
 the foundation they build on.
+
+## D-081 — Episode threading: group session-episodes into cross-session arcs (PROPOSED — backlog, not ratified)
+
+> **Status: PROPOSED / backlog — NOT a settled decision.** Captured for the record
+> (owner request, 2026-06-18). The decisions log is otherwise settled-only; this
+> entry is a sketch that ratifies only when the phase is pulled. The number D-081 is
+> **reserved** for this proposal — if other work settles first it takes the next free
+> number and this stays D-081 until ratified or withdrawn. Roadmap stub: Phase 24b.
+
+**Problem.** Phase 22 detects an episode as one *closed session* (structural +
+temporal-gap heuristic, D-079). But the unit a user actually reasons about is the
+**arc** — "the billing-migration effort," "the Q1 outage" — which spans many
+sessions over days/weeks. Different sessions are often semantically the *same living
+episode*. Today nothing groups them; Phase 23's `[from,until]` window is a blunt
+time proxy, not a semantic thread.
+
+**Proposal.** A deterministic lifecycle sweep (sibling to detect/narrate/reflect)
+clusters recent episodes into arcs and records the grouping. Clustering signal:
+`narrative-vector similarity ∧ entity/keyword overlap ∧ temporal proximity ∧
+(project,user) continuity`, above a conservative threshold. The grouping *decision*
+is **gateway-free** (heuristic-first, like Phase 22 detection); an optional gateway
+call writes the arc *title/summary* only (detect-free → narrate-LLM mirror).
+
+**Reuses, doesn't reinvent.** Arc-grouping is one step beyond the Phase-23b
+similar-episode contrast (same kind-filtered narrative vectors,
+`vindex.Filter{Kinds:["narrative"]}`), and the "are these the same?" gate mirrors
+reconcile's bigram-Jaccard + entity-neighbor + threshold discipline.
+
+**Two open forks (decide at pull time).**
+1. **Edges vs container.** Start with episode↔episode `relates_to` links (no new
+   table — the links graph exists, composes with Phase-24 causal edges, reversible).
+   Promote to a parent **arc** entity (a `parent_id` on `episodes` or a small `arcs`
+   table → RFC §8.1 amendment, D-024 budget) only when the eval justifies an
+   arc-level narrative/retrieval surface.
+2. **Risk: false merges** (two unrelated tasks fused). Same class as cross-kind
+   supersede; mitigate with a conservative threshold + entity-overlap gate, and keep
+   it **reversible** (derived grouping over immutable episodes/records — re-cluster,
+   never destroy).
+
+**Why it matters / why gated.** Turns the episodic layer from session summaries into
+long-horizon "living memory" (the differentiator vs flat RAG); it's the natural home
+for Phase-24 causal traversal and Phase-27 resumption/proactive ("you're back on the
+migration thread"). But it's "elegant, needs evidence": **gated on an episodic-eval
+win** (does grouping improve cross-session QA / resumption?) per the D-035 discipline,
+not shipped on intuition.
+
+**Sequencing.** After Phase 23b (vector-over-narratives) and Phase 24 (causal links)
+— by then the vector machinery and the episode-edge graph exist and threading is
+mostly wiring. Not a v0.1-launch blocker.
