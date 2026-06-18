@@ -1,0 +1,26 @@
+{
+  "id": "adapt-deploy-01",
+  "description": "Online adaptation: an agent learns from a failed deploy, then faces a similar deploy task; the playbook strategy from the first task should help the second.",
+  "tasks": [
+    {
+      "turns": [
+        {"role": "user", "content": "Deploy the billing service to production."},
+        {"role": "assistant", "content": "Deploying billing service v2.3 directly to all regions now."},
+        {"role": "tool", "content": "Deploy failed: the migration ran without a lock and deadlocked against live traffic; rolled back."}
+      ],
+      "outcome": "failure",
+      "eval_question": "When deploying a service with a schema migration, what should you do to avoid a deadlock against live traffic?",
+      "expected_answer": "acquire a lock before running the migration"
+    },
+    {
+      "turns": [
+        {"role": "user", "content": "Deploy the inventory service to production; it also has a schema migration."},
+        {"role": "assistant", "content": "Acquiring the migration lock first this time, then deploying region by region."},
+        {"role": "tool", "content": "Deploy succeeded: migration applied under lock, no contention."}
+      ],
+      "outcome": "success",
+      "eval_question": "When deploying a service with a schema migration, what should you do to avoid a deadlock against live traffic?",
+      "expected_answer": "acquire a lock before running the migration"
+    }
+  ]
+}

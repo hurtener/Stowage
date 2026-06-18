@@ -30,6 +30,37 @@ type Turn struct {
 	Content string `json:"content"`
 }
 
+// AdaptScenario is an online-adaptation scenario (Phase 20b, D-078): an ordered
+// sequence of tasks. Between tasks the reflection→playbook loop accumulates
+// strategies; the measure is whether later tasks improve as the playbook matures.
+type AdaptScenario struct {
+	ID          string      `json:"id"`
+	Description string      `json:"description"`
+	Tasks       []AdaptTask `json:"tasks"`
+}
+
+// AdaptTask is one task in an AdaptScenario: a short trajectory carrying a terminal
+// outcome, plus an eval question asked after reflection + playbook assembly.
+type AdaptTask struct {
+	Turns          []Turn `json:"turns"`
+	Outcome        string `json:"outcome"` // "success" | "failure"
+	EvalQuestion   string `json:"eval_question"`
+	ExpectedAnswer string `json:"expected_answer"`
+}
+
+// LoadAdaptScenario loads an online-adaptation scenario from a JSON file.
+func LoadAdaptScenario(path string) (*AdaptScenario, error) {
+	data, err := os.ReadFile(path) //nolint:gosec // operator-supplied path
+	if err != nil {
+		return nil, fmt.Errorf("load adapt scenario %s: %w", path, err)
+	}
+	var s AdaptScenario
+	if err := json.Unmarshal(data, &s); err != nil {
+		return nil, fmt.Errorf("parse adapt scenario %s: %w", path, err)
+	}
+	return &s, nil
+}
+
 // LoadScenario loads a scenario from a JSON file.
 func LoadScenario(path string) (*Scenario, error) {
 	data, err := os.ReadFile(path) //nolint:gosec // operator-supplied path
