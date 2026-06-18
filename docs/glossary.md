@@ -61,7 +61,18 @@ New terms land here in the same PR that introduces them (CLAUDE.md §14).
 - **Outcome** — the success/failure + execution-feedback tag a record or buffer
   flush can carry; the label-free fuel for reflection (D-018).
 - **Reflection** — the outcome-aware extraction mode that distills `strategy`
-  and `failure_mode` memories from trajectories (ACE's Reflector, brief 05).
+  and `failure_mode` memories from trajectories (ACE's Reflector, brief 05). The
+  write-side runs as a lifecycle sweep feeding the existing reconcile core
+  (`internal/reflect`, Phase 19, D-077); it is the LLM-ful counterpart to the
+  LLM-free playbook *assembly*.
+- **Trajectory (reflection)** — outcome-tagged records grouped by `(session_id,
+  branch_id)` with a terminal outcome, ordered by `occurred_at`; the unit a
+  reflection pass reflects over (success/failure contrast).
+- **Re-reflection** — the multi-epoch reflection sweep that revisits older
+  trajectories as the playbook matures; idempotent via reconcile pre-filters +
+  a per-scope watermark (D-077).
+- **`llm_reflected`** — the trust source stamped on reflection-produced memories,
+  distinguishing them from `llm_extracted` (topic extraction) (D-077).
 - **Playbook** — the deterministic, sectioned, budget-packed context view over
   a scope's strategy/failure-mode memories (`GET /v1/playbook`); evolves only
   through delta reconciliation, never LLM rewrite (context-collapse defense).
