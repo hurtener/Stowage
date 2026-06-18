@@ -1,6 +1,6 @@
 # Phase 19 — Reflection write-side (ACE §6a.1-2)
 
-- **Status:** draft
+- **Status:** implemented (see "As-built deviations" below)
 - **Owning subsystem(s):** new `internal/reflect` (reflection extraction: prompt,
   schema, trajectory assembler, candidate constructor); `internal/lifecycle`
   (re-reflection sweep); `internal/store` (+ `ListByOutcome` + index migration);
@@ -305,6 +305,45 @@ an explicit knob enables it; `stowage serve` with one secret env var is unaffect
   weights in the constructor; a general kind→weight table is a later refinement).
 - A `reflector` link source (reflection rides the existing `reconciler` source;
   revisit only if a consumer needs to distinguish reflection-origin links).
+
+## As-built deviations (§4.3)
+
+Reasonable deviations discovered during implementation; D-077's decisions hold.
+
+1. **Reflection config is profile-internal, not a top-level config knob.** Following
+   the established `BufferTriggersForProfile` / `PlaybookBudgetForProfile` precedent
+   (pipeline tuning is profile-internal, explicitly *not* a D-034 top-level knob),
+   reflection enablement/tuning lives in `config.ReflectConfigForProfile` (fleet on;
+   assistant/coding-agent off). The smoke proves the gating via a config unit test
+   rather than `config explain`. Zero-config single-user start does no reflection.
+2. **The eval harness `server.go` + `stageparity_test.go` were not changed.** The
+   parity test guards the four *constructors* `StartPipeline` wires; reflection is
+   wired via `Manager.SetReflection` (a method) + a fan-in goroutine, neither a new
+   constructor — so parity holds without a harness change, and the eval-CI run does
+   no reflection (it never calls `SetReflection`).
+3. **`Store.Tenants()` now unions memories + records.** Reflection operates on
+   outcome-tagged *records* that exist before any memory; a memories-only listing
+   made fresh scopes invisible to the sweep. The union is safe for the memory-only
+   sweeps (they no-op on record-only tenants) and locked by a conformance case.
+4. **Store-layer kind filter implemented (adversarial-review blocker).** D-077 #5
+   set `NeighborQuery.Kinds` for reflection candidates, but that field was an
+   unimplemented dead field in both `FindNeighbors` drivers — making the cross-kind
+   isolation inert (a strategy could supersede a fact). Both drivers now honor
+   `Kinds` (`AND kind IN (...)`), proven by a conformance case **and** the
+   integration test (a pre-existing fact sharing the strategy's entity survives).
+5. **Trajectory grouping keys on the full identity `(project, user, session,
+   branch)`** (review finding), order-robust via a map, so two users sharing a
+   `session_id` within a tenant never merge into one trajectory.
+
+### Tracked follow-ups (not blockers)
+
+- **`job_markers` growth.** The per-`(scope, epoch, trajectory)` markers accumulate;
+  a TTL/prune sweep keyed on `ran_at` is a follow-up (reflection is the first
+  per-trajectory marker user).
+- **Trajectory context is the outcome-tagged records only** (v1, as planned);
+  full-session hydration around the outcome is a quality enrichment for later.
+- **Reflection emits at tenant scope** (the shared team playbook); finer
+  per-project/user reflection scoping is a possible later refinement.
 
 ## Glossary additions
 

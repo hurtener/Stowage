@@ -16,6 +16,27 @@ import (
 // It mirrors internal/api's pipelineCap so every entrypoint shares one depth.
 const pipelineCap = 4096
 
+// reflectChanCap bounds the reflection→reconcile fan-in channels (Phase 19).
+const reflectChanCap = 256
+
+// fanInCandidates merges two CandidateBatch producers (the extract stage and the
+// reflection sweep) into one reconcile-input channel, closing out once BOTH
+// inputs are closed. This lets one reconcile core serve both producers (D-077 #7).
+func fanInCandidates(out chan<- pipeline.CandidateBatch, a, b <-chan pipeline.CandidateBatch) {
+	var wg sync.WaitGroup
+	wg.Add(2)
+	forward := func(in <-chan pipeline.CandidateBatch) {
+		defer wg.Done()
+		for batch := range in {
+			out <- batch
+		}
+	}
+	go forward(a)
+	go forward(b)
+	wg.Wait()
+	close(out)
+}
+
 // Pipeline is the live derivation system layered on top of an opened *Stack:
 // the buffer/extract/reconcile pipeline stages, the lifecycle Manager (all
 // sweeps), and the embedding BackfillSweep. It is produced by StartPipeline and
@@ -41,6 +62,12 @@ type Pipeline struct {
 	extract   *pipeline.ExtractStage
 	reconcile *reconcile.ReconcileStage
 	lc        *lifecycle.Manager
+
+	// reflectCh is the reflection sweep → reconcile fan-in producer channel (Phase
+	// 19, D-077); nil when reflection is disabled (single-user profiles). Closed in
+	// Drain AFTER the lifecycle sweeps stop, so the fan-in can close the merged
+	// reconcile-input channel once both producers (extract + reflection) are done.
+	reflectCh chan pipeline.CandidateBatch
 
 	// bgCancel/bgWG govern the BackfillSweep goroutine so Drain can stop it
 	// without relying on the caller cancelling ctx (no goroutine leak, AC-6).
@@ -83,14 +110,28 @@ func StartPipeline(ctx context.Context, stk *Stack, cfg config.Config) (*Pipelin
 	extract := pipeline.NewExtractStage(stk.Store, stk.Gateway, stk.TopicSvc, stk.Log, cfg.Profile, buf.Downstream())
 	extract.Start(ctx)
 
-	// 3. Reconcile stage — commit extracted candidates, embed, invalidate cache.
+	// 3. Reconcile stage — commit candidates, embed, invalidate cache. Its input is
+	//    the extract stage's output, OR — when reflection is enabled (Phase 19,
+	//    D-077) — a fan-in of extract + the reflection sweep, so one reconcile core
+	//    serves both producers with identical trust gates / dedupe / supersede.
+	reflectCfg := config.ReflectConfigForProfile(cfg.Profile)
+	var reconcileIn <-chan pipeline.CandidateBatch
+	var reflectCh chan pipeline.CandidateBatch
+	if reflectCfg.Enabled {
+		reflectCh = make(chan pipeline.CandidateBatch, reflectChanCap)
+		merged := make(chan pipeline.CandidateBatch, reflectChanCap)
+		go fanInCandidates(merged, extract.Downstream(), reflectCh)
+		reconcileIn = merged
+	} else {
+		reconcileIn = extract.Downstream()
+	}
 	rec := reconcile.New(
 		stk.Store.Memories(),
 		stk.Store.Ops(),
 		stk.Store.Events(),
 		stk.Gateway,
 		stk.Log,
-		extract.Downstream(),
+		reconcileIn,
 	)
 	rec.SetEmbedder(stk.Embedder)
 	rec.SetScopeInvalidator(stk.Retriever.Cache()) // Phase 12 cache invalidation (D-053)
@@ -103,6 +144,7 @@ func StartPipeline(ctx context.Context, stk *Stack, cfg config.Config) (*Pipelin
 		buf:       buf,
 		extract:   extract,
 		reconcile: rec,
+		reflectCh: reflectCh,
 	}
 
 	// 4. Embedding backfill (D-047 embed recovery) — runs on every live path, no
@@ -119,7 +161,16 @@ func StartPipeline(ctx context.Context, stk *Stack, cfg config.Config) (*Pipelin
 	// 5. Lifecycle sweeps — decay, dedupe, rollup, re-enqueue, confirm. The
 	// re-enqueue sweep produces into ch, so it must be stopped before ch is
 	// closed (handled by Drain).
-	lc := lifecycle.New(stk.Store, stk.Log, lifecycle.DefaultProfile(), ch)
+	lcProfile := lifecycle.DefaultProfile()
+	lcProfile.ReflectInterval = reflectCfg.Interval
+	lcProfile.ReflectBatchSize = reflectCfg.BatchSize
+	lcProfile.ReflectEpochEvery = reflectCfg.EpochEvery
+	lc := lifecycle.New(stk.Store, stk.Log, lcProfile, ch)
+	if reflectCfg.Enabled {
+		// Wire the reflection sweep: it calls the gateway and emits into the
+		// reconcile fan-in (Phase 19, D-077). Set before RunForce/Start.
+		lc.SetReflection(stk.Gateway, reflectCh)
+	}
 	if os.Getenv("STOWAGE_SWEEP_FORCE") != "" {
 		stk.Log.Info("boot: STOWAGE_SWEEP_FORCE set — running all sweeps once before serving")
 		lc.RunForce(ctx)
@@ -151,6 +202,14 @@ func (p *Pipeline) Drain(ctx context.Context) error {
 			p.bgCancel()
 		}
 		p.bgWG.Wait()
+
+		// 1b. The lifecycle sweeps (incl. the reflection sweep) are now stopped, so
+		//     no further sends race the reflection fan-in channel. Close it so the
+		//     fan-in goroutine can close the merged reconcile-input channel once the
+		//     extract stage's output also closes (Phase 19, D-077).
+		if p.reflectCh != nil {
+			close(p.reflectCh)
+		}
 
 		// 2. Close the ingest channel so buffer workers exit their range loop.
 		close(p.ch)

@@ -77,7 +77,9 @@ var CandidateSchema = json.RawMessage(`{
 }`)
 
 // ValidKinds is the accepted candidate kind set for Phase 07 (RFC §5.2 subset).
-// strategy and failure_mode are reserved for Phase 19 (reflection).
+// strategy and failure_mode are reserved for Phase 19 (reflection) — they are NOT
+// in this map, so topic extraction can never emit them (and the reflection schema
+// in internal/reflect can never emit topic kinds).
 var ValidKinds = map[string]bool{
 	"fact":       true,
 	"preference": true,
@@ -87,6 +89,21 @@ var ValidKinds = map[string]bool{
 	"task":       true,
 	"narrative":  true,
 }
+
+// ReflectionKinds is the accepted candidate kind set for the Phase 19 reflection
+// write-side (ACE §6a.2, D-077). Disjoint from ValidKinds.
+var ReflectionKinds = map[string]bool{
+	"strategy":     true,
+	"failure_mode": true,
+}
+
+// IsReflectionKind reports whether kind is a reflection product (strategy /
+// failure_mode). Used by reconcile to restrict reflection candidates' neighbor
+// search to reflection kinds so a strategy cannot supersede a fact (D-077 #5).
+func IsReflectionKind(kind string) bool { return ReflectionKinds[kind] }
+
+// ReflectionKindList returns the reflection kinds as a slice (for NeighborQuery).
+func ReflectionKindList() []string { return []string{"strategy", "failure_mode"} }
 
 // ProvSpan links a candidate memory to a character range within a verbatim record.
 type ProvSpan struct {
@@ -98,6 +115,12 @@ type ProvSpan struct {
 // Candidate is an extracted not-yet-committed memory produced by the extract
 // stage. Scope and BranchID are stamped on the containing CandidateBatch by the
 // server (P3); the model never sets them.
+//
+// TrustSource and Stability are server-set provenance/seed fields (json:"-", never
+// set by the model): the reflection constructor stamps them ("llm_reflected" + a
+// seed stability) so reflection-origin memories are distinguishable and seeded;
+// topic candidates leave them zero and inherit the "llm_extracted" / 1.0 defaults
+// in reconcile (D-077 #4).
 type Candidate struct {
 	Kind               string     `json:"kind"`
 	Content            string     `json:"content"`
@@ -108,6 +131,8 @@ type Candidate struct {
 	Importance         int        `json:"importance"`
 	Confidence         float64    `json:"confidence"`
 	Provenance         []ProvSpan `json:"provenance"`
+	TrustSource        string     `json:"-"` // server-set; "" → "llm_extracted"
+	Stability          float64    `json:"-"` // server-set seed; 0 → 1.0
 }
 
 // CandidateList is the top-level object the model returns.

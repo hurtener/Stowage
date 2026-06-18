@@ -43,6 +43,7 @@ func Run(t *testing.T, factory Factory) {
 	t.Run("RecordListBySession", func(t *testing.T) { testRecordListBySession(t, factory) })
 	t.Run("RecordListBySessionCursor", func(t *testing.T) { testRecordListBySessionCursor(t, factory) })
 	t.Run("RecordListUnprocessedMarkProcessed", func(t *testing.T) { testRecordListUnprocessedMarkProcessed(t, factory) })
+	t.Run("RecordListByOutcome", func(t *testing.T) { testRecordListByOutcome(t, factory) })
 	t.Run("RecordScopeIsolation", func(t *testing.T) { testRecordScopeIsolation(t, factory) })
 	t.Run("RecordGetNotFound", func(t *testing.T) { testRecordGetNotFound(t, factory) })
 	t.Run("MemoryInsertGet", func(t *testing.T) { testMemoryInsertGet(t, factory) })
@@ -110,6 +111,7 @@ func Run(t *testing.T, factory Factory) {
 	t.Run("MemoryContentHashScopeIsolation", func(t *testing.T) { testMemoryContentHashScopeIsolation(t, factory) })
 	t.Run("MemoryFindNeighborsScopeIsolation", func(t *testing.T) { testMemoryFindNeighborsScopeIsolation(t, factory) })
 	t.Run("MemoryFindNeighborsByKeyword", func(t *testing.T) { testMemoryFindNeighborsByKeyword(t, factory) })
+	t.Run("MemoryFindNeighborsKindFilter", func(t *testing.T) { testMemoryFindNeighborsKindFilter(t, factory) })
 	t.Run("MemoryCommitAddZeroTimes", func(t *testing.T) { testMemoryCommitAddZeroTimes(t, factory) })
 	t.Run("MemoryCommitUpdateZeroTimes", func(t *testing.T) { testMemoryCommitUpdateZeroTimes(t, factory) })
 	t.Run("MemoryCommitAddWithProvenance", func(t *testing.T) { testMemoryCommitAddWithProvenance(t, factory) })
@@ -446,6 +448,75 @@ func testRecordListUnprocessedMarkProcessed(t *testing.T, factory Factory) {
 		if r.ID == rec.ID {
 			t.Error("record still unprocessed after MarkProcessed")
 		}
+	}
+}
+
+func testRecordListByOutcome(t *testing.T, factory Factory) {
+	t.Helper()
+	s, cleanup := factory()
+	defer cleanup()
+	ctx := context.Background()
+	scope := tenantScope("t-" + newID())
+	base := time.Now().Add(-time.Hour).UnixMilli()
+
+	// success + failure tagged, plus an untagged record and an old success.
+	succ := store.Record{ID: newID(), SessionID: "s1", BranchID: "main", Role: "tool", Content: "did X", Outcome: "success", OccurredAt: base + 100, CreatedAt: base + 100}
+	fail := store.Record{ID: newID(), SessionID: "s1", BranchID: "main", Role: "tool", Content: "Y broke", Outcome: "failure", OccurredAt: base + 200, CreatedAt: base + 200}
+	plain := store.Record{ID: newID(), SessionID: "s1", BranchID: "main", Role: "user", Content: "hi", Outcome: "", OccurredAt: base + 50, CreatedAt: base + 50}
+	old := store.Record{ID: newID(), SessionID: "s0", BranchID: "main", Role: "tool", Content: "old win", Outcome: "success", OccurredAt: base - 10_000, CreatedAt: base - 10_000}
+	if err := s.Records().Append(ctx, scope, []store.Record{succ, fail, plain, old}); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+
+	// since just before succ's timestamp: returns succ+fail (not plain/untagged, not old).
+	got, err := s.Records().ListByOutcome(ctx, scope, []string{"success", "failure"}, base+60, 100)
+	if err != nil {
+		t.Fatalf("ListByOutcome: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("expected 2 tagged records since cutoff, got %d", len(got))
+	}
+	// Ordered by (session, branch, occurred_at): succ (100) before fail (200).
+	if got[0].ID != succ.ID || got[1].ID != fail.ID {
+		t.Errorf("ordering wrong: got %s,%s want %s,%s", got[0].ID, got[1].ID, succ.ID, fail.ID)
+	}
+	for _, r := range got {
+		if r.Outcome == "" {
+			t.Error("untagged record leaked into ListByOutcome")
+		}
+	}
+
+	// Filter to failures only.
+	fails, err := s.Records().ListByOutcome(ctx, scope, []string{"failure"}, base+60, 100)
+	if err != nil {
+		t.Fatalf("ListByOutcome(failure): %v", err)
+	}
+	if len(fails) != 1 || fails[0].ID != fail.ID {
+		t.Errorf("expected only the failure record, got %d", len(fails))
+	}
+
+	// Empty outcomes → no rows.
+	none, err := s.Records().ListByOutcome(ctx, scope, nil, 0, 100)
+	if err != nil {
+		t.Fatalf("ListByOutcome(nil): %v", err)
+	}
+	if len(none) != 0 {
+		t.Errorf("empty outcomes should return no rows, got %d", len(none))
+	}
+
+	// Scope isolation: a different tenant sees nothing.
+	other := tenantScope("t-" + newID())
+	iso, err := s.Records().ListByOutcome(ctx, other, []string{"success", "failure"}, 0, 100)
+	if err != nil {
+		t.Fatalf("ListByOutcome(other): %v", err)
+	}
+	if len(iso) != 0 {
+		t.Errorf("cross-scope leak: other tenant saw %d records", len(iso))
+	}
+
+	// Missing scope fails closed (P3).
+	if _, err := s.Records().ListByOutcome(ctx, identity.Scope{}, []string{"success"}, 0, 100); err == nil {
+		t.Error("expected error on empty scope (P3 fail-closed)")
 	}
 }
 
@@ -2140,6 +2211,59 @@ func testMemoryFindNeighbors(t *testing.T, factory Factory) {
 	}
 }
 
+// testMemoryFindNeighborsKindFilter asserts NeighborQuery.Kinds restricts the
+// result to the named kinds — the store-layer enforcement the reflection
+// write-side relies on so a strategy cannot supersede a fact (D-077 #5).
+func testMemoryFindNeighborsKindFilter(t *testing.T, factory Factory) {
+	t.Helper()
+	s, cleanup := factory()
+	defer cleanup()
+	ctx := context.Background()
+	scope := tenantScope("t-" + newID())
+
+	// A fact and a strategy that share an entity ("API-X").
+	factID, stratID := newID(), newID()
+	commit := func(id, kind string) {
+		if err := s.Memories().Commit(ctx, scope, store.CommitSet{
+			Action: store.ActionAdd,
+			Memory: store.Memory{
+				ID: id, Kind: kind, Content: kind + " about API-X",
+				Status: "active", Confidence: 0.9, TrustSource: "llm_extracted", Stability: 1.0,
+				CreatedAt: nowMs(), UpdatedAt: nowMs(),
+			},
+			Entities: []string{"API-X"},
+			Keywords: []string{"api"},
+		}); err != nil {
+			t.Fatalf("Commit %s: %v", kind, err)
+		}
+	}
+	commit(factID, "fact")
+	commit(stratID, "strategy")
+
+	// No kind filter → both returned.
+	all, err := s.Memories().FindNeighbors(ctx, scope, store.NeighborQuery{Entities: []string{"API-X"}, Limit: 10})
+	if err != nil {
+		t.Fatalf("FindNeighbors (all): %v", err)
+	}
+	if len(all) != 2 {
+		t.Fatalf("unfiltered: got %d neighbors, want 2", len(all))
+	}
+
+	// Kind filter to strategy/failure_mode → only the strategy.
+	filtered, err := s.Memories().FindNeighbors(ctx, scope, store.NeighborQuery{
+		Entities: []string{"API-X"}, Limit: 10, Kinds: []string{"strategy", "failure_mode"},
+	})
+	if err != nil {
+		t.Fatalf("FindNeighbors (kind-filtered): %v", err)
+	}
+	if len(filtered) != 1 {
+		t.Fatalf("kind-filtered: got %d neighbors, want 1", len(filtered))
+	}
+	if filtered[0].ID != stratID {
+		t.Errorf("kind-filtered neighbor: got %q, want the strategy %q (a fact leaked through)", filtered[0].ID, stratID)
+	}
+}
+
 func testMemoryFindNeighborsEmpty(t *testing.T, factory Factory) {
 	t.Helper()
 	s, cleanup := factory()
@@ -3444,6 +3568,26 @@ func testTenantsListing(t *testing.T, factory Factory) {
 		if !tenantSet[expected] {
 			t.Errorf("expected tenant %q in result", expected)
 		}
+	}
+
+	// A tenant with only RECORDS (no memories) must also appear — the reflection
+	// sweep operates on outcome-tagged records before any memory exists (D-077).
+	recScope := tenantScope("tenant-records-only")
+	if err := s.Records().Append(ctx, recScope, []store.Record{
+		{ID: newID(), Role: "tool", Content: "did a thing", Outcome: "success", OccurredAt: nowMs(), CreatedAt: nowMs()},
+	}); err != nil {
+		t.Fatalf("append record-only tenant: %v", err)
+	}
+	tenants, err = s.Tenants(ctx)
+	if err != nil {
+		t.Fatalf("Tenants (with records): %v", err)
+	}
+	rset := map[string]bool{}
+	for _, tid := range tenants {
+		rset[tid] = true
+	}
+	if !rset["tenant-records-only"] {
+		t.Errorf("record-only tenant missing from Tenants(): %v", tenants)
 	}
 }
 

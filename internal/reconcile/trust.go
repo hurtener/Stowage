@@ -19,6 +19,10 @@ var sourceMultiplierMap = map[string]float64{
 	"agreed_upon":     1.5,
 	"agent_suggested": 1.0,
 	"llm_extracted":   0.7,
+	// Reflection products are LLM-derived without user confirmation — same trust
+	// tier as llm_extracted (D-077). Registered explicitly so they do NOT fall to
+	// the higher defaultSourceMultiplier (1.0).
+	"llm_reflected": 0.7,
 }
 
 // defaultSourceMultiplier is used when trust_source does not appear in

@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/hurtener/stowage/internal/gateway"
 	"github.com/hurtener/stowage/internal/pipeline"
 	"github.com/hurtener/stowage/internal/store"
 )
@@ -51,6 +52,13 @@ type Profile struct {
 	// promoted early via repeated-independent-extraction (Phase 18, D-065).
 	// Default 2.
 	ConfirmRepeats int
+
+	// Reflection sweep tuning (Phase 19, D-077). The sweep is only registered when
+	// SetReflection has wired a gateway + reconcile-input channel (boot does this
+	// only for the fleet profile by default — config.ReflectConfigForProfile).
+	ReflectInterval   time.Duration // default 30m
+	ReflectBatchSize  int           // outcome-tagged records per scope per sweep; default 200
+	ReflectEpochEvery int           // every Nth interval re-reflects the trailing window; default 8
 }
 
 // DefaultProfile returns the profile with sensible production defaults.
@@ -73,18 +81,42 @@ func DefaultProfile() Profile {
 		DecayGraceSweeps:  2,
 		ConfirmTTL:        72 * time.Hour, // D-065: 72 h review window
 		ConfirmRepeats:    2,              // D-065: 2 independent extractions promote early
+
+		ReflectInterval:   30 * time.Minute,
+		ReflectBatchSize:  200,
+		ReflectEpochEvery: 8,
 	}
 }
 
-// Manager runs the four lifecycle sweeps.
+// Manager runs the lifecycle sweeps.
 type Manager struct {
 	st      store.Store
 	log     *slog.Logger
 	profile Profile
 	ingest  chan<- pipeline.Item // re-enqueue target
 
+	// Reflection wiring (Phase 19, D-077). Set via SetReflection; when both are
+	// non-nil the reflect sweep is registered. nil → reflection off (the default
+	// for single-user profiles and every caller that doesn't opt in).
+	gw         gateway.Gateway
+	reflectOut chan<- pipeline.CandidateBatch
+
 	wg     sync.WaitGroup
 	stopCh chan struct{}
+}
+
+// SetReflection wires the reflection sweep's dependencies: the gateway it calls
+// to distill strategy/failure_mode candidates, and the reconcile-input channel it
+// emits CandidateBatches into. Must be called before Start. When unset, the
+// reflection sweep is not registered (Phase 19, D-077).
+func (m *Manager) SetReflection(gw gateway.Gateway, reflectOut chan<- pipeline.CandidateBatch) {
+	m.gw = gw
+	m.reflectOut = reflectOut
+}
+
+// reflectionEnabled reports whether the reflect sweep should run.
+func (m *Manager) reflectionEnabled() bool {
+	return m.gw != nil && m.reflectOut != nil && m.profile.ReflectInterval > 0
 }
 
 // New creates a Manager. Call Start to begin sweeps.
@@ -137,6 +169,15 @@ func New(st store.Store, log *slog.Logger, profile Profile, ingest chan<- pipeli
 	if p.ConfirmRepeats <= 0 {
 		p.ConfirmRepeats = 2 // D-065: 2 independent extractions promote early
 	}
+	if p.ReflectInterval <= 0 {
+		p.ReflectInterval = 30 * time.Minute
+	}
+	if p.ReflectBatchSize <= 0 {
+		p.ReflectBatchSize = 200
+	}
+	if p.ReflectEpochEvery <= 0 {
+		p.ReflectEpochEvery = 8
+	}
 	return &Manager{
 		st:      st,
 		log:     log.With("subsystem", "lifecycle"),
@@ -153,6 +194,9 @@ func (m *Manager) Start(ctx context.Context) {
 	m.startSweep(ctx, "rollup", m.profile.RollupInterval, m.runRollup)
 	m.startSweep(ctx, "reenqueue", m.profile.ReenqueueInterval, m.runReenqueue)
 	m.startSweep(ctx, "confirm", m.profile.ConfirmInterval, m.runConfirm)
+	if m.reflectionEnabled() {
+		m.startSweep(ctx, "reflect", m.profile.ReflectInterval, m.runReflect)
+	}
 }
 
 // Stop signals all sweeps to stop and waits for them to finish.
@@ -199,4 +243,7 @@ func (m *Manager) RunForce(ctx context.Context) {
 	m.runRollup(ctx)
 	m.runReenqueue(ctx)
 	m.runConfirm(ctx)
+	if m.reflectionEnabled() {
+		m.runReflect(ctx)
+	}
 }

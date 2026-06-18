@@ -475,8 +475,13 @@ func nullStr(s string) interface{} {
 // Tenants returns distinct tenant IDs from the memories table.
 // Used by lifecycle sweeps to enumerate tenants for per-scope passes (D-057).
 func (s *sqliteStore) Tenants(ctx context.Context) ([]string, error) {
+	// Union memories AND records: the reflection sweep (Phase 19, D-077) operates
+	// on outcome-tagged RECORDS, which exist for a fresh scope before any memory —
+	// a memories-only listing would make such scopes invisible to reflection. The
+	// memory-operating sweeps (decay/dedupe/rollup/confirm) no-op on a record-only
+	// tenant.
 	rows, err := s.rdb.QueryContext(ctx,
-		`SELECT DISTINCT tenant_id FROM memories ORDER BY tenant_id`)
+		`SELECT tenant_id FROM memories UNION SELECT tenant_id FROM records ORDER BY tenant_id`)
 	if err != nil {
 		return nil, fmt.Errorf("sqlitestore: tenants: %w", err)
 	}

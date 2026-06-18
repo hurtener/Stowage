@@ -206,8 +206,11 @@ func nullStr(s string) interface{} {
 // Tenants returns distinct tenant IDs from the memories table.
 // Used by lifecycle sweeps to enumerate tenants for per-scope passes (D-057).
 func (s *pgStore) Tenants(ctx context.Context) ([]string, error) {
+	// Union memories AND records — the reflection sweep operates on outcome-tagged
+	// records that exist before any memory (Phase 19, D-077); see the sqlite
+	// driver for the rationale. Memory-operating sweeps no-op on record-only tenants.
 	rows, err := s.pool.Query(ctx,
-		`SELECT DISTINCT tenant_id FROM memories ORDER BY tenant_id`)
+		`SELECT tenant_id FROM memories UNION SELECT tenant_id FROM records ORDER BY tenant_id`)
 	if err != nil {
 		return nil, fmt.Errorf("pgstore: tenants: %w", err)
 	}

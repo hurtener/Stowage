@@ -463,16 +463,29 @@ func (m *memoryStore) FindNeighbors(ctx context.Context, scope identity.Scope, q
 	}
 
 	allArgs := append(cteArgs, scopeArgs...) //nolint:gocritic
+
+	// Optional kind filter (NeighborQuery.Kinds): reflection candidates restrict
+	// neighbors to reflection kinds so a strategy cannot dedupe/supersede a fact
+	// (D-077 #5). Empty Kinds = all kinds (the topic-extraction default).
+	kindClause := ""
+	if len(q.Kinds) > 0 {
+		ph := make([]string, len(q.Kinds))
+		for i, k := range q.Kinds {
+			ph[i] = "?"
+			allArgs = append(allArgs, k)
+		}
+		kindClause = " AND m.kind IN (" + strings.Join(ph, ",") + ")"
+	}
 	allArgs = append(allArgs, limit)
 
 	// Build query: all variable parts are either compile-time constants or built
-	// from controlled helpers (unionParts contains only ? placeholders;
+	// from controlled helpers (unionParts/kindClause contain only ? placeholders;
 	// scopeWhere is from buildScopeWhere; memorySelectCols is a constant).
 	cteUnion := strings.Join(unionParts, " UNION ALL ")
 	qStr := "WITH overlap AS (SELECT memory_id,COUNT(*) AS cnt FROM (" + cteUnion + ") sub GROUP BY memory_id) " + //nolint:gosec
 		"SELECT " + memorySelectCols + " FROM memories m " +
 		"JOIN overlap o ON o.memory_id=m.id " +
-		"WHERE " + scopeWhere + " AND m.status='active' " +
+		"WHERE " + scopeWhere + " AND m.status='active'" + kindClause + " " +
 		"ORDER BY o.cnt DESC,m.created_at DESC LIMIT ?"
 
 	rows, err := m.s.rdb.QueryContext(ctx, qStr, allArgs...)
