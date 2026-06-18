@@ -140,6 +140,40 @@ type Branch struct {
 	UpdatedAt      int64  // unix millis
 }
 
+// Episode is a coherent temporal unit of records (RFC §6b, Phase 22, D-079).
+// Detected heuristically (one closed session → one episode); a narration sweep
+// attaches a narrative memory. All timestamps are unix milliseconds.
+type Episode struct {
+	ID                string
+	TenantID          string
+	ProjectID         string
+	UserID            string
+	SessionID         string
+	Title             string
+	Status            string // "open"|"closed"|"archived"
+	StartedAt         int64
+	EndedAt           int64
+	NarrativeMemoryID string
+	Outcome           string // "" | "success" | "failure"
+	CreatedAt         int64
+	UpdatedAt         int64
+}
+
+// SessionInfo summarizes a distinct (project, user, session, branch) for boundary
+// detection (RecordStore.DistinctSessions): the record time-range and count.
+// ProjectID/UserID are carried so episodes are created at the FULL scope (P3) —
+// not tenant-only — keeping narratives retrievable for the owning user and
+// preventing cross-user merges when session_id collides within a tenant.
+type SessionInfo struct {
+	ProjectID     string
+	UserID        string
+	SessionID     string
+	BranchID      string
+	FirstOccurred int64
+	LastOccurred  int64
+	RecordCount   int64
+}
+
 // DeadLetter is a failed pipeline item that requires operator attention.
 type DeadLetter struct {
 	ID         string

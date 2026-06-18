@@ -59,6 +59,14 @@ type Profile struct {
 	ReflectInterval   time.Duration // default 30m
 	ReflectBatchSize  int           // outcome-tagged records per scope per sweep; default 200
 	ReflectEpochEvery int           // every Nth interval re-reflects the trailing window; default 8
+
+	// Episode sweep tuning (Phase 22, D-079). Registered only when SetEpisodes has
+	// wired a gateway (boot does this per config.EpisodeConfigForProfile).
+	EpisodeDetectInterval  time.Duration // default 15m
+	EpisodeNarrateInterval time.Duration // default 15m
+	EpisodeIdleWindow      time.Duration // a session with no records for this long is "closed"; default 30m
+	EpisodeGapSplit        time.Duration // intra-session gap that splits an episode; default 0 (off, v1)
+	EpisodeBatchSize       int           // sessions/episodes per sweep; default 100
 }
 
 // DefaultProfile returns the profile with sensible production defaults.
@@ -85,6 +93,12 @@ func DefaultProfile() Profile {
 		ReflectInterval:   30 * time.Minute,
 		ReflectBatchSize:  200,
 		ReflectEpochEvery: 8,
+
+		EpisodeDetectInterval:  15 * time.Minute,
+		EpisodeNarrateInterval: 15 * time.Minute,
+		EpisodeIdleWindow:      30 * time.Minute,
+		EpisodeGapSplit:        0,
+		EpisodeBatchSize:       100,
 	}
 }
 
@@ -101,8 +115,25 @@ type Manager struct {
 	gw         gateway.Gateway
 	reflectOut chan<- pipeline.CandidateBatch
 
+	// Episode wiring (Phase 22, D-079). Set via SetEpisodes; when enabled the
+	// detect + narrate sweeps are registered. Shares the gateway handle (gw) with
+	// reflection — either setter may supply it.
+	episodesEnabled bool
+
 	wg     sync.WaitGroup
 	stopCh chan struct{}
+}
+
+// SetEpisodes enables the episode detect + narrate sweeps, wiring the gateway the
+// narration sweep calls. Must be called before Start. When unset, the episode
+// sweeps are not registered (Phase 22, D-079).
+func (m *Manager) SetEpisodes(gw gateway.Gateway) {
+	m.gw = gw
+	m.episodesEnabled = true
+}
+
+func (m *Manager) episodesOn() bool {
+	return m.episodesEnabled && m.gw != nil && m.profile.EpisodeDetectInterval > 0
 }
 
 // SetReflection wires the reflection sweep's dependencies: the gateway it calls
@@ -178,6 +209,18 @@ func New(st store.Store, log *slog.Logger, profile Profile, ingest chan<- pipeli
 	if p.ReflectEpochEvery <= 0 {
 		p.ReflectEpochEvery = 8
 	}
+	if p.EpisodeDetectInterval <= 0 {
+		p.EpisodeDetectInterval = 15 * time.Minute
+	}
+	if p.EpisodeNarrateInterval <= 0 {
+		p.EpisodeNarrateInterval = 15 * time.Minute
+	}
+	if p.EpisodeIdleWindow <= 0 {
+		p.EpisodeIdleWindow = 30 * time.Minute
+	}
+	if p.EpisodeBatchSize <= 0 {
+		p.EpisodeBatchSize = 100
+	}
 	return &Manager{
 		st:      st,
 		log:     log.With("subsystem", "lifecycle"),
@@ -196,6 +239,10 @@ func (m *Manager) Start(ctx context.Context) {
 	m.startSweep(ctx, "confirm", m.profile.ConfirmInterval, m.runConfirm)
 	if m.reflectionEnabled() {
 		m.startSweep(ctx, "reflect", m.profile.ReflectInterval, m.runReflect)
+	}
+	if m.episodesOn() {
+		m.startSweep(ctx, "episode-detect", m.profile.EpisodeDetectInterval, m.runDetectEpisodes)
+		m.startSweep(ctx, "episode-narrate", m.profile.EpisodeNarrateInterval, m.runNarrateEpisodes)
 	}
 }
 
@@ -245,5 +292,9 @@ func (m *Manager) RunForce(ctx context.Context) {
 	m.runConfirm(ctx)
 	if m.reflectionEnabled() {
 		m.runReflect(ctx)
+	}
+	if m.episodesOn() {
+		m.runDetectEpisodes(ctx)
+		m.runNarrateEpisodes(ctx)
 	}
 }

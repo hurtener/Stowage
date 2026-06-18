@@ -165,11 +165,21 @@ func StartPipeline(ctx context.Context, stk *Stack, cfg config.Config) (*Pipelin
 	lcProfile.ReflectInterval = reflectCfg.Interval
 	lcProfile.ReflectBatchSize = reflectCfg.BatchSize
 	lcProfile.ReflectEpochEvery = reflectCfg.EpochEvery
+	episodeCfg := config.EpisodeConfigForProfile(cfg.Profile)
+	lcProfile.EpisodeDetectInterval = episodeCfg.DetectInterval
+	lcProfile.EpisodeNarrateInterval = episodeCfg.NarrateInterval
+	lcProfile.EpisodeIdleWindow = episodeCfg.IdleWindow
+	lcProfile.EpisodeGapSplit = episodeCfg.GapSplit
 	lc := lifecycle.New(stk.Store, stk.Log, lcProfile, ch)
 	if reflectCfg.Enabled {
 		// Wire the reflection sweep: it calls the gateway and emits into the
 		// reconcile fan-in (Phase 19, D-077). Set before RunForce/Start.
 		lc.SetReflection(stk.Gateway, reflectCh)
+	}
+	if episodeCfg.Enabled {
+		// Wire the episode detect + narrate sweeps (Phase 22, D-079); the narration
+		// sweep calls the gateway. Set before RunForce/Start.
+		lc.SetEpisodes(stk.Gateway)
 	}
 	if os.Getenv("STOWAGE_SWEEP_FORCE") != "" {
 		stk.Log.Info("boot: STOWAGE_SWEEP_FORCE set — running all sweeps once before serving")

@@ -190,6 +190,7 @@ func (s *pgStore) Buffers() store.BufferStore       { return &bufferStore{s} }
 func (s *pgStore) Keys() auth.Keyring               { return &keyStore{s} }
 func (s *pgStore) Events() store.EventStore         { return &eventStore{s} }
 func (s *pgStore) Branches() store.BranchStore      { return &branchStore{s} }
+func (s *pgStore) Episodes() store.EpisodeStore     { return &episodeStore{s} }
 func (s *pgStore) Ops() store.OpsStore              { return &opsStore{s} }
 func (s *pgStore) Vectors() store.VectorStore       { return &vectorStore{s} }
 func (s *pgStore) Injections() store.InjectionStore { return &injectionStore{s} }
