@@ -1197,3 +1197,51 @@ func TestHandlerEpisodes_Similar(t *testing.T) {
 		t.Errorf("expected positive score, got %v", res.Structured.Episodes[0].Score)
 	}
 }
+
+// TestHandlerCausal exercises memory_causal: a seeded led_to edge is walked
+// backward from the effect to the cause (D-083).
+func TestHandlerCausal(t *testing.T) {
+	svc := newHandlerServices(t)
+	h := makeCausalHandler(svc)
+	ctx := context.Background()
+	scope := testScope()
+
+	for _, m := range []store.Memory{
+		{ID: "01MCAUSEAAAAAAAAAAAAAAAAAA", Kind: "decision", Content: "cause", Status: "active", Confidence: 0.8, TrustSource: "llm_extracted", Stability: 1.0, CreatedAt: 1, UpdatedAt: 1},
+		{ID: "01MEFFECTAAAAAAAAAAAAAAAAA", Kind: "decision", Content: "effect", Status: "active", Confidence: 0.8, TrustSource: "llm_extracted", Stability: 1.0, CreatedAt: 2, UpdatedAt: 2},
+	} {
+		if err := svc.Store.Memories().Insert(ctx, scope, m); err != nil {
+			t.Fatalf("seed memory: %v", err)
+		}
+	}
+	if err := svc.Store.Memories().InsertLinks(ctx, scope, []store.Link{{
+		ID: "01MLINKAAAAAAAAAAAAAAAAAAA", TenantID: scope.Tenant,
+		FromMemory: "01MCAUSEAAAAAAAAAAAAAAAAAA", ToMemory: "01MEFFECTAAAAAAAAAAAAAAAAA",
+		Type: "led_to", Source: "inferred", Confidence: 0.9, CreatedAt: 3,
+	}}); err != nil {
+		t.Fatalf("seed link: %v", err)
+	}
+
+	res, err := h(ctx, CausalInput{MemoryID: "01MEFFECTAAAAAAAAAAAAAAAAA", Direction: "backward", Depth: 3})
+	if err != nil {
+		t.Fatalf("causal: %v", err)
+	}
+	if res.Structured.Root != "01MEFFECTAAAAAAAAAAAAAAAAA" || len(res.Structured.Nodes) != 2 || len(res.Structured.Edges) != 1 {
+		t.Fatalf("unexpected graph: %+v", res.Structured)
+	}
+	if res.Structured.Edges[0].From != "01MCAUSEAAAAAAAAAAAAAAAAAA" || res.Structured.Edges[0].Type != "led_to" {
+		t.Errorf("edge wrong: %+v", res.Structured.Edges[0])
+	}
+	if res.Text == "" {
+		t.Error("Text must not be empty")
+	}
+}
+
+// TestHandlerCausal_MissingMemoryID: empty memory_id ⇒ error.
+func TestHandlerCausal_MissingMemoryID(t *testing.T) {
+	svc := newHandlerServices(t)
+	h := makeCausalHandler(svc)
+	if _, err := h(context.Background(), CausalInput{}); err == nil {
+		t.Error("expected error when memory_id is empty")
+	}
+}

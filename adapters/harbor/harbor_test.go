@@ -97,6 +97,10 @@ func (f *fakeClient) Episodes(_ context.Context, _ stowage.EpisodesRequest) (sto
 	return stowage.EpisodesResponse{Episodes: []stowage.Episode{{ID: "e1", SessionID: "s1", Title: "fake", Status: "closed"}}}, nil
 }
 
+func (f *fakeClient) Causal(_ context.Context, req stowage.CausalRequest) (stowage.CausalResponse, error) {
+	return stowage.CausalResponse{Root: req.MemoryID}, nil
+}
+
 func (f *fakeClient) Rollback(_ context.Context, req stowage.RollbackRequest) (stowage.Memory, error) {
 	return stowage.Memory{ID: req.MemoryID}, nil
 }

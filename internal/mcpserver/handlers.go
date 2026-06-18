@@ -7,6 +7,7 @@ import (
 
 	"github.com/hurtener/dockyard/runtime/tool"
 
+	"github.com/hurtener/stowage/internal/causal"
 	"github.com/hurtener/stowage/internal/config"
 	"github.com/hurtener/stowage/internal/episodes"
 	"github.com/hurtener/stowage/internal/grants"
@@ -972,4 +973,44 @@ func episodeToItem(v episodes.EpisodeView) EpisodeItem {
 		StartedAt: v.StartedAt, EndedAt: v.EndedAt, NarrativeMemoryID: v.NarrativeMemoryID, Narrative: v.Narrative,
 		Score: v.Score,
 	}
+}
+
+// makeCausalHandler implements memory_causal (RFC §5.6/§6b, D-083): the
+// deterministic, gateway-free why-traversal (mirrors GET /v1/causal + the embedded
+// SDK Causal). Scope resolved via svc.ScopeFn.
+func makeCausalHandler(svc *Services) tool.Handler[CausalInput, CausalOutput] {
+	return func(ctx context.Context, in CausalInput) (tool.Result[CausalOutput], error) {
+		scope, err := svc.ScopeFn(ctx)
+		if err != nil {
+			return tool.Result[CausalOutput]{}, fmt.Errorf("memory_causal: resolve scope: %w", err)
+		}
+		if in.MemoryID == "" {
+			return tool.Result[CausalOutput]{}, fmt.Errorf("memory_causal: memory_id is required")
+		}
+		g, terr := causal.Traverse(ctx, svc.Store, scope, in.MemoryID, causal.Direction(in.Direction), in.Depth)
+		if terr != nil {
+			return tool.Result[CausalOutput]{}, fmt.Errorf("memory_causal: %w", terr)
+		}
+		out := causalGraphToOutput(g)
+		return tool.Result[CausalOutput]{
+			Text:       fmt.Sprintf("Causal graph: %d nodes, %d edges", len(out.Nodes), len(out.Edges)),
+			Structured: out,
+		}, nil
+	}
+}
+
+func causalGraphToOutput(g causal.Graph) CausalOutput {
+	out := CausalOutput{Root: g.Root, Truncated: g.Truncated,
+		Nodes: make([]CausalNodeItem, 0, len(g.Nodes)), Edges: make([]CausalEdgeItem, 0, len(g.Edges))}
+	for _, n := range g.Nodes {
+		cn := CausalNodeItem{MemoryID: n.MemoryID, Kind: n.Kind, Content: n.Content, Context: n.Context, EpisodeID: n.EpisodeID}
+		for _, p := range n.Provenance {
+			cn.Provenance = append(cn.Provenance, CausalProvRefItem{RecordID: p.RecordID, SpanStart: p.SpanStart, SpanEnd: p.SpanEnd})
+		}
+		out.Nodes = append(out.Nodes, cn)
+	}
+	for _, e := range g.Edges {
+		out.Edges = append(out.Edges, CausalEdgeItem{From: e.From, To: e.To, Type: e.Type, Confidence: e.Confidence})
+	}
+	return out
 }

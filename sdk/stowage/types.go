@@ -427,3 +427,45 @@ type EpisodesResponse struct {
 	NextCursor string    `json:"next_cursor,omitempty"`
 	Degraded   bool      `json:"degraded,omitempty"`
 }
+
+// CausalRequest walks the causal graph from MemoryID (RFC §5.6/§6b, D-083).
+// Direction is "backward" (causes — the default), "forward" (effects), or "both".
+// Depth bounds the hops (default 3, capped server-side).
+type CausalRequest struct {
+	MemoryID  string
+	Direction string
+	Depth     int
+}
+
+// CausalProvRef is a compact provenance span for P1 drill-down at a node.
+type CausalProvRef struct {
+	RecordID  string `json:"record_id"`
+	SpanStart int    `json:"span_start,omitempty"`
+	SpanEnd   int    `json:"span_end,omitempty"`
+}
+
+// CausalNode is one memory in the causal graph.
+type CausalNode struct {
+	MemoryID   string          `json:"memory_id"`
+	Kind       string          `json:"kind"`
+	Content    string          `json:"content"`
+	Context    string          `json:"context,omitempty"`
+	EpisodeID  string          `json:"episode_id,omitempty"`
+	Provenance []CausalProvRef `json:"provenance,omitempty"`
+}
+
+// CausalEdge is a canonical cause→effect edge.
+type CausalEdge struct {
+	From       string  `json:"from"`
+	To         string  `json:"to"`
+	Type       string  `json:"type"`
+	Confidence float64 `json:"confidence"`
+}
+
+// CausalResponse is the why-traversal envelope.
+type CausalResponse struct {
+	Root      string       `json:"root"`
+	Nodes     []CausalNode `json:"nodes"`
+	Edges     []CausalEdge `json:"edges"`
+	Truncated bool         `json:"truncated,omitempty"`
+}

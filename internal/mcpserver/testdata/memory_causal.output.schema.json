@@ -1,0 +1,103 @@
+{
+  "type": "object",
+  "properties": {
+    "root": {
+      "type": "string"
+    },
+    "nodes": {
+      "type": [
+        "null",
+        "array"
+      ],
+      "items": {
+        "type": "object",
+        "properties": {
+          "memory_id": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "content": {
+            "type": "string"
+          },
+          "context": {
+            "type": "string"
+          },
+          "episode_id": {
+            "type": "string"
+          },
+          "provenance": {
+            "type": [
+              "null",
+              "array"
+            ],
+            "items": {
+              "type": "object",
+              "properties": {
+                "record_id": {
+                  "type": "string"
+                },
+                "span_start": {
+                  "type": "integer"
+                },
+                "span_end": {
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "record_id"
+              ],
+              "additionalProperties": false
+            }
+          }
+        },
+        "required": [
+          "memory_id",
+          "kind",
+          "content"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "edges": {
+      "type": [
+        "null",
+        "array"
+      ],
+      "items": {
+        "type": "object",
+        "properties": {
+          "from": {
+            "type": "string"
+          },
+          "to": {
+            "type": "string"
+          },
+          "type": {
+            "type": "string"
+          },
+          "confidence": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "from",
+          "to",
+          "type",
+          "confidence"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "truncated": {
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "root",
+    "nodes",
+    "edges"
+  ],
+  "additionalProperties": false
+}

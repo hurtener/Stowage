@@ -2071,3 +2071,46 @@ not shipped on spec.
 
 **No new config knob, no new schema** (read-only; reuses the retrieval gateway +
 vindex).
+
+## D-083 — Causal inference is a narration sub-step; why-traversal is a gateway-free memory_causal capability
+
+2026-06-18. Phase 24 (RFC §5.6, §6b) ships **inferred causal links** + **why-traversal**
+over the day-one `links` table — no new table or column, **no RFC §8.1 amendment**
+(the `caused_by`/`led_to`/`inferred` enum values are day-one).
+
+**Inference as a narration sub-step.** Rather than a standalone sweep (which would
+need a new processed-marker column to avoid re-inferring 0-edge episodes), causal
+inference runs **inside the Phase-22 narration step**, gated by the same
+`narrative_memory_id`-absent check that makes narration idempotent — so it runs
+**exactly once per episode**. After producing the narrative, the sweep gathers the
+episode's decision-class memories (`decision|task|gotcha|pattern|strategy|failure_mode`)
+via a new reverse-provenance store method `ListMemoriesByRecords` (both drivers +
+conformance; index `idx_provenance_record`), asks the gateway for `led_to` edges
+(schema-constrained `Complete`, P5/D-040), confidence-gates them
+(`EpisodeConfig.CausalMinConfidence`, default 0.6), and commits the surviving edges
+(`source="inferred"`) **atomically with the narrative** via `CommitSet.Links` + one
+`causal.inferred` audit event each. A gateway/inference failure leaves the episode
+narrated without edges (best-effort, advisory layer); re-inference is an explicit
+future reindex, never a silent re-run (the §10 reindex discipline).
+
+**Profile-internal knob (not top-level).** `CausalMinConfidence` lives in
+`EpisodeConfig` alongside the episode-sweep intervals — a profile-internal constant
+re-tuned by eval (D-035), **not** an operator-facing top-level config knob, so the
+D-034 knob ceremony (profiles/explain/zero-config) does not apply (consistent with
+how episode tuning + the playbook budget are handled). This is the one deviation from
+the phase plan, which had proposed a top-level `lifecycle.causal_min_confidence`.
+
+**Why-traversal is deterministic + gateway-free.** `causal.Traverse` (in `traverse.go`,
+which imports no gateway — the file-level guard; `infer.go` is the only gateway-touching
+file) walks `led_to`/`caused_by` from a memory, normalizing **both** stored
+orientations to canonical cause→effect, in `backward` (causes — the default),
+`forward` (effects), or `both`; it includes only **active** memories (non-active
+endpoints are not traversed and their edges omitted), attaches provenance per node
+(P1 drill-down at every hop), is cycle-safe (visited set), and caps `depth`
+(`maxDepth=10`) + node budget (200) with a `truncated` flag (no silent truncation,
+§11). It ships as the `memory_causal` capability across {SDK, HTTP, MCP} (D-067) with
+a byte-identical parity test (deterministic — no gateway in the read); a missing/
+non-active root ⇒ empty graph, no error (parity with `memory_episodes` get-missing).
+
+**Cross-episode causality deferred** to Phase 24b (episode threading, D-081): Phase 24
+scopes causality within a single episode's narrative frame.

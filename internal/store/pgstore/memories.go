@@ -1032,6 +1032,61 @@ func (m *memoryStore) ListByKinds(ctx context.Context, scope identity.Scope, kin
 	return out, nil
 }
 
+// ListMemoriesByRecords returns active memories whose provenance references any of
+// recordIDs, optionally filtered to kinds. DISTINCT by id, scope-enforced (P3),
+// ordered (created_at, id) ASC. Backs Phase-24 causal candidate gathering.
+func (m *memoryStore) ListMemoriesByRecords(ctx context.Context, scope identity.Scope, recordIDs []string, kinds []string) ([]store.Memory, error) {
+	if len(recordIDs) == 0 {
+		return []store.Memory{}, nil
+	}
+	whereClause, args, next, err := buildScopeWhere(scope, 1)
+	if err != nil {
+		return nil, err
+	}
+	whereClause += " AND status = 'active'"
+	if len(kinds) > 0 {
+		kph := make([]string, len(kinds))
+		for i, k := range kinds {
+			kph[i] = fmt.Sprintf("$%d", next)
+			args = append(args, k)
+			next++
+		}
+		whereClause += " AND kind IN (" + strings.Join(kph, ",") + ")"
+	}
+	rph := make([]string, len(recordIDs))
+	for i, rid := range recordIDs {
+		rph[i] = fmt.Sprintf("$%d", next)
+		args = append(args, rid)
+		next++
+	}
+	tenantPH := fmt.Sprintf("$%d", next)
+	args = append(args, scope.Tenant)
+	whereClause += " AND id IN (SELECT memory_id FROM provenance WHERE record_id IN (" +
+		strings.Join(rph, ",") + ") AND tenant_id = " + tenantPH + ")"
+
+	rows, err := m.s.pool.Query(ctx,
+		`SELECT `+memorySelectCols+` FROM memories WHERE `+whereClause+` ORDER BY created_at ASC, id ASC`,
+		args...,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("pgstore: list memories by records: %w", err)
+	}
+	defer rows.Close()
+
+	out := make([]store.Memory, 0)
+	for rows.Next() {
+		mem, err := scanMemory(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, *mem)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // SetValidUntil sets the valid_until field of a memory (unix millis).
 // A value of 0 clears the field. Used by the decay sweep (D-058).
 func (m *memoryStore) SetValidUntil(ctx context.Context, scope identity.Scope, id string, validUntil int64) error {

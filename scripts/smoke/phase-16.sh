@@ -120,7 +120,7 @@ else
   NAMES=""
 fi
 
-WANT=14
+WANT=15
 if [ "$TOOL_COUNT" -eq "$WANT" ]; then
   ok "tools/list returned exactly $WANT tools (AC-1)"
 else
@@ -133,6 +133,7 @@ fi
 if command -v jq &>/dev/null && [ -n "$NAMES" ]; then
   EXPECTED="memory_assert
 memory_branch
+memory_causal
 memory_drilldown
 memory_episodes
 memory_feedback

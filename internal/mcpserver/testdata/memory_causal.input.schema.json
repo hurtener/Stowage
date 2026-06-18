@@ -1,0 +1,18 @@
+{
+  "type": "object",
+  "properties": {
+    "memory_id": {
+      "type": "string"
+    },
+    "direction": {
+      "type": "string"
+    },
+    "depth": {
+      "type": "integer"
+    }
+  },
+  "required": [
+    "memory_id"
+  ],
+  "additionalProperties": false
+}

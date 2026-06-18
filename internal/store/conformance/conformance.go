@@ -57,6 +57,7 @@ func Run(t *testing.T, factory Factory) {
 	t.Run("MemoryLinks", func(t *testing.T) { testMemoryLinks(t, factory) })
 	t.Run("MemoryLinksEmpty", func(t *testing.T) { testMemoryLinksEmpty(t, factory) })
 	t.Run("MemoryProvenance", func(t *testing.T) { testMemoryProvenance(t, factory) })
+	t.Run("MemoryListByRecords", func(t *testing.T) { testMemoryListByRecords(t, factory) })
 	t.Run("MemoryScopeIsolation", func(t *testing.T) { testMemoryScopeIsolation(t, factory) })
 	t.Run("TopicUpsertGetListDelete", func(t *testing.T) { testTopicUpsertGetListDelete(t, factory) })
 	t.Run("TopicScopeIsolation", func(t *testing.T) { testTopicScopeIsolation(t, factory) })
@@ -827,6 +828,98 @@ func testMemoryProvenance(t *testing.T, factory Factory) {
 	}
 	if err := s.Memories().AddProvenance(ctx, scope, []store.Provenance{prov}); err != nil {
 		t.Fatalf("AddProvenance: %v", err)
+	}
+}
+
+func testMemoryListByRecords(t *testing.T, factory Factory) {
+	t.Helper()
+	s, cleanup := factory()
+	defer cleanup()
+	ctx := context.Background()
+	scope := tenantScope("t-" + newID())
+
+	// Two records; r1 backs a decision + a fact, r2 backs a preference, r3 backs nothing.
+	r1, r2, r3 := newID(), newID(), newID()
+	recs := []store.Record{
+		{ID: r1, Role: "user", Content: "a", OccurredAt: nowMs(), CreatedAt: nowMs()},
+		{ID: r2, Role: "user", Content: "b", OccurredAt: nowMs(), CreatedAt: nowMs()},
+		{ID: r3, Role: "user", Content: "c", OccurredAt: nowMs(), CreatedAt: nowMs()},
+	}
+	if err := s.Records().Append(ctx, scope, recs); err != nil {
+		t.Fatalf("append records: %v", err)
+	}
+	mkMem := func(kind, status string) string {
+		id := newID()
+		if err := s.Memories().Insert(ctx, scope, store.Memory{
+			ID: id, Kind: kind, Content: kind + " mem", Status: status,
+			Confidence: 0.5, TrustSource: "llm_extracted", Stability: 1.0,
+			CreatedAt: nowMs(), UpdatedAt: nowMs(),
+		}); err != nil {
+			t.Fatalf("insert %s: %v", kind, err)
+		}
+		return id
+	}
+	decID := mkMem("decision", "active")
+	factID := mkMem("fact", "active")
+	prefID := mkMem("preference", "active")
+	supID := mkMem("decision", "superseded") // non-active must be excluded
+
+	addProv := func(memID, recID string) {
+		if err := s.Memories().AddProvenance(ctx, scope, []store.Provenance{{
+			ID: newID(), MemoryID: memID, RecordID: recID, TenantID: scope.Tenant, CreatedAt: nowMs(),
+		}}); err != nil {
+			t.Fatalf("addprov: %v", err)
+		}
+	}
+	addProv(decID, r1)
+	addProv(factID, r1)
+	addProv(prefID, r2)
+	addProv(supID, r1) // superseded decision also points at r1
+
+	// kind-filtered to decision: only decID (factID excluded by kind; supID by status).
+	got, err := s.Memories().ListMemoriesByRecords(ctx, scope, []string{r1}, []string{"decision"})
+	if err != nil {
+		t.Fatalf("ListMemoriesByRecords: %v", err)
+	}
+	if len(got) != 1 || got[0].ID != decID {
+		t.Fatalf("kind-filtered: want [%s], got %+v", decID, got)
+	}
+
+	// DISTINCT: decID has provenance to BOTH r1 and r2 → must appear exactly once.
+	addProv(decID, r2)
+	dd, err := s.Memories().ListMemoriesByRecords(ctx, scope, []string{r1, r2}, []string{"decision"})
+	if err != nil {
+		t.Fatalf("ListMemoriesByRecords(distinct): %v", err)
+	}
+	if len(dd) != 1 || dd[0].ID != decID {
+		t.Fatalf("DISTINCT: a memory provenance-linked to 2 records must return once, got %+v", dd)
+	}
+
+	// no kind filter, records r1+r2: decID, factID, prefID (supID excluded by status).
+	got2, err := s.Memories().ListMemoriesByRecords(ctx, scope, []string{r1, r2}, nil)
+	if err != nil {
+		t.Fatalf("ListMemoriesByRecords(all): %v", err)
+	}
+	ids := map[string]bool{}
+	for _, m := range got2 {
+		ids[m.ID] = true
+	}
+	if len(got2) != 3 || !ids[decID] || !ids[factID] || !ids[prefID] || ids[supID] {
+		t.Fatalf("all-kinds: want {dec,fact,pref}, got %+v", got2)
+	}
+
+	// record with no provenance ⇒ empty; empty recordIDs ⇒ empty.
+	if g, _ := s.Memories().ListMemoriesByRecords(ctx, scope, []string{r3}, nil); len(g) != 0 {
+		t.Errorf("r3 should yield none, got %d", len(g))
+	}
+	if g, _ := s.Memories().ListMemoriesByRecords(ctx, scope, nil, nil); len(g) != 0 {
+		t.Errorf("empty recordIDs should yield none, got %d", len(g))
+	}
+
+	// scope isolation: another tenant sees nothing for r1.
+	other := tenantScope("t-other-" + newID())
+	if g, _ := s.Memories().ListMemoriesByRecords(ctx, other, []string{r1}, nil); len(g) != 0 {
+		t.Errorf("cross-tenant leak: %d", len(g))
 	}
 }
 

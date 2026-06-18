@@ -67,6 +67,10 @@ type Profile struct {
 	EpisodeIdleWindow      time.Duration // a session with no records for this long is "closed"; default 30m
 	EpisodeGapSplit        time.Duration // intra-session gap that splits an episode; default 0 (off, v1)
 	EpisodeBatchSize       int           // sessions/episodes per sweep; default 100
+
+	// Causal inference (Phase 24, D-083). Runs as a sub-step of narration when a
+	// gateway is wired. CausalMinConfidence gates which inferred led_to edges persist.
+	CausalMinConfidence float64 // min gateway-reported confidence to persist an edge; default 0.6
 }
 
 // DefaultProfile returns the profile with sensible production defaults.
@@ -99,6 +103,8 @@ func DefaultProfile() Profile {
 		EpisodeIdleWindow:      30 * time.Minute,
 		EpisodeGapSplit:        0,
 		EpisodeBatchSize:       100,
+
+		CausalMinConfidence: 0.6,
 	}
 }
 
@@ -220,6 +226,9 @@ func New(st store.Store, log *slog.Logger, profile Profile, ingest chan<- pipeli
 	}
 	if p.EpisodeBatchSize <= 0 {
 		p.EpisodeBatchSize = 100
+	}
+	if p.CausalMinConfidence <= 0 || p.CausalMinConfidence > 1 {
+		p.CausalMinConfidence = 0.6
 	}
 	return &Manager{
 		st:      st,

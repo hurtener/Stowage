@@ -115,6 +115,13 @@ New terms land here in the same PR that introduces them (CLAUDE.md §14).
   path of decisions, not a vague summary.
 - **Causal link** — a `caused_by`/`led_to` typed edge between decision
   memories, explicit or inferred through episode narratives.
+- **Causal inference pass** — the once-per-episode, schema-constrained gateway step
+  (run inside narration) that proposes confidence-scored `led_to` edges between an
+  episode's decision memories, written `source="inferred"` (Phase 24, D-083).
+- **Why-traversal** — the deterministic, gateway-free walk of the
+  `caused_by`/`led_to` graph from a memory (backward to causes, forward to effects,
+  or both) with provenance at every hop; the `memory_causal` capability (Phase 24,
+  RFC §5.6/§6b, D-083).
 - **Episodic retrieval** — reading episodes + their narratives through the
   `memory_episodes` capability (list / get / time-window), deterministic and
   LLM-free (Phase 23, D-080); the §6b read side over Phase-22 episodes.
