@@ -126,8 +126,10 @@ match table slots 19–21.
 | # | Phase | Owns | RFC |
 |---|-------|------|-----|
 | 22 | Episodes & narratives | boundary-detection sweep, narrative construction, episode wiring | §6b |
-| 23 | Episodic retrieval | similar-episode contrast, cross-episode aggregation, `GET /v1/episodes` | §6b |
+| 23 | Episodic retrieval | `memory_episodes` (list/get/window) across {SDK,HTTP,MCP}; deterministic | §6b |
+| 23b | Similar-episode contrast + synthesis | vector-over-narratives nearest-episode contrast; optional gateway-synthesized window summary (deferred from 23 — D-080) | §6b |
 | 24 | Causal links | inferred `caused_by`/`led_to` over narratives, "why" traversal | §5.6, §6b |
+| 24b | Episode threading (PROPOSED) | group session-episodes into cross-session **arcs** (a "living episode") via narrative-vector clustering + entity/temporal overlap; deterministic grouping, optional arc summary. Pulled only on an episodic-eval win — **D-081 (proposed)** | §6b |
 
 ### v1.2 — Trust extensions
 
@@ -328,9 +330,12 @@ drift-audit green; five-minute smoke green.
 ### Phases 22–27 (v0.1 launch scope — D-076) — summaries
 Detail plans are authored when each track is pulled. 22 episodes & narratives
 (heuristic-first boundaries — **OQ-8**; provenance-complete narratives;
-idempotent re-detection). 23 episodic retrieval (contrast with outcome diff;
-window aggregation returning structure, not fragment dumps). 24 causal links
-(schema-constrained inference, confidence-gated assertion, "why" traversal).
+idempotent re-detection). 23 episodic retrieval (shipped deterministic
+`memory_episodes` list/get/window across {SDK,HTTP,MCP} — D-080; similar-episode
+contrast + gateway-synthesized window summary deferred to 23b). 24 causal links
+(schema-constrained inference, confidence-gated assertion, "why" traversal). 24b
+episode threading (PROPOSED, D-081 — cross-session arc grouping; gated on an
+episodic-eval win).
 25 verification & review queue (entailment verdicts; uncited knowledge parks,
 approve commits as `agreed_upon`). 26 reasoning traces + audit export (signed
 bundles; retention class — **OQ-10**). 27 proactive engine (threshold +
