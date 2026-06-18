@@ -366,3 +366,48 @@ func TestEpisodeSweeps_DuplicateNarrativeRelinks(t *testing.T) {
 		t.Errorf("expected exactly 1 narrative memory, got %d", n)
 	}
 }
+
+// TestThreadingSweep_SharedNarrativeNoSelfEdge is the checkpoint regression for the
+// M1 finding: two episodes that share one narrative memory (D-079 content-dedup of
+// identical narratives) must NOT be threaded — the relates_to edge would be
+// self-referential (M→M). The dedup itself is intentional (covered by
+// TestEpisodeSweeps_DuplicateNarrativeRelinks); this guards the threading consequence.
+func TestThreadingSweep_SharedNarrativeNoSelfEdge(t *testing.T) {
+	st, cleanup := newTestStore(t)
+	defer cleanup()
+	ctx := context.Background()
+	scope := identity.Scope{Tenant: "se-t", Project: "p", User: "u"}
+	base := time.Now().Add(-48 * time.Hour).UnixMilli()
+
+	// One shared narrative memory; two episodes both point at it (the dedup outcome).
+	if err := st.Memories().Insert(ctx, scope, store.Memory{
+		ID: "narr-shared", Kind: "narrative", Content: "shipped the launch under a lock", Status: "active",
+		Importance: 3, Confidence: 0.8, TrustSource: "episodic", Stability: 1.0, EpisodeID: "ep-A",
+		CreatedAt: base, UpdatedAt: base,
+	}); err != nil {
+		t.Fatalf("insert narrative: %v", err)
+	}
+	mk := func(epID string, start int64) {
+		if err := st.Episodes().CreateEpisode(ctx, scope, store.Episode{
+			ID: epID, SessionID: epID + "-s", Title: "T", Status: "closed", Outcome: "success",
+			StartedAt: start, EndedAt: start + 100, NarrativeMemoryID: "narr-shared", CreatedAt: start, UpdatedAt: start,
+		}); err != nil {
+			t.Fatalf("create %s: %v", epID, err)
+		}
+	}
+	mk("ep-A", base)
+	mk("ep-B", base+2000)
+
+	threadManager(t, st, 0.3).RunForce(ctx)
+
+	// No relates_to edge at all (a self-edge narr-shared→narr-shared must be skipped).
+	links, err := st.Memories().ListLinks(ctx, identity.Scope{Tenant: "se-t"}, "narr-shared", "")
+	if err != nil {
+		t.Fatalf("list links: %v", err)
+	}
+	for _, l := range links {
+		if l.Type == "relates_to" {
+			t.Errorf("shared-narrative episodes must not produce a relates_to edge, got %+v", l)
+		}
+	}
+}

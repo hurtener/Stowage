@@ -2175,3 +2175,38 @@ explicit producer; auto-detection is a future eval-gated enhancement.
 **No new schema** — `pending_review` + `quarantined` are day-one memory statuses (§8.1);
 no new table/column, no RFC amendment. Two new MCP tools (count 15 → 17). Reasoning-
 trace export stays Phase 26 (D-027/D-076).
+
+## D-085 — Wave-D checkpoint (phases 23b/24/24b/25): findings fixed + accepted follow-ups
+
+2026-06-18. A read-only checkpoint audit (CLAUDE.md §17, four adversarial passes:
+wiring, invariants, test-quality, lifecycle-correctness) reviewed the just-merged
+cycle. The cores, scopes (P3), gateway isolation (P5), and D-067 parity were found
+clean. Fixed in the `chore(checkpoint)` PR:
+
+- **Threading self-edge on shared narratives.** Phase-22 content-dedup (D-079)
+  intentionally lets two same-user episodes with identical narratives **share** one
+  narrative memory (N:1, not 1:1). Phase-24b threading then tried to thread such a pair
+  and would write a self-referential `relates_to` edge (M→M). Fixed: `runThreadEpisodes`
+  skips pairs whose episodes share a `NarrativeMemoryID`. (An earlier attempt to instead
+  *prevent the share* by leaving the colliding episode un-narrated was reverted — it
+  suppressed narration and **regressed the eval benchmark gate** (`answer_context_hit`
+  0.85→0.76, D-035), confirming the dedup feeds retrieval and must stay.)
+- **Promised fuzz targets delivered.** `FuzzCausalProposals` (causal index-mapping/
+  decode) and `FuzzVerifyVerdict` (verify verdict decode/coercion) were promised in the
+  24/25 plans but absent; added with seed corpora (§11).
+- **Verify parity strengthened.** The `memory_verify` parity test now scripts a
+  deterministic `entailed` verdict (`STOWAGE_MOCK_SCRIPT`) and asserts it propagates
+  identically across {SDK,HTTP,MCP}, instead of only the coerced `unclear` default.
+- **No-silent-truncation.** `causal.Traverse` now flags `Truncated` when the depth
+  frontier has unexpanded neighbors (§11); `episodes.Arc` enforces `maxArcNodes`
+  per-append; boot warns when a profile enables threading without episodes.
+
+**Accepted follow-ups (not regressions; tracked, not blocking this checkpoint):**
+- **Resolve double-resolve is not a compare-and-swap.** `trust.Resolve` and the
+  pre-existing `reconcile.Resolve` (Phase 18) read-then-commit the status flip; two
+  concurrent resolves of the same memory could race. Low-probability for a single-scope
+  queue; the proper fix is a conditional `UPDATE … WHERE status=…` across both paths
+  (a shared-store change deferred to avoid touching the Phase-18 confirm path here).
+- **`links` has no `UNIQUE(from_memory,to_memory,type)`.** Idempotency rests on the
+  app-level `ListLinks` pre-check + advisory locks (verified correct today); a partial
+  unique index would be defense-in-depth.

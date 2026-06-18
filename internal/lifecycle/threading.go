@@ -121,6 +121,13 @@ func (m *Manager) threadTenant(ctx context.Context, tenant string, windowMs int6
 			if a.ep.ProjectID != b.ep.ProjectID || a.ep.UserID != b.ep.UserID {
 				continue
 			}
+			// Two episodes that SHARE one narrative memory (D-079 content-dedup of
+			// identical narratives) must not be threaded — the relates_to edge would
+			// be self-referential (M→M). Skip; there is no meaningful arc edge between
+			// an episode and itself-via-a-shared-narrative (checkpoint finding).
+			if a.ep.NarrativeMemoryID == b.ep.NarrativeMemoryID {
+				continue
+			}
 			if !withinWindow(a.ep, b.ep, windowMs) {
 				continue
 			}

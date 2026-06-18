@@ -186,6 +186,11 @@ func StartPipeline(ctx context.Context, stk *Stack, cfg config.Config) (*Pipelin
 		// Wire the episode detect + narrate sweeps (Phase 22, D-079); the narration
 		// sweep calls the gateway. Set before RunForce/Start.
 		lc.SetEpisodes(stk.Gateway)
+	} else if episodeCfg.ThreadingEnabled {
+		// Threading (Phase 24b) reads narrated episodes, so it only runs when episodes
+		// are enabled. Warn loudly if a profile turns threading on without episodes —
+		// otherwise the sweep silently never fires (checkpoint finding).
+		stk.Log.Warn("boot: episode threading is enabled but episodes are disabled for this profile — threading will not run (it needs narrated episodes)")
 	}
 	if os.Getenv("STOWAGE_SWEEP_FORCE") != "" {
 		stk.Log.Info("boot: STOWAGE_SWEEP_FORCE set — running all sweeps once before serving")

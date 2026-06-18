@@ -66,6 +66,12 @@ func Resolve(ctx context.Context, st store.Store, scope identity.Scope, id strin
 	if mem.Status != "pending_review" {
 		return nil, ErrNotPending
 	}
+	// NOTE (checkpoint follow-up): this read-then-commit is not a compare-and-swap, so
+	// two concurrent resolves of the SAME memory could both pass the check (last-writer
+	// wins, two prior-state events). It is the same pre-existing pattern as
+	// reconcile.Resolve (Phase 18) and is low-probability for a single-scope queue; a
+	// proper fix makes the status flip conditional (UPDATE … WHERE status='pending_review')
+	// across both Resolve paths — tracked, not done here to avoid a broad store change.
 	jt, _ := st.Memories().GetJunctions(ctx, scope, id)
 	now := time.Now().UnixMilli()
 

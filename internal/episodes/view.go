@@ -108,6 +108,9 @@ func Arc(ctx context.Context, st store.Store, scope identity.Scope, episodeID st
 				if !seenEp[mem.EpisodeID] {
 					seenEp[mem.EpisodeID] = true
 					epIDs = append(epIDs, mem.EpisodeID)
+					if len(epIDs) >= maxArcNodes {
+						break // cap enforced per-append, not just per-BFS-level
+					}
 				}
 				queue = append(queue, nID)
 			}
