@@ -8,6 +8,8 @@ import (
 	"context"
 	"encoding/json"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -157,6 +159,17 @@ func TestVerifyParity_AllSurfaces(t *testing.T) {
 	cfg.Profile = "assistant"
 	seedVerify(t, cfg)
 
+	// Script the mock gateway with a deterministic NON-trivial verdict so the parity
+	// bar proves the real verdict flows through identically (not just the coerced
+	// "unclear" default). The mock reads STOWAGE_MOCK_SCRIPT at Open; each surface
+	// opens its own driver at offset 0, so all three read the same first entry. This
+	// also guards against the verdict being silently dropped (checkpoint finding).
+	scriptPath := filepath.Join(t.TempDir(), "verify-script.json")
+	if err := os.WriteFile(scriptPath, []byte(`[{"verdict":"entailed","confidence":0.91,"explanation":"the memory states it"}]`), 0o600); err != nil {
+		t.Fatalf("write mock script: %v", err)
+	}
+	t.Setenv("STOWAGE_MOCK_SCRIPT", scriptPath)
+
 	emb := verifyEmbedded(t, cfg, stowage.VerifyRequest{Claim: "Paris is the capital of France.", Citations: []string{"01VCITAAAAAAAAAAAAAAAAAAAA"}})
 	htp := verifyHTTP(t, cfg, stowage.VerifyRequest{Claim: "Paris is the capital of France.", Citations: []string{"01VCITAAAAAAAAAAAAAAAAAAAA"}})
 	mcp := verifyMCP(t, cfg, mcpserver.VerifyInput{Claim: "Paris is the capital of France.", Citations: []string{"01VCITAAAAAAAAAAAAAAAAAAAA"}})
@@ -168,12 +181,15 @@ func TestVerifyParity_AllSurfaces(t *testing.T) {
 	if embJSON != canonicalJSON(t, mcp) {
 		t.Errorf("verify: embedded vs MCP diverge:\n embedded=%s\n      mcp=%s", embJSON, canonicalJSON(t, mcp))
 	}
-	// The gateway WAS reached (citation resolved → not the empty short-circuit), so the
-	// verdict is a real value and not degraded.
+	// The scripted verdict flowed through (gateway reached, not degraded, not the
+	// coerced default) — identically on all three surfaces.
 	if emb.Degraded {
 		t.Errorf("gateway present ⇒ not degraded, got %+v", emb)
 	}
-	if emb.Verdict != "entailed" && emb.Verdict != "not_entailed" && emb.Verdict != "unclear" {
-		t.Errorf("unexpected verdict: %q", emb.Verdict)
+	if emb.Verdict != "entailed" || emb.Confidence != 0.91 {
+		t.Errorf("scripted verdict not propagated: got %+v (want entailed/0.91)", emb)
+	}
+	if htp.Verdict != "entailed" || mcp.Verdict != "entailed" {
+		t.Errorf("verdict diverged across surfaces: http=%q mcp=%q", htp.Verdict, mcp.Verdict)
 	}
 }

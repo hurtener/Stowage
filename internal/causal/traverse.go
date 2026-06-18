@@ -127,6 +127,21 @@ func Traverse(ctx context.Context, st store.Store, scope identity.Scope, startID
 		cur := queue[0]
 		queue = queue[1:]
 		if cur.depth >= depth {
+			// At the depth frontier. If this node still has an unvisited causal
+			// neighbor, the graph extends past the requested depth — flag truncation
+			// so the caller can distinguish "complete within N hops" from "more
+			// exists beyond N" (§11, no silent truncation). The !Truncated guard
+			// bounds the extra expand calls (stops probing once set).
+			if !g.Truncated {
+				if nbrs, eerr := expand(ctx, st, scope, cur.id, dir); eerr == nil {
+					for _, nb := range nbrs {
+						if !visited[nb.id] {
+							g.Truncated = true
+							break
+						}
+					}
+				}
+			}
 			continue
 		}
 		neighbors, err := expand(ctx, st, scope, cur.id, dir)

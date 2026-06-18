@@ -139,11 +139,16 @@ func (m *Manager) runNarrateEpisodes(ctx context.Context) {
 			// committed it but crashed before linking). Recover idempotently: link
 			// the existing memory to the episode instead of stranding it (D-079).
 			if existing, gerr := m.st.Memories().GetByContentHash(ctx, scope, hash); gerr == nil {
+				// A memory with this narrative already exists. Recover idempotently by
+				// linking the existing memory to this episode (D-079 content-dedup: two
+				// episodes of the same user with identical narratives intentionally
+				// SHARE one narrative memory — there is no 1:1 invariant). The downstream
+				// self-edge hazard this creates for threading is guarded in
+				// runThreadEpisodes (a shared narrative is never threaded to itself).
 				memID = existing.ID
 				// The whole CommitSet (incl. any inferred links) rolled back on the
 				// dup. On crash-recovery the original sweep already committed identical
-				// edges; on a rare distinct-episode hash collision the edges are a
-				// no-edge outcome (D-083 best-effort) — log so it is not silent.
+				// edges; log so the no-edge outcome is not silent (D-083 best-effort).
 				if len(links) > 0 {
 					m.log.InfoContext(ctx, "lifecycle/causal: narrative dedup — inferred edges not committed this pass", "episode", ep.ID, "edges", len(links))
 				}
