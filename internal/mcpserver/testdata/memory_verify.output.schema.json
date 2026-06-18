@@ -1,27 +1,22 @@
 {
   "type": "object",
   "properties": {
-    "action": {
+    "verdict": {
       "type": "string"
     },
-    "memory_id": {
+    "confidence": {
+      "type": "number"
+    },
+    "explanation": {
       "type": "string"
     },
-    "content": {
-      "type": "string"
-    },
-    "kind": {
-      "type": "string"
-    },
-    "context": {
-      "type": "string"
-    },
-    "review": {
+    "degraded": {
       "type": "boolean"
     }
   },
   "required": [
-    "action"
+    "verdict",
+    "confidence"
   ],
   "additionalProperties": false
 }

@@ -11,6 +11,7 @@ import (
 	"github.com/hurtener/dockyard/runtime/tool"
 
 	"github.com/hurtener/stowage/internal/auth"
+	"github.com/hurtener/stowage/internal/gateway"
 	"github.com/hurtener/stowage/internal/grants"
 	"github.com/hurtener/stowage/internal/identity"
 	"github.com/hurtener/stowage/internal/pipeline"
@@ -27,10 +28,13 @@ type ScopeFn func(ctx context.Context) (identity.Scope, error)
 // Services bundles the dependencies shared across all MCP tool handlers.
 // Fields mirror the dependencies wired in cmd/stowage/main.go runServe.
 type Services struct {
-	Store      store.Store
-	Retriever  *retrieval.Retriever
-	TopicSvc   *topics.Service
-	GrantsSvc  *grants.Service
+	Store     store.Store
+	Retriever *retrieval.Retriever
+	TopicSvc  *topics.Service
+	GrantsSvc *grants.Service
+	// Gateway is the intelligence seam, used by memory_verify (claim entailment,
+	// Phase 25). May be nil — verify then degrades to unclear (D-036).
+	Gateway    gateway.Gateway
 	PipelineIn chan<- pipeline.Item
 	// PipelineStage is the buffer stage, used by memory_flush and memory_branch
 	// (discard) — the shared control-verb core (D-071). May be nil in tests.
@@ -51,10 +55,11 @@ func StdioScopeFn(tenant string) ScopeFn {
 	}
 }
 
-// New creates a Dockyard *server.Server with all 13 Stowage MCP tools registered:
+// New creates a Dockyard *server.Server with all 17 Stowage MCP tools registered:
 // the original seven, the D-070 reversibility trio (memory_get, memory_rollback,
-// memory_resolve), and the D-071 Tier control verbs (memory_flush, memory_branch,
-// and the Tier-B memory_grants).
+// memory_resolve), the D-071 Tier control verbs (memory_flush, memory_branch, and the
+// Tier-B memory_grants), the episodic reads (memory_episodes, memory_causal), and the
+// §6c trust verbs (memory_verify, memory_review).
 // It returns an error when any tool fails to register (type mismatch, missing
 // handler) — the caller must handle the error and exit non-zero (AGENTS.md §5).
 func New(info server.Info, svc *Services) (*server.Server, error) {
@@ -94,6 +99,20 @@ func New(info server.Info, svc *Services) (*server.Server, error) {
 	if err := tool.New[CausalInput, CausalOutput]("memory_causal").
 		Describe("Walk the causal graph from a memory (mirrors GET /v1/causal; RFC §5.6/§6b, D-083): backward to its causes ('why did this happen'), forward to its effects, or both, with provenance at every hop. Deterministic + LLM-free.").
 		Handler(makeCausalHandler(svc)).
+		Register(srv); err != nil {
+		return nil, err
+	}
+
+	if err := tool.New[VerifyInput, VerifyOutput]("memory_verify").
+		Describe("Verify that a claim is entailed by its cited memories (mirrors POST /v1/verify; RFC §6c, D-084): a schema-constrained gateway entailment check. Returns verdict (entailed|not_entailed|unclear) + confidence + explanation; degrades to unclear when the gateway is unreachable.").
+		Handler(makeVerifyHandler(svc)).
+		Register(srv); err != nil {
+		return nil, err
+	}
+
+	if err := tool.New[ReviewInput, ReviewOutput]("memory_review").
+		Describe("List the scope's pending_review memories (uncited agent assertions) and approve (→active) or reject (→quarantined) them (RFC §6c, D-084). action: list | approve | reject.").
+		Handler(makeReviewHandler(svc)).
 		Register(srv); err != nil {
 		return nil, err
 	}

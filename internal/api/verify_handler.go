@@ -1,0 +1,61 @@
+package api
+
+import (
+	"encoding/json"
+	"net/http"
+
+	"github.com/hurtener/stowage/internal/identity"
+	"github.com/hurtener/stowage/internal/trust"
+)
+
+// verifyRequestJSON is the POST /v1/verify body (mirrors SDK + MCP).
+type verifyRequestJSON struct {
+	Claim     string   `json:"claim"`
+	Citations []string `json:"citations,omitempty"`
+}
+
+// verifyResponseJSON is the verification verdict envelope.
+type verifyResponseJSON struct {
+	Verdict     string  `json:"verdict"`
+	Confidence  float64 `json:"confidence"`
+	Explanation string  `json:"explanation,omitempty"`
+	Degraded    bool    `json:"degraded,omitempty"`
+}
+
+// handleVerify implements POST /v1/verify (RFC §6c, D-084): resolve the claim's
+// citation handles and run a schema-constrained gateway entailment check. Degrades to
+// unclear (200) when the gateway is unreachable (D-036).
+func (s *Server) handleVerify(w http.ResponseWriter, r *http.Request) {
+	if !requireJSON(w, r) {
+		return
+	}
+	authKey := keyFromContext(r.Context())
+	scope := identity.Scope{Tenant: authKey.TenantID}
+
+	var req verifyRequestJSON
+	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&req); err != nil {
+		respondJSON(w, http.StatusBadRequest, errBody("decode: "+sanitizeDecodeErr(err)))
+		return
+	}
+	if req.Claim == "" {
+		respondJSON(w, http.StatusBadRequest, errBody("claim must be set"))
+		return
+	}
+	cited, err := trust.ResolveCited(r.Context(), s.st, scope, req.Citations)
+	if err != nil {
+		s.log.ErrorContext(r.Context(), "api: verify: resolve cited failed", "err", err)
+		respondJSON(w, http.StatusInternalServerError, errBody("verify resolve failed"))
+		return
+	}
+	v, err := trust.Verify(r.Context(), s.gw, req.Claim, cited)
+	if err != nil {
+		s.log.ErrorContext(r.Context(), "api: verify failed", "err", err)
+		respondJSON(w, http.StatusInternalServerError, errBody("verify failed"))
+		return
+	}
+	respondJSON(w, http.StatusOK, verifyResponseJSON{
+		Verdict: v.Verdict, Confidence: v.Confidence, Explanation: v.Explanation, Degraded: v.Degraded,
+	})
+}

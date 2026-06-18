@@ -4,20 +4,14 @@
     "action": {
       "type": "string"
     },
-    "memory_id": {
+    "id": {
       "type": "string"
     },
-    "content": {
-      "type": "string"
+    "limit": {
+      "type": "integer"
     },
-    "kind": {
+    "cursor": {
       "type": "string"
-    },
-    "context": {
-      "type": "string"
-    },
-    "review": {
-      "type": "boolean"
     }
   },
   "required": [

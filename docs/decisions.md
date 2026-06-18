@@ -2137,3 +2137,41 @@ non-active root ⇒ empty graph, no error (parity with `memory_episodes` get-mis
 
 **Cross-episode causality deferred** to Phase 24b (episode threading, D-081): Phase 24
 scopes causality within a single episode's narrative frame.
+
+## D-084 — Verification (memory_verify) + review queue (memory_review) on the single-user tier; producer is the explicit assert review flag
+
+2026-06-18. Phase 25 (RFC §6c) ships the two trust safeguards that Phase 11 (citations)
+left for later — **claim verification** and the **uncited-claim review queue** — and
+defers reasoning-trace export to Phase 26.
+
+**Claim verification.** `POST /v1/verify` / `memory_verify` / SDK `Verify` take a claim
++ citation handles, resolve the cited memories (the shared `trust.ResolveCited` over the
+Phase-11 injection store), and run a **schema-constrained gateway entailment check**
+(`trust.Verify`, P5/D-040) returning `{verdict∈{entailed,not_entailed,unclear},
+confidence, explanation}`. Gateway-unreachable (or nil) ⇒ `unclear`+`degraded`, no error
+(D-036) — the safeguard never blocks. Empty citations ⇒ `unclear`, no gateway call.
+Ships on the single-user tier {SDK, HTTP, MCP} (D-067); parity is proven with the
+deterministic mock gateway (byte-identical verdict across surfaces).
+
+**Review queue (scope-level, not credential-admin).** Uncited agent assertions park as
+`pending_review` (inert — not retrieved) and are listed + approved (→`active`,
+retrieval-cache invalidated) or rejected (→`quarantined`, reversible — held, not
+deleted) via `memory_review` (`GET /v1/review` + `POST /v1/review/{id}` / MCP
+`memory_review` `{action:list|approve|reject}` / SDK `Review`). Resolution is atomic +
+reversible (a `memory.review_approved`/`memory.review_rejected` event carries the prior
+state, D-017), mirroring the Phase-18 confirm/reject discipline. The queue is a
+**scope-level single-user-tier** capability (the scope owner reviews their own pending
+memories at `/v1/review`), **not** an operator/credential-admin (`/v1/admin/*`)
+function — RFC's "admin queue" is satisfied by a scope-level review/moderation surface.
+
+**Producer = explicit `review` flag on `memory_assert`.** `AssertParams.Review` (SDK +
+MCP, assert being Tier-A {SDK, MCP}, D-071) parks the asserted memory as
+`pending_review` + a `memory.pending_review` event. **Automatic uncited-claim detection
+is deferred**: routing "agent-generated extraction without citations" to review needs a
+citation-on-ingest signal Stowage doesn't capture yet + an eval to tune false positives.
+Phase 25 ships the full mechanism (verify + park + queue + reversible resolve) and the
+explicit producer; auto-detection is a future eval-gated enhancement.
+
+**No new schema** — `pending_review` + `quarantined` are day-one memory statuses (§8.1);
+no new table/column, no RFC amendment. Two new MCP tools (count 15 → 17). Reasoning-
+trace export stays Phase 26 (D-027/D-076).

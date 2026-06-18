@@ -90,4 +90,13 @@ type Client interface {
 	// pipeline (D-071). This is an embedded-host escape hatch; the HTTP surface
 	// deliberately omits it (writes stay routed through the pipeline there).
 	Assert(ctx context.Context, req AssertRequest) (AssertResponse, error)
+
+	// Verify checks that a claim is entailed by its cited memories (RFC §6c, D-084):
+	// a schema-constrained gateway entailment check. Degrades to "unclear" when the
+	// gateway is unreachable (never blocks).
+	Verify(ctx context.Context, req VerifyRequest) (VerifyResponse, error)
+
+	// Review lists the scope's pending_review memories (uncited agent assertions) and
+	// approves (→active) or rejects (→quarantined) them (RFC §6c, D-084).
+	Review(ctx context.Context, req ReviewRequest) (ReviewResponse, error)
 }

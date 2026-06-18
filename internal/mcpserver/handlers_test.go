@@ -97,6 +97,7 @@ func newFullServices(t *testing.T) *Services {
 	return &Services{
 		Store:      st,
 		Retriever:  ret,
+		Gateway:    gw,
 		TopicSvc:   topicSvc,
 		PipelineIn: nil,
 		Log:        log,
@@ -1243,5 +1244,75 @@ func TestHandlerCausal_MissingMemoryID(t *testing.T) {
 	h := makeCausalHandler(svc)
 	if _, err := h(context.Background(), CausalInput{}); err == nil {
 		t.Error("expected error when memory_id is empty")
+	}
+}
+
+// --- Phase 25: memory_verify / memory_review (D-084) -------------------------
+
+// TestHandlerVerify exercises memory_verify: a resolved citation runs through the
+// (full-services) mock gateway entailment check.
+func TestHandlerVerify(t *testing.T) {
+	svc := newFullServices(t) // has a mock gateway
+	h := makeVerifyHandler(svc)
+	ctx := context.Background()
+	scope := testScope()
+
+	_ = svc.Store.Memories().Insert(ctx, scope, store.Memory{
+		ID: "vm1", Kind: "fact", Content: "Paris is the capital of France.", Status: "active",
+		Confidence: 0.8, TrustSource: "llm_extracted", Stability: 1.0, CreatedAt: 1, UpdatedAt: 1,
+	})
+	_ = svc.Store.Injections().Append(ctx, scope, []store.Injection{{ID: "vc1", ResponseID: "r1", MemoryID: "vm1", CreatedAt: 1}})
+
+	res, err := h(ctx, VerifyInput{Claim: "Paris is the capital of France.", Citations: []string{"vc1"}})
+	if err != nil {
+		t.Fatalf("verify: %v", err)
+	}
+	// Mock gateway present + citation resolved ⇒ a real verdict, not degraded.
+	if res.Structured.Degraded {
+		t.Errorf("gateway present ⇒ not degraded, got %+v", res.Structured)
+	}
+	if res.Structured.Verdict == "" {
+		t.Error("verdict must not be empty")
+	}
+}
+
+// TestHandlerVerify_MissingClaim: empty claim ⇒ error.
+func TestHandlerVerify_MissingClaim(t *testing.T) {
+	svc := newHandlerServices(t)
+	h := makeVerifyHandler(svc)
+	if _, err := h(context.Background(), VerifyInput{Citations: []string{"x"}}); err == nil {
+		t.Error("expected error when claim is empty")
+	}
+}
+
+// TestHandlerReview covers memory_review list + approve + reject.
+func TestHandlerReview(t *testing.T) {
+	svc := newHandlerServices(t)
+	h := makeReviewHandler(svc)
+	ctx := context.Background()
+	scope := testScope()
+
+	_ = svc.Store.Memories().Insert(ctx, scope, store.Memory{
+		ID: "pr1", Kind: "fact", Content: "uncited claim", Status: "pending_review",
+		Confidence: 0.5, TrustSource: "asserted", Stability: 1.0, CreatedAt: 1, UpdatedAt: 1,
+	})
+
+	// list
+	lst, err := h(ctx, ReviewInput{Action: "list"})
+	if err != nil || len(lst.Structured.Items) != 1 || lst.Structured.Items[0].ID != "pr1" {
+		t.Fatalf("list: %v / %+v", err, lst.Structured.Items)
+	}
+	// approve → active
+	ap, err := h(ctx, ReviewInput{Action: "approve", ID: "pr1"})
+	if err != nil || ap.Structured.Status != "active" {
+		t.Fatalf("approve: %v / %q", err, ap.Structured.Status)
+	}
+	// missing id on resolve ⇒ error
+	if _, err := h(ctx, ReviewInput{Action: "approve"}); err == nil {
+		t.Error("expected error when id missing on approve")
+	}
+	// bad action ⇒ error
+	if _, err := h(ctx, ReviewInput{Action: "banana"}); err == nil {
+		t.Error("expected error on bad action")
 	}
 }

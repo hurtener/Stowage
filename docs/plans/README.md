@@ -135,7 +135,7 @@ match table slots 19–21.
 
 | # | Phase | Owns | RFC |
 |---|-------|------|-----|
-| 25 | Verification & review queue | `POST /v1/verify` entailment safeguard, uncited-claim `pending_review` + admin queue | §6c |
+| 25 | Verification & review queue | `memory_verify` (`POST /v1/verify`) schema-constrained gateway entailment, degraded-safe + `memory_review` scope-level queue (assert `review`→`pending_review`; approve→active / reject→quarantined, reversible) across {SDK,HTTP,MCP} — D-084. Auto uncited-detection + trace export deferred | §6c |
 | 26 | Reasoning traces + audit export | trace reconstruction, signed bundles, audit API, retention class (OQ-10) | §6c |
 
 ### v1.3 — Proactive

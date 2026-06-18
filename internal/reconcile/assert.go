@@ -27,6 +27,10 @@ type AssertParams struct {
 	Content  string // required for add
 	Kind     string // optional; defaults to "fact" on add
 	Context  string // optional
+	// Review (add only) parks the asserted memory as pending_review instead of active
+	// — the uncited-claim safeguard (RFC §6c, Phase 25/D-084). A pending_review memory
+	// is inert (not retrievable) until approved via the review queue.
+	Review bool
 }
 
 // AssertResult is the outcome of an Assert.
@@ -62,20 +66,30 @@ func Assert(ctx context.Context, st store.Store, scope identity.Scope, p AssertP
 			kind = "fact"
 		}
 		memoryID = ulid.Make().String()
+		status = "active"
+		if p.Review {
+			status = "pending_review" // uncited-claim safeguard (§6c, D-084)
+		}
 		m := store.Memory{
 			ID:        memoryID,
 			TenantID:  scope.Tenant,
 			Kind:      kind,
 			Content:   p.Content,
 			Context:   p.Context,
-			Status:    "active",
+			Status:    status,
 			CreatedAt: now,
 			UpdatedAt: now,
 		}
 		if err := st.Memories().Insert(ctx, scope, m); err != nil {
 			return nil, fmt.Errorf("assert: insert: %w", err)
 		}
-		status = "active"
+		if p.Review {
+			// Emit the pending_review audit event (best-effort; the insert is durable).
+			_ = st.Events().Emit(ctx, scope, store.Event{
+				ID: ulid.Make().String(), TenantID: scope.Tenant, Type: "memory.pending_review",
+				SubjectID: memoryID, Reason: "assert: parked for review (uncited)", Payload: "{}", CreatedAt: now,
+			})
+		}
 
 	case "update":
 		if p.MemoryID == "" {

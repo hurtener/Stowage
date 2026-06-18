@@ -101,6 +101,14 @@ func (f *fakeClient) Causal(_ context.Context, req stowage.CausalRequest) (stowa
 	return stowage.CausalResponse{Root: req.MemoryID}, nil
 }
 
+func (f *fakeClient) Verify(_ context.Context, _ stowage.VerifyRequest) (stowage.VerifyResponse, error) {
+	return stowage.VerifyResponse{Verdict: "unclear"}, nil
+}
+
+func (f *fakeClient) Review(_ context.Context, _ stowage.ReviewRequest) (stowage.ReviewResponse, error) {
+	return stowage.ReviewResponse{}, nil
+}
+
 func (f *fakeClient) Rollback(_ context.Context, req stowage.RollbackRequest) (stowage.Memory, error) {
 	return stowage.Memory{ID: req.MemoryID}, nil
 }

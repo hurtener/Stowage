@@ -19,6 +19,7 @@ import (
 	"github.com/hurtener/stowage/internal/retrieval"
 	"github.com/hurtener/stowage/internal/store"
 	"github.com/hurtener/stowage/internal/topics"
+	"github.com/hurtener/stowage/internal/trust"
 )
 
 // ─── memory_ingest ────────────────────────────────────────────────────────────
@@ -482,6 +483,7 @@ func makeAssertHandler(svc *Services) tool.Handler[AssertInput, AssertOutput] {
 			Content:  in.Content,
 			Kind:     in.Kind,
 			Context:  in.Context,
+			Review:   in.Review,
 		}, svc.scopeInvalidator())
 		if err != nil {
 			return tool.Result[AssertOutput]{}, fmt.Errorf("memory_assert: %w", err)
@@ -1023,4 +1025,71 @@ func causalGraphToOutput(g causal.Graph) CausalOutput {
 		out.Edges = append(out.Edges, CausalEdgeItem{From: e.From, To: e.To, Type: e.Type, Confidence: e.Confidence})
 	}
 	return out
+}
+
+// ─── memory_verify / memory_review (Phase 25, D-084) ──────────────────────────
+
+// makeVerifyHandler implements memory_verify (RFC §6c): resolve the claim's citation
+// handles and run a schema-constrained gateway entailment check. Degrades to unclear
+// when the gateway is unreachable (D-036). Mirrors POST /v1/verify + SDK Verify.
+func makeVerifyHandler(svc *Services) tool.Handler[VerifyInput, VerifyOutput] {
+	return func(ctx context.Context, in VerifyInput) (tool.Result[VerifyOutput], error) {
+		scope, err := svc.ScopeFn(ctx)
+		if err != nil {
+			return tool.Result[VerifyOutput]{}, fmt.Errorf("memory_verify: resolve scope: %w", err)
+		}
+		if in.Claim == "" {
+			return tool.Result[VerifyOutput]{}, fmt.Errorf("memory_verify: claim is required")
+		}
+		cited, err := trust.ResolveCited(ctx, svc.Store, scope, in.Citations)
+		if err != nil {
+			return tool.Result[VerifyOutput]{}, fmt.Errorf("memory_verify: %w", err)
+		}
+		v, err := trust.Verify(ctx, svc.Gateway, in.Claim, cited)
+		if err != nil {
+			return tool.Result[VerifyOutput]{}, fmt.Errorf("memory_verify: %w", err)
+		}
+		out := VerifyOutput{Verdict: v.Verdict, Confidence: v.Confidence, Explanation: v.Explanation, Degraded: v.Degraded}
+		return tool.Result[VerifyOutput]{
+			Text:       fmt.Sprintf("Verify: %s (confidence %.2f)", v.Verdict, v.Confidence),
+			Structured: out,
+		}, nil
+	}
+}
+
+// makeReviewHandler implements memory_review (RFC §6c): list the scope's pending_review
+// memories or approve/reject one. Mirrors GET /v1/review + POST /v1/review/{id} + SDK Review.
+func makeReviewHandler(svc *Services) tool.Handler[ReviewInput, ReviewOutput] {
+	return func(ctx context.Context, in ReviewInput) (tool.Result[ReviewOutput], error) {
+		scope, err := svc.ScopeFn(ctx)
+		if err != nil {
+			return tool.Result[ReviewOutput]{}, fmt.Errorf("memory_review: resolve scope: %w", err)
+		}
+		switch in.Action {
+		case "list":
+			mems, next, lerr := trust.ListPending(ctx, svc.Store, scope, in.Limit, in.Cursor)
+			if lerr != nil {
+				return tool.Result[ReviewOutput]{}, fmt.Errorf("memory_review: %w", lerr)
+			}
+			out := ReviewOutput{Items: make([]ReviewItem, 0, len(mems)), NextCursor: next}
+			for _, m := range mems {
+				out.Items = append(out.Items, ReviewItem{ID: m.ID, Kind: m.Kind, Content: m.Content, Context: m.Context, CreatedAt: m.CreatedAt})
+			}
+			return tool.Result[ReviewOutput]{Text: fmt.Sprintf("Review queue: %d pending", len(out.Items)), Structured: out}, nil
+		case "approve", "reject":
+			if in.ID == "" {
+				return tool.Result[ReviewOutput]{}, fmt.Errorf("memory_review: id required for action=%s", in.Action)
+			}
+			res, rerr := trust.Resolve(ctx, svc.Store, scope, in.ID, trust.ReviewAction(in.Action), svc.scopeInvalidator())
+			if rerr != nil {
+				return tool.Result[ReviewOutput]{}, fmt.Errorf("memory_review: %w", rerr)
+			}
+			return tool.Result[ReviewOutput]{
+				Text:       fmt.Sprintf("Review %s: %s → %s", in.Action, res.ID, res.Status),
+				Structured: ReviewOutput{ID: res.ID, Status: res.Status},
+			}, nil
+		default:
+			return tool.Result[ReviewOutput]{}, fmt.Errorf("memory_review: action must be list|approve|reject")
+		}
+	}
 }
