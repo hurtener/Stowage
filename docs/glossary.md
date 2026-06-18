@@ -120,6 +120,11 @@ New terms land here in the same PR that introduces them (CLAUDE.md §14).
   LLM-free (Phase 23, D-080); the §6b read side over Phase-22 episodes.
 - **Episode contrast** — surfacing the most similar past episode and comparing
   outcomes against the current situation.
+- **Similar-episode contrast** — ranking the scope's past episodes by
+  narrative-vector similarity to a situation (the `memory_episodes` `similar_to`
+  query), surfacing each one's outcome + narrative as contrast material; backed by
+  `Retriever.SimilarNarratives` (gateway embed + `kind=narrative` vindex),
+  degraded-safe (Phase 23b, D-082).
 - **Branch** — a session fork for exploration; working memories merge on
   accept or expire on discard, records always remain (D-029).
 - **Hot–warm cache** — the (query-signature, scope) result cache plus

@@ -587,3 +587,50 @@ func (r *Retriever) Retrieve(ctx context.Context, scope identity.Scope, req Requ
 		DegradedRerank: degradedRerank,
 	}, nil
 }
+
+// SimilarNarratives finds the scope's past episodes most similar to query by
+// vector search over narrative memories (Phase 23b, D-082). It embeds query via the
+// gateway and searches vindex filtered to kind="narrative", returning the linked
+// episode IDs + similarity scores, rank-ordered. Degrades gracefully (D-036): if the
+// gateway is absent/unreachable or the embed/search fails, it returns degraded=true
+// with no results and NO error — callers fall back to the deterministic episode list.
+//
+// It satisfies the episodes.NarrativeSearcher interface (no import cycle: retrieval
+// does not import episodes). k is the narrative-level top-k (default 5, capped at
+// maxLimit); because unlinked/deleted narratives are dropped and duplicate episodes
+// deduped after the cut, the episode count returned is best-effort (≤ k).
+func (r *Retriever) SimilarNarratives(ctx context.Context, scope identity.Scope, query string, k int) (ids []string, scores []float64, degraded bool, err error) {
+	if k <= 0 {
+		k = 5
+	}
+	if k > maxLimit {
+		k = maxLimit // resource guard: k is caller-controlled on HTTP/MCP (mirrors Retrieve's clamp)
+	}
+	if r.gw == nil || r.vi == nil {
+		return nil, nil, true, nil
+	}
+	resp, embErr := r.gw.Embed(ctx, gateway.EmbedRequest{Inputs: []string{query}})
+	if embErr != nil || len(resp.Vectors) == 0 {
+		r.log.WarnContext(ctx, "episodes/similar: embed failed — degraded", "err", embErr)
+		return nil, nil, true, nil
+	}
+	hits, sErr := r.vi.Search(ctx, scope, resp.Vectors[0], k, vindex.Filter{Kinds: []string{"narrative"}})
+	if sErr != nil {
+		r.log.WarnContext(ctx, "episodes/similar: vindex search failed — degraded", "err", sErr)
+		return nil, nil, true, nil
+	}
+	seen := make(map[string]struct{}, len(hits))
+	for _, h := range hits {
+		mem, mErr := r.mem.Get(ctx, scope, h.MemoryID)
+		if mErr != nil || mem == nil || mem.EpisodeID == "" {
+			continue // narrative deleted or not episode-linked — skip
+		}
+		if _, dup := seen[mem.EpisodeID]; dup {
+			continue // an episode with >1 active narrative — keep the highest-ranked hit
+		}
+		seen[mem.EpisodeID] = struct{}{}
+		ids = append(ids, mem.EpisodeID)
+		scores = append(scores, h.Score)
+	}
+	return ids, scores, false, nil
+}

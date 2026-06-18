@@ -165,25 +165,32 @@ type EpisodesInput struct {
 	SessionID string `json:"session_id,omitempty"`
 	From      int64  `json:"from,omitempty"`
 	Until     int64  `json:"until,omitempty"`
+	// SimilarTo, when set, vector-ranks the scope's episodes by narrative
+	// similarity to this situation (§6b contrast, Phase 23b/D-082); K caps the
+	// result count (default 5). The deterministic list path is unaffected.
+	SimilarTo string `json:"similar_to,omitempty"`
+	K         int    `json:"k,omitempty"`
 }
 
 // EpisodeItem is one episode + its narrative (byte-identical to the HTTP/SDK shape).
 type EpisodeItem struct {
-	ID                string `json:"id"`
-	SessionID         string `json:"session_id"`
-	Title             string `json:"title"`
-	Status            string `json:"status"`
-	Outcome           string `json:"outcome,omitempty"`
-	StartedAt         int64  `json:"started_at"`
-	EndedAt           int64  `json:"ended_at"`
-	NarrativeMemoryID string `json:"narrative_memory_id,omitempty"`
-	Narrative         string `json:"narrative,omitempty"`
+	ID                string  `json:"id"`
+	SessionID         string  `json:"session_id"`
+	Title             string  `json:"title"`
+	Status            string  `json:"status"`
+	Outcome           string  `json:"outcome,omitempty"`
+	StartedAt         int64   `json:"started_at"`
+	EndedAt           int64   `json:"ended_at"`
+	NarrativeMemoryID string  `json:"narrative_memory_id,omitempty"`
+	Narrative         string  `json:"narrative,omitempty"`
+	Score             float64 `json:"score,omitempty"`
 }
 
 // EpisodesOutput is the memory_episodes tool output.
 type EpisodesOutput struct {
 	Episodes   []EpisodeItem `json:"episodes"`
 	NextCursor string        `json:"next_cursor,omitempty"`
+	Degraded   bool          `json:"degraded,omitempty"`
 }
 
 // ─── memory_drilldown ────────────────────────────────────────────────────────

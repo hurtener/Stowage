@@ -1129,3 +1129,71 @@ func TestHandlerEpisodes_ListGetMissing(t *testing.T) {
 		t.Errorf("missing id should yield empty list, got %d", len(miss.Structured.Episodes))
 	}
 }
+
+// TestHandlerEpisodes_SimilarNoRetriever proves similar_to degrades (empty +
+// degraded, no error) when no retriever is wired (D-082/D-036).
+func TestHandlerEpisodes_SimilarNoRetriever(t *testing.T) {
+	svc := newHandlerServices(t) // Retriever: nil
+	h := makeEpisodesHandler(svc)
+	res, err := h(context.Background(), EpisodesInput{SimilarTo: "anything", K: 3})
+	if err != nil {
+		t.Fatalf("similar (no retriever): %v", err)
+	}
+	if !res.Structured.Degraded || len(res.Structured.Episodes) != 0 {
+		t.Errorf("want degraded+empty, got deg=%v n=%d", res.Structured.Degraded, len(res.Structured.Episodes))
+	}
+}
+
+// TestHandlerEpisodes_Similar exercises the full similar_to path: a seeded +
+// embedded narrative ranks its episode first with a score (D-082).
+func TestHandlerEpisodes_Similar(t *testing.T) {
+	svc := newFullServices(t)
+	h := makeEpisodesHandler(svc)
+	ctx := context.Background()
+	scope := testScope()
+
+	const narrative = "migrating the billing service under a lock"
+	if err := svc.Store.Memories().Insert(ctx, scope, store.Memory{
+		ID: "01NARRSIMAAAAAAAAAAAAAAAAA", Kind: "narrative", Content: narrative,
+		Status: "active", Importance: 3, Confidence: 0.8, TrustSource: "episodic", Stability: 1.0,
+		EpisodeID: "01EPSIMONEAAAAAAAAAAAAAAAA", CreatedAt: 1, UpdatedAt: 1,
+	}); err != nil {
+		t.Fatalf("seed narrative: %v", err)
+	}
+	if err := svc.Store.Episodes().CreateEpisode(ctx, scope, store.Episode{
+		ID: "01EPSIMONEAAAAAAAAAAAAAAAA", SessionID: "s1", Title: "Billing", Status: "closed",
+		Outcome: "success", StartedAt: 10, EndedAt: 20, NarrativeMemoryID: "01NARRSIMAAAAAAAAAAAAAAAAA",
+		CreatedAt: 10, UpdatedAt: 10,
+	}); err != nil {
+		t.Fatalf("seed episode: %v", err)
+	}
+	// Embed the narrative (mock, deterministic) into the shared vector store so the
+	// retriever's vindex ranks it.
+	gw, err := gateway.Open(ctx, config.GatewayConfig{Driver: "mock", EmbedDims: 8}, slog.Default(), prometheus.NewRegistry())
+	if err != nil {
+		t.Fatalf("gateway: %v", err)
+	}
+	defer func() { _ = gw.Close(ctx) }()
+	emb, err := gw.Embed(ctx, gateway.EmbedRequest{Inputs: []string{narrative}})
+	if err != nil {
+		t.Fatalf("embed: %v", err)
+	}
+	vi := vindex.New(svc.Store.Vectors(), 8, "mock-embed")
+	if err := vi.Upsert(ctx, scope, "01NARRSIMAAAAAAAAAAAAAAAAA", emb.Vectors[0]); err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+
+	res, err := h(ctx, EpisodesInput{SimilarTo: narrative, K: 5})
+	if err != nil {
+		t.Fatalf("similar: %v", err)
+	}
+	if res.Structured.Degraded {
+		t.Fatalf("should not be degraded with a live retriever")
+	}
+	if len(res.Structured.Episodes) == 0 || res.Structured.Episodes[0].ID != "01EPSIMONEAAAAAAAAAAAAAAAA" {
+		t.Fatalf("expected episode ranked first, got %+v", res.Structured.Episodes)
+	}
+	if res.Structured.Episodes[0].Score <= 0 {
+		t.Errorf("expected positive score, got %v", res.Structured.Episodes[0].Score)
+	}
+}

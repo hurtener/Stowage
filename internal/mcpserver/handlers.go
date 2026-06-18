@@ -919,7 +919,8 @@ func makeEpisodesHandler(svc *Services) tool.Handler[EpisodesInput, EpisodesOutp
 			return tool.Result[EpisodesOutput]{}, fmt.Errorf("memory_episodes: resolve scope: %w", err)
 		}
 		var out EpisodesOutput
-		if in.ID != "" {
+		switch {
+		case in.ID != "":
 			v, gerr := episodes.Get(ctx, svc.Store, scope, in.ID)
 			if errors.Is(gerr, store.ErrNotFound) {
 				out.Episodes = []EpisodeItem{}
@@ -928,7 +929,24 @@ func makeEpisodesHandler(svc *Services) tool.Handler[EpisodesInput, EpisodesOutp
 			} else {
 				out.Episodes = []EpisodeItem{episodeToItem(*v)}
 			}
-		} else {
+		case in.SimilarTo != "":
+			// Vector-rank the scope's episodes by narrative similarity (§6b, D-082).
+			// Degrades to an empty+degraded envelope when the gateway is down.
+			if svc.Retriever == nil {
+				out.Episodes = []EpisodeItem{}
+				out.Degraded = true
+				break
+			}
+			views, degraded, serr := episodes.Similar(ctx, svc.Store, svc.Retriever, scope, in.SimilarTo, in.K)
+			if serr != nil {
+				return tool.Result[EpisodesOutput]{}, fmt.Errorf("memory_episodes: %w", serr)
+			}
+			out.Episodes = make([]EpisodeItem, 0, len(views))
+			for _, v := range views {
+				out.Episodes = append(out.Episodes, episodeToItem(v))
+			}
+			out.Degraded = degraded
+		default:
 			res, lerr := episodes.List(ctx, svc.Store, scope, episodes.ListOptions{
 				Limit: in.Limit, Cursor: in.Cursor, SessionID: in.SessionID, From: in.From, Until: in.Until,
 			})
@@ -952,5 +970,6 @@ func episodeToItem(v episodes.EpisodeView) EpisodeItem {
 	return EpisodeItem{
 		ID: v.ID, SessionID: v.SessionID, Title: v.Title, Status: v.Status, Outcome: v.Outcome,
 		StartedAt: v.StartedAt, EndedAt: v.EndedAt, NarrativeMemoryID: v.NarrativeMemoryID, Narrative: v.Narrative,
+		Score: v.Score,
 	}
 }

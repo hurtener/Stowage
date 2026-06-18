@@ -7,20 +7,25 @@ package integration
 import (
 	"context"
 	"encoding/json"
+	"log/slog"
 	"net/http/httptest"
 	"testing"
 	"time"
 
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
+	"github.com/prometheus/client_golang/prometheus"
 
 	"github.com/hurtener/dockyard/runtime/server"
 
 	"github.com/hurtener/stowage/internal/api"
 	"github.com/hurtener/stowage/internal/auth"
 	"github.com/hurtener/stowage/internal/config"
+	"github.com/hurtener/stowage/internal/gateway"
+	_ "github.com/hurtener/stowage/internal/gateway/mock" // register the mock gateway for seed embeds
 	"github.com/hurtener/stowage/internal/identity"
 	"github.com/hurtener/stowage/internal/mcpserver"
 	"github.com/hurtener/stowage/internal/store"
+	"github.com/hurtener/stowage/internal/vindex"
 	stowage "github.com/hurtener/stowage/sdk/stowage"
 )
 
@@ -56,6 +61,34 @@ func seedEpisodes(t *testing.T, cfg config.Config) {
 	}
 	if err := st.Episodes().CreateEpisode(ctx, scope, mk("01EPTWOAAAAAAAAAAAAAAAAAAA", "sess-2", "Debug", 2_000_000, 2_000_500, "", "failure")); err != nil {
 		t.Fatalf("seed e2: %v", err)
+	}
+}
+
+// seedEpisodeVectors embeds e1's narrative (mock gateway, deterministic) and
+// upserts it into the shared store's vector BLOBs, so every surface's hnsw index
+// rebuilds the same vector and the similar_to path is non-trivially correct +
+// byte-identical (Phase 23b, D-082).
+func seedEpisodeVectors(t *testing.T, cfg config.Config) {
+	t.Helper()
+	ctx := context.Background()
+	st, err := store.Open(ctx, cfg.Store)
+	if err != nil {
+		t.Fatalf("seed vectors: open: %v", err)
+	}
+	defer func() { _ = st.Close(ctx) }()
+	gw, err := gateway.Open(ctx, cfg.Gateway, slog.Default(), prometheus.NewRegistry())
+	if err != nil {
+		t.Fatalf("seed vectors: gateway: %v", err)
+	}
+	defer func() { _ = gw.Close(ctx) }()
+	const narrative = "Planned and shipped the launch under a lock."
+	emb, err := gw.Embed(ctx, gateway.EmbedRequest{Inputs: []string{narrative}})
+	if err != nil {
+		t.Fatalf("seed vectors: embed: %v", err)
+	}
+	vi := vindex.New(st.Vectors(), cfg.Gateway.EmbedDims, cfg.Gateway.EmbedModel)
+	if err := vi.Upsert(ctx, identity.Scope{Tenant: episodesTenant}, "01NARRAAAAAAAAAAAAAAAAAAAA", emb.Vectors[0]); err != nil {
+		t.Fatalf("seed vectors: upsert: %v", err)
 	}
 }
 
@@ -183,6 +216,44 @@ func TestEpisodesParity_AllSurfaces(t *testing.T) {
 	}
 	if emb.Episodes[1].Outcome != "success" || emb.Episodes[0].Outcome != "failure" {
 		t.Errorf("outcomes wrong: %+v", emb.Episodes)
+	}
+}
+
+// TestEpisodesParity_Similar is the Phase-23b similar-episode contrast parity bar
+// (D-082): a seeded similar_to query is BYTE IDENTICAL across embedded/HTTP/MCP
+// (deterministic mock embedder) and ranks e1 (the narrated, embedded episode) first.
+func TestEpisodesParity_Similar(t *testing.T) {
+	cfg := baseConfig(t)
+	cfg.Profile = "assistant"
+	seedEpisodes(t, cfg)
+	seedEpisodeVectors(t, cfg)
+
+	const query = "Planned and shipped the launch under a lock."
+	emb := episodesEmbedded(t, cfg, stowage.EpisodesRequest{SimilarTo: query, K: 5})
+	htp := episodesHTTP(t, cfg, stowage.EpisodesRequest{SimilarTo: query, K: 5})
+	mcp := episodesMCP(t, cfg, mcpserver.EpisodesInput{SimilarTo: query, K: 5})
+
+	embJSON := canonicalJSON(t, emb)
+	if embJSON != canonicalJSON(t, htp) {
+		t.Errorf("similar: embedded vs HTTP diverge:\n embedded=%s\n     http=%s", embJSON, canonicalJSON(t, htp))
+	}
+	if embJSON != canonicalJSON(t, mcp) {
+		t.Errorf("similar: embedded vs MCP diverge:\n embedded=%s\n      mcp=%s", embJSON, canonicalJSON(t, mcp))
+	}
+
+	// Non-trivially correct: e1 (the embedded, narrated episode) ranks first with a
+	// score; e2 has no narrative vector so does not appear.
+	if len(emb.Episodes) == 0 {
+		t.Fatalf("similar: expected ≥1 episode, got 0")
+	}
+	if emb.Episodes[0].ID != "01EPONEAAAAAAAAAAAAAAAAAAA" {
+		t.Errorf("similar: expected e1 ranked first, got %+v", emb.Episodes)
+	}
+	if emb.Episodes[0].Score <= 0 {
+		t.Errorf("similar: expected a positive similarity score, got %v", emb.Episodes[0].Score)
+	}
+	if emb.Episodes[0].Narrative != "Planned and shipped the launch under a lock." {
+		t.Errorf("similar: e1 narrative not attached: %q", emb.Episodes[0].Narrative)
 	}
 }
 

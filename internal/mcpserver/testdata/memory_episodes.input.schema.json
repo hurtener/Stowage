@@ -18,6 +18,12 @@
     },
     "until": {
       "type": "integer"
+    },
+    "similar_to": {
+      "type": "string"
+    },
+    "k": {
+      "type": "integer"
     }
   },
   "additionalProperties": false

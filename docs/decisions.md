@@ -2031,3 +2031,43 @@ not shipped on intuition.
 **Sequencing.** After Phase 23b (vector-over-narratives) and Phase 24 (causal links)
 — by then the vector machinery and the episode-edge graph exist and threading is
 mostly wiring. Not a v0.1-launch blocker.
+
+## D-082 — Similar-episode contrast ships as a memory_episodes similar_to query; LLM window-synthesis deferred
+
+2026-06-18. Phase 23b (RFC §6b) ships the **similar-episode contrast** half of what
+D-080 deferred — the §6b "retrieve the most similar past episode and contrast
+outcomes" behaviour — and **defers the gateway-synthesized window summary**.
+
+**Capability.** `memory_episodes` gains a `similar_to` (free-text situation) query
+with an optional `k` (default 5). It is backed by a new
+`Retriever.SimilarNarratives` (gateway embed → `vindex.Search` filtered to
+`kind=narrative` → load each hit's `EpisodeID`), wrapped by one `episodes.Similar`
+view core that loads each episode + narrative and stamps the similarity `score`. The
+core all three single-user surfaces call (D-067): `GET /v1/episodes?similar_to=&k=`
+(HTTP), `EpisodesInput.SimilarTo/K` (MCP), `EpisodesRequest.SimilarTo/K` (SDK HTTP +
+embedded). Output adds a per-episode `score` and a top-level `degraded` flag.
+
+**No import cycle.** `episodes.Similar` takes a `NarrativeSearcher` interface that
+`*retrieval.Retriever` satisfies structurally — the episodes view core stays
+gateway-free (P5; retrieval does not import episodes).
+
+**Degraded-safe (D-036).** Gateway/vindex unreachable ⇒ `degraded=true`, empty
+results, **no error** — callers fall back to the deterministic `List`. The default
+list/get/window path is unchanged and remains embedding-free.
+
+**Parity holds despite the gateway.** The `mock` embedder is deterministic, so a
+seeded store yields identical vector rankings across embedded/HTTP/MCP — the
+byte-identical parity test (D-080's anti-drift guard) extends to the `similar_to`
+leg (`TestEpisodesParity_Similar`), seeding the narrative vector into the shared
+store BLOBs so every surface's hnsw index rebuilds the same vector.
+
+**Deferred: LLM window-synthesis.** D-080's other deferred piece — a
+gateway-synthesized cross-episode window summary — is **not** shipped here. The
+deterministic windowed `List` (Phase 23) already returns the §6b structured summary
+("never a raw fragment dump"), so synthesis is the explicitly-*optional* §6b step;
+it adds a `Complete` path of marginal value whose output the mock gateway cannot make
+parity-stable, and it should be pulled on a concrete eval/use-case signal (D-035),
+not shipped on spec.
+
+**No new config knob, no new schema** (read-only; reuses the retrieval gateway +
+vindex).

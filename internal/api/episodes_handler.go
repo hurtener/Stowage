@@ -12,21 +12,23 @@ import (
 
 // episodeViewJSON is one episode + its narrative (mirrors the SDK + MCP shapes).
 type episodeViewJSON struct {
-	ID                string `json:"id"`
-	SessionID         string `json:"session_id"`
-	Title             string `json:"title"`
-	Status            string `json:"status"`
-	Outcome           string `json:"outcome,omitempty"`
-	StartedAt         int64  `json:"started_at"`
-	EndedAt           int64  `json:"ended_at"`
-	NarrativeMemoryID string `json:"narrative_memory_id,omitempty"`
-	Narrative         string `json:"narrative,omitempty"`
+	ID                string  `json:"id"`
+	SessionID         string  `json:"session_id"`
+	Title             string  `json:"title"`
+	Status            string  `json:"status"`
+	Outcome           string  `json:"outcome,omitempty"`
+	StartedAt         int64   `json:"started_at"`
+	EndedAt           int64   `json:"ended_at"`
+	NarrativeMemoryID string  `json:"narrative_memory_id,omitempty"`
+	Narrative         string  `json:"narrative,omitempty"`
+	Score             float64 `json:"score,omitempty"`
 }
 
 // episodesResponseJSON is the GET /v1/episodes envelope.
 type episodesResponseJSON struct {
 	Episodes   []episodeViewJSON `json:"episodes"`
 	NextCursor string            `json:"next_cursor,omitempty"`
+	Degraded   bool              `json:"degraded,omitempty"`
 }
 
 // handleEpisodes implements GET /v1/episodes (RFC §6b, D-080): the deterministic,
@@ -58,6 +60,27 @@ func (s *Server) handleEpisodes(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// similar_to: vector-rank the scope's episodes by narrative similarity (§6b,
+	// D-082). Degrades to an empty+degraded envelope when the gateway is down.
+	if query := q.Get("similar_to"); query != "" {
+		if s.retriever == nil {
+			respondJSON(w, http.StatusOK, episodesResponseJSON{Episodes: []episodeViewJSON{}, Degraded: true})
+			return
+		}
+		views, degraded, err := episodes.Similar(r.Context(), s.st, s.retriever, scope, query, atoiDefault(q.Get("k"), 0))
+		if err != nil {
+			s.log.ErrorContext(r.Context(), "api: episodes: similar failed", "err", err)
+			respondJSON(w, http.StatusInternalServerError, errBody("episode similar failed"))
+			return
+		}
+		out := episodesResponseJSON{Episodes: make([]episodeViewJSON, 0, len(views)), Degraded: degraded}
+		for _, v := range views {
+			out.Episodes = append(out.Episodes, episodeToJSON(v))
+		}
+		respondJSON(w, http.StatusOK, out)
+		return
+	}
+
 	res, err := episodes.List(r.Context(), s.st, scope, episodes.ListOptions{
 		Limit:     atoiDefault(q.Get("limit"), 0),
 		Cursor:    q.Get("cursor"),
@@ -77,6 +100,7 @@ func episodeToJSON(v episodes.EpisodeView) episodeViewJSON {
 	return episodeViewJSON{
 		ID: v.ID, SessionID: v.SessionID, Title: v.Title, Status: v.Status, Outcome: v.Outcome,
 		StartedAt: v.StartedAt, EndedAt: v.EndedAt, NarrativeMemoryID: v.NarrativeMemoryID, Narrative: v.Narrative,
+		Score: v.Score,
 	}
 }
 

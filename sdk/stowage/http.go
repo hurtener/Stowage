@@ -255,6 +255,12 @@ func (c *httpClient) Episodes(ctx context.Context, req EpisodesRequest) (Episode
 	if req.Until > 0 {
 		v.Set("until", strconv.FormatInt(req.Until, 10))
 	}
+	if req.SimilarTo != "" {
+		v.Set("similar_to", req.SimilarTo)
+	}
+	if req.K > 0 {
+		v.Set("k", strconv.Itoa(req.K))
+	}
 	path := "/v1/episodes"
 	if enc := v.Encode(); enc != "" {
 		path += "?" + enc

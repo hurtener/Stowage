@@ -23,7 +23,44 @@ type EpisodeView struct {
 	StartedAt         int64
 	EndedAt           int64
 	NarrativeMemoryID string
-	Narrative         string // the narrative memory's content ("" if not yet narrated)
+	Narrative         string  // the narrative memory's content ("" if not yet narrated)
+	Score             float64 // similarity score (similar-episode path only; Phase 23b)
+}
+
+// NarrativeSearcher finds episodes whose narrative is most similar to a query
+// (satisfied by *retrieval.Retriever). Returns parallel episode-id + score slices,
+// rank-ordered, with degraded=true (no error) when the gateway/vindex can't serve.
+type NarrativeSearcher interface {
+	SimilarNarratives(ctx context.Context, scope identity.Scope, query string, k int) (ids []string, scores []float64, degraded bool, err error)
+}
+
+// Similar returns the scope's episodes most similar to query (Phase 23b, D-082),
+// rank-ordered with their similarity Score + narrative — the §6b contrast material.
+// degraded mirrors the searcher (callers fall back to the deterministic list).
+func Similar(ctx context.Context, st store.Store, searcher NarrativeSearcher, scope identity.Scope, query string, k int) ([]EpisodeView, bool, error) {
+	ids, scores, degraded, err := searcher.SimilarNarratives(ctx, scope, query, k)
+	if err != nil {
+		return nil, degraded, fmt.Errorf("episodes: similar: %w", err)
+	}
+	views := make([]EpisodeView, 0, len(ids))
+	for i, id := range ids {
+		ep, gerr := st.Episodes().GetEpisode(ctx, scope, id)
+		if errors.Is(gerr, store.ErrNotFound) {
+			continue // episode gone — skip, preserve rank of the rest
+		}
+		if gerr != nil {
+			return nil, degraded, fmt.Errorf("episodes: similar load %s: %w", id, gerr)
+		}
+		v, terr := toView(ctx, st, scope, *ep)
+		if terr != nil {
+			return nil, degraded, terr
+		}
+		if i < len(scores) { // defensive: never index out of a misbehaving searcher's scores (no panic across the core boundary)
+			v.Score = scores[i]
+		}
+		views = append(views, v)
+	}
+	return views, degraded, nil
 }
 
 // ListOptions filters/paginates an episode list.
