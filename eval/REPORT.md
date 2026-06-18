@@ -12,19 +12,84 @@
 
 ## Metric definition
 
-`answer_context_hit`: the gold answer string appears (case-insensitive) in
-the content of the retrieved memories. Short answers (< 4 runes) must match
-on token boundaries with joining-punctuation handling, so "2" cannot match
-inside "f/2.8". This is a RETRIEVAL-ONLY metric over the memory abstraction
-layer: no reader model, no LLM judge, no drill-down to verbatim records.
+Two metrics, by design (Phase 20, D-076):
 
-**It is NOT comparable to published LongMemEval accuracy figures** (the
-90%+ range reported by competitors), which measure end-to-end QA accuracy:
-a reader LLM answers from retrieved context and an LLM judge scores the
-answer. Several LongMemEval question classes (abstention, preference,
-temporal composites) have gold answers that are full sentences which can
-never substring-match retrieved context on ANY system — the like-for-like
-comparison requires the Phase 20 judged-QA mode.
+`answer_context_hit` — the **deterministic, LLM-free CI metric**: the gold answer
+appears in the content of the retrieved memories (case-insensitive). Short answers
+(< 4 runes) match on token boundaries with joining-punctuation handling, so "2"
+cannot match inside "f/2.8". Phase 20 added deterministic normalization:
+number-word equivalence both directions ("five"↔"5", boundary-matched so "8" never
+matches inside "weight") and either-direction stopword-tolerant phrase match
+("under my bed"↔"under the bed"). This is a RETRIEVAL-ONLY proxy: no reader, no
+judge. **It is NOT comparable to published LongMemEval accuracy figures** — several
+question classes (abstention, preference, temporal composites) have full-sentence
+gold answers that can never substring-match on ANY system.
+
+`answer_quality` — the **judged end-to-end QA metric**, comparable to competitors'
+published accuracy. A reader LLM answers from the retrieved context; an LLM judge
+grades the answer against the gold answer semantically (correct = 1, partial = ½,
+incorrect = 0); `answer_quality = (correct + ½·partial) / N_judged`. The judge call
+is JSON-schema-constrained through the gateway seam (RFC §10). Opt-in
+(`STOWAGE_EVAL_JUDGE=1`), full-mode only, operator-run — **never in CI**.
+
+## Judged-QA result (2026-06-17, D-076) — the headline number
+
+First judged run with the Phase 20 reader+judge path. Full bifrost/OpenRouter
+stack (D-075): memory formation + reader + judge on `inception/mercury-2`, embed
+`perplexity/pplx-embed-v1-0.6b` @ 1024d, rerank `cohere/rerank-4-fast`
+(precise profile). LongMemEval **oracle** (cleaned), n=10.
+
+| Metric | Value | Notes |
+|---|---|---|
+| **`answer_quality` (judged)** | **0.556 (5/9)** | reader+judge; the competitor-comparable axis |
+| `answer_context_hit` (normalized, retrieval-only) | 0.20 (2/10) | deterministic proxy; understates quality |
+| judged_count | 9/10 | 1 question dropped on a transient empty reader response (see below) |
+| p50 / p95 retrieve latency | 536 ms / 2293 ms | local dev box, not the SLO rig |
+
+Run validity: pipeline fully quiescent before scoring (87 active memories from 10
+conversations); Probe passed (fail-fast guard armed). Results:
+`eval/results/longmemeval-n10-20260617T230629Z.jsonl`.
+
+**The judged metric more than doubles the retrieval-only number (0.556 vs 0.20),
+and the judge is discriminating — not rubber-stamping.** Per-question:
+
+| Question | gold | reader answer | verdict | why the substring metric missed it |
+|---|---|---|---|---|
+| 001be529 | over a year | more than a year | ✅ correct | paraphrase |
+| 0100672e | $12 | $12 per coffee mug | ✅ correct | gold not verbatim in a memory |
+| 01493427 | 25 | 25 new postcards | ✅ correct | (also a substring hit) |
+| 06db6396 | 5 | five | ✅ correct | number form — now also a normalized hit |
+| 06f04340 | (preference: homegrown-produce dinners) | dishes using your cherry tomatoes, basil, mint… | ✅ correct | full-sentence gold; synthesis answer |
+| 00ca467f | 2 | One | ❌ incorrect | genuine reasoning error (miscount) |
+| 031748ae | (temporal: led 4, now 5) | partial/unspecified | ❌ incorrect | genuine — composite not fully answered |
+| 031748ae_abs | (abstention) | "You lead four engineers." | ❌ incorrect | genuine — failed to abstain |
+| 07741c44 | under my bed | In a shoe rack. | ❌ incorrect | genuine — wrong location |
+| 06878be2 | (preference: Sony accessories) | (empty) | — not judged | transient empty reader response |
+
+The 4 ❌ are real failures (a miscount, a missed abstention, a temporal composite,
+a wrong retrieval/read) — the judge correctly rejects them. The 1 unjudged question
+is a transient `nil content in response message` from the reader model (1
+consecutive; the 5-error fail-fast did not trip); a re-run would judge it.
+
+### Comparability + competitor reference points (NOT yet apples-to-apples)
+
+This is an **n=10 oracle** run; published competitor LongMemEval accuracy is on the
+**`longmemeval_s` distractor haystack (~500 questions, ~40–50 sessions each)**. The
+two are not directly comparable — a larger `_s` run is the remaining operator
+follow-up before claiming a head-to-head. Reference figures (end-to-end QA accuracy,
+from each project's published materials; verify before quoting in launch copy):
+
+| System | LongMemEval (published) | Notes |
+|---|---|---|
+| Stowage (this run) | **0.556 judged** | n=10 **oracle**, mercury-2 reader+judge — preliminary |
+| mempalace | ~98.4% R@5 (retrieval) | retrieval recall, not end-to-end QA |
+| Mem0 / Zep / Letta / Engram | (varies; cite per source) | end-to-end QA on `_s`; pull exact figures with the `_s` run |
+
+**Honest read:** 0.556 on a cheap reader (mercury-2) over oracle context is an
+encouraging first judged signal — and the gap to `answer_context_hit` confirms the
+0/10–0.20 retrieval-only numbers were a metric artifact, exactly the Phase 20
+thesis. It is **not** a launch claim yet: the like-for-like `_s` run (and likely a
+stronger judge/reader) is required for the competitor table.
 
 ## Valid baseline (2026-06-12, run #6)
 
