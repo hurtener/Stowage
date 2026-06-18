@@ -1,0 +1,59 @@
+{
+  "type": "object",
+  "properties": {
+    "episodes": {
+      "type": [
+        "null",
+        "array"
+      ],
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "outcome": {
+            "type": "string"
+          },
+          "started_at": {
+            "type": "integer"
+          },
+          "ended_at": {
+            "type": "integer"
+          },
+          "narrative_memory_id": {
+            "type": "string"
+          },
+          "narrative": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "session_id",
+          "title",
+          "status",
+          "started_at",
+          "ended_at"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "next_cursor": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "episodes"
+  ],
+  "additionalProperties": false
+}

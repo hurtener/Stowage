@@ -120,7 +120,7 @@ else
   NAMES=""
 fi
 
-WANT=13
+WANT=14
 if [ "$TOOL_COUNT" -eq "$WANT" ]; then
   ok "tools/list returned exactly $WANT tools (AC-1)"
 else
@@ -128,12 +128,13 @@ else
   echo "tools/list response: $TOOLS_LINE" >&2
 fi
 
-# Verify the 13 expected names (only when jq is available). Sorted to match the
-# `sort` applied to NAMES above.
+# Verify the expected names (only when jq is available). Sorted to match the
+# `sort` applied to NAMES above. memory_episodes added in Phase 23 (D-080).
 if command -v jq &>/dev/null && [ -n "$NAMES" ]; then
   EXPECTED="memory_assert
 memory_branch
 memory_drilldown
+memory_episodes
 memory_feedback
 memory_flush
 memory_get

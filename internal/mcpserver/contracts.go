@@ -1,7 +1,7 @@
 // Package mcpserver implements the Stowage MCP tool surface over the Dockyard
 // runtime library (RFC §9.2, D-015, D-018, D-020, D-061).
 //
-// Thirteen typed tools mirror the HTTP v1 surfaces: the original seven, the
+// Fourteen typed tools mirror the HTTP v1 surfaces: the original seven, the
 // D-070 reversibility trio (memory_get, memory_rollback, memory_resolve), and the
 // D-071 Tier control verbs (memory_flush, memory_branch, and the Tier-B
 // memory_grants). Tool handlers share the same store/service core code the HTTP
@@ -153,6 +153,37 @@ type PlaybookBudget struct {
 type PlaybookOutput struct {
 	Sections []PlaybookSection `json:"sections"`
 	Budget   PlaybookBudget    `json:"budget"`
+}
+
+// EpisodesInput is the memory_episodes tool input (RFC §6b, D-080). ID returns one
+// episode; otherwise a most-recent-first list narrowed by SessionID + the
+// [From,Until] time window (unix millis; 0 = unbounded). Limit/Cursor paginate.
+type EpisodesInput struct {
+	ID        string `json:"id,omitempty"`
+	Limit     int    `json:"limit,omitempty"`
+	Cursor    string `json:"cursor,omitempty"`
+	SessionID string `json:"session_id,omitempty"`
+	From      int64  `json:"from,omitempty"`
+	Until     int64  `json:"until,omitempty"`
+}
+
+// EpisodeItem is one episode + its narrative (byte-identical to the HTTP/SDK shape).
+type EpisodeItem struct {
+	ID                string `json:"id"`
+	SessionID         string `json:"session_id"`
+	Title             string `json:"title"`
+	Status            string `json:"status"`
+	Outcome           string `json:"outcome,omitempty"`
+	StartedAt         int64  `json:"started_at"`
+	EndedAt           int64  `json:"ended_at"`
+	NarrativeMemoryID string `json:"narrative_memory_id,omitempty"`
+	Narrative         string `json:"narrative,omitempty"`
+}
+
+// EpisodesOutput is the memory_episodes tool output.
+type EpisodesOutput struct {
+	Episodes   []EpisodeItem `json:"episodes"`
+	NextCursor string        `json:"next_cursor,omitempty"`
 }
 
 // ─── memory_drilldown ────────────────────────────────────────────────────────

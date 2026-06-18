@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"time"
 
 	"github.com/hurtener/stowage/internal/reconcile"
@@ -229,6 +230,38 @@ func (c *httpClient) Playbook(ctx context.Context, req PlaybookRequest) (Playboo
 	var resp PlaybookResponse
 	if err := c.do(ctx, http.MethodGet, path, nil, &resp); err != nil {
 		return PlaybookResponse{}, err
+	}
+	return resp, nil
+}
+
+// Episodes implements Client via GET /v1/episodes (D-080).
+func (c *httpClient) Episodes(ctx context.Context, req EpisodesRequest) (EpisodesResponse, error) {
+	v := url.Values{}
+	if req.ID != "" {
+		v.Set("id", req.ID)
+	}
+	if req.Limit > 0 {
+		v.Set("limit", strconv.Itoa(req.Limit))
+	}
+	if req.Cursor != "" {
+		v.Set("cursor", req.Cursor)
+	}
+	if req.SessionID != "" {
+		v.Set("session_id", req.SessionID)
+	}
+	if req.From > 0 {
+		v.Set("from", strconv.FormatInt(req.From, 10))
+	}
+	if req.Until > 0 {
+		v.Set("until", strconv.FormatInt(req.Until, 10))
+	}
+	path := "/v1/episodes"
+	if enc := v.Encode(); enc != "" {
+		path += "?" + enc
+	}
+	var resp EpisodesResponse
+	if err := c.do(ctx, http.MethodGet, path, nil, &resp); err != nil {
+		return EpisodesResponse{}, err
 	}
 	return resp, nil
 }

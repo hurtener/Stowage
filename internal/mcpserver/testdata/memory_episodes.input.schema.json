@@ -1,0 +1,24 @@
+{
+  "type": "object",
+  "properties": {
+    "id": {
+      "type": "string"
+    },
+    "limit": {
+      "type": "integer"
+    },
+    "cursor": {
+      "type": "string"
+    },
+    "session_id": {
+      "type": "string"
+    },
+    "from": {
+      "type": "integer"
+    },
+    "until": {
+      "type": "integer"
+    }
+  },
+  "additionalProperties": false
+}

@@ -93,6 +93,10 @@ func (f *fakeClient) GetMemory(_ context.Context, id string) (stowage.GetMemoryR
 	return stowage.GetMemoryResponse{Memory: stowage.Memory{ID: id}}, nil
 }
 
+func (f *fakeClient) Episodes(_ context.Context, _ stowage.EpisodesRequest) (stowage.EpisodesResponse, error) {
+	return stowage.EpisodesResponse{Episodes: []stowage.Episode{{ID: "e1", SessionID: "s1", Title: "fake", Status: "closed"}}}, nil
+}
+
 func (f *fakeClient) Rollback(_ context.Context, req stowage.RollbackRequest) (stowage.Memory, error) {
 	return stowage.Memory{ID: req.MemoryID}, nil
 }

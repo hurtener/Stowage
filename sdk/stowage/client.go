@@ -40,6 +40,11 @@ type Client interface {
 	// only. SessionID, when set, narrows assembly to one session.
 	Playbook(ctx context.Context, req PlaybookRequest) (PlaybookResponse, error)
 
+	// Episodes reads the client's episodes + their narratives (RFC §6b, D-080):
+	// most-recent-first list, or one episode when ID is set, optionally narrowed by
+	// SessionID and the [From,Until] time window. Deterministic and LLM-free.
+	Episodes(ctx context.Context, req EpisodesRequest) (EpisodesResponse, error)
+
 	// GetMemory reads a memory, its junctions, and its supersedes chain within
 	// the client's scope (D-070). Returns an error when the memory is absent.
 	GetMemory(ctx context.Context, id string) (GetMemoryResponse, error)
