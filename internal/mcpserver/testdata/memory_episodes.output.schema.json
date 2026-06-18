@@ -35,6 +35,9 @@
           },
           "narrative": {
             "type": "string"
+          },
+          "score": {
+            "type": "number"
           }
         },
         "required": [
@@ -50,6 +53,9 @@
     },
     "next_cursor": {
       "type": "string"
+    },
+    "degraded": {
+      "type": "boolean"
     }
   },
   "required": [

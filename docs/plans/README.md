@@ -127,7 +127,7 @@ match table slots 19–21.
 |---|-------|------|-----|
 | 22 | Episodes & narratives | boundary-detection sweep, narrative construction, episode wiring | §6b |
 | 23 | Episodic retrieval | `memory_episodes` (list/get/window) across {SDK,HTTP,MCP}; deterministic | §6b |
-| 23b | Similar-episode contrast + synthesis | vector-over-narratives nearest-episode contrast; optional gateway-synthesized window summary (deferred from 23 — D-080) | §6b |
+| 23b | Similar-episode contrast | `memory_episodes` `similar_to` (vector-over-narratives nearest-episode contrast) across {SDK,HTTP,MCP}, degraded-safe — D-082. **LLM window-synthesis deferred** (deterministic window list already serves the §6b structured summary; pulled on an eval signal) | §6b |
 | 24 | Causal links | inferred `caused_by`/`led_to` over narratives, "why" traversal | §5.6, §6b |
 | 24b | Episode threading (PROPOSED) | group session-episodes into cross-session **arcs** (a "living episode") via narrative-vector clustering + entity/temporal overlap; deterministic grouping, optional arc summary. Pulled only on an episodic-eval win — **D-081 (proposed)** | §6b |
 

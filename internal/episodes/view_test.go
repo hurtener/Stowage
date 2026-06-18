@@ -94,3 +94,62 @@ func TestList_Get_Window(t *testing.T) {
 		t.Errorf("cross-scope leak: %d", len(iso.Episodes))
 	}
 }
+
+// fakeSearcher is a deterministic NarrativeSearcher for the Similar core tests.
+type fakeSearcher struct {
+	ids      []string
+	scores   []float64
+	degraded bool
+	err      error
+}
+
+func (f fakeSearcher) SimilarNarratives(_ context.Context, _ identity.Scope, _ string, _ int) ([]string, []float64, bool, error) {
+	return f.ids, f.scores, f.degraded, f.err
+}
+
+func TestSimilar(t *testing.T) {
+	ctx := context.Background()
+	st := openStore(t)
+	scope := identity.Scope{Tenant: "vt"}
+
+	mk := func(id, sess, title string, start, end int64) store.Episode {
+		return store.Episode{ID: id, SessionID: sess, Title: title, Status: "closed", Outcome: "success", StartedAt: start, EndedAt: end, CreatedAt: start, UpdatedAt: start}
+	}
+	for _, e := range []store.Episode{mk("e1", "s1", "T1", 100, 200), mk("e2", "s2", "T2", 300, 400)} {
+		if err := st.Episodes().CreateEpisode(ctx, scope, e); err != nil {
+			t.Fatalf("create %s: %v", e.ID, err)
+		}
+	}
+
+	// Rank preserved, scores stamped, missing episode skipped (preserving rank).
+	views, degraded, err := Similar(ctx, st, fakeSearcher{
+		ids:    []string{"e2", "gone", "e1"},
+		scores: []float64{0.9, 0.5, 0.3},
+	}, scope, "a situation", 5)
+	if err != nil {
+		t.Fatalf("Similar: %v", err)
+	}
+	if degraded {
+		t.Errorf("degraded should be false")
+	}
+	if len(views) != 2 {
+		t.Fatalf("want 2 views (missing skipped), got %d: %+v", len(views), views)
+	}
+	if views[0].ID != "e2" || views[0].Score != 0.9 {
+		t.Errorf("view[0] wrong: %+v", views[0])
+	}
+	if views[1].ID != "e1" || views[1].Score != 0.3 {
+		t.Errorf("view[1] wrong: %+v", views[1])
+	}
+
+	// Degraded passthrough: searcher degraded ⇒ empty + degraded, no error.
+	dv, deg, err := Similar(ctx, st, fakeSearcher{degraded: true}, scope, "x", 5)
+	if err != nil || !deg || len(dv) != 0 {
+		t.Errorf("degraded passthrough wrong: views=%d deg=%v err=%v", len(dv), deg, err)
+	}
+
+	// Searcher error ⇒ propagated.
+	if _, _, err := Similar(ctx, st, fakeSearcher{err: errors.New("boom")}, scope, "x", 5); err == nil {
+		t.Errorf("expected searcher error to propagate")
+	}
+}

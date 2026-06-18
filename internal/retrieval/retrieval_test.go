@@ -1535,3 +1535,106 @@ func TestAdversarialCrossScopeCache(t *testing.T) {
 		}
 	}
 }
+
+// --- Phase 23b: SimilarNarratives (similar-episode contrast, D-082) ----------
+
+// insertNarrative commits a kind="narrative" memory linked to episodeID and
+// returns its memory id (mirrors insertMemory but sets EpisodeID + kind).
+func insertNarrative(t *testing.T, st store.Store, scope identity.Scope, content, episodeID string) string {
+	t.Helper()
+	id := newID()
+	ts := time.Now().UnixMilli()
+	cs := store.CommitSet{
+		Action: store.ActionAdd,
+		Memory: store.Memory{
+			ID: id, Kind: "narrative", Content: content, Context: "ctx",
+			Status: "active", Confidence: 0.8, TrustSource: "episodic",
+			Stability: 1.0, ContentHash: newID(), EpisodeID: episodeID,
+			CreatedAt: ts, UpdatedAt: ts,
+		},
+		Events: []store.Event{{ID: newID(), Type: "memory.added", SubjectID: id, Payload: `{}`}},
+	}
+	if err := st.Memories().Commit(context.Background(), scope, cs); err != nil {
+		t.Fatalf("insertNarrative: %v", err)
+	}
+	return id
+}
+
+func TestSimilarNarratives(t *testing.T) {
+	t.Parallel()
+	st := openStore(t)
+	gw := openMockGateway(t, 4)
+	vi := vindex.New(st.Vectors(), 4, "test")
+	r := retrieval.New(st.Memories(), st.Records(), vi, gw, slog.New(slog.NewTextHandler(os.Stderr, nil)))
+
+	scope := identity.Scope{Tenant: "tenant-similar"}
+	ctx := context.Background()
+
+	// Two narratives linked to episodes; embed + upsert each (mock: same text → same vec).
+	queryText := "migrating the auth service to the new gateway"
+	mA := insertNarrative(t, st, scope, queryText, "ep-A")
+	mB := insertNarrative(t, st, scope, "tuning the database connection pool", "ep-B")
+	for _, p := range []struct{ id, text string }{{mA, queryText}, {mB, "tuning the database connection pool"}} {
+		emb, err := gw.Embed(ctx, gateway.EmbedRequest{Inputs: []string{p.text}})
+		if err != nil {
+			t.Fatalf("embed: %v", err)
+		}
+		if err := vi.Upsert(ctx, scope, p.id, emb.Vectors[0]); err != nil {
+			t.Fatalf("upsert: %v", err)
+		}
+	}
+	// A non-narrative memory (kind=fact) that IS episode-linked must be excluded by
+	// the kind filter — if the filter regressed, "ep-FACT" would leak into results.
+	factID := newID()
+	if err := st.Memories().Commit(ctx, scope, store.CommitSet{
+		Action: store.ActionAdd,
+		Memory: store.Memory{
+			ID: factID, Kind: "fact", Content: queryText, Context: "ctx",
+			Status: "active", Confidence: 0.8, TrustSource: "llm_extracted",
+			Stability: 1.0, ContentHash: newID(), EpisodeID: "ep-FACT",
+			CreatedAt: time.Now().UnixMilli(), UpdatedAt: time.Now().UnixMilli(),
+		},
+		Events: []store.Event{{ID: newID(), Type: "memory.added", SubjectID: factID, Payload: `{}`}},
+	}); err != nil {
+		t.Fatalf("insert fact: %v", err)
+	}
+	embF, _ := gw.Embed(ctx, gateway.EmbedRequest{Inputs: []string{queryText}})
+	_ = vi.Upsert(ctx, scope, factID, embF.Vectors[0])
+
+	ids, scores, degraded, err := r.SimilarNarratives(ctx, scope, queryText, 5)
+	if err != nil {
+		t.Fatalf("SimilarNarratives: %v", err)
+	}
+	if degraded {
+		t.Fatalf("degraded should be false with a live gateway")
+	}
+	if len(ids) == 0 || ids[0] != "ep-A" {
+		t.Fatalf("expected ep-A ranked first, got ids=%v scores=%v", ids, scores)
+	}
+	if len(ids) != len(scores) {
+		t.Fatalf("ids/scores length mismatch: %d vs %d", len(ids), len(scores))
+	}
+	// The fact is kind=fact (not narrative), so the kind filter excludes it: its
+	// "ep-FACT" link must never surface, and no empty id may leak.
+	for _, id := range ids {
+		if id == "" {
+			t.Errorf("empty episode id leaked into results")
+		}
+		if id == "ep-FACT" {
+			t.Errorf("kind filter regressed: a kind=fact memory's episode leaked into similar-narrative results")
+		}
+	}
+
+	// Degraded: broken gateway ⇒ degraded=true, empty, no error.
+	rDown := retrieval.New(st.Memories(), st.Records(), vi, &brokenGateway{}, slog.New(slog.NewTextHandler(os.Stderr, nil)))
+	dIDs, _, deg, err := rDown.SimilarNarratives(ctx, scope, queryText, 5)
+	if err != nil || !deg || len(dIDs) != 0 {
+		t.Errorf("degraded path wrong: ids=%v deg=%v err=%v", dIDs, deg, err)
+	}
+
+	// k<=0 defaults; cross-scope isolation: another tenant sees nothing.
+	oIDs, _, _, _ := r.SimilarNarratives(ctx, identity.Scope{Tenant: "other"}, queryText, 0)
+	if len(oIDs) != 0 {
+		t.Errorf("cross-scope leak: %v", oIDs)
+	}
+}

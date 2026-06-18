@@ -12,16 +12,18 @@ import (
 
 type episodesBody struct {
 	Episodes []struct {
-		ID                string `json:"id"`
-		SessionID         string `json:"session_id"`
-		Title             string `json:"title"`
-		Status            string `json:"status"`
-		Outcome           string `json:"outcome"`
-		StartedAt         int64  `json:"started_at"`
-		NarrativeMemoryID string `json:"narrative_memory_id"`
-		Narrative         string `json:"narrative"`
+		ID                string  `json:"id"`
+		SessionID         string  `json:"session_id"`
+		Title             string  `json:"title"`
+		Status            string  `json:"status"`
+		Outcome           string  `json:"outcome"`
+		StartedAt         int64   `json:"started_at"`
+		NarrativeMemoryID string  `json:"narrative_memory_id"`
+		Narrative         string  `json:"narrative"`
+		Score             float64 `json:"score"`
 	} `json:"episodes"`
 	NextCursor string `json:"next_cursor"`
+	Degraded   bool   `json:"degraded"`
 }
 
 func seedEpisodesAPI(t *testing.T, st store.Store, tenant string) {
@@ -108,5 +110,48 @@ func TestEpisodes_GetByID_Window_Missing(t *testing.T) {
 	_ = json.NewDecoder(r3.Body).Decode(&b3)
 	if r3.StatusCode != http.StatusOK || len(b3.Episodes) != 0 {
 		t.Errorf("missing id: want 200 + empty list, got %d / %d", r3.StatusCode, len(b3.Episodes))
+	}
+}
+
+// TestEpisodes_SimilarNoRetriever proves ?similar_to= returns 200 empty+degraded
+// when no retriever is wired (graceful degradation, D-036/D-082).
+func TestEpisodes_SimilarNoRetriever(t *testing.T) {
+	t.Parallel()
+	_, ts, st := newTopicsTestServer(t)
+	tenant := "tenant-episodes-simnr"
+	_, agentKey := mustCreateAgentKey(t, st, tenant)
+	seedEpisodesAPI(t, st, tenant)
+
+	resp, err := doRequest(t, http.MethodGet, ts.URL+"/v1/episodes?similar_to=launch&k=3", nil, agentKey)
+	if err != nil {
+		t.Fatalf("similar (no retriever): %v", err)
+	}
+	defer drainClose(resp.Body)
+	var body episodesBody
+	_ = json.NewDecoder(resp.Body).Decode(&body)
+	if resp.StatusCode != http.StatusOK || !body.Degraded || len(body.Episodes) != 0 {
+		t.Errorf("no-retriever similar: want 200+degraded+empty, got %d deg=%v n=%d", resp.StatusCode, body.Degraded, len(body.Episodes))
+	}
+}
+
+// TestEpisodes_SimilarDegraded proves ?similar_to= returns 200 empty+degraded when
+// the retriever's gateway is down (nil gateway → SimilarNarratives degrades; D-082).
+func TestEpisodes_SimilarDegraded(t *testing.T) {
+	t.Parallel()
+	srv, ts, st := newTopicsTestServer(t)
+	tenant := "tenant-episodes-simdeg"
+	_, agentKey := mustCreateAgentKey(t, st, tenant)
+	seedEpisodesAPI(t, st, tenant)
+	setRetriever(t, srv, st) // nil-gateway retriever → degraded
+
+	resp, err := doRequest(t, http.MethodGet, ts.URL+"/v1/episodes?similar_to=the+launch+story", nil, agentKey)
+	if err != nil {
+		t.Fatalf("similar (degraded): %v", err)
+	}
+	defer drainClose(resp.Body)
+	var body episodesBody
+	_ = json.NewDecoder(resp.Body).Decode(&body)
+	if resp.StatusCode != http.StatusOK || !body.Degraded || len(body.Episodes) != 0 {
+		t.Errorf("degraded similar: want 200+degraded+empty, got %d deg=%v n=%d", resp.StatusCode, body.Degraded, len(body.Episodes))
 	}
 }

@@ -555,6 +555,22 @@ func (c *embeddedClient) Episodes(ctx context.Context, req EpisodesRequest) (Epi
 		}
 		return EpisodesResponse{Episodes: []Episode{episodeToSDK(*v)}}, nil
 	}
+	// similar_to: vector-rank the scope's episodes by narrative similarity (§6b,
+	// D-082). Degrades to an empty+degraded envelope when the gateway is down.
+	if req.SimilarTo != "" {
+		if c.stack.Retriever == nil {
+			return EpisodesResponse{Episodes: []Episode{}, Degraded: true}, nil
+		}
+		views, degraded, err := episodes.Similar(ctx, c.stack.Store, c.stack.Retriever, c.scope, req.SimilarTo, req.K)
+		if err != nil {
+			return EpisodesResponse{}, fmt.Errorf("sdk: episodes similar: %w", err)
+		}
+		out := EpisodesResponse{Episodes: make([]Episode, 0, len(views)), Degraded: degraded}
+		for _, v := range views {
+			out.Episodes = append(out.Episodes, episodeToSDK(v))
+		}
+		return out, nil
+	}
 	res, err := episodes.List(ctx, c.stack.Store, c.scope, episodes.ListOptions{
 		Limit: req.Limit, Cursor: req.Cursor, SessionID: req.SessionID, From: req.From, Until: req.Until,
 	})
@@ -572,6 +588,7 @@ func episodeToSDK(v episodes.EpisodeView) Episode {
 	return Episode{
 		ID: v.ID, SessionID: v.SessionID, Title: v.Title, Status: v.Status, Outcome: v.Outcome,
 		StartedAt: v.StartedAt, EndedAt: v.EndedAt, NarrativeMemoryID: v.NarrativeMemoryID, Narrative: v.Narrative,
+		Score: v.Score,
 	}
 }
 

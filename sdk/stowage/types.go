@@ -401,23 +401,29 @@ type EpisodesRequest struct {
 	SessionID string
 	From      int64
 	Until     int64
+	// SimilarTo, when set, vector-ranks the scope's episodes by narrative
+	// similarity to this text (§6b contrast, Phase 23b); K caps the results.
+	SimilarTo string
+	K         int
 }
 
 // Episode is one episode + its narrative.
 type Episode struct {
-	ID                string `json:"id"`
-	SessionID         string `json:"session_id"`
-	Title             string `json:"title"`
-	Status            string `json:"status"`
-	Outcome           string `json:"outcome,omitempty"`
-	StartedAt         int64  `json:"started_at"`
-	EndedAt           int64  `json:"ended_at"`
-	NarrativeMemoryID string `json:"narrative_memory_id,omitempty"`
-	Narrative         string `json:"narrative,omitempty"`
+	ID                string  `json:"id"`
+	SessionID         string  `json:"session_id"`
+	Title             string  `json:"title"`
+	Status            string  `json:"status"`
+	Outcome           string  `json:"outcome,omitempty"`
+	StartedAt         int64   `json:"started_at"`
+	EndedAt           int64   `json:"ended_at"`
+	NarrativeMemoryID string  `json:"narrative_memory_id,omitempty"`
+	Narrative         string  `json:"narrative,omitempty"`
+	Score             float64 `json:"score,omitempty"`
 }
 
 // EpisodesResponse is the episodic-retrieval envelope.
 type EpisodesResponse struct {
 	Episodes   []Episode `json:"episodes"`
 	NextCursor string    `json:"next_cursor,omitempty"`
+	Degraded   bool      `json:"degraded,omitempty"`
 }
