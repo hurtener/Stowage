@@ -132,6 +132,12 @@ New terms land here in the same PR that introduces them (CLAUDE.md §14).
   clusters recent narrated episodes into arcs by narrative content word-set overlap ∧
   temporal proximity ∧ `(project,user)` continuity (Phase 24b, D-081); enablement is
   eval-gated.
+- **Claim verification** — the schema-constrained gateway entailment check that a
+  claim is supported by its cited memories; the `memory_verify` capability
+  (`POST /v1/verify`), degraded-safe to "unclear" (Phase 25, §6c, D-084).
+- **Review queue** — the scope-level hold for `pending_review` memories (uncited agent
+  assertions): listed and approved (→active) or rejected (→quarantined) via
+  `memory_review` (Phase 25, D-084).
 - **Episode contrast** — surfacing the most similar past episode and comparing
   outcomes against the current situation.
 - **Similar-episode contrast** — ranking the scope's past episodes by

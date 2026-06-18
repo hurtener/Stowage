@@ -239,6 +239,52 @@ type CausalOutput struct {
 	Truncated bool             `json:"truncated,omitempty"`
 }
 
+// ─── memory_verify (D-084) ─────────────────────────────────────────────────────
+
+// VerifyInput is the memory_verify tool input (mirrors HTTP POST /v1/verify): a claim
+// + the citation handles (injection IDs) it was drafted from.
+type VerifyInput struct {
+	Claim     string   `json:"claim"`
+	Citations []string `json:"citations,omitempty"`
+}
+
+// VerifyOutput is the memory_verify tool output: the entailment verdict.
+type VerifyOutput struct {
+	Verdict     string  `json:"verdict"`
+	Confidence  float64 `json:"confidence"`
+	Explanation string  `json:"explanation,omitempty"`
+	Degraded    bool    `json:"degraded,omitempty"`
+}
+
+// ─── memory_review (D-084) ─────────────────────────────────────────────────────
+
+// ReviewInput is the memory_review tool input. action ∈ {list, approve, reject}.
+// list paginates the scope's pending_review memories; approve/reject resolve one by id.
+type ReviewInput struct {
+	Action string `json:"action"`
+	ID     string `json:"id,omitempty"`
+	Limit  int    `json:"limit,omitempty"`
+	Cursor string `json:"cursor,omitempty"`
+}
+
+// ReviewItem is one pending_review memory in the queue.
+type ReviewItem struct {
+	ID        string `json:"id"`
+	Kind      string `json:"kind"`
+	Content   string `json:"content"`
+	Context   string `json:"context,omitempty"`
+	CreatedAt int64  `json:"created_at"`
+}
+
+// ReviewOutput is the memory_review tool output. For list: items + next_cursor. For
+// approve/reject: id + status (the resolved status).
+type ReviewOutput struct {
+	Items      []ReviewItem `json:"items,omitempty"`
+	NextCursor string       `json:"next_cursor,omitempty"`
+	ID         string       `json:"id,omitempty"`
+	Status     string       `json:"status,omitempty"`
+}
+
 // ─── memory_drilldown ────────────────────────────────────────────────────────
 
 // DrilldownInput is the memory_drilldown tool input (mirrors HTTP POST /v1/drilldown).
@@ -288,6 +334,9 @@ type AssertInput struct {
 	Content  string `json:"content,omitempty"`
 	Kind     string `json:"kind,omitempty"`
 	Context  string `json:"context,omitempty"`
+	// Review (action=add) parks the memory as pending_review instead of active — the
+	// uncited-claim safeguard (§6c, D-084); resolve it via memory_review.
+	Review bool `json:"review,omitempty"`
 }
 
 // AssertOutput is the memory_assert tool output.

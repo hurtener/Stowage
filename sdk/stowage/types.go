@@ -268,6 +268,9 @@ type AssertRequest struct {
 	Content  string `json:"content,omitempty"`
 	Kind     string `json:"kind,omitempty"`
 	Context  string `json:"context,omitempty"`
+	// Review (action=add) parks the memory as pending_review instead of active —
+	// the uncited-claim safeguard (§6c, Phase 25); resolve it via Review.
+	Review bool `json:"review,omitempty"`
 }
 
 // AssertResponse is the response from Assert.
@@ -275,6 +278,51 @@ type AssertResponse struct {
 	MemoryID string `json:"memory_id"`
 	Action   string `json:"action"`
 	Status   string `json:"status"`
+}
+
+// ---- Verification + review queue (Phase 25, RFC §6c, D-084) ------------------
+
+// VerifyRequest checks that Claim is entailed by the memories behind Citations
+// (injection handles from a prior Retrieve).
+type VerifyRequest struct {
+	Claim     string   `json:"claim"`
+	Citations []string `json:"citations,omitempty"`
+}
+
+// VerifyResponse is the entailment verdict. Degraded is set when the gateway was
+// unreachable (verdict falls back to "unclear").
+type VerifyResponse struct {
+	Verdict     string  `json:"verdict"`
+	Confidence  float64 `json:"confidence"`
+	Explanation string  `json:"explanation,omitempty"`
+	Degraded    bool    `json:"degraded,omitempty"`
+}
+
+// ReviewRequest drives the review queue. Action ∈ {list, approve, reject}; list
+// paginates pending_review memories, approve/reject resolve one by MemoryID.
+type ReviewRequest struct {
+	Action   string `json:"action"`
+	MemoryID string `json:"memory_id,omitempty"`
+	Limit    int    `json:"limit,omitempty"`
+	Cursor   string `json:"cursor,omitempty"`
+}
+
+// ReviewItem is one pending_review memory.
+type ReviewItem struct {
+	ID        string `json:"id"`
+	Kind      string `json:"kind"`
+	Content   string `json:"content"`
+	Context   string `json:"context,omitempty"`
+	CreatedAt int64  `json:"created_at"`
+}
+
+// ReviewResponse is the review-queue envelope. For list: Items + NextCursor. For
+// approve/reject: ID + Status.
+type ReviewResponse struct {
+	Items      []ReviewItem `json:"items,omitempty"`
+	NextCursor string       `json:"next_cursor,omitempty"`
+	ID         string       `json:"id,omitempty"`
+	Status     string       `json:"status,omitempty"`
 }
 
 // ---- Memory / reversibility types (D-070) -----------------------------------

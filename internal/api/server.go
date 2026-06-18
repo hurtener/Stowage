@@ -23,6 +23,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
 	"github.com/hurtener/stowage/internal/config"
+	"github.com/hurtener/stowage/internal/gateway"
 	"github.com/hurtener/stowage/internal/grants"
 	"github.com/hurtener/stowage/internal/pipeline"
 	"github.com/hurtener/stowage/internal/retrieval"
@@ -69,6 +70,10 @@ type Server struct {
 	// grantsSvc provides group and grant management (Phase 15).
 	// Set via SetGrantsService before calling ListenAndServe.
 	grantsSvc *grants.Service
+
+	// gw is the intelligence seam, used by POST /v1/verify (claim entailment,
+	// Phase 25). Set via SetGateway. May be nil — verify then degrades to unclear.
+	gw gateway.Gateway
 
 	maxBodyB int64 // max request body bytes
 
@@ -138,6 +143,11 @@ func New(cfg *config.Config, st store.Store, log *slog.Logger, reg *prometheus.R
 	// Phase 24: causal why-traversal (RFC §5.6/§6b, D-083).
 	mux.HandleFunc("GET /v1/causal", srv.authMiddleware(srv.handleCausal, false))
 
+	// Phase 25: claim verification + review queue (RFC §6c, D-084).
+	mux.HandleFunc("POST /v1/verify", srv.authMiddleware(srv.handleVerify, false))
+	mux.HandleFunc("GET /v1/review", srv.authMiddleware(srv.handleReviewList, false))
+	mux.HandleFunc("POST /v1/review/{id}", srv.authMiddleware(srv.handleReviewResolve, false))
+
 	// Phase 11: drill-down, feedback, and citation resolution.
 	mux.HandleFunc("POST /v1/drilldown", srv.authMiddleware(srv.handleDrilldown, false))
 	mux.HandleFunc("POST /v1/feedback", srv.authMiddleware(srv.handleFeedback, false))
@@ -199,6 +209,12 @@ func (s *Server) SetStage(st *pipeline.Stage) {
 // Must be called before ListenAndServe.
 func (s *Server) SetTopicService(svc *topics.Service) {
 	s.topicSvc = svc
+}
+
+// SetGateway wires the intelligence seam used by POST /v1/verify (Phase 25).
+// Optional — when nil, verify degrades to unclear (D-036).
+func (s *Server) SetGateway(gw gateway.Gateway) {
+	s.gw = gw
 }
 
 // SetRetriever wires the retrieval.Retriever used by POST /v1/retrieve (Phase 09).

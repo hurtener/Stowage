@@ -295,6 +295,55 @@ func (c *httpClient) Causal(ctx context.Context, req CausalRequest) (CausalRespo
 	return resp, nil
 }
 
+// Verify implements Client via POST /v1/verify (D-084).
+func (c *httpClient) Verify(ctx context.Context, req VerifyRequest) (VerifyResponse, error) {
+	if req.Claim == "" {
+		return VerifyResponse{}, errors.New("sdk: verify: claim must not be empty")
+	}
+	var resp VerifyResponse
+	if err := c.do(ctx, http.MethodPost, "/v1/verify", req, &resp); err != nil {
+		return VerifyResponse{}, err
+	}
+	return resp, nil
+}
+
+// Review implements Client via GET /v1/review (list) + POST /v1/review/{id} (D-084).
+func (c *httpClient) Review(ctx context.Context, req ReviewRequest) (ReviewResponse, error) {
+	switch req.Action {
+	case "list":
+		v := url.Values{}
+		if req.Limit > 0 {
+			v.Set("limit", strconv.Itoa(req.Limit))
+		}
+		if req.Cursor != "" {
+			v.Set("cursor", req.Cursor)
+		}
+		path := "/v1/review"
+		if enc := v.Encode(); enc != "" {
+			path += "?" + enc
+		}
+		var resp ReviewResponse
+		if err := c.do(ctx, http.MethodGet, path, nil, &resp); err != nil {
+			return ReviewResponse{}, err
+		}
+		return resp, nil
+	case "approve", "reject":
+		if req.MemoryID == "" {
+			return ReviewResponse{}, errors.New("sdk: review: memory_id required for approve/reject")
+		}
+		body := struct {
+			Action string `json:"action"`
+		}{Action: req.Action}
+		var resp ReviewResponse
+		if err := c.do(ctx, http.MethodPost, "/v1/review/"+url.PathEscape(req.MemoryID), body, &resp); err != nil {
+			return ReviewResponse{}, err
+		}
+		return resp, nil
+	default:
+		return ReviewResponse{}, errors.New("sdk: review: action must be list, approve, or reject")
+	}
+}
+
 // GetMemory implements Client via GET /v1/memories/{id} (D-070).
 func (c *httpClient) GetMemory(ctx context.Context, id string) (GetMemoryResponse, error) {
 	if id == "" {

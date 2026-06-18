@@ -18,6 +18,7 @@ import (
 	"github.com/hurtener/stowage/internal/retrieval"
 	"github.com/hurtener/stowage/internal/store"
 	"github.com/hurtener/stowage/internal/topics"
+	"github.com/hurtener/stowage/internal/trust"
 
 	// Register drivers so NewEmbedded works without manual blank-imports (sqlite
 	// default — D-022; mock gateway default; hnsw vindex).
@@ -811,6 +812,7 @@ func (c *embeddedClient) Assert(ctx context.Context, req AssertRequest) (AssertR
 		Content:  req.Content,
 		Kind:     req.Kind,
 		Context:  req.Context,
+		Review:   req.Review,
 	}, c.scopeInvalidator())
 	if err != nil {
 		return AssertResponse{}, fmt.Errorf("sdk: assert: %w", err)
@@ -818,6 +820,49 @@ func (c *embeddedClient) Assert(ctx context.Context, req AssertRequest) (AssertR
 	// Cache invalidation now happens inside reconcile.Assert (D-053, Wave-B
 	// checkpoint) — the single invalidation.
 	return AssertResponse{MemoryID: res.MemoryID, Action: res.Action, Status: res.Status}, nil
+}
+
+// Verify implements Client via the trust entailment core (D-084).
+func (c *embeddedClient) Verify(ctx context.Context, req VerifyRequest) (VerifyResponse, error) {
+	if req.Claim == "" {
+		return VerifyResponse{}, errors.New("sdk: verify: claim must not be empty")
+	}
+	cited, err := trust.ResolveCited(ctx, c.stack.Store, c.scope, req.Citations)
+	if err != nil {
+		return VerifyResponse{}, fmt.Errorf("sdk: verify: %w", err)
+	}
+	v, err := trust.Verify(ctx, c.stack.Gateway, req.Claim, cited)
+	if err != nil {
+		return VerifyResponse{}, fmt.Errorf("sdk: verify: %w", err)
+	}
+	return VerifyResponse{Verdict: v.Verdict, Confidence: v.Confidence, Explanation: v.Explanation, Degraded: v.Degraded}, nil
+}
+
+// Review implements Client via the trust review-queue core (D-084).
+func (c *embeddedClient) Review(ctx context.Context, req ReviewRequest) (ReviewResponse, error) {
+	switch req.Action {
+	case "list":
+		mems, next, err := trust.ListPending(ctx, c.stack.Store, c.scope, req.Limit, req.Cursor)
+		if err != nil {
+			return ReviewResponse{}, fmt.Errorf("sdk: review: %w", err)
+		}
+		out := ReviewResponse{Items: make([]ReviewItem, 0, len(mems)), NextCursor: next}
+		for _, m := range mems {
+			out.Items = append(out.Items, ReviewItem{ID: m.ID, Kind: m.Kind, Content: m.Content, Context: m.Context, CreatedAt: m.CreatedAt})
+		}
+		return out, nil
+	case "approve", "reject":
+		if req.MemoryID == "" {
+			return ReviewResponse{}, errors.New("sdk: review: memory_id required for approve/reject")
+		}
+		res, err := trust.Resolve(ctx, c.stack.Store, c.scope, req.MemoryID, trust.ReviewAction(req.Action), c.scopeInvalidator())
+		if err != nil {
+			return ReviewResponse{}, fmt.Errorf("sdk: review: %w", err)
+		}
+		return ReviewResponse{ID: res.ID, Status: res.Status}, nil
+	default:
+		return ReviewResponse{}, errors.New("sdk: review: action must be list, approve, or reject")
+	}
 }
 
 // scopeInvalidator returns the retrieval-cache invalidator the reconcile core
