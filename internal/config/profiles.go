@@ -82,6 +82,32 @@ func ReflectConfigForProfile(profile string) ReflectConfig {
 	return rc
 }
 
+// EpisodeConfig holds the per-profile episode-sweep tuning (Phase 22, D-079).
+// Profile-internal (like ReflectConfig/BufferTriggers — not top-level config
+// knobs). Episodes are enabled where episodic memory helps; off by zero-config
+// default elsewhere.
+type EpisodeConfig struct {
+	Enabled         bool
+	DetectInterval  time.Duration
+	NarrateInterval time.Duration
+	IdleWindow      time.Duration // a session idle this long is "closed"
+	GapSplit        time.Duration // intra-session gap that splits an episode; 0 = off (v1)
+}
+
+// EpisodeConfigForProfile returns the episode-sweep tuning for the named profile.
+// Enabled for assistant + fleet (episodic memory is useful for both); off for
+// coding-agent and unknown profiles. Profile-internal (not a top-level knob).
+func EpisodeConfigForProfile(profile string) EpisodeConfig {
+	ec := EpisodeConfig{
+		Enabled: false, DetectInterval: 15 * time.Minute, NarrateInterval: 15 * time.Minute,
+		IdleWindow: 30 * time.Minute, GapSplit: 0,
+	}
+	if profile == "assistant" || profile == "fleet" {
+		ec.Enabled = true
+	}
+	return ec
+}
+
 // PlaybookBudgetForProfile returns the deterministic playbook token budget for
 // the named profile (D-072). Like the buffer triggers above, this is a
 // profile-internal constant — NOT an operator-tunable top-level config knob

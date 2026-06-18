@@ -253,6 +253,35 @@ func (r *recordStore) ListByOutcome(ctx context.Context, scope identity.Scope, o
 	return out, rows.Err()
 }
 
+// DistinctSessions returns scope's closed (session_id, branch_id) groups whose
+// latest record is at/before idleBefore, with the time-range + count. Used by the
+// episode boundary-detection sweep (Phase 22).
+func (r *recordStore) DistinctSessions(ctx context.Context, scope identity.Scope, idleBefore int64, limit int) ([]store.SessionInfo, error) {
+	whereClause, args, err := buildScopeWhere(scope)
+	if err != nil {
+		return nil, err
+	}
+	args = append(args, idleBefore, limit)
+	q := `SELECT COALESCE(project_id,''), COALESCE(user_id,''), COALESCE(session_id,''), branch_id,` + //nolint:gosec // whereClause from controlled helper; values are bound
+		` MIN(occurred_at), MAX(occurred_at), COUNT(*) FROM records WHERE ` + whereClause +
+		` AND session_id IS NOT NULL AND session_id <> '' GROUP BY project_id, user_id, session_id, branch_id` +
+		` HAVING MAX(occurred_at) <= ? ORDER BY MAX(occurred_at) ASC, session_id ASC, branch_id ASC LIMIT ?`
+	rows, err := r.s.rdb.QueryContext(ctx, q, args...)
+	if err != nil {
+		return nil, fmt.Errorf("sqlitestore: distinct sessions: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	var out []store.SessionInfo
+	for rows.Next() {
+		var si store.SessionInfo
+		if err := rows.Scan(&si.ProjectID, &si.UserID, &si.SessionID, &si.BranchID, &si.FirstOccurred, &si.LastOccurred, &si.RecordCount); err != nil {
+			return nil, fmt.Errorf("sqlitestore: scan session info: %w", err)
+		}
+		out = append(out, si)
+	}
+	return out, rows.Err()
+}
+
 type rowScanner interface {
 	Scan(dest ...interface{}) error
 }

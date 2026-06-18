@@ -1927,3 +1927,32 @@ quality trajectory across tasks is the compounding signal (ACE). This is **repor
 not release-gated** — the gain delta is the gate. Both runs are opt-in, full-mode,
 operator-run; `make eval-ci` is unaffected. No new config knob (eval env vars only;
 D-034 not applicable).
+
+## D-079 — Episodes detected by a heuristic gateway-free sweep; narration is a separate schema-constrained gateway sweep
+
+2026-06-18. Phase 22 (RFC §6b) ships episodes + narratives (the write/detection
+side; episodic retrieval is Phase 23, causal links Phase 24).
+
+**Heuristic boundary detection (OQ-8 heuristic-first).** A boundary-detection
+lifecycle sweep groups records into episodes with **no LLM**: v1 maps one closed
+session (no new records for an idle window) to one episode, splitting on a large
+intra-session temporal gap. An LLM/topic-shift boundary refiner is a documented
+follow-up. The gateway is used ONLY for the narrative text, never the boundary
+decision — cheap, deterministic, debuggable.
+
+**Derived episode↔record membership.** Records are immutable (P1), so they carry no
+`episode_id`; an episode owns its session's records by time range. Detection
+idempotency is therefore "**an episode already exists for this (scope, session)**"
+(`EpisodeStore.GetEpisodeBySession`), not a record stamp. New store surface:
+`RecordStore.DistinctSessions` (closed-session enumeration) + an `EpisodeStore` seam
+(create / get-by-session / list-needing-narrative / set-narrative / list) on both
+drivers + conformance; episode indexes are an index-only migration (the episodes
+table is day-one §8.1).
+
+**Narration.** A separate narration sweep constructs a `narrative`-kind memory per
+episode via a **schema-constrained** gateway call (§10) through the gateway seam
+(P5), carrying `episode_id` + provenance to the episode's records (P1) and
+`TrustSource:"episodic"`; it sets `episodes.narrative_memory_id`. Idempotent:
+narrated episodes are skipped; a forced re-run dedups on content hash. Both sweeps
+follow the Phase-19 reflection pattern (advisory locks, jitter, profile-gated, off by
+zero-config default); narration gateway calls are metered/evented.

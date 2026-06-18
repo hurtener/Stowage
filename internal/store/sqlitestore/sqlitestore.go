@@ -459,6 +459,7 @@ func (s *sqliteStore) Buffers() store.BufferStore       { return &bufferStore{s}
 func (s *sqliteStore) Keys() auth.Keyring               { return &keyStore{s} }
 func (s *sqliteStore) Events() store.EventStore         { return &eventStore{s} }
 func (s *sqliteStore) Branches() store.BranchStore      { return &branchStore{s} }
+func (s *sqliteStore) Episodes() store.EpisodeStore     { return &episodeStore{s} }
 func (s *sqliteStore) Ops() store.OpsStore              { return &opsStore{s} }
 func (s *sqliteStore) Vectors() store.VectorStore       { return &vectorStore{s} }
 func (s *sqliteStore) Injections() store.InjectionStore { return &injectionStore{s} }

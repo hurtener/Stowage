@@ -106,6 +106,9 @@ New terms land here in the same PR that introduces them (CLAUDE.md §14).
 - **Reasoning trace** — the reconstructable memory-into-conclusion chain for a
   response (query, injections, drill-downs, verification verdicts), exportable
   as a signed audit bundle.
+- **Boundary detection** — the heuristic, gateway-free lifecycle sweep that
+  groups records into episodes (one closed session → one episode, intra-session
+  gap split; OQ-8 heuristic-first, Phase 22, D-079).
 - **Episode** — a detected coherent temporal unit of records, with a generated
   narrative memory carrying full provenance (§6b).
 - **Narrative** — the `narrative`-kind memory telling an episode's concrete

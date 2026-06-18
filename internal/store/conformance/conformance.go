@@ -78,6 +78,11 @@ func Run(t *testing.T, factory Factory) {
 	t.Run("BranchListBySession", func(t *testing.T) { testBranchListBySession(t, factory) })
 	t.Run("BranchScopeIsolation", func(t *testing.T) { testBranchScopeIsolation(t, factory) })
 	t.Run("BranchGetNotFound", func(t *testing.T) { testBranchGetNotFound(t, factory) })
+	// Episodes (Phase 22, D-079)
+	t.Run("EpisodeCRUD", func(t *testing.T) { testEpisodeCRUD(t, factory) })
+	t.Run("EpisodeNeedingNarrative", func(t *testing.T) { testEpisodeNeedingNarrative(t, factory) })
+	t.Run("EpisodeScopeIsolation", func(t *testing.T) { testEpisodeScopeIsolation(t, factory) })
+	t.Run("RecordDistinctSessions", func(t *testing.T) { testRecordDistinctSessions(t, factory) })
 	// Keyring.List
 	t.Run("KeyringList", func(t *testing.T) { testKeyringList(t, factory) })
 	// S1 — empty-tenant guard (P3: store layer fails closed)
@@ -3747,5 +3752,167 @@ func testMemorySetValidUntil(t *testing.T, factory Factory) {
 	err = s.Memories().SetValidUntil(ctx, identity.Scope{}, mem.ID, future)
 	if err == nil {
 		t.Error("expected error for empty tenant scope")
+	}
+}
+
+// --- Phase 22: episodes + distinct sessions -----------------------------------
+
+func testEpisodeCRUD(t *testing.T, factory Factory) {
+	t.Helper()
+	s, cleanup := factory()
+	defer cleanup()
+	ctx := context.Background()
+	scope := tenantScope("t-" + newID())
+
+	ep := store.Episode{
+		ID: newID(), SessionID: "sess-1", Title: "draft", Status: "closed",
+		StartedAt: 1000, EndedAt: 2000, Outcome: "success",
+		CreatedAt: nowMs(), UpdatedAt: nowMs(),
+	}
+	if err := s.Episodes().CreateEpisode(ctx, scope, ep); err != nil {
+		t.Fatalf("CreateEpisode: %v", err)
+	}
+	got, err := s.Episodes().GetEpisode(ctx, scope, ep.ID)
+	if err != nil {
+		t.Fatalf("GetEpisode: %v", err)
+	}
+	if got.SessionID != "sess-1" || got.Status != "closed" || got.Outcome != "success" {
+		t.Errorf("episode round-trip wrong: %+v", got)
+	}
+	bySess, err := s.Episodes().GetEpisodeBySession(ctx, scope, "sess-1")
+	if err != nil || bySess.ID != ep.ID {
+		t.Errorf("GetEpisodeBySession: %v / %+v", err, bySess)
+	}
+	if _, err := s.Episodes().GetEpisodeBySession(ctx, scope, "no-such"); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("GetEpisodeBySession(absent) = %v, want ErrNotFound", err)
+	}
+	// Attach a narrative.
+	if err := s.Episodes().SetEpisodeNarrative(ctx, scope, ep.ID, "mem-narr-1", "March deploy", nowMs()); err != nil {
+		t.Fatalf("SetEpisodeNarrative: %v", err)
+	}
+	got2, _ := s.Episodes().GetEpisode(ctx, scope, ep.ID)
+	if got2.NarrativeMemoryID != "mem-narr-1" || got2.Title != "March deploy" {
+		t.Errorf("narrative not attached: %+v", got2)
+	}
+	// List.
+	eps, _, err := s.Episodes().ListEpisodes(ctx, scope, 10, "")
+	if err != nil || len(eps) != 1 {
+		t.Errorf("ListEpisodes: %v / %d", err, len(eps))
+	}
+	if _, err := s.Episodes().GetEpisode(ctx, scope, "missing"); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("GetEpisode(missing) = %v, want ErrNotFound", err)
+	}
+}
+
+func testEpisodeNeedingNarrative(t *testing.T, factory Factory) {
+	t.Helper()
+	s, cleanup := factory()
+	defer cleanup()
+	ctx := context.Background()
+	scope := tenantScope("t-" + newID())
+
+	narrated := store.Episode{ID: newID(), SessionID: "s-a", Status: "closed", StartedAt: 100, NarrativeMemoryID: "m-1", CreatedAt: nowMs(), UpdatedAt: nowMs()}
+	pending := store.Episode{ID: newID(), SessionID: "s-b", Status: "closed", StartedAt: 200, CreatedAt: nowMs(), UpdatedAt: nowMs()}
+	if err := s.Episodes().CreateEpisode(ctx, scope, narrated); err != nil {
+		t.Fatalf("create narrated: %v", err)
+	}
+	if err := s.Episodes().CreateEpisode(ctx, scope, pending); err != nil {
+		t.Fatalf("create pending: %v", err)
+	}
+	need, err := s.Episodes().ListEpisodesNeedingNarrative(ctx, 10)
+	if err != nil {
+		t.Fatalf("ListEpisodesNeedingNarrative: %v", err)
+	}
+	found := false
+	for _, e := range need {
+		if e.ID == narrated.ID {
+			t.Error("narrated episode leaked into needing-narrative list")
+		}
+		if e.ID == pending.ID {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("pending episode missing from needing-narrative list")
+	}
+}
+
+func testEpisodeScopeIsolation(t *testing.T, factory Factory) {
+	t.Helper()
+	s, cleanup := factory()
+	defer cleanup()
+	ctx := context.Background()
+	a := tenantScope("t-" + newID())
+	b := tenantScope("t-" + newID())
+	ep := store.Episode{ID: newID(), SessionID: "s1", Status: "closed", StartedAt: 1, CreatedAt: nowMs(), UpdatedAt: nowMs()}
+	if err := s.Episodes().CreateEpisode(ctx, a, ep); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if _, err := s.Episodes().GetEpisode(ctx, b, ep.ID); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("cross-scope GetEpisode = %v, want ErrNotFound", err)
+	}
+	eps, _, _ := s.Episodes().ListEpisodes(ctx, b, 10, "")
+	if len(eps) != 0 {
+		t.Errorf("cross-scope ListEpisodes returned %d", len(eps))
+	}
+	if err := s.Episodes().CreateEpisode(ctx, identity.Scope{}, ep); !errors.Is(err, store.ErrScopeRequired) {
+		t.Errorf("CreateEpisode(empty scope) = %v, want ErrScopeRequired", err)
+	}
+}
+
+func testRecordDistinctSessions(t *testing.T, factory Factory) {
+	t.Helper()
+	s, cleanup := factory()
+	defer cleanup()
+	ctx := context.Background()
+	scope := tenantScope("t-" + newID())
+
+	// Two session-scoped record sets + one sessionless record.
+	s1 := identity.Scope{Tenant: scope.Tenant, Project: "p", User: "u", Session: "s1"}
+	s2 := identity.Scope{Tenant: scope.Tenant, Project: "p", User: "u", Session: "s2"}
+	mk := func(id string, occ int64) store.Record {
+		return store.Record{ID: id, BranchID: "main", Role: "user", Content: "x", OccurredAt: occ, CreatedAt: occ}
+	}
+	if err := s.Records().Append(ctx, s1, []store.Record{mk(newID(), 100), mk(newID(), 200)}); err != nil {
+		t.Fatalf("append s1: %v", err)
+	}
+	if err := s.Records().Append(ctx, s2, []store.Record{mk(newID(), 5000)}); err != nil {
+		t.Fatalf("append s2: %v", err)
+	}
+	if err := s.Records().Append(ctx, scope, []store.Record{mk(newID(), 300)}); err != nil { // sessionless
+		t.Fatalf("append sessionless: %v", err)
+	}
+
+	// idleBefore = 1000 → only s1 (last=200) is "closed"; s2 (last=5000) and the
+	// sessionless record are excluded.
+	got, err := s.Records().DistinctSessions(ctx, scope, 1000, 10)
+	if err != nil {
+		t.Fatalf("DistinctSessions: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("expected 1 closed session, got %d: %+v", len(got), got)
+	}
+	if got[0].SessionID != "s1" || got[0].RecordCount != 2 || got[0].FirstOccurred != 100 || got[0].LastOccurred != 200 {
+		t.Errorf("session info wrong: %+v", got[0])
+	}
+	// Project/User are carried so episodes are created at the full scope (P3).
+	if got[0].ProjectID != "p" || got[0].UserID != "u" {
+		t.Errorf("session info missing project/user: %+v", got[0])
+	}
+
+	// A wider idle window includes both real sessions (never the sessionless one).
+	got2, _ := s.Records().DistinctSessions(ctx, scope, 10000, 10)
+	if len(got2) != 2 {
+		t.Errorf("expected 2 sessions, got %d", len(got2))
+	}
+
+	// Scope isolation + fail-closed.
+	other := tenantScope("t-" + newID())
+	iso, _ := s.Records().DistinctSessions(ctx, other, 10000, 10)
+	if len(iso) != 0 {
+		t.Errorf("cross-scope DistinctSessions returned %d", len(iso))
+	}
+	if _, err := s.Records().DistinctSessions(ctx, identity.Scope{}, 10000, 10); !errors.Is(err, store.ErrScopeRequired) {
+		t.Errorf("DistinctSessions(empty) = %v, want ErrScopeRequired", err)
 	}
 }

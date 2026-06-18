@@ -41,6 +41,9 @@ type Store interface {
 	// Branches returns the branch-lifecycle sub-store.
 	Branches() BranchStore
 
+	// Episodes returns the episodic sub-store (Phase 22, RFC §6b, D-079).
+	Episodes() EpisodeStore
+
 	// Ops returns the dead-letter and job-marker sub-store.
 	Ops() OpsStore
 
@@ -104,6 +107,41 @@ type RecordStore interface {
 	// unscoped variant. An empty outcomes slice returns no rows. Used by the
 	// reflection sweep to read outcome-tagged trajectories (Phase 19, D-077).
 	ListByOutcome(ctx context.Context, scope identity.Scope, outcomes []string, since int64, limit int) ([]Record, error)
+
+	// DistinctSessions returns scope's distinct (session_id, branch_id) groups
+	// whose latest record occurred at or before idleBefore (i.e. closed sessions),
+	// with the record time-range and count, ordered by last occurrence ascending,
+	// capped at limit. Sessionless records (session_id empty) are excluded. Scope-
+	// parameterized (P3). Used by the episode boundary-detection sweep (Phase 22).
+	DistinctSessions(ctx context.Context, scope identity.Scope, idleBefore int64, limit int) ([]SessionInfo, error)
+}
+
+// EpisodeStore is the episodic sub-store (RFC §6b, Phase 22, D-079). Episodes are
+// detected heuristically from closed sessions; a narration sweep attaches a
+// narrative memory. Scope-parameterized except the unscoped narration scan.
+type EpisodeStore interface {
+	// CreateEpisode inserts a new episode. Scope sets tenant/project/user.
+	CreateEpisode(ctx context.Context, scope identity.Scope, e Episode) error
+
+	// GetEpisode returns an episode by ID within scope; ErrNotFound when absent.
+	GetEpisode(ctx context.Context, scope identity.Scope, id string) (*Episode, error)
+
+	// GetEpisodeBySession returns the episode for a session within scope, or
+	// ErrNotFound when none exists — the detection idempotency gate (D-079).
+	GetEpisodeBySession(ctx context.Context, scope identity.Scope, sessionID string) (*Episode, error)
+
+	// ListEpisodesNeedingNarrative returns episodes with no narrative_memory_id,
+	// oldest first, up to limit. Unscoped scan (the narration sweep iterates all
+	// tenants), mirroring RecordStore.ListUnprocessed (D-057).
+	ListEpisodesNeedingNarrative(ctx context.Context, limit int) ([]Episode, error)
+
+	// SetEpisodeNarrative attaches the narrative memory + title to an episode and
+	// bumps updated_at, within scope. ErrNotFound when absent.
+	SetEpisodeNarrative(ctx context.Context, scope identity.Scope, episodeID, narrativeMemoryID, title string, updatedAt int64) error
+
+	// ListEpisodes returns scope's episodes, most recent first, paginated by an
+	// opaque "<started_at>:<id>" cursor ("" for the first page). Used by Phase 23.
+	ListEpisodes(ctx context.Context, scope identity.Scope, limit int, cursor string) ([]Episode, string, error)
 }
 
 // MemoryStore is the abstraction layer (RFC §5, D-006, D-008, D-024).
