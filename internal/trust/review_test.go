@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/hurtener/stowage/internal/config"
+	"github.com/hurtener/stowage/internal/gateway"
 	"github.com/hurtener/stowage/internal/identity"
 	"github.com/hurtener/stowage/internal/reconcile"
 	"github.com/hurtener/stowage/internal/store"
@@ -168,4 +169,47 @@ func hasEvent(evs []store.Event, typ string) bool {
 		}
 	}
 	return false
+}
+
+// fakeVerifyGateway returns a fixed entailed verdict.
+type fakeVerifyGateway struct{}
+
+func (fakeVerifyGateway) Embed(context.Context, gateway.EmbedRequest) (gateway.EmbedResponse, error) {
+	return gateway.EmbedResponse{}, nil
+}
+func (fakeVerifyGateway) Complete(context.Context, gateway.CompleteRequest) (gateway.CompleteResponse, error) {
+	return gateway.CompleteResponse{JSON: []byte(`{"verdict":"entailed","confidence":0.88,"explanation":"x"}`)}, nil
+}
+func (fakeVerifyGateway) Probe(context.Context) error { return nil }
+func (fakeVerifyGateway) Rerank(context.Context, gateway.RerankRequest) (gateway.RerankResponse, error) {
+	return gateway.RerankResponse{}, nil
+}
+func (fakeVerifyGateway) Close(context.Context) error { return nil }
+
+// TestVerifyClaim_CapturesVerdict proves VerifyClaim emits a verify.verdict event keyed
+// by the response_id the citations belong to (Phase 26 trace capture, D-086).
+func TestVerifyClaim_CapturesVerdict(t *testing.T) {
+	st := openStore(t)
+	scope := identity.Scope{Tenant: "vc-t"}
+	ctx := context.Background()
+	// A memory + an injection (citation) for response "resp-9".
+	if err := st.Memories().Insert(ctx, scope, store.Memory{ID: "m1", Kind: "fact", Content: "Paris is the capital.", Status: "active", Confidence: 0.8, TrustSource: "llm_extracted", Stability: 1.0, CreatedAt: 1, UpdatedAt: 1}); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+	if err := st.Injections().Append(ctx, scope, []store.Injection{{ID: "cit-1", ResponseID: "resp-9", MemoryID: "m1", CreatedAt: 1}}); err != nil {
+		t.Fatalf("inj: %v", err)
+	}
+
+	v, err := VerifyClaim(ctx, st, fakeVerifyGateway{}, scope, "Paris is the capital", []string{"cit-1"})
+	if err != nil {
+		t.Fatalf("VerifyClaim: %v", err)
+	}
+	if v.Verdict != "entailed" || v.Confidence != 0.88 {
+		t.Fatalf("verdict wrong: %+v", v)
+	}
+	// The verify.verdict event is captured keyed by response_id.
+	evs, _ := st.Events().ListBySubject(ctx, scope, "resp-9", 10)
+	if !hasEvent(evs, "verify.verdict") {
+		t.Errorf("expected a verify.verdict event keyed by response_id, got %+v", evs)
+	}
 }

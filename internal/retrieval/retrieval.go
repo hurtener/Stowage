@@ -32,6 +32,7 @@ package retrieval
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"log/slog"
 	"sort"
@@ -136,6 +137,40 @@ func New(mem store.MemoryStore, recs store.RecordStore, vi vindex.Index, gw gate
 func (r *Retriever) WithRerankModel(model string) *Retriever {
 	r.rerankModel = model
 	return r
+}
+
+// WithEventCapture wires the event store used for Phase-26 trace capture (the async
+// retrieve.query event). No-op when injections (and thus the writer) are not wired.
+// Call after construction, before serving; not safe to call concurrently with Retrieve.
+func (r *Retriever) WithEventCapture(es store.EventStore) *Retriever {
+	if r.injWr != nil && es != nil {
+		r.injWr.SetEventStore(es)
+	}
+	return r
+}
+
+// buildQueryEvent assembles the response-keyed retrieve.query event (Phase 26, D-086).
+// SubjectID = response_id so traces.Reconstruct finds it via ListBySubject.
+func buildQueryEvent(scope identity.Scope, responseID, query, support string, degraded bool, now int64) *store.Event {
+	payload, err := json.Marshal(struct {
+		Query    string `json:"query"`
+		Support  string `json:"support"`
+		Degraded bool   `json:"degraded"`
+	}{Query: query, Support: support, Degraded: degraded})
+	if err != nil {
+		return nil
+	}
+	return &store.Event{
+		ID:        ulid.Make().String(),
+		TenantID:  scope.Tenant,
+		ProjectID: scope.Project,
+		UserID:    scope.User,
+		Type:      "retrieve.query",
+		SubjectID: responseID,
+		Reason:    "retrieve: response query captured for the reasoning trace",
+		Payload:   string(payload),
+		CreatedAt: now,
+	}
 }
 
 // Cache returns the result cache, which also implements ScopeInvalidator.
@@ -575,7 +610,12 @@ func (r *Retriever) Retrieve(ctx context.Context, scope identity.Scope, req Requ
 				CreatedAt:  nowInj,
 			}
 		}
-		r.injWr.Enqueue(scope, injRows)
+		// Phase-26 trace capture (D-086): a response-keyed query event so the reasoning
+		// trace can include the query (an unbackfillable signal, D-024). Written async
+		// by the injection writer (off the retrieve path); nil → the writer skips it
+		// when no event store is wired.
+		queryEvent := buildQueryEvent(scope, responseID, req.Query, sup.Strength, degraded, nowInj)
+		r.injWr.Enqueue(scope, injRows, queryEvent)
 	}
 
 	return &Response{

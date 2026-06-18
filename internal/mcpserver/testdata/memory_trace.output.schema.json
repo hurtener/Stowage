@@ -1,0 +1,175 @@
+{
+  "type": "object",
+  "properties": {
+    "trace": {
+      "type": "object",
+      "properties": {
+        "response_id": {
+          "type": "string"
+        },
+        "query": {
+          "type": "string"
+        },
+        "support": {
+          "type": "string"
+        },
+        "degraded": {
+          "type": "boolean"
+        },
+        "items": {
+          "type": [
+            "null",
+            "array"
+          ],
+          "items": {
+            "type": "object",
+            "properties": {
+              "memory_id": {
+                "type": "string"
+              },
+              "kind": {
+                "type": "string"
+              },
+              "content": {
+                "type": "string"
+              },
+              "status": {
+                "type": "string"
+              },
+              "rank": {
+                "type": "integer"
+              },
+              "score": {
+                "type": "number"
+              },
+              "lane": {
+                "type": "string"
+              },
+              "was_cited": {
+                "type": "boolean"
+              },
+              "feedback": {
+                "type": "string"
+              },
+              "provenance": {
+                "type": [
+                  "null",
+                  "array"
+                ],
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "record_id": {
+                      "type": "string"
+                    },
+                    "span_start": {
+                      "type": "integer"
+                    },
+                    "span_end": {
+                      "type": "integer"
+                    },
+                    "excerpt": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "record_id"
+                  ],
+                  "additionalProperties": false
+                }
+              },
+              "links": {
+                "type": [
+                  "null",
+                  "array"
+                ],
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "to": {
+                      "type": "string"
+                    },
+                    "type": {
+                      "type": "string"
+                    },
+                    "confidence": {
+                      "type": "number"
+                    }
+                  },
+                  "required": [
+                    "to",
+                    "type"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "required": [
+              "memory_id",
+              "kind",
+              "content",
+              "status",
+              "rank",
+              "score"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "verdicts": {
+          "type": [
+            "null",
+            "array"
+          ],
+          "items": {
+            "type": "object",
+            "properties": {
+              "claim": {
+                "type": "string"
+              },
+              "verdict": {
+                "type": "string"
+              },
+              "confidence": {
+                "type": "number"
+              },
+              "degraded": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "claim",
+              "verdict"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "generated_at": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "response_id",
+        "items",
+        "generated_at"
+      ],
+      "additionalProperties": false
+    },
+    "signed": {
+      "type": "boolean"
+    },
+    "algorithm": {
+      "type": "string"
+    },
+    "public_key": {
+      "type": "string"
+    },
+    "signature": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "trace",
+    "signed"
+  ],
+  "additionalProperties": false
+}

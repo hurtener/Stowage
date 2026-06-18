@@ -136,7 +136,7 @@ match table slots 19–21.
 | # | Phase | Owns | RFC |
 |---|-------|------|-----|
 | 25 | Verification & review queue | `memory_verify` (`POST /v1/verify`) schema-constrained gateway entailment, degraded-safe + `memory_review` scope-level queue (assert `review`→`pending_review`; approve→active / reject→quarantined, reversible) across {SDK,HTTP,MCP} — D-084. Auto uncited-detection + trace export deferred | §6c |
-| 26 | Reasoning traces + audit export | trace reconstruction, signed bundles, audit API, retention class (OQ-10) | §6c |
+| 26 | Reasoning traces + audit export | `memory_trace` (`GET /v1/traces/{response_id}`) across {SDK,HTTP,MCP}: per-response chain reconstructed on demand from day-one tables (query+verdicts captured to events), ed25519-signed bundle. Retention = source rows; OQ-10 settled — D-086 | §6c |
 
 ### v1.3 — Proactive
 

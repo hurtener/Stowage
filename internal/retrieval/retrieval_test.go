@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -1002,10 +1003,10 @@ func TestInjectionWriterDropsCountered(t *testing.T) {
 	// the 2 channel slots. A 4th enqueue therefore MUST drop in every
 	// interleaving (CI flake: with only 3, the writer could park batch 1 and
 	// free a slot before the enqueues, absorbing all three).
-	w.Enqueue(scope, batch) // absorbed (slot or parked)
-	w.Enqueue(scope, batch) // absorbed
-	w.Enqueue(scope, batch) // absorbed (worst case)
-	w.Enqueue(scope, batch) // guaranteed drop
+	w.Enqueue(scope, batch, nil) // absorbed (slot or parked)
+	w.Enqueue(scope, batch, nil) // absorbed
+	w.Enqueue(scope, batch, nil) // absorbed (worst case)
+	w.Enqueue(scope, batch, nil) // guaranteed drop
 
 	if w.Drops() == 0 {
 		t.Error("expected Drops() > 0 after overfilling channel")
@@ -1636,5 +1637,45 @@ func TestSimilarNarratives(t *testing.T) {
 	oIDs, _, _, _ := r.SimilarNarratives(ctx, identity.Scope{Tenant: "other"}, queryText, 0)
 	if len(oIDs) != 0 {
 		t.Errorf("cross-scope leak: %v", oIDs)
+	}
+}
+
+// TestRetrieveQueryCaptured asserts the async retrieve.query event is emitted keyed by
+// response_id when event capture is wired (Phase 26 trace capture, D-086).
+func TestRetrieveQueryCaptured(t *testing.T) {
+	t.Parallel()
+	st := openStore(t)
+	gw := openMockGateway(t, 4)
+	vi := vindex.New(st.Vectors(), 4, "test")
+	log := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	r := retrieval.NewWithInjections(st.Memories(), st.Records(), vi, gw, st.Injections(), log)
+	r.WithEventCapture(st.Events())
+	t.Cleanup(func() { r.Close() })
+
+	scope := identity.Scope{Tenant: "tenant-qcap-" + newID()}
+	_ = insertMemory(t, st, scope, "PostgreSQL is a relational database", "fact", []string{"PostgreSQL"}, []string{"database"}, nil, 0)
+
+	resp, err := r.Retrieve(context.Background(), scope, retrieval.Request{Query: "what database to use", Limit: 5})
+	if err != nil {
+		t.Fatalf("Retrieve: %v", err)
+	}
+	time.Sleep(100 * time.Millisecond)
+	r.Close() // drain the async writer
+
+	evs, err := st.Events().ListBySubject(context.Background(), scope, resp.ResponseID, 10)
+	if err != nil {
+		t.Fatalf("ListBySubject: %v", err)
+	}
+	found := false
+	for _, e := range evs {
+		if e.Type == "retrieve.query" {
+			found = true
+			if !strings.Contains(e.Payload, "what database to use") {
+				t.Errorf("query event payload missing the query: %s", e.Payload)
+			}
+		}
+	}
+	if !found {
+		t.Errorf("expected a retrieve.query event keyed by response_id %q, got %+v", resp.ResponseID, evs)
 	}
 }

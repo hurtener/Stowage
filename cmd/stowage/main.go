@@ -463,6 +463,7 @@ func runMCP(args []string) {
 		TopicSvc:      stk.TopicSvc,
 		GrantsSvc:     stk.GrantsSvc,
 		Gateway:       stk.Gateway,
+		TraceSigner:   stk.TraceSigner,
 		PipelineIn:    p.In,
 		PipelineStage: p.Stage,
 		Log:           stk.Log,
@@ -654,7 +655,8 @@ func runServe(args []string) {
 	srv.SetTopicService(stk.TopicSvc)
 	srv.SetRetriever(stk.Retriever)
 	srv.SetGrantsService(stk.GrantsSvc)
-	srv.SetGateway(stk.Gateway) // POST /v1/verify (Phase 25)
+	srv.SetGateway(stk.Gateway)         // POST /v1/verify (Phase 25)
+	srv.SetTraceSigner(stk.TraceSigner) // GET /v1/traces (Phase 26)
 
 	// Optional co-mounted MCP-over-HTTP surface (D-074). When server.mcp_listen
 	// is set, serve the SAME mcpserver handlers (h3/h4/h5) over the SAME
@@ -674,6 +676,7 @@ func runServe(args []string) {
 			TopicSvc:      stk.TopicSvc,
 			GrantsSvc:     stk.GrantsSvc,
 			Gateway:       stk.Gateway,
+			TraceSigner:   stk.TraceSigner,
 			PipelineIn:    p.In,    // SAME ingest channel as the HTTP API
 			PipelineStage: p.Stage, // SAME buffer stage (flush/branch control)
 			Log:           stk.Log,

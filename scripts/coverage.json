@@ -32,9 +32,11 @@
   "github.com/hurtener/stowage/internal/store/sqlitestore": 85,
   "github.com/hurtener/stowage/internal/telemetry": 80,
   "github.com/hurtener/stowage/internal/topics": 85,
+  "github.com/hurtener/stowage/internal/traces": 80,
   "github.com/hurtener/stowage/internal/trust": 80,
   "github.com/hurtener/stowage/internal/vindex": 85,
   "github.com/hurtener/stowage/internal/vindex/conformance": 0,
   "github.com/hurtener/stowage/internal/vindex/hnsw": 85,
-  "github.com/hurtener/stowage/internal/episodes": 80
+  "github.com/hurtener/stowage/internal/episodes": 80,
+  "github.com/hurtener/stowage/internal/excerpt": 90
 }

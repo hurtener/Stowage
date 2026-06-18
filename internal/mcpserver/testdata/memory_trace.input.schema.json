@@ -1,0 +1,12 @@
+{
+  "type": "object",
+  "properties": {
+    "response_id": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "response_id"
+  ],
+  "additionalProperties": false
+}

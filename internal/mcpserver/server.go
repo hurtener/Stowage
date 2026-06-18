@@ -2,6 +2,7 @@ package mcpserver
 
 import (
 	"context"
+	"crypto/ed25519"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -18,6 +19,7 @@ import (
 	"github.com/hurtener/stowage/internal/retrieval"
 	"github.com/hurtener/stowage/internal/store"
 	"github.com/hurtener/stowage/internal/topics"
+	"github.com/hurtener/stowage/internal/traces"
 )
 
 // ScopeFn resolves an identity.Scope from the request context. In stdio mode
@@ -34,8 +36,10 @@ type Services struct {
 	GrantsSvc *grants.Service
 	// Gateway is the intelligence seam, used by memory_verify (claim entailment,
 	// Phase 25). May be nil — verify then degrades to unclear (D-036).
-	Gateway    gateway.Gateway
-	PipelineIn chan<- pipeline.Item
+	Gateway gateway.Gateway
+	// TraceSigner signs memory_trace exports (Phase 26, D-086). nil ⇒ unsigned.
+	TraceSigner ed25519.PrivateKey
+	PipelineIn  chan<- pipeline.Item
 	// PipelineStage is the buffer stage, used by memory_flush and memory_branch
 	// (discard) — the shared control-verb core (D-071). May be nil in tests.
 	PipelineStage *pipeline.Stage
@@ -113,6 +117,13 @@ func New(info server.Info, svc *Services) (*server.Server, error) {
 	if err := tool.New[ReviewInput, ReviewOutput]("memory_review").
 		Describe("List the scope's pending_review memories (uncited agent assertions) and approve (→active) or reject (→quarantined) them (RFC §6c, D-084). action: list | approve | reject.").
 		Handler(makeReviewHandler(svc)).
+		Register(srv); err != nil {
+		return nil, err
+	}
+
+	if err := tool.New[TraceInput, traces.Bundle]("memory_trace").
+		Describe("Export the reasoning trace for a response_id (mirrors GET /v1/traces/{response_id}; RFC §6c, D-086): the memory-into-conclusion chain (query, injected memories, drill-down spans, typed links, verification verdicts) reconstructed from the day-one tables, as an optionally ed25519-signed bundle. Deterministic + LLM-free.").
+		Handler(makeTraceHandler(svc)).
 		Register(srv); err != nil {
 		return nil, err
 	}

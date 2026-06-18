@@ -49,8 +49,18 @@ type Config struct {
 	Gateway   GatewayConfig   `yaml:"gateway"`
 	Telemetry TelemetryConfig `yaml:"telemetry"`
 	MCP       MCPConfig       `yaml:"mcp"`
+	Trace     TraceConfig     `yaml:"trace"`
 
 	prov Provenance
+}
+
+// TraceConfig holds reasoning-trace export tuning (Phase 26, §6c, D-086).
+type TraceConfig struct {
+	// SigningKey, when set, MUST be an env.VAR_NAME reference (D-030) to a
+	// base64-encoded 32-byte ed25519 seed used to sign exported trace bundles.
+	// Empty (the default) ⇒ bundles are returned unsigned (signed:false). The seed
+	// itself never appears in config or logs.
+	SigningKey string `yaml:"signing_key"`
 }
 
 // ServerConfig holds HTTP server tuning.
@@ -134,11 +144,13 @@ var allKeys = []string{
 	"telemetry.log_format",
 	"telemetry.metrics_listen",
 	"mcp.stdio_tenant",
+	"trace.signing_key",
 }
 
 // secretKeyPaths is the set of keys that hold env.VAR_NAME references.
 var secretKeyPaths = map[string]bool{
-	"gateway.api_key": true,
+	"gateway.api_key":   true,
+	"trace.signing_key": true,
 }
 
 // envKeys maps STOWAGE_* env var names to config key paths.
@@ -408,6 +420,11 @@ func (c *Config) Validate() error {
 	if c.Gateway.APIKey != "" && !strings.HasPrefix(c.Gateway.APIKey, "env.") {
 		errs = append(errs, errors.New("config.gateway.api_key: must use env.VAR indirection"))
 	}
+	// trace.signing_key is optional (empty → unsigned); when set it is a secret and
+	// must use env.VAR indirection (D-030/D-086).
+	if c.Trace.SigningKey != "" && !strings.HasPrefix(c.Trace.SigningKey, "env.") {
+		errs = append(errs, errors.New("config.trace.signing_key: must use env.VAR indirection"))
+	}
 
 	// gateway.rerank_base_url is optional (default empty → reuse base_url); when
 	// set it must be an absolute URL with scheme + host (D-075/D-034).
@@ -575,6 +592,8 @@ func (c *Config) getByPath(path string) string {
 		return c.Telemetry.MetricsListen
 	case "mcp.stdio_tenant":
 		return c.MCP.StdioTenant
+	case "trace.signing_key":
+		return c.Trace.SigningKey
 	default:
 		return ""
 	}
@@ -649,6 +668,8 @@ func (c *Config) setByPath(path, value string) error {
 		c.Telemetry.MetricsListen = value
 	case "mcp.stdio_tenant":
 		c.MCP.StdioTenant = value
+	case "trace.signing_key":
+		c.Trace.SigningKey = value
 	default:
 		return fmt.Errorf("config: unknown key path %q", path)
 	}

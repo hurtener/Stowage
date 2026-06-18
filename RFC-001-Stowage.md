@@ -1026,5 +1026,8 @@ MCP App, managed-cloud control plane.
 - **OQ-9:** Hot–warm cache invalidation granularity — per-scope flush (simple,
   correct) vs per-memory dependency tracking (precise, complex). Lean per-scope
   first; measure hit rates before adding precision.
-- **OQ-10:** Reasoning-trace retention class and export signing scheme —
-  decide in the traces phase with compliance input.
+- **OQ-10 (RESOLVED, Phase 26 / D-086):** Reasoning-trace retention class and export
+  signing scheme. Resolved: traces are reconstructed on demand (never stored), so the
+  retention class is exactly that of the source day-one tables (no separate trace
+  store/retention); export bundles are ed25519-signed with an operator-provided,
+  env-indirected key (`trace.signing_key`).

@@ -1316,3 +1316,33 @@ func TestHandlerReview(t *testing.T) {
 		t.Error("expected error on bad action")
 	}
 }
+
+// --- Phase 26: memory_trace (D-086) ------------------------------------------
+
+func TestHandlerTrace(t *testing.T) {
+	svc := newHandlerServices(t)
+	h := makeTraceHandler(svc)
+	ctx := context.Background()
+	scope := testScope()
+	_ = svc.Store.Memories().Insert(ctx, scope, store.Memory{ID: "tm1", Kind: "fact", Content: "Paris.", Status: "active", Confidence: 0.8, TrustSource: "llm_extracted", Stability: 1.0, CreatedAt: 1, UpdatedAt: 1})
+	_ = svc.Store.Injections().Append(ctx, scope, []store.Injection{{ID: "ti1", ResponseID: "resp-x", MemoryID: "tm1", Rank: 0, Score: 0.9, CreatedAt: 1}})
+
+	res, err := h(ctx, TraceInput{ResponseID: "resp-x"})
+	if err != nil {
+		t.Fatalf("trace: %v", err)
+	}
+	if res.Structured.Trace.ResponseID != "resp-x" || len(res.Structured.Trace.Items) != 1 {
+		t.Fatalf("trace wrong: %+v", res.Structured.Trace)
+	}
+	if res.Structured.Signed { // no signer on the test services
+		t.Error("expected unsigned bundle")
+	}
+}
+
+func TestHandlerTrace_MissingResponseID(t *testing.T) {
+	svc := newHandlerServices(t)
+	h := makeTraceHandler(svc)
+	if _, err := h(context.Background(), TraceInput{}); err == nil {
+		t.Error("expected error when response_id is empty")
+	}
+}

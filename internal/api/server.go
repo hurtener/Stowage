@@ -14,6 +14,7 @@ package api
 
 import (
 	"context"
+	"crypto/ed25519"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -74,6 +75,10 @@ type Server struct {
 	// gw is the intelligence seam, used by POST /v1/verify (claim entailment,
 	// Phase 25). Set via SetGateway. May be nil — verify then degrades to unclear.
 	gw gateway.Gateway
+
+	// traceSigner signs reasoning-trace exports (Phase 26, D-086). Set via
+	// SetTraceSigner. nil ⇒ bundles returned unsigned (signed:false).
+	traceSigner ed25519.PrivateKey
 
 	maxBodyB int64 // max request body bytes
 
@@ -148,6 +153,9 @@ func New(cfg *config.Config, st store.Store, log *slog.Logger, reg *prometheus.R
 	mux.HandleFunc("GET /v1/review", srv.authMiddleware(srv.handleReviewList, false))
 	mux.HandleFunc("POST /v1/review/{id}", srv.authMiddleware(srv.handleReviewResolve, false))
 
+	// Phase 26: reasoning-trace audit export (RFC §6c, D-086).
+	mux.HandleFunc("GET /v1/traces/{response_id}", srv.authMiddleware(srv.handleTrace, false))
+
 	// Phase 11: drill-down, feedback, and citation resolution.
 	mux.HandleFunc("POST /v1/drilldown", srv.authMiddleware(srv.handleDrilldown, false))
 	mux.HandleFunc("POST /v1/feedback", srv.authMiddleware(srv.handleFeedback, false))
@@ -215,6 +223,12 @@ func (s *Server) SetTopicService(svc *topics.Service) {
 // Optional — when nil, verify degrades to unclear (D-036).
 func (s *Server) SetGateway(gw gateway.Gateway) {
 	s.gw = gw
+}
+
+// SetTraceSigner wires the ed25519 key for signing trace exports (Phase 26, D-086).
+// Optional — when nil, bundles are returned unsigned.
+func (s *Server) SetTraceSigner(key ed25519.PrivateKey) {
+	s.traceSigner = key
 }
 
 // SetRetriever wires the retrieval.Retriever used by POST /v1/retrieve (Phase 09).
