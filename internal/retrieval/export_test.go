@@ -12,11 +12,11 @@ func ExportRRF(lanes map[string][]string) []FusedHit {
 	return rrf(lanes)
 }
 
-// ExportNewHub creates a Hub with the given maxSize for testing.
-func ExportNewHub(maxSize int) *Hub { return NewHub(maxSize) }
-
 // ExportQuerySig exposes QuerySig for testing.
 func ExportQuerySig(tokens []string) string { return QuerySig(tokens) }
+
+// ExportHubWindowMs exposes the durable hub recency window for testing (D-092).
+func ExportHubWindowMs() int64 { return hubWindowMs }
 
 // InjWr exposes the InjectionWriter for fault-hook testing (TEST-ONLY).
 // Returns nil when injections are not wired.

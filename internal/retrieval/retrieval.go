@@ -104,7 +104,7 @@ type Retriever struct {
 	recs        store.RecordStore
 	vi          vindex.Index
 	gw          gateway.Gateway
-	hub         *Hub
+	injSt       store.InjectionStore // read handle for the durable hub signal (D-092); nil ⇒ no dampening
 	log         *slog.Logger
 	injWr       *InjectionWriter // nil when no injection store is wired
 	cache       *ResultCache
@@ -122,7 +122,6 @@ func New(mem store.MemoryStore, recs store.RecordStore, vi vindex.Index, gw gate
 		recs:   recs,
 		vi:     vi,
 		gw:     gw,
-		hub:    NewHub(hubMaxSize),
 		log:    log.With("subsystem", "retrieval"),
 		cache:  NewResultCache(0),
 		hotSet: NewHotSet(0),
@@ -183,6 +182,7 @@ func (r *Retriever) Cache() *ResultCache { return r.cache }
 func NewWithInjections(mem store.MemoryStore, recs store.RecordStore, vi vindex.Index, gw gateway.Gateway, injSt store.InjectionStore, log *slog.Logger) *Retriever {
 	r := New(mem, recs, vi, gw, log)
 	if injSt != nil {
+		r.injSt = injSt // durable hub-signal read handle (D-092)
 		r.injWr = NewInjectionWriter(injSt, log)
 		r.injWr.SetMemoryCounter(mem) // bump inject_count on each injection (D-008)
 	}
@@ -470,16 +470,28 @@ func (r *Retriever) Retrieve(ctx context.Context, scope identity.Scope, req Requ
 
 	nowMs := time.Now().UnixMilli()
 
-	// Record hub signals for all returned memories BEFORE scoring (uses the
-	// query signature derived from this retrieve call's tokens).
-	for _, m := range mems {
-		r.hub.Record(m.ID, querySig)
-	}
-
 	// Score each memory and build the response items.
 	memByID := make(map[string]store.Memory, len(mems))
+	memIDs := make([]string, 0, len(mems))
 	for _, m := range mems {
 		memByID[m.ID] = m
+		memIDs = append(memIDs, m.ID)
+	}
+
+	// Durable hub signals (D-092): one batched, scoped query counting the DISTINCT
+	// query clusters that returned each candidate in the recent window. Replaces the
+	// former per-process LRU — the signal now survives restart and is shared across
+	// processes. THIS retrieve's own injection (carrying querySig) is written async
+	// after the ACK, so it counts toward future retrieves, not this one. Degraded-safe
+	// (D-036): on a nil store or a query error, no dampening is applied (signals = 0).
+	hubSignals := map[string]int{}
+	if r.injSt != nil {
+		hs, err := r.injSt.HubSignals(ctx, scope, memIDs, nowMs-hubWindowMs)
+		if err != nil {
+			r.log.WarnContext(ctx, "retrieval: HubSignals failed — no hub dampening this call", "err", err)
+		} else {
+			hubSignals = hs
+		}
 	}
 
 	// Convert query window for scoring.
@@ -526,7 +538,7 @@ func (r *Retriever) Retrieve(ctx context.Context, scope identity.Scope, req Requ
 			ActivityTurns: activityTurns,
 			QueryWindow:   scoringWindow,
 			SameSession:   sameSession,
-			HubSignals:    r.hub.Signals(m.ID),
+			HubSignals:    hubSignals[m.ID],
 		}
 
 		finalScore, bd := scoring.Score(in)
@@ -624,6 +636,7 @@ func (r *Retriever) Retrieve(ctx context.Context, scope identity.Scope, req Requ
 				Rank:       i,
 				Score:      item.Score,
 				Lane:       strings.Join(lanesByID[item.Memory.ID], ","),
+				QuerySig:   querySig, // durable hub-dampening signal (D-092)
 				CreatedAt:  nowInj,
 			}
 		}

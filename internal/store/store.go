@@ -462,6 +462,15 @@ type InjectionStore interface {
 	// last_accessed_at — all in a single transaction (D-027 groundwork).
 	// Returns ErrNotFound if the injection does not exist within scope.
 	MarkWrongCitation(ctx context.Context, scope identity.Scope, injectionID string) error
+
+	// HubSignals returns, for each memory in memoryIDs, the number of DISTINCT
+	// non-empty query signatures that returned it via an injection created at or
+	// after sinceMs (the durable hub-dampening signal, D-092). This replaces the
+	// former per-process LRU: the signal now survives restart and is shared across
+	// processes. Scoped to the tenant (P3), matching ListByResponse/Get. Memories
+	// with no qualifying injections are absent from the map (caller treats as 0).
+	// An empty memoryIDs slice returns an empty map without querying.
+	HubSignals(ctx context.Context, scope identity.Scope, memoryIDs []string, sinceMs int64) (map[string]int, error)
 }
 
 // GrantStore manages groups, group membership, and grants (Phase 15, RFC §5.3, D-016).

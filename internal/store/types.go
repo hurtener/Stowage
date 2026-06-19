@@ -314,6 +314,7 @@ type Injection struct {
 	Lane       string // CSV of lane names
 	WasCited   bool
 	Feedback   string // "" | "wrong_citation"
+	QuerySig   string // stable signature of the retrieve query (hub-dampening signal, D-092)
 	CreatedAt  int64  // unix millis
 }
 

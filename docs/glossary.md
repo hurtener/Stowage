@@ -233,10 +233,16 @@ New terms land here in the same PR that introduces them (CLAUDE.md §14).
   5 turns in a quiet scope is less stale than one idle for 5 turns in a busy
   scope. Computed as a single `COUNT` query per retrieve call (not per item).
 - **HubSignals** — the number of distinct query clusters (query signatures) that
-  have returned a given memory in the current process lifetime, tracked by the
-  in-memory LRU Hub (Phase 10, `internal/retrieval.Hub`). Memories with ≥ 4
-  distinct signals receive a 0.80× hub-dampening multiplier in the utility score
-  to counteract generic "hub" content dominating results across unrelated queries.
+  have returned a given memory within the recent window (30 days). Derived durably
+  from the `query_sig` column on the `injections` table — `COUNT(DISTINCT query_sig)`
+  — so the signal survives restart and is shared across processes (D-092, replacing
+  the former per-process LRU). Memories with ≥ 4 distinct signals receive a 0.80×
+  hub-dampening multiplier in the utility score to counteract generic "hub" content
+  dominating results across unrelated queries.
+- **Query signature (query_sig)** — a short, stable SHA-256-derived fingerprint of a
+  retrieve query's sorted token set (`retrieval.QuerySig`). Two retrieves with the same
+  tokens in any order share a signature, so they count as ONE query cluster for hub
+  dampening and share a result-cache key. Persisted on each injection row (D-092).
 - **SameSession** — true when the retrieve request's `session_id` matches the
   `session_id` of the memory's origin (the scope.Session value at INSERT time).
   Used by the write-echo cooldown: memories created in the current session within
