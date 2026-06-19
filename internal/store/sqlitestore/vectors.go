@@ -182,6 +182,24 @@ func (vs *vectorStore) ListWithoutVectors(ctx context.Context, limit int) ([]sto
 	return out, rows.Err()
 }
 
+// DistinctModels returns the distinct embedding model names across all vectors.
+func (vs *vectorStore) DistinctModels(ctx context.Context) ([]string, error) {
+	rows, err := vs.s.rdb.QueryContext(ctx, `SELECT DISTINCT model FROM memory_vectors WHERE model <> '' ORDER BY model`)
+	if err != nil {
+		return nil, fmt.Errorf("sqlitestore: distinct vector models: %w", err)
+	}
+	defer rows.Close() //nolint:errcheck
+	out := make([]string, 0, 2)
+	for rows.Next() {
+		var m string
+		if err := rows.Scan(&m); err != nil {
+			return nil, err
+		}
+		out = append(out, m)
+	}
+	return out, rows.Err()
+}
+
 // splitCSV splits a comma-separated string, returning nil for empty input.
 func splitCSV(s string) []string {
 	if s == "" {

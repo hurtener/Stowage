@@ -146,6 +146,7 @@ func Run(t *testing.T, factory Factory) {
 	t.Run("VectorWindowFilter", func(t *testing.T) { testVectorWindowFilter(t, factory) })
 	t.Run("VectorListWithoutVectors", func(t *testing.T) { testVectorListWithoutVectors(t, factory) })
 	t.Run("VectorScopeRequired", func(t *testing.T) { testVectorScopeRequired(t, factory) })
+	t.Run("VectorDistinctModels", func(t *testing.T) { testVectorDistinctModels(t, factory) })
 	// Phase 09 — MemoryStore lexical + GetMany
 	t.Run("LexicalSearch", func(t *testing.T) { testLexicalSearch(t, factory) })
 	t.Run("LexicalSearchWindow", func(t *testing.T) { testLexicalSearchWindow(t, factory) })

@@ -3,16 +3,29 @@ package gateway
 import (
 	"context"
 	"log/slog"
+	"sync/atomic"
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
 )
 
-// Meter records token usage and cost for every provider round-trip (CLAUDE.md §10).
-// Phase 05 wires the Meter to the event store; this phase ships PromMeter.
+// Meter records token usage and cost for every provider round-trip (CLAUDE.md §10):
+// as Prometheus counters AND (when an emitter is wired) as an audit/cost event on the
+// store event stream — so cost governance and the audit trail see every gateway call.
 type Meter interface {
 	Record(ctx context.Context, op, model string, usage Usage)
 	RecordRerank(ctx context.Context, model string, usage RerankUsage)
+	// SetEmitter wires the optional event sink. Call once at boot before serving.
+	SetEmitter(e UsageEventEmitter)
+}
+
+// UsageEventEmitter records a gateway call as an event (§8/§10). The implementation
+// (wired at boot) attributes the event to the scope carried in ctx; a call made on a
+// scope-less background ctx is skipped. Defined here (not via a store import) to keep
+// the gateway seam free of persistence coupling.
+type UsageEventEmitter interface {
+	EmitUsage(ctx context.Context, op, model string, inputTokens, outputTokens int, costUSD float64)
+	EmitRerankUsage(ctx context.Context, model string, searchUnits int, costUSD float64)
 }
 
 // PromMeter records usage as Prometheus counters and slog debug lines.
@@ -25,7 +38,12 @@ type PromMeter struct {
 	calls        *prometheus.CounterVec
 	searchUnits  *prometheus.CounterVec
 	rerankCalls  *prometheus.CounterVec
+	emitter      atomic.Pointer[UsageEventEmitter] // optional; nil ⇒ no events (Prom-only)
 }
+
+// SetEmitter wires the optional event sink (boot, before serving). Stored atomically
+// so it is safe against the batcher goroutine reading it in Record.
+func (m *PromMeter) SetEmitter(e UsageEventEmitter) { m.emitter.Store(&e) }
 
 // NewPromMeter returns a Meter backed by a scoped Prometheus registry and slog.
 func NewPromMeter(log *slog.Logger, prom *prometheus.Registry) *PromMeter {
@@ -71,6 +89,9 @@ func (m *PromMeter) RecordRerank(ctx context.Context, model string, usage Rerank
 		slog.Int("search_units", usage.SearchUnits),
 		slog.Float64("cost_usd", usage.CostUSD),
 	)
+	if ep := m.emitter.Load(); ep != nil {
+		(*ep).EmitRerankUsage(ctx, model, usage.SearchUnits, usage.CostUSD)
+	}
 }
 
 // Record increments Prometheus counters and emits a debug log line.
@@ -86,4 +107,7 @@ func (m *PromMeter) Record(ctx context.Context, op, model string, usage Usage) {
 		slog.Int("output_tokens", usage.OutputTokens),
 		slog.Float64("cost_usd", usage.CostUSD),
 	)
+	if ep := m.emitter.Load(); ep != nil {
+		(*ep).EmitUsage(ctx, op, model, usage.InputTokens, usage.OutputTokens, usage.CostUSD)
+	}
 }

@@ -169,7 +169,9 @@ func (e *ExtractStage) processFlush(ctx context.Context, fb FlushedBuffer) {
 		MaxTokens:   extractMaxTokens,
 		Temperature: 0.0,
 	}
-	resp, err := e.gw.Complete(ctx, req)
+	// Scope the ctx so the extraction gateway call is attributed in the usage event
+	// stream (§10); the pipeline stage runs on a scope-less background ctx.
+	resp, err := e.gw.Complete(identity.WithScope(ctx, fb.Scope), req)
 	if err != nil {
 		reason := "gateway_failure"
 		if strings.Contains(err.Error(), "unavailable") {
