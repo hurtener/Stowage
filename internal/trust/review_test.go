@@ -213,3 +213,51 @@ func TestVerifyClaim_CapturesVerdict(t *testing.T) {
 		t.Errorf("expected a verify.verdict event keyed by response_id, got %+v", evs)
 	}
 }
+
+// TestVerifyClaim_CapturesVerdictPerResponse proves that when a verify call mixes
+// citations from MULTIPLE responses, EACH distinct response's trace records the verdict
+// (A8, D-094) — not just the first (the prior simplification).
+func TestVerifyClaim_CapturesVerdictPerResponse(t *testing.T) {
+	st := openStore(t)
+	scope := identity.Scope{Tenant: "vc-multi"}
+	ctx := context.Background()
+	// Two memories, each cited in a DIFFERENT response.
+	if err := st.Memories().Insert(ctx, scope, store.Memory{ID: "m1", Kind: "fact", Content: "Paris is the capital.", Status: "active", Confidence: 0.8, TrustSource: "llm_extracted", Stability: 1.0, CreatedAt: 1, UpdatedAt: 1}); err != nil {
+		t.Fatalf("insert m1: %v", err)
+	}
+	if err := st.Memories().Insert(ctx, scope, store.Memory{ID: "m2", Kind: "fact", Content: "France is in Europe.", Status: "active", Confidence: 0.8, TrustSource: "llm_extracted", Stability: 1.0, CreatedAt: 1, UpdatedAt: 1}); err != nil {
+		t.Fatalf("insert m2: %v", err)
+	}
+	if err := st.Injections().Append(ctx, scope, []store.Injection{
+		{ID: "cit-1", ResponseID: "resp-A", MemoryID: "m1", CreatedAt: 1},
+		{ID: "cit-2", ResponseID: "resp-B", MemoryID: "m2", CreatedAt: 1},
+	}); err != nil {
+		t.Fatalf("inj: %v", err)
+	}
+
+	// A second citation for resp-A (same response) — must NOT double-count it.
+	if err := st.Injections().Append(ctx, scope, []store.Injection{
+		{ID: "cit-3", ResponseID: "resp-A", MemoryID: "m1", CreatedAt: 1},
+	}); err != nil {
+		t.Fatalf("inj cit-3: %v", err)
+	}
+
+	if _, err := VerifyClaim(ctx, st, fakeVerifyGateway{}, scope, "Paris is the capital of France in Europe", []string{"cit-1", "cit-2", "cit-3"}); err != nil {
+		t.Fatalf("VerifyClaim: %v", err)
+	}
+
+	// EACH distinct response's trace must carry EXACTLY ONE verify.verdict event — the
+	// seenResp dedup must not double-emit for resp-A despite its two citations (A8/D-094).
+	for _, resp := range []string{"resp-A", "resp-B"} {
+		evs, _ := st.Events().ListBySubject(ctx, scope, resp, 10)
+		n := 0
+		for _, e := range evs {
+			if e.Type == "verify.verdict" {
+				n++
+			}
+		}
+		if n != 1 {
+			t.Errorf("response %s: expected exactly 1 verify.verdict event, got %d (%+v)", resp, n, evs)
+		}
+	}
+}

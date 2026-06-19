@@ -2534,3 +2534,21 @@ dependency on vectors; the whole sweep remains OFF BY DEFAULT and eval-gated (D-
 **Non-destructive, reversible.** Threading only writes `relates_to` edges (Source=
 "inferred") over immutable narratives — the same reversible, idempotent edges as before;
 only the candidate-selection signal widened. No schema change, no new config.
+
+## D-094 — Claim verification captures the verdict against EVERY cited response, not just the first
+
+2026-06-19. Bar-remediation (simplification A8). `trust.VerifyClaim` captures the
+entailment verdict as a `verify.verdict` event keyed by `response_id` for the reasoning
+trace (D-086). It keyed the event to the FIRST resolvable citation's response only — so
+when a caller verified a claim citing memories injected across SEVERAL responses, only
+the first response's trace recorded the verdict; the other responses' traces were silently
+incomplete. The reasoning trace is an audit contract (RFC §6c) — a per-response trace that
+silently drops the verdict for a claim its citations supported is a v1- simplification.
+
+**Fix: emit to every distinct cited response.** `resolveCitedWithResponse` now returns all
+DISTINCT response IDs the citations resolve to (first-seen order); `VerifyClaim` emits the
+`verify.verdict` event once per response. The verdict itself is unchanged — the claim is
+verified ONCE against the full cited memory set (one claim, one entailment check); only the
+trace capture fans out, so each contributing response's trace is complete. No new schema,
+no contract-shape change (same event type/payload, keyed per response). Scope-enforced
+(P3) and degraded-safe (gateway failure ⇒ unclear+degraded, the verdict still captured).
