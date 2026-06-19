@@ -2456,3 +2456,46 @@ breaking the offline single-binary guarantee — or embed it: cl100k ~1.6MB + o2
 is a poor trade for an estimate that never affects correctness, and it couples the binary
 to a specific provider's vocab when the gateway is provider-agnostic (P5). The lean binary
 is a differentiator; a clamping estimate does not justify spending multiple MB on it.
+
+## D-092 — Hub dampening is durable, derived from injection query_sig (per-process LRU removed)
+
+2026-06-19. Bar-remediation (simplification A6). The hub-dampening signal — "how many
+DISTINCT query clusters returned this memory in the recent window", used by scoring to
+penalise generic content (brief 02, CC-mem D-008) — was a per-process in-memory LRU
+(`internal/retrieval.Hub`, 4096-entry). It reset to zero on every restart/deploy and was
+not shared across processes, so a fresh process applied NO hub dampening until it had
+re-observed enough traffic. That is a v1- simplification: the signal is inherently
+cross-session and accumulating, so it must be durable.
+
+**Derived from the injections table, not a new table.** The retrieve path already writes
+one durable, scoped, async injection row per returned memory per retrieve (the attribution
+backbone, D-025/D-051). Adding a single `query_sig` column (the same stable sorted-token
+signature already used for the result-cache key) makes the hub signal a pure query:
+`COUNT(DISTINCT query_sig) … WHERE memory_id = ? AND created_at >= ? AND query_sig <> ''`.
+A new `InjectionStore.HubSignals(scope, memoryIDs, sinceMs)` returns it batched (one query
+for all candidates), proven by the shared conformance suite on both drivers. No new table,
+no new write path — the per-process LRU is deleted (only `QuerySig` and the window constant
+remain in hub.go). RFC §8.1 amended (the one `query_sig` column); migration 0012.
+
+**Recency window = 30 days** (`hubWindowMs`, a tuning constant, not a knob — D-034). The
+old LRU bounded recency by capacity (4096 entries); the durable signal bounds it by time.
+
+**Covering index, not just a filter index.** Migration 0012's index is
+`(memory_id, created_at, query_sig)` — query_sig is included so both drivers satisfy the
+`COUNT(DISTINCT query_sig)` from an index-only scan. A genuine hub memory has the MOST
+injection rows (it is returned by the most queries), so the distinct count would otherwise
+be the most expensive heap scan exactly for the memories this targets — on the latency-gated
+retrieve path (D-035). The covering index keeps the hot case cheap.
+
+**Signal source: actually-injected, not candidates.** The old LRU recorded every CANDIDATE
+returned by a lane; injections record the final RANKED/returned set. "Returned to the agent"
+is the truer hub signal than "appeared in a candidate pool", and it is the set we already
+persist. THIS retrieve's own injection (carrying its query_sig) is written async after the
+ACK, so it counts toward FUTURE retrieves, not the current one — correct for an accumulating
+breadth signal (self-counting a single call toward its own dampening was never meaningful at
+the threshold of 4 distinct clusters).
+
+**Degraded-safe (D-036).** When the injection store is unwired (`retrieval.New` without
+injections) or the HubSignals query errors, retrieval applies NO dampening (signals = 0) and
+logs — never a hard dependency on the read. Empty-query_sig rows (pre-migration / non-retrieve
+injections) are excluded from the count, so the migration is backfill-free.

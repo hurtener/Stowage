@@ -167,6 +167,9 @@ func Run(t *testing.T, factory Factory) {
 	t.Run("InjectionScopeIsolation", func(t *testing.T) { testInjectionScopeIsolation(t, factory) })
 	t.Run("MarkWrongCitation", func(t *testing.T) { testMarkWrongCitation(t, factory) })
 	t.Run("MarkWrongCitationNotFound", func(t *testing.T) { testMarkWrongCitationNotFound(t, factory) })
+	t.Run("HubSignals", func(t *testing.T) { testHubSignals(t, factory) })
+	t.Run("HubSignalsWindowAndEmptySig", func(t *testing.T) { testHubSignalsWindowAndEmptySig(t, factory) })
+	t.Run("HubSignalsScopeIsolation", func(t *testing.T) { testHubSignalsScopeIsolation(t, factory) })
 	t.Run("ApplyFeedback", func(t *testing.T) { testApplyFeedback(t, factory) })
 	t.Run("ApplyFeedbackNoopMissing", func(t *testing.T) { testApplyFeedbackNoopMissing(t, factory) })
 	t.Run("ApplyFeedbackUnknownSignal", func(t *testing.T) { testApplyFeedbackUnknownSignal(t, factory) })
@@ -1649,6 +1652,8 @@ func testEmptyScopeRejected(t *testing.T, factory Factory) {
 	assertScopeRequired(t, "Injections.ListByResponse", err)
 	assertScopeRequired(t, "Injections.MarkWrongCitation",
 		s.Injections().MarkWrongCitation(ctx, zero, "any"))
+	_, err = s.Injections().HubSignals(ctx, zero, []string{"any"}, 0)
+	assertScopeRequired(t, "Injections.HubSignals", err)
 
 	// Phase 11 — MemoryStore.ApplyFeedback + Records.GetMany empty-scope rejection
 	assertScopeRequired(t, "Memories.ApplyFeedback",

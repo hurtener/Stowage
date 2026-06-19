@@ -34,12 +34,12 @@ func (inj *injectionStore) Append(ctx context.Context, scope identity.Scope, row
 		if _, err := tx.Exec(ctx, `
 			INSERT INTO injections
 				(id, tenant_id, project_id, user_id, session_id, response_id, memory_id,
-				 rank, score, lane, was_cited, feedback, created_at)
-			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+				 rank, score, lane, was_cited, feedback, query_sig, created_at)
+			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
 			ON CONFLICT (id) DO NOTHING`,
 			r.ID, scope.Tenant, nullStr(scope.Project), nullStr(scope.User), nullStr(scope.Session),
 			r.ResponseID, r.MemoryID,
-			r.Rank, r.Score, r.Lane, wasCited, r.Feedback, r.CreatedAt,
+			r.Rank, r.Score, r.Lane, wasCited, r.Feedback, r.QuerySig, r.CreatedAt,
 		); err != nil {
 			return err
 		}
@@ -53,7 +53,7 @@ func (inj *injectionStore) ListByResponse(ctx context.Context, scope identity.Sc
 	}
 	rows, err := inj.s.pool.Query(ctx,
 		`SELECT id, tenant_id, COALESCE(project_id,''), COALESCE(user_id,''), COALESCE(session_id,''),
-		        response_id, memory_id, rank, score, lane, was_cited, feedback, created_at
+		        response_id, memory_id, rank, score, lane, was_cited, feedback, query_sig, created_at
 		   FROM injections
 		  WHERE tenant_id = $1 AND response_id = $2
 		  ORDER BY rank ASC`,
@@ -80,7 +80,7 @@ func (inj *injectionStore) Get(ctx context.Context, scope identity.Scope, id str
 	}
 	row := inj.s.pool.QueryRow(ctx,
 		`SELECT id, tenant_id, COALESCE(project_id,''), COALESCE(user_id,''), COALESCE(session_id,''),
-		        response_id, memory_id, rank, score, lane, was_cited, feedback, created_at
+		        response_id, memory_id, rank, score, lane, was_cited, feedback, query_sig, created_at
 		   FROM injections
 		  WHERE tenant_id = $1 AND id = $2`,
 		scope.Tenant, id,
@@ -134,6 +134,40 @@ func (inj *injectionStore) MarkWrongCitation(ctx context.Context, scope identity
 	return tx.Commit(ctx)
 }
 
+// HubSignals returns the count of DISTINCT non-empty query_sig values per memory
+// across injections created at or after sinceMs, scoped to the tenant (P3). The
+// durable replacement for the former per-process hub LRU (D-092).
+func (inj *injectionStore) HubSignals(ctx context.Context, scope identity.Scope, memoryIDs []string, sinceMs int64) (map[string]int, error) {
+	if scope.Tenant == "" {
+		return nil, store.ErrScopeRequired
+	}
+	out := make(map[string]int, len(memoryIDs))
+	if len(memoryIDs) == 0 {
+		return out, nil
+	}
+	rows, err := inj.s.pool.Query(ctx,
+		`SELECT memory_id, COUNT(DISTINCT query_sig)
+		   FROM injections
+		  WHERE tenant_id = $1 AND created_at >= $2 AND query_sig <> ''
+		    AND memory_id = ANY($3)
+		  GROUP BY memory_id`,
+		scope.Tenant, sinceMs, memoryIDs,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id string
+		var n int
+		if err := rows.Scan(&id, &n); err != nil {
+			return nil, err
+		}
+		out[id] = n
+	}
+	return out, rows.Err()
+}
+
 // --- pgRowScanner is the common interface for pgx.Row and pgx.Rows -----------
 
 type pgRowScanner interface {
@@ -146,7 +180,7 @@ func scanInjectionPG(s pgRowScanner) (*store.Injection, error) {
 	err := s.Scan(
 		&r.ID, &r.TenantID, &r.ProjectID, &r.UserID, &r.SessionID,
 		&r.ResponseID, &r.MemoryID, &r.Rank, &r.Score, &r.Lane,
-		&wasCited, &r.Feedback, &r.CreatedAt,
+		&wasCited, &r.Feedback, &r.QuerySig, &r.CreatedAt,
 	)
 	if err != nil {
 		return nil, err

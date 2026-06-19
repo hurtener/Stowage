@@ -2,6 +2,7 @@ package retrieval_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -635,36 +636,42 @@ checkOtherSession:
 
 // --- Phase-10 AC-6: Hub dampening integration ────────────────────────────────
 
-// TestHubDampeningIntegration verifies that a memory hit by 4 distinct
-// query-token clusters receives hub dampening (score lower than an equivalent
-// memory with fewer hits).
+// TestHubDampeningIntegration verifies the DURABLE hub signal (D-092): a memory
+// returned by ≥4 distinct query clusters (recorded as injection rows carrying
+// query_sig) receives hub dampening, while a memory with one cluster does not.
+// The injection rows are Appended synchronously here so the assertion is
+// deterministic — the production path enqueues them async via the InjectionWriter.
 func TestHubDampeningIntegration(t *testing.T) {
 	t.Parallel()
 	st := openStore(t)
 	gw := openMockGateway(t, 4)
 	vi := vindex.New(st.Vectors(), 4, "test")
-	r := retrieval.New(st.Memories(), st.Records(), vi, gw, slog.New(slog.NewTextHandler(os.Stderr, nil)))
+	// NewWithInjections wires r.injSt — the durable hub-signal read handle.
+	r := retrieval.NewWithInjections(st.Memories(), st.Records(), vi, gw, st.Injections(),
+		slog.New(slog.NewTextHandler(os.Stderr, nil)))
+	defer r.Close()
 
 	scope := identity.Scope{Tenant: "tenant-hubdampen"}
 	ctx := context.Background()
 
-	// Memory A: will appear in 4 distinct query results → becomes a hub.
 	hubTerm := "hubmemoryxyzzyshared"
 	hubID := insertMemory(t, st, scope, hubTerm+" alpha beta gamma delta", "fact", nil, nil, nil, 0)
-	// Memory B: appears in only 1 query result → not a hub.
 	freshID := insertMemory(t, st, scope, hubTerm+" exclusive distinct only", "fact", nil, nil, nil, 0)
 
-	// Simulate 4 different retrievals that return hubID (but not freshID)
-	// by querying with different significant tokens.
-	queries := []string{hubTerm + " alpha", hubTerm + " beta", hubTerm + " gamma", hubTerm + " delta"}
-	for _, q := range queries {
-		_, err := r.Retrieve(ctx, scope, retrieval.Request{Query: q, Limit: 5})
-		if err != nil {
-			t.Logf("retrieve %q: %v (non-fatal)", q, err)
-		}
+	// Seed the durable hub signal: 4 distinct query clusters returned hubID; one
+	// cluster returned freshID. (Threshold for dampening is 4 distinct clusters.)
+	now := time.Now().UnixMilli()
+	seed := []store.Injection{
+		{ID: newID(), ResponseID: newID(), MemoryID: hubID, QuerySig: "cluster-1", CreatedAt: now},
+		{ID: newID(), ResponseID: newID(), MemoryID: hubID, QuerySig: "cluster-2", CreatedAt: now},
+		{ID: newID(), ResponseID: newID(), MemoryID: hubID, QuerySig: "cluster-3", CreatedAt: now},
+		{ID: newID(), ResponseID: newID(), MemoryID: hubID, QuerySig: "cluster-4", CreatedAt: now},
+		{ID: newID(), ResponseID: newID(), MemoryID: freshID, QuerySig: "cluster-1", CreatedAt: now},
+	}
+	if err := st.Injections().Append(ctx, scope, seed); err != nil {
+		t.Fatalf("seed injections: %v", err)
 	}
 
-	// Now retrieve and check that hubID has hub dampening applied.
 	resp, err := r.Retrieve(ctx, scope, retrieval.Request{
 		Query: hubTerm,
 		Limit: 10,
@@ -685,19 +692,57 @@ func TestHubDampeningIntegration(t *testing.T) {
 		}
 	}
 
-	if hubDampening >= 0 {
-		t.Logf("hub memory dampening: %.3f (hub signals)", hubDampening)
-		// Hub dampening 0.8 should be applied if it appeared in 4+ distinct clusters.
-		// Due to tokenisation, the 4 queries may map to similar signatures, so we
-		// accept either dampening applied or explain why it wasn't.
+	if hubDampening < 0 {
+		t.Fatal("hub memory was not returned with a breakdown")
 	}
-	if freshDampening >= 0 && freshDampening < 0.9 {
-		t.Errorf("fresh memory: hub dampening %.3f should be ~1.0", freshDampening)
+	if hubDampening >= 1.0 {
+		t.Errorf("hub memory (4 distinct clusters): dampening %.3f should be < 1.0 (penalised)", hubDampening)
 	}
+	if freshDampening < 0 {
+		t.Fatal("fresh memory was not returned with a breakdown")
+	}
+	if freshDampening < 0.9 {
+		t.Errorf("fresh memory (1 cluster): dampening %.3f should be ~1.0 (no penalty)", freshDampening)
+	}
+}
 
-	_ = hubID
-	_ = freshID
-	t.Log("hub dampening integration: LRU wired and signals populated")
+// hubSignalsFailStore wraps an InjectionStore but fails HubSignals, to exercise the
+// degraded path (D-036): a HubSignals error must not fail Retrieve — it just skips
+// dampening (signals = 0).
+type hubSignalsFailStore struct {
+	store.InjectionStore
+}
+
+func (h hubSignalsFailStore) HubSignals(context.Context, identity.Scope, []string, int64) (map[string]int, error) {
+	return nil, errors.New("synthetic HubSignals failure")
+}
+
+// TestHubSignalsErrorDegrades proves that a HubSignals query error degrades to no
+// dampening rather than failing the retrieve (D-036).
+func TestHubSignalsErrorDegrades(t *testing.T) {
+	t.Parallel()
+	st := openStore(t)
+	gw := openMockGateway(t, 4)
+	vi := vindex.New(st.Vectors(), 4, "test")
+	r := retrieval.NewWithInjections(st.Memories(), st.Records(), vi, gw,
+		hubSignalsFailStore{st.Injections()},
+		slog.New(slog.NewTextHandler(os.Stderr, nil)))
+	defer r.Close()
+
+	scope := identity.Scope{Tenant: "tenant-hubfail"}
+	ctx := context.Background()
+	id := insertMemory(t, st, scope, "degraded hub signal memory term", "fact", nil, nil, nil, 0)
+
+	resp, err := r.Retrieve(ctx, scope, retrieval.Request{Query: "memory term", Limit: 10, Debug: true})
+	if err != nil {
+		t.Fatalf("Retrieve must succeed despite HubSignals failure: %v", err)
+	}
+	for i := range resp.Items {
+		item := &resp.Items[i]
+		if item.Memory.ID == id && item.Breakdown != nil && item.Breakdown.HubDampening != 1.0 {
+			t.Errorf("HubSignals failed → expected no dampening (1.0), got %.3f", item.Breakdown.HubDampening)
+		}
+	}
 }
 
 // --- Phase-10 AC-7: Support summary ──────────────────────────────────────────

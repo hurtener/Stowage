@@ -250,6 +250,113 @@ func testMarkWrongCitationNotFound(t *testing.T, factory Factory) {
 	}
 }
 
+// --- InjectionStore.HubSignals conformance (D-092) --------------------------
+
+// testHubSignals proves the core durable hub-signal semantics: HubSignals counts
+// DISTINCT query_sig values per memory, deduping repeats of the same signature.
+func testHubSignals(t *testing.T, factory Factory) {
+	t.Helper()
+	s, cleanup := factory()
+	defer cleanup()
+	ctx := context.Background()
+	scope := tenantScope("t-" + newID())
+
+	memHub := insertActiveMemory(t, s, scope, "generic hub memory", "fact", nil, nil, nil)
+	memNarrow := insertActiveMemory(t, s, scope, "specific narrow memory", "fact", nil, nil, nil)
+
+	// memHub returned by 3 distinct query clusters; one cluster repeats (must dedup → 3).
+	// memNarrow returned by 1 cluster.
+	rows := []store.Injection{
+		{ID: newID(), ResponseID: newID(), MemoryID: memHub, QuerySig: "sig-a", CreatedAt: nowMs()},
+		{ID: newID(), ResponseID: newID(), MemoryID: memHub, QuerySig: "sig-b", CreatedAt: nowMs()},
+		{ID: newID(), ResponseID: newID(), MemoryID: memHub, QuerySig: "sig-c", CreatedAt: nowMs()},
+		{ID: newID(), ResponseID: newID(), MemoryID: memHub, QuerySig: "sig-a", CreatedAt: nowMs()}, // repeat
+		{ID: newID(), ResponseID: newID(), MemoryID: memNarrow, QuerySig: "sig-a", CreatedAt: nowMs()},
+	}
+	if err := s.Injections().Append(ctx, scope, rows); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+
+	got, err := s.Injections().HubSignals(ctx, scope, []string{memHub, memNarrow}, 0)
+	if err != nil {
+		t.Fatalf("HubSignals: %v", err)
+	}
+	if got[memHub] != 3 {
+		t.Errorf("memHub distinct clusters: got %d want 3 (dedup of sig-a)", got[memHub])
+	}
+	if got[memNarrow] != 1 {
+		t.Errorf("memNarrow distinct clusters: got %d want 1", got[memNarrow])
+	}
+
+	// Empty memoryIDs → empty map, no query.
+	empty, err := s.Injections().HubSignals(ctx, scope, nil, 0)
+	if err != nil {
+		t.Fatalf("HubSignals(nil): %v", err)
+	}
+	if len(empty) != 0 {
+		t.Errorf("HubSignals(nil): got %d entries want 0", len(empty))
+	}
+}
+
+// testHubSignalsWindowAndEmptySig proves the recency window excludes old injections
+// and that empty query_sig rows (pre-migration / non-retrieve) never count.
+func testHubSignalsWindowAndEmptySig(t *testing.T, factory Factory) {
+	t.Helper()
+	s, cleanup := factory()
+	defer cleanup()
+	ctx := context.Background()
+	scope := tenantScope("t-" + newID())
+
+	mem := insertActiveMemory(t, s, scope, "windowed memory", "fact", nil, nil, nil)
+	now := nowMs()
+	old := now - 1_000_000 // well before the cutoff we pass below
+
+	rows := []store.Injection{
+		{ID: newID(), ResponseID: newID(), MemoryID: mem, QuerySig: "recent-1", CreatedAt: now},
+		{ID: newID(), ResponseID: newID(), MemoryID: mem, QuerySig: "recent-2", CreatedAt: now},
+		{ID: newID(), ResponseID: newID(), MemoryID: mem, QuerySig: "stale", CreatedAt: old}, // outside window
+		{ID: newID(), ResponseID: newID(), MemoryID: mem, QuerySig: "", CreatedAt: now},      // empty sig — never counts
+	}
+	if err := s.Injections().Append(ctx, scope, rows); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+
+	got, err := s.Injections().HubSignals(ctx, scope, []string{mem}, now-1000)
+	if err != nil {
+		t.Fatalf("HubSignals: %v", err)
+	}
+	if got[mem] != 2 {
+		t.Errorf("windowed distinct clusters: got %d want 2 (stale + empty-sig excluded)", got[mem])
+	}
+}
+
+// testHubSignalsScopeIsolation proves tenant B's injections never leak into tenant
+// A's hub signal (P3).
+func testHubSignalsScopeIsolation(t *testing.T, factory Factory) {
+	t.Helper()
+	s, cleanup := factory()
+	defer cleanup()
+	ctx := context.Background()
+	scopeA := tenantScope("tenant-A-" + newID())
+	scopeB := tenantScope("tenant-B-" + newID())
+
+	memA := insertActiveMemory(t, s, scopeA, "tenant A memory", "fact", nil, nil, nil)
+	if err := s.Injections().Append(ctx, scopeA, []store.Injection{
+		{ID: newID(), ResponseID: newID(), MemoryID: memA, QuerySig: "sig-a", CreatedAt: nowMs()},
+	}); err != nil {
+		t.Fatalf("Append A: %v", err)
+	}
+
+	// Tenant B asking about memA's ID must see zero signals (the ID is not theirs).
+	got, err := s.Injections().HubSignals(ctx, scopeB, []string{memA}, 0)
+	if err != nil {
+		t.Fatalf("HubSignals B: %v", err)
+	}
+	if got[memA] != 0 {
+		t.Errorf("cross-tenant isolation violated: tenant B saw %d signals for tenant A's memory", got[memA])
+	}
+}
+
 // --- MemoryStore.ApplyFeedback conformance ----------------------------------
 
 func testApplyFeedback(t *testing.T, factory Factory) {

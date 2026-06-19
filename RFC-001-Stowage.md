@@ -662,7 +662,7 @@ table earns its place by carrying a signal a later capability cannot backfill
 | `memory_entities` / `memory_keywords` / `memory_queries` | structured + anticipated-queries lanes | retrieval |
 | `memory_topics` | memory ↔ extraction-topic association (tagged at extraction) | grant `topic_filter` enforcement (§5.3, D-089) |
 | `provenance` | memory ↔ record spans | drill-down, citations, traces |
-| `injections` | what was injected into which response (§5.7) | citations, feedback, RL, cache hot-set, gain |
+| `injections` | what was injected into which response (§5.7), incl. `query_sig` | citations, feedback, RL, cache hot-set, gain, durable hub dampening (D-092) |
 | `links` | typed graph edges (§5.6) | causal traversal, narratives |
 | `episodes` | temporal units + narrative refs (§6b) | episodic retrieval |
 | `branches` | exploration lifecycle (§5.5) | write path |
