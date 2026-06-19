@@ -270,9 +270,11 @@ These enforce P1–P5 (§1). They are binding on every phase.
   signals — `occurred_at`, `branch_id`, outcomes, injections, reconciler links
   — from the first build. Removing or skipping one of these writes "because
   nothing reads it yet" is drift; a named later phase reads it.
-- **The benchmark gate (D-035).** From Phase 13 on, the eval suite runs in CI;
-  a change that regresses a public benchmark or the latency SLO does not
-  merge. Eval is continuous, never a final phase.
+- **The benchmark gate (D-035, D-095).** From Phase 13 on, the eval suite runs
+  in CI; a change that regresses a public benchmark does not merge. The latency
+  SLO is a **reference-hardware release gate** (`make slo`, D-031) that fails the
+  build on a p99 regression when run — deliberately out of the noisy per-PR CI
+  matrix (D-095). Eval is continuous, never a final phase.
 - **The knob guardrail (D-034).** A new config knob ships in the same PR with
   a tuned default, a placement in every profile, and docs — or it doesn't
   ship. Zero-config start (`stowage serve` + one secret env var) is a smoke-
