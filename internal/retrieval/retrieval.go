@@ -442,9 +442,12 @@ func (r *Retriever) Retrieve(ctx context.Context, scope identity.Scope, req Requ
 	// old single-count-for-all approximation that mis-estimated decay per item.
 	var recTimes []int64 // ASC; empty ⇒ activityTurns 0 for all (e.g. recs unwired)
 	if r.recs != nil && len(mems) > 0 {
-		minLastAccessed := mems[0].LastAccessedAt
-		for _, m := range mems[1:] {
-			if m.LastAccessedAt < minLastAccessed {
+		// Bound the fetch by the oldest POSITIVE last_accessed_at. Never-accessed
+		// memories (0) don't decay on the activity axis (scoring's recently-created
+		// assumption), so they don't widen the scan.
+		var minLastAccessed int64
+		for _, m := range mems {
+			if m.LastAccessedAt > 0 && (minLastAccessed == 0 || m.LastAccessedAt < minLastAccessed) {
 				minLastAccessed = m.LastAccessedAt
 			}
 		}

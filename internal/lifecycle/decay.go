@@ -73,8 +73,10 @@ func (m *Manager) decayTenant(ctx context.Context, tenant string, nowMs int64) {
 }
 
 // decayActivityScanCap bounds the per-batch record-timestamp fetch for the decay
-// sweep's activity-turn computation (background path; generous but bounded).
-const decayActivityScanCap = 50000
+// sweep's activity-turn computation. Same value as the retrieval read path so both
+// compute identical activity turns for the same memory (beyond the cap the decay term
+// is already pinned to the floor).
+const decayActivityScanCap = 20000
 
 // activityTimes fetches the scope's record created_at timestamps (ASC) newer than the
 // oldest last_accessed_at in the batch, for per-memory activity-turn counting. A fetch
@@ -83,9 +85,11 @@ func (m *Manager) activityTimes(ctx context.Context, scope identity.Scope, batch
 	if len(batch) == 0 {
 		return nil
 	}
-	minLast := batch[0].LastAccessedAt
-	for _, mem := range batch[1:] {
-		if mem.LastAccessedAt < minLast {
+	// Oldest POSITIVE last_accessed_at: never-accessed memories (0) don't decay on the
+	// activity axis (scoring's recently-created assumption), so they don't widen the scan.
+	var minLast int64
+	for _, mem := range batch {
+		if mem.LastAccessedAt > 0 && (minLast == 0 || mem.LastAccessedAt < minLast) {
 			minLast = mem.LastAccessedAt
 		}
 	}

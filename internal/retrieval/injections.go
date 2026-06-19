@@ -128,6 +128,9 @@ func (w *InjectionWriter) loop() {
 				// once per DISTINCT memory in the batch (one response = one injection event
 				// per memory). This is the precision-factor / zombie-memory-killer signal:
 				// a memory injected-but-never-used decays in score (D-008, brief 02).
+				// Each retrieve call mints fresh injection IDs, so a redelivered identical
+				// batch (idempotent Append no-op) re-incrementing is not reachable in
+				// practice; the counter is a soft signal where a rare over-count is benign.
 				seen := make(map[string]struct{}, len(b.rows))
 				for _, row := range b.rows {
 					if row.MemoryID == "" {
