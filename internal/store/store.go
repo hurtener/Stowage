@@ -279,6 +279,12 @@ type MemoryStore interface {
 	// exists but has no junction rows.
 	GetJunctions(ctx context.Context, scope identity.Scope, id string) (MemoryJunctions, error)
 
+	// MemoriesTopics returns the extraction topic keys for each of the given memory
+	// ids within scope (D-089). Used by the retrieval grant fan-out to enforce a
+	// grant's topic_filter (only memories linked to the granted topic cross the
+	// grant). ids not present in the map have no topics.
+	MemoriesTopics(ctx context.Context, scope identity.Scope, ids []string) (map[string][]string, error)
+
 	// LexicalSearch returns the top-k memories matching query via full-text
 	// search on content+context (FTS5/tsvector, Phase 09). Results are ordered
 	// by relevance score descending. scope-isolated per P3.

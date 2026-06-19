@@ -209,6 +209,18 @@ func (e *ExtractStage) processFlush(ctx context.Context, fb FlushedBuffer) {
 
 	validated, dropped := ValidateCandidates(list.Candidates, recordSet, recordContents)
 
+	// Validate candidate topic tags against the ACTIVE topic keys (D-089): the model
+	// is asked to tag each candidate with the topic keys it pertains to; drop any key
+	// it did not pertain to / hallucinated so the memory→topic association (used to
+	// enforce a grant's topic_filter) only ever holds real, active topic keys.
+	activeKeys := make(map[string]struct{}, len(activeTopics))
+	for _, tv := range activeTopics {
+		activeKeys[tv.Key] = struct{}{}
+	}
+	for i := range validated {
+		validated[i].Topics = filterToActiveTopics(validated[i].Topics, activeKeys)
+	}
+
 	// P3: stamp scope + branch from the flush onto the batch (not per-candidate).
 	batch := CandidateBatch{
 		Scope:      fb.Scope,
@@ -319,6 +331,27 @@ func (e *ExtractStage) emitEvent(
 }
 
 // topicViewsToLines converts TopicViews to "key: description" strings.
+// filterToActiveTopics keeps only the topic keys present in the active set, deduped
+// and order-preserving. Returns nil for no matches.
+func filterToActiveTopics(tagged []string, active map[string]struct{}) []string {
+	if len(tagged) == 0 {
+		return nil
+	}
+	var out []string
+	seen := make(map[string]struct{}, len(tagged))
+	for _, k := range tagged {
+		if _, ok := active[k]; !ok {
+			continue
+		}
+		if _, dup := seen[k]; dup {
+			continue
+		}
+		seen[k] = struct{}{}
+		out = append(out, k)
+	}
+	return out
+}
+
 func topicViewsToLines(views []topics.TopicView) []string {
 	lines := make([]string, len(views))
 	for i, v := range views {

@@ -295,7 +295,8 @@ func (g *grantStore) EffectiveScopes(ctx context.Context, callerScope identity.S
 
 	// Single join: grants in this tenant where the caller's user is a member.
 	rows, err := g.s.rdb.QueryContext(ctx, `
-		SELECT DISTINCT gr.tenant_id, COALESCE(gr.project_id,''), COALESCE(gr.user_id,''), COALESCE(gr.session_id,''), gr.zone_ceiling
+		SELECT DISTINCT gr.tenant_id, COALESCE(gr.project_id,''), COALESCE(gr.user_id,''), COALESCE(gr.session_id,''),
+		       gr.zone_ceiling, COALESCE(gr.topic_filter,''), COALESCE(gr.kind_filter,'')
 		FROM grants gr
 		JOIN group_members gm ON gm.group_id = gr.group_id AND gm.tenant_id = gr.tenant_id
 		WHERE gr.tenant_id = ? AND gm.user_id = ? AND gr.revoked_at = 0
@@ -309,8 +310,8 @@ func (g *grantStore) EffectiveScopes(ctx context.Context, callerScope identity.S
 
 	for rows.Next() {
 		var sq store.ScopedQuery
-		var tenantID, projectID, userID, sessionID, zoneCeiling string
-		if err := rows.Scan(&tenantID, &projectID, &userID, &sessionID, &zoneCeiling); err != nil {
+		var tenantID, projectID, userID, sessionID, zoneCeiling, topicFilter, kindFilter string
+		if err := rows.Scan(&tenantID, &projectID, &userID, &sessionID, &zoneCeiling, &topicFilter, &kindFilter); err != nil {
 			return nil, fmt.Errorf("sqlitestore: scan effective scope: %w", err)
 		}
 		// Defense: only same-tenant scopes (guaranteed by query, but double-check).
@@ -329,6 +330,8 @@ func (g *grantStore) EffectiveScopes(ctx context.Context, callerScope identity.S
 			Session: sessionID,
 		}
 		sq.ZoneCeiling = zoneCeiling
+		sq.KindFilter = kindFilter
+		sq.TopicFilter = topicFilter
 		result = append(result, sq)
 	}
 	if err := rows.Err(); err != nil {

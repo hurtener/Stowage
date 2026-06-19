@@ -213,6 +213,7 @@ type MemoryJunctions struct {
 	Entities   []string
 	Keywords   []string
 	Queries    []string
+	Topics     []string // extraction topic keys this memory pertains to (D-089, grant topic_filter)
 	Provenance []Provenance
 }
 
@@ -323,6 +324,11 @@ type Injection struct {
 type ScopedQuery struct {
 	Scope       identity.Scope
 	ZoneCeiling string // "" | "public" | "work"
+	// KindFilter/TopicFilter slice a granted scope's shared memories (RFC §5.3,
+	// D-089). Empty = no restriction. Enforced post-query in the retrieval fan-out
+	// (defense-in-depth, like ZoneCeiling). Always empty for the caller's own scope.
+	KindFilter  string
+	TopicFilter string
 }
 
 // ZoneOrder maps privacy_zone values to ordinal integers for ceiling comparison.
@@ -379,6 +385,7 @@ type RollbackMemory struct {
 	Entities   []string
 	Keywords   []string
 	Queries    []string
+	Topics     []string
 	Provenance []Provenance
 }
 
@@ -397,11 +404,12 @@ type CommitSet struct {
 	// Zero-value for ActionDiscard (nothing is persisted).
 	Memory Memory
 
-	// Entities, Keywords, Queries are junction rows for Memory.
+	// Entities, Keywords, Queries, Topics are junction rows for Memory.
 	// For ActionUpdate these replace the existing junctions for Memory.ID.
 	Entities []string
 	Keywords []string
 	Queries  []string
+	Topics   []string // extraction topic keys (D-089, grant topic_filter)
 
 	// Provenance rows to insert.
 	Provenance []Provenance

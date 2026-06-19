@@ -426,6 +426,14 @@ func (r *Retriever) Retrieve(ctx context.Context, scope identity.Scope, req Requ
 			if sq.ZoneCeiling != "" {
 				got = applyZoneCeiling(got, sq.ZoneCeiling)
 			}
+			// Apply the grant's kind/topic slice (D-089): a topic/kind-filtered grant
+			// only exposes the owner's matching memories, never the whole scope.
+			if sq.KindFilter != "" {
+				got = filterByKind(got, sq.KindFilter)
+			}
+			if sq.TopicFilter != "" {
+				got = r.filterByTopic(ctx, sq.Scope, got, sq.TopicFilter)
+			}
 			for _, m := range got {
 				if !seenIDs[m.ID] {
 					seenIDs[m.ID] = true

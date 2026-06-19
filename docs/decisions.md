@@ -2355,3 +2355,39 @@ reindex, never a silent mix of incompatible embeddings (§10).
 **New event types.** `gateway.call`, `gateway.rerank` join the `subsystem.event`
 convention; `Event.Type` is free-form so no enum change. Recorded here as the event-
 stream contract addition (§8).
+
+## D-089 — Grant topic_filter/kind_filter enforced; memory→topic association added (RFC §8.1 amendment)
+
+2026-06-19. Bar-remediation (audit #3). Grant `topic_filter`/`kind_filter` (RFC §5.3)
+were stored and surfaced on all three surfaces but enforced NOWHERE — a grant intended
+to share a topic/kind slice silently exposed the entire owner scope (up to the zone
+ceiling). Security-load-bearing over-share.
+
+**kind_filter** maps to `memory.kind` and is enforced now. **topic_filter** had no
+backing association — memories never recorded which extraction topic they pertain to —
+so it was unenforceable without a schema change.
+
+**RFC §8.1 amendment: `memory_topics` junction** (memory_id, topic_key, tenant_id;
+migration 0011, both drivers). A memory is linked to the topic(s) it pertains to. The
+extractor tags each candidate with the applicable topic keys (new optional `topics`
+field on the candidate schema v2 + prompt v2 instruction); the extract stage validates
+the tags against the scope's ACTIVE topic keys (drops hallucinated/inactive keys) before
+the junction is written. Candidates with no topic match get no topic links (and thus
+never satisfy a topic_filter — correct).
+
+**Enforcement** is per-granted-scope, post-query in the retrieval fan-out (defense-in-
+depth, the same model as the zone ceiling): `ScopedQuery` carries the grant's
+`KindFilter`/`TopicFilter` (populated by `EffectiveScopes`, both drivers); after
+`GetMany` for a granted scope, `kind_filter` filters by `memory.kind` and `topic_filter`
+filters by the `memory_topics` link (batch `MemoriesTopics`). topic_filter **fails
+closed**: if topic membership cannot be read, the granted scope's memories are dropped,
+never over-shared. The caller's OWN scope is never filtered.
+
+**Contribute grants reject filters.** `topic_filter`/`kind_filter` slice extracted
+read memories; a contribute grant authorizes writing raw records (no kind/topic until
+extraction), so a filter there is unenforceable — `CreateGrant` rejects it
+(`ErrFilterOnContribute`) rather than silently authorizing anything.
+
+**No LLM-quality risk to extraction.** The `topics` field is optional; the mock-gateway
+eval (no topics in its scripted candidates) and existing extraction behaviour are
+unchanged. The schema/prompt version bumps regenerate the goldens.

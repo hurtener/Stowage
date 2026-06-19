@@ -133,6 +133,80 @@ func TestSetGrants_GrantedScopeRetrieval(t *testing.T) {
 	}
 }
 
+// commitMemoryWithTopics inserts an active memory carrying topic links via Commit.
+func commitMemoryWithTopics(t *testing.T, st store.Store, scope identity.Scope, content, kind string, topics []string) string {
+	t.Helper()
+	id := newID()
+	cs := store.CommitSet{
+		Action: store.ActionAdd,
+		Memory: store.Memory{
+			ID: id, Kind: kind, Content: content, Status: "active",
+			Importance: 3, Confidence: 0.8, TrustSource: "llm_extracted", Stability: 1.0,
+			PrivacyZone: "public", CreatedAt: nowMs(), UpdatedAt: nowMs(),
+		},
+		Keywords: []string{"shared", "alice"},
+		Topics:   topics,
+		Scope:    scope,
+	}
+	if err := st.Memories().Commit(context.Background(), scope, cs); err != nil {
+		t.Fatalf("commit memory: %v", err)
+	}
+	return id
+}
+
+// TestSetGrants_TopicAndKindFilter proves the D-089 fix: a grant with a topic_filter
+// (or kind_filter) only exposes the owner's MATCHING memories, never the whole scope.
+func TestSetGrants_TopicAndKindFilter(t *testing.T) {
+	t.Parallel()
+	st := openStore(t)
+	gw := openMockGateway(t, 4)
+	vi := vindex.New(st.Vectors(), 4, "test")
+	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+	r := retrieval.New(st.Memories(), st.Records(), vi, gw, log)
+	r.SetGrants(st.Grants())
+	ctx := context.Background()
+	tenant := "t-filter"
+	alice := identity.Scope{Tenant: tenant, User: "alice"}
+	bob := identity.Scope{Tenant: tenant, User: "bob"}
+	ten := identity.Scope{Tenant: tenant}
+
+	authFact := commitMemoryWithTopics(t, st, alice, "alice shared auth fact", "fact", []string{"auth"})
+	deployFact := commitMemoryWithTopics(t, st, alice, "alice shared deploy fact", "fact", []string{"deploy"})
+	authStrategy := commitMemoryWithTopics(t, st, alice, "alice shared auth strategy", "strategy", []string{"auth"})
+
+	grp := store.Group{ID: newID(), TenantID: tenant, Name: "g", CreatedAt: nowMs()}
+	_ = st.Grants().CreateGroup(ctx, ten, grp)
+	_ = st.Grants().AddMember(ctx, ten, store.GroupMember{ID: newID(), GroupID: grp.ID, UserID: "bob", TenantID: tenant, CreatedAt: nowMs()})
+
+	// Grant to bob: topic_filter="auth" AND kind_filter="fact" → only the auth FACT crosses.
+	gr := store.Grant{
+		ID: newID(), TenantID: tenant, UserID: "alice", GroupID: grp.ID,
+		Access: "read", ZoneCeiling: "work", TopicFilter: "auth", KindFilter: "fact",
+		CreatedAt: nowMs(), UpdatedAt: nowMs(),
+	}
+	if err := st.Grants().CreateGrant(ctx, ten, gr); err != nil {
+		t.Fatalf("CreateGrant: %v", err)
+	}
+
+	resp, err := r.Retrieve(ctx, bob, retrieval.Request{Query: "alice shared", Limit: 20})
+	if err != nil {
+		t.Fatalf("retrieve: %v", err)
+	}
+	got := map[string]bool{}
+	for _, it := range resp.Items {
+		got[it.Memory.ID] = true
+	}
+	if !got[authFact] {
+		t.Errorf("the auth FACT should cross the topic+kind grant")
+	}
+	if got[deployFact] {
+		t.Errorf("the deploy fact must NOT cross a topic_filter=auth grant (over-share)")
+	}
+	if got[authStrategy] {
+		t.Errorf("the auth STRATEGY must NOT cross a kind_filter=fact grant (over-share)")
+	}
+}
+
 // TestSetGrants_ZoneCeilingDefense verifies that memories with personal or
 // intimate privacy_zone are NOT returned even when included in a granted scope
 // (AC-1 defense-in-depth).

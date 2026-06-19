@@ -65,7 +65,12 @@ New terms land here in the same PR that introduces them (CLAUDE.md §14).
   inspection, never silently dropped.
 - **Grant** — a store-layer-enforced share of a slice of an owner scope to a
   named group (team), with read or contribute access, a privacy-zone ceiling,
-  and optional redaction (D-016).
+  optional `topic_filter`/`kind_filter` slicing (read grants only — enforced via
+  `memory.kind` and the `memory_topics` association, D-089), and optional
+  redaction (D-016).
+- **memory→topic association** — the `memory_topics` junction linking a memory to
+  the extraction topic(s) it pertains to, tagged by the extractor and validated
+  against the scope's active topics; backs grant `topic_filter` (RFC §8.1, D-089).
 - **Outcome** — the success/failure + execution-feedback tag a record or buffer
   flush can carry; the label-free fuel for reflection (D-018).
 - **Reflection** — the outcome-aware extraction mode that distills `strategy`

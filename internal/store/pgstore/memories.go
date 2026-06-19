@@ -358,6 +358,26 @@ func (m *memoryStore) GetJunctions(ctx context.Context, scope identity.Scope, id
 		return j, err
 	}
 
+	// Topics (D-089).
+	tRows, err := m.s.pool.Query(ctx,
+		`SELECT topic_key FROM memory_topics WHERE memory_id = $1 AND tenant_id = $2 ORDER BY id`,
+		id, scope.Tenant)
+	if err != nil {
+		return j, fmt.Errorf("pgstore: get topics: %w", err)
+	}
+	for tRows.Next() {
+		var tk string
+		if scanErr := tRows.Scan(&tk); scanErr != nil {
+			tRows.Close()
+			return j, scanErr
+		}
+		j.Topics = append(j.Topics, tk)
+	}
+	tRows.Close()
+	if err = tRows.Err(); err != nil {
+		return j, err
+	}
+
 	// Provenance.
 	pRows, err := m.s.pool.Query(ctx,
 		`SELECT id, memory_id, record_id, span_start, span_end, tenant_id, created_at
@@ -376,6 +396,32 @@ func (m *memoryStore) GetJunctions(ctx context.Context, scope identity.Scope, id
 	}
 	pRows.Close()
 	return j, pRows.Err()
+}
+
+// MemoriesTopics returns topic keys per memory id within scope (D-089).
+func (m *memoryStore) MemoriesTopics(ctx context.Context, scope identity.Scope, ids []string) (map[string][]string, error) {
+	if scope.Tenant == "" {
+		return nil, store.ErrScopeRequired
+	}
+	out := make(map[string][]string, len(ids))
+	if len(ids) == 0 {
+		return out, nil
+	}
+	rows, err := m.s.pool.Query(ctx,
+		`SELECT memory_id, topic_key FROM memory_topics WHERE tenant_id = $1 AND memory_id = ANY($2) ORDER BY id`,
+		scope.Tenant, ids)
+	if err != nil {
+		return nil, fmt.Errorf("pgstore: memories topics: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var mid, tk string
+		if err := rows.Scan(&mid, &tk); err != nil {
+			return nil, err
+		}
+		out[mid] = append(out[mid], tk)
+	}
+	return out, rows.Err()
 }
 
 // GetByContentHash returns the active memory matching hash within scope (D-044).
@@ -583,7 +629,7 @@ func execCommitPG(ctx context.Context, tx pgx.Tx, scope identity.Scope, cs store
 				return err
 			}
 		}
-		if err := insertJunctionsPG(ctx, tx, scope, cs.Memory.ID, cs.Entities, cs.Keywords, cs.Queries); err != nil {
+		if err := insertJunctionsPG(ctx, tx, scope, cs.Memory.ID, cs.Entities, cs.Keywords, cs.Queries, cs.Topics); err != nil {
 			return err
 		}
 		if err := insertProvenancePG(ctx, tx, scope, cs.Provenance, now); err != nil {
@@ -608,7 +654,7 @@ func execCommitPG(ctx context.Context, tx pgx.Tx, scope identity.Scope, cs store
 		if err := deleteJunctionsPG(ctx, tx, cs.Memory.ID); err != nil {
 			return err
 		}
-		if err := insertJunctionsPG(ctx, tx, scope, cs.Memory.ID, cs.Entities, cs.Keywords, cs.Queries); err != nil {
+		if err := insertJunctionsPG(ctx, tx, scope, cs.Memory.ID, cs.Entities, cs.Keywords, cs.Queries, cs.Topics); err != nil {
 			return err
 		}
 		if err := insertProvenancePG(ctx, tx, scope, cs.Provenance, now); err != nil {
@@ -627,7 +673,7 @@ func execCommitPG(ctx context.Context, tx pgx.Tx, scope identity.Scope, cs store
 				return err
 			}
 		}
-		if err := insertJunctionsPG(ctx, tx, scope, cs.Memory.ID, cs.Entities, cs.Keywords, cs.Queries); err != nil {
+		if err := insertJunctionsPG(ctx, tx, scope, cs.Memory.ID, cs.Entities, cs.Keywords, cs.Queries, cs.Topics); err != nil {
 			return err
 		}
 		if err := insertProvenancePG(ctx, tx, scope, cs.Provenance, now); err != nil {
@@ -654,7 +700,7 @@ func execCommitPG(ctx context.Context, tx pgx.Tx, scope identity.Scope, cs store
 				return err
 			}
 		}
-		if err := insertJunctionsPG(ctx, tx, scope, cs.Memory.ID, cs.Entities, cs.Keywords, cs.Queries); err != nil {
+		if err := insertJunctionsPG(ctx, tx, scope, cs.Memory.ID, cs.Entities, cs.Keywords, cs.Queries, cs.Topics); err != nil {
 			return err
 		}
 		if err := insertProvenancePG(ctx, tx, scope, cs.Provenance, now); err != nil {
@@ -688,7 +734,7 @@ func execCommitPG(ctx context.Context, tx pgx.Tx, scope identity.Scope, cs store
 		if err := deleteJunctionsPG(ctx, tx, cs.Memory.ID); err != nil {
 			return err
 		}
-		if err := insertJunctionsPG(ctx, tx, scope, cs.Memory.ID, cs.Entities, cs.Keywords, cs.Queries); err != nil {
+		if err := insertJunctionsPG(ctx, tx, scope, cs.Memory.ID, cs.Entities, cs.Keywords, cs.Queries, cs.Topics); err != nil {
 			return err
 		}
 		if err := deleteProvenancePG(ctx, tx, cs.Memory.ID); err != nil {
@@ -705,7 +751,7 @@ func execCommitPG(ctx context.Context, tx pgx.Tx, scope identity.Scope, cs store
 			if err := deleteJunctionsPG(ctx, tx, xm.Memory.ID); err != nil {
 				return err
 			}
-			if err := insertJunctionsPG(ctx, tx, scope, xm.Memory.ID, xm.Entities, xm.Keywords, xm.Queries); err != nil {
+			if err := insertJunctionsPG(ctx, tx, scope, xm.Memory.ID, xm.Entities, xm.Keywords, xm.Queries, xm.Topics); err != nil {
 				return err
 			}
 			if err := deleteProvenancePG(ctx, tx, xm.Memory.ID); err != nil {
@@ -802,13 +848,21 @@ func updateMemoryContentPG(ctx context.Context, tx pgx.Tx, scope identity.Scope,
 	return err
 }
 
-func insertJunctionsPG(ctx context.Context, tx pgx.Tx, scope identity.Scope, memID string, entities, keywords, queries []string) error {
+func insertJunctionsPG(ctx context.Context, tx pgx.Tx, scope identity.Scope, memID string, entities, keywords, queries, topics []string) error {
 	for _, e := range entities {
 		if _, err := tx.Exec(ctx,
 			`INSERT INTO memory_entities (id, memory_id, entity, tenant_id) VALUES ($1,$2,$3,$4) ON CONFLICT(id) DO NOTHING`,
 			ulid.Make().String(), memID, e, scope.Tenant,
 		); err != nil {
 			return fmt.Errorf("pgstore: insert entity: %w", err)
+		}
+	}
+	for _, tp := range topics {
+		if _, err := tx.Exec(ctx,
+			`INSERT INTO memory_topics (id, memory_id, topic_key, tenant_id) VALUES ($1,$2,$3,$4) ON CONFLICT(id) DO NOTHING`,
+			ulid.Make().String(), memID, tp, scope.Tenant,
+		); err != nil {
+			return fmt.Errorf("pgstore: insert topic: %w", err)
 		}
 	}
 	for _, k := range keywords {
@@ -831,7 +885,7 @@ func insertJunctionsPG(ctx context.Context, tx pgx.Tx, scope identity.Scope, mem
 }
 
 func deleteJunctionsPG(ctx context.Context, tx pgx.Tx, memID string) error {
-	for _, table := range []string{"memory_entities", "memory_keywords", "memory_queries"} {
+	for _, table := range []string{"memory_entities", "memory_keywords", "memory_queries", "memory_topics"} {
 		if _, err := tx.Exec(ctx, `DELETE FROM `+table+` WHERE memory_id = $1`, memID); err != nil { //nolint:gosec
 			return fmt.Errorf("pgstore: delete junctions from %s: %w", table, err)
 		}

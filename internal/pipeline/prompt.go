@@ -10,7 +10,7 @@ import (
 // PromptTemplateVersion is the version of the extraction prompt template.
 // Increment when the template text changes; golden files must be regenerated
 // with UPDATE_GOLDEN=1.
-const PromptTemplateVersion = "1"
+const PromptTemplateVersion = "2"
 
 // systemPromptTemplate is the versioned system-prompt skeleton.
 // The literal "{topics}" placeholder is replaced by BuildPrompt.
@@ -30,6 +30,7 @@ For each piece of memorable information you identify:
 3. Provide 3–5 anticipated search queries a user might use to find this memory later
 4. Cite the source record(s) with approximate character spans (span_start inclusive, span_end exclusive)
 5. Rate importance 1–5 (1 = trivial background noise, 5 = business-critical or safety-relevant) and confidence 0.0–1.0
+6. Set "topics" to the key(s) of the active topics above that this candidate pertains to — use the EXACT topic keys (the text before the colon); [] if none clearly apply
 
 ## Constraints
 
