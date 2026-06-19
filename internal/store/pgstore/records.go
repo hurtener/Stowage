@@ -181,6 +181,33 @@ func (r *recordStore) CountRecordsSince(ctx context.Context, scope identity.Scop
 	return count, nil
 }
 
+func (r *recordStore) RecordCreatedAtsSince(ctx context.Context, scope identity.Scope, sinceMs int64, limit int) ([]int64, error) {
+	whereClause, args, next, err := buildScopeWhere(scope, 1)
+	if err != nil {
+		return nil, err
+	}
+	if limit <= 0 {
+		limit = 20000
+	}
+	args = append(args, sinceMs, limit)
+	q := `SELECT created_at FROM records WHERE ` + whereClause +
+		fmt.Sprintf(` AND created_at > $%d ORDER BY created_at ASC LIMIT $%d`, next, next+1)
+	rows, err := r.s.pool.Query(ctx, q, args...)
+	if err != nil {
+		return nil, fmt.Errorf("pgstore: record created_ats since: %w", err)
+	}
+	defer rows.Close()
+	out := make([]int64, 0, 256)
+	for rows.Next() {
+		var ts int64
+		if err := rows.Scan(&ts); err != nil {
+			return nil, err
+		}
+		out = append(out, ts)
+	}
+	return out, rows.Err()
+}
+
 // GetMany returns records for the given IDs within scope. IDs not found are
 // silently omitted; order matches the order of ids.
 func (r *recordStore) GetMany(ctx context.Context, scope identity.Scope, ids []string) ([]store.Record, error) {

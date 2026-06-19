@@ -19,7 +19,23 @@
 // Both are documented here to prevent accidental merging of the two concerns.
 package scoring
 
-import "math"
+import (
+	"math"
+	"sort"
+)
+
+// ActivityTurnsAfter counts how many of the ASC-sorted record timestamps are strictly
+// greater than lastAccessed — the activity turns since a memory was last used. Shared
+// by the retrieval read path and the decay sweep so both compute the activity-turn
+// decay input identically (D-008); replaces the earlier divergent approximations
+// (a single shared count in retrieval, a hardcoded 0 in the sweep).
+func ActivityTurnsAfter(ascTimes []int64, lastAccessed int64) int64 {
+	if len(ascTimes) == 0 {
+		return 0
+	}
+	i := sort.Search(len(ascTimes), func(i int) bool { return ascTimes[i] > lastAccessed })
+	return int64(len(ascTimes) - i)
+}
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 // All constants are named with doc comments (D-034 knob guardrail). These are

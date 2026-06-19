@@ -36,6 +36,7 @@ type injBatch struct {
 type InjectionWriter struct {
 	inj       store.InjectionStore
 	events    store.EventStore // optional (Phase 26 trace capture); nil ⇒ no query events
+	counter   memoryCounter    // optional; nil ⇒ inject_count is not incremented
 	ch        chan injBatch
 	done      chan struct{}
 	closeOnce sync.Once
@@ -65,6 +66,18 @@ func NewInjectionWriter(inj store.InjectionStore, log *slog.Logger) *InjectionWr
 // written (async) alongside the injection rows. Call once at construction, before any
 // Enqueue — not safe to call concurrently with Enqueue.
 func (w *InjectionWriter) SetEventStore(es store.EventStore) { w.events = es }
+
+// memoryCounter is the minimal slice of MemoryStore the writer needs to record that a
+// memory was injected (the inject utility counter, D-008).
+type memoryCounter interface {
+	IncrementCounter(ctx context.Context, scope identity.Scope, id, counter string) error
+}
+
+// SetMemoryCounter enables inject_count tracking: when set, each distinct memory in an
+// appended injection batch has its `inject` counter incremented (the precision /
+// zombie-memory-killer signal — a memory injected but never used loses score, D-008).
+// Call once at construction, before any Enqueue — not safe to call concurrently.
+func (w *InjectionWriter) SetMemoryCounter(c memoryCounter) { w.counter = c }
 
 // Enqueue non-blockingly enqueues a batch for the given scope, with an optional
 // response-keyed query event (nil to skip). Drops the batch (incrementing Drops) when
@@ -110,6 +123,24 @@ func (w *InjectionWriter) loop() {
 		if len(b.rows) > 0 {
 			if err := w.inj.Append(context.Background(), b.scope, b.rows); err != nil { //nolint:contextcheck
 				w.log.Warn("injection writer: Append failed", "err", err)
+			} else if w.counter != nil {
+				// The injection rows are durable, so the inject happened: bump inject_count
+				// once per DISTINCT memory in the batch (one response = one injection event
+				// per memory). This is the precision-factor / zombie-memory-killer signal:
+				// a memory injected-but-never-used decays in score (D-008, brief 02).
+				seen := make(map[string]struct{}, len(b.rows))
+				for _, row := range b.rows {
+					if row.MemoryID == "" {
+						continue
+					}
+					if _, dup := seen[row.MemoryID]; dup {
+						continue
+					}
+					seen[row.MemoryID] = struct{}{}
+					if err := w.counter.IncrementCounter(context.Background(), b.scope, row.MemoryID, "inject"); err != nil { //nolint:contextcheck
+						w.log.Warn("injection writer: inject_count increment failed", "memory_id", row.MemoryID, "err", err)
+					}
+				}
 			}
 		}
 		// Phase-26 trace capture: persist the response-keyed query event (best-effort,

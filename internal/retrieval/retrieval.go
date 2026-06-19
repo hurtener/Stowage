@@ -15,14 +15,11 @@
 // match_count is incremented asynchronously for every returned memory;
 // failures are logged but never returned to the caller.
 //
-// ActivityTurns approximation (Phase 10): for the scoring decay function, we
-// compute a single COUNT of records in scope created after the minimum
-// last_accessed_at across all result memories. This count is shared across all
-// scored items in one retrieve call to avoid per-item queries. Documented as an
-// approximation: a memory whose last_accessed_at is much older than others
-// may receive fewer ActivityTurns than it would in a perfect per-item query.
-// This is acceptable for Phase 10; a per-item query would be accurate but
-// costly.
+// ActivityTurns (Phase 10, deepened): for the scoring decay function each memory
+// gets its TRUE activity-turn count — the number of records in scope created after
+// THAT memory's last_accessed_at. We fetch the scope's record timestamps newer than
+// the oldest result's last_accessed once (capped at activityTurnsScanCap) and count
+// per item in memory via binary search, so there are no per-item round-trips.
 //
 // Phase 11: every retrieve call is recorded as injection rows (async, zero added
 // latency via InjectionWriter). The envelope graduates to api:"v1" with
@@ -149,6 +146,11 @@ func (r *Retriever) WithEventCapture(es store.EventStore) *Retriever {
 	return r
 }
 
+// activityTurnsScanCap bounds the per-call record-timestamp fetch for ActivityTurns.
+// Beyond this the count saturates (the decay term is already near-floor for memories
+// with this many intervening turns), keeping the fetch bounded on the hot path.
+const activityTurnsScanCap = 20000
+
 // buildQueryEvent assembles the response-keyed retrieve.query event (Phase 26, D-086).
 // SubjectID = response_id so traces.Reconstruct finds it via ListBySubject.
 func buildQueryEvent(scope identity.Scope, responseID, query, support string, degraded bool, now int64) *store.Event {
@@ -182,6 +184,7 @@ func NewWithInjections(mem store.MemoryStore, recs store.RecordStore, vi vindex.
 	r := New(mem, recs, vi, gw, log)
 	if injSt != nil {
 		r.injWr = NewInjectionWriter(injSt, log)
+		r.injWr.SetMemoryCounter(mem) // bump inject_count on each injection (D-008)
 	}
 	return r
 }
@@ -432,13 +435,12 @@ func (r *Retriever) Retrieve(ctx context.Context, scope identity.Scope, req Requ
 		}
 	}
 
-	// Compute ActivityTurns approximation:
-	// Use the minimum last_accessed_at across all results as the sinceMs bound.
-	// This is an approximation: all items receive the same ActivityTurns count.
-	// A memory accessed more recently will have its decay underestimated (fewer
-	// turns counted), and one accessed less recently will be overestimated.
-	// Documented per the phase-10 plan; the trade-off is one query vs N queries.
-	var activityTurns int64
+	// Per-item ActivityTurns (D-008 activity-turn decay): fetch the scope's record
+	// created_at timestamps newer than the OLDEST item's last_accessed_at ONCE, then
+	// count per memory in memory (records after that memory's own last_accessed_at).
+	// This gives each item its true turn count without N round-trips — replacing the
+	// old single-count-for-all approximation that mis-estimated decay per item.
+	var recTimes []int64 // ASC; empty ⇒ activityTurns 0 for all (e.g. recs unwired)
 	if r.recs != nil && len(mems) > 0 {
 		minLastAccessed := mems[0].LastAccessedAt
 		for _, m := range mems[1:] {
@@ -447,10 +449,10 @@ func (r *Retriever) Retrieve(ctx context.Context, scope identity.Scope, req Requ
 			}
 		}
 		if minLastAccessed > 0 {
-			activityTurns, err = r.recs.CountRecordsSince(ctx, scope, minLastAccessed)
+			recTimes, err = r.recs.RecordCreatedAtsSince(ctx, scope, minLastAccessed, activityTurnsScanCap)
 			if err != nil {
-				r.log.WarnContext(ctx, "retrieval: CountRecordsSince failed — using 0 turns", "err", err)
-				activityTurns = 0
+				r.log.WarnContext(ctx, "retrieval: RecordCreatedAtsSince failed — using 0 turns", "err", err)
+				recTimes = nil
 			}
 		}
 	}
@@ -487,6 +489,10 @@ func (r *Retriever) Retrieve(ctx context.Context, scope identity.Scope, req Requ
 		}
 
 		sameSession := req.SessionID != "" && req.SessionID == m.SessionID
+
+		// Per-item activity turns: count of records created after THIS memory was last
+		// accessed (recTimes is ASC, so it's the suffix past last_accessed_at).
+		activityTurns := scoring.ActivityTurnsAfter(recTimes, m.LastAccessedAt)
 
 		in := scoring.Inputs{
 			Memory: scoring.MemoryFacts{

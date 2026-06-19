@@ -167,6 +167,32 @@ func (r *recordStore) CountRecordsSince(ctx context.Context, scope identity.Scop
 	return count, nil
 }
 
+func (r *recordStore) RecordCreatedAtsSince(ctx context.Context, scope identity.Scope, sinceMs int64, limit int) ([]int64, error) {
+	whereClause, args, err := buildScopeWhere(scope)
+	if err != nil {
+		return nil, err
+	}
+	if limit <= 0 {
+		limit = 20000
+	}
+	args = append(args, sinceMs, limit)
+	q := `SELECT created_at FROM records WHERE ` + whereClause + ` AND created_at > ? ORDER BY created_at ASC LIMIT ?` //nolint:gosec
+	rows, err := r.s.rdb.QueryContext(ctx, q, args...)
+	if err != nil {
+		return nil, fmt.Errorf("sqlitestore: record created_ats since: %w", err)
+	}
+	defer rows.Close() //nolint:errcheck
+	out := make([]int64, 0, 256)
+	for rows.Next() {
+		var ts int64
+		if err := rows.Scan(&ts); err != nil {
+			return nil, err
+		}
+		out = append(out, ts)
+	}
+	return out, rows.Err()
+}
+
 // GetMany returns records for the given IDs within scope. IDs not found are
 // silently omitted; order matches the order of ids.
 func (r *recordStore) GetMany(ctx context.Context, scope identity.Scope, ids []string) ([]store.Record, error) {

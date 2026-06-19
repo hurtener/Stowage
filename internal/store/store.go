@@ -155,6 +155,14 @@ type RecordStore interface {
 	// The count is scope-indexed for efficiency; see D-008 on decay computation.
 	CountRecordsSince(ctx context.Context, scope identity.Scope, sinceMs int64) (int64, error)
 
+	// RecordCreatedAtsSince returns the created_at timestamps (unix ms, ASC) of
+	// records in scope strictly newer than sinceMs, capped at limit. The retrieval
+	// and decay layers fetch this ONCE per call and count per-memory in memory
+	// (records after each memory's last_accessed_at) — giving a PER-ITEM ActivityTurns
+	// without N round-trips (D-008 activity-turn decay; replaces the batched
+	// single-count approximation).
+	RecordCreatedAtsSince(ctx context.Context, scope identity.Scope, sinceMs int64, limit int) ([]int64, error)
+
 	// GetMany returns records for the given IDs within scope. IDs not found are
 	// silently omitted. Order matches the order of ids. Used by the drill-down
 	// path to batch-fetch verbatim records for provenance spans (Phase 11).
