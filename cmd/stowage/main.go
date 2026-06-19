@@ -20,8 +20,9 @@ import (
 	"github.com/hurtener/dockyard/runtime/server"
 	"github.com/prometheus/client_golang/prometheus"
 
-	"github.com/hurtener/stowage/eval/datasets/locomo"
-	"github.com/hurtener/stowage/eval/datasets/longmemeval"
+	"github.com/hurtener/stowage/eval/datasets"
+	_ "github.com/hurtener/stowage/eval/datasets/locomo"      // registers "locomo" (D-096)
+	_ "github.com/hurtener/stowage/eval/datasets/longmemeval" // registers "longmemeval" + "longmemeval_s" (D-096)
 	"github.com/hurtener/stowage/internal/api"
 	"github.com/hurtener/stowage/internal/boot"
 	"github.com/hurtener/stowage/internal/config"
@@ -245,7 +246,7 @@ Usage:
 
 Subcommands:
   fetch --dataset <name>   download a dataset into eval/data/
-                           known datasets: longmemeval, locomo
+                           known datasets: longmemeval, longmemeval_s, locomo
   ci                       print instructions for running the CI eval gate
 `
 
@@ -255,7 +256,7 @@ Usage:
   stowage eval fetch --dataset <name> [--data-dir path]
 
 Flags:
-  --dataset name    dataset to fetch (longmemeval | locomo)
+  --dataset name    dataset to fetch (longmemeval | longmemeval_s | locomo)
   --data-dir path   root directory for downloaded data (default: eval/data)
 `
 
@@ -321,25 +322,17 @@ func runEvalFetch(args []string) {
 	}
 
 	ctx := context.Background()
-	switch dataset {
-	case "longmemeval":
-		dest, err := longmemeval.Fetch(ctx, dataDir)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "stowage eval fetch: %v\n", err)
-			os.Exit(1)
-		}
-		fmt.Printf("stowage eval fetch: longmemeval saved to %s\n", dest)
-	case "locomo":
-		dest, err := locomo.Fetch(ctx, dataDir)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "stowage eval fetch: %v\n", err)
-			os.Exit(1)
-		}
-		fmt.Printf("stowage eval fetch: locomo saved to %s\n", dest)
-	default:
-		fmt.Fprintf(os.Stderr, "stowage eval fetch: unknown dataset %q (known: longmemeval, locomo)\n", dataset)
+	spec, err := datasets.MustLookup(dataset)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "stowage eval fetch: %v\n", err)
 		os.Exit(2)
 	}
+	dest, err := spec.Fetch(ctx, dataDir)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "stowage eval fetch: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Printf("stowage eval fetch: %s saved to %s\n", dataset, dest)
 }
 
 const mcpUsage = `stowage mcp — run the MCP tool server (Phase 16)

@@ -2581,3 +2581,37 @@ hardware": the eval benchmarks gate per-PR; the latency SLO gates on reference h
 `-slo.maxp99` flag lets a slower-than-reference environment raise the budget deliberately
 without recompiling; the binding number is always taken at 150 ms on reference hardware.
 Recording the actual numbers remains operator-run (the bar-remediation eval/SLO track).
+
+## D-096 — One public-benchmark runner behind a dataset registry (LoCoMo wired; longmemeval_s + dataset-gain runnable)
+
+2026-06-19. Bar-remediation (audit finding #7). The eval harness had a LongMemEval
+oracle run path (the fullmode test hardcoded the longmemeval path + normalizer), but:
+LoCoMo had a fetcher + normalizer that NO runner consumed (built, unwired); longmemeval_s
+(the distractor headline variant) was reachable only by overriding a URL env var with no
+runner entry; and there was no factory mapping a dataset name → its fetch/normalize. Built-
+but-unrunnable benchmarks and a copy-paste-per-dataset runner are a v1- simplification of
+the D-035 benchmark commitment.
+
+**One runner, dataset as a parameter.** A dataset **registry** (`eval/datasets`) maps a name
+→ `Spec{DataFile, Fetch, Normalize}`; each dataset subpackage self-registers in `init()`
+(blank-imported by the runner/CLI), so adding a benchmark is a new package + one Register
+call — no central switch. The generic `harness.RunDataset` (extracted from the old
+longmemeval-only fullmode body) ingests the needed conversations, settles, scores, and
+optionally judges ANY normalized dataset. `TestFullMode` now selects the dataset via
+`STOWAGE_EVAL_DATASET` (longmemeval | longmemeval_s | locomo) and runs them all through
+that one path; the CLI `eval fetch` and `TestGainDatasetMode` (gain memory-on/off over a
+dataset's questions, reusing the `judgeOnOff` primitive) resolve through the same registry.
+
+**Wiring is CI-proven; numbers stay operator-run.** `TestRunDataset_Wiring` drives a tiny
+dataset end-to-end through `RunDataset` with the MOCK gateway and a scripted extraction
+(deterministic, no paid call), and `TestDatasetRegistry` asserts the three datasets resolve
+— so the dataset→runner wiring can never silently rot. The benchmark NUMBERS (live gateway)
+remain operator-run via the fullmode entries; REPORT.md carries the runner docs + the
+operator-fill placeholders for longmemeval_s / LoCoMo / dataset-gain.
+
+**A latent async-buffer race fixed.** Ingest enqueues to the buffer stage asynchronously
+(records_handler non-blocking channel → stage goroutine), so a flush issued right after the
+ACK could race the buffer-append and no-op (the old longmemeval path only avoided this by
+ingesting many conversations before flushing). `RunDataset` now waits via
+`TestServer.WaitForBuffered` (BufferStore.ListDue) before each flush — deterministic for
+single- and multi-conversation datasets alike.

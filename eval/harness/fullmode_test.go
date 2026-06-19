@@ -8,30 +8,29 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"sort"
 	"strconv"
-	"strings"
 	"testing"
 	"time"
 
 	"github.com/hurtener/stowage/eval/datasets"
-	"github.com/hurtener/stowage/eval/datasets/longmemeval"
 	_ "github.com/hurtener/stowage/internal/gateway/bifrost"      // full mode: bifrost runs the whole OpenRouter stack incl. rerank (D-075)
 	_ "github.com/hurtener/stowage/internal/gateway/openaicompat" // still a valid driver (selectable via STOWAGE_EVAL_GATEWAY)
 )
 
-// TestFullMode runs a public-dataset slice through the REAL pipeline (live
+// TestFullMode runs a public-benchmark slice through the REAL pipeline (live
 // gateway from STOWAGE_EVAL_* envs) and writes per-question results to
-// eval/results/. Operator-triggered: make eval-full (never CI).
+// eval/results/. Operator-triggered (never CI).
 //
-// Rebased onto bifrost + the operator's cheaper models with rerank ENABLED
-// (D-075): bifrost auto-wires a Cohere-shape custom provider so a single gateway
-// runs embed + complete + rerank on OpenRouter with one key.
+// The dataset is selected with STOWAGE_EVAL_DATASET (default "longmemeval"):
 //
-// NOTE on base URLs (bifrost+openrouter): bifrost's OpenRouter provider appends
-// "/v1/…" to its base, so embed/complete use BASE_URL=.../api; the auto-wired
-// Cohere-shape rerank provider appends "/rerank", so it uses
-// RERANK_BASE_URL=.../api/v1 (→ /api/v1/rerank). They differ — set both.
+//	longmemeval     — oracle haystack (evidence sessions only)
+//	longmemeval_s   — distractor haystack (~40–50 sessions/question) — the headline
+//	locomo          — LoCoMo multi-session conversations
+//
+// All three resolve through the dataset registry (D-096) and run on the single
+// harness.RunDataset path — the dataset is a parameter, not a forked runner.
+//
+// Rebased onto bifrost + the operator's cheaper models with rerank ENABLED (D-075):
 //
 //	STOWAGE_EVAL_GATEWAY=bifrost STOWAGE_EVAL_PROVIDER=openrouter \
 //	STOWAGE_EVAL_BASE_URL=https://openrouter.ai/api \
@@ -40,7 +39,8 @@ import (
 //	STOWAGE_EVAL_MODEL=inception/mercury-2 \
 //	STOWAGE_EVAL_EMBED_MODEL=perplexity/pplx-embed-v1-0.6b STOWAGE_EVAL_EMBED_DIMS=1024 \
 //	STOWAGE_EVAL_RERANK_MODEL=cohere/rerank-4-fast \
-//	STOWAGE_EVAL_LIMIT=10 go test -tags=fullmode -run TestFullMode -timeout 90m ./eval/harness/
+//	STOWAGE_EVAL_DATASET=longmemeval_s STOWAGE_EVAL_JUDGE=1 STOWAGE_EVAL_LIMIT=10 \
+//	go test -tags=fullmode -run TestFullMode -timeout 90m ./eval/harness/
 func TestFullMode(t *testing.T) {
 	if os.Getenv("STOWAGE_EVAL_GATEWAY") == "" {
 		t.Skip("STOWAGE_EVAL_GATEWAY not set — full mode is operator-triggered")
@@ -52,173 +52,80 @@ func TestFullMode(t *testing.T) {
 		}
 	}
 
-	dataPath, _ := filepath.Abs("../../eval/data/longmemeval/longmemeval.json")
-	f, err := os.Open(dataPath)
-	if err != nil {
-		t.Fatalf("open dataset (run `stowage eval fetch --dataset longmemeval` first): %v", err)
+	datasetName := os.Getenv("STOWAGE_EVAL_DATASET")
+	if datasetName == "" {
+		datasetName = "longmemeval"
 	}
-	defer f.Close() //nolint:errcheck
-	convs, questions, err := longmemeval.Normalize(f)
+	spec, err := datasets.MustLookup(datasetName)
 	if err != nil {
-		t.Fatalf("normalize: %v", err)
+		t.Fatalf("dataset select: %v", err)
 	}
 
-	// Deterministic question slice; ingest only the conversations they need.
-	sort.Slice(questions, func(i, j int) bool { return questions[i].ID < questions[j].ID })
-	if len(questions) > limit {
-		questions = questions[:limit]
+	dataPath, _ := filepath.Abs(filepath.Join("../../eval/data", spec.DataFile))
+	f, err := os.Open(dataPath) //nolint:gosec // operator-controlled path
+	if err != nil {
+		t.Fatalf("open dataset %q (run `stowage eval fetch --dataset %s` first): %v", datasetName, datasetName, err)
 	}
-	need := map[string]bool{}
-	for _, q := range questions {
-		need[q.ConvID] = true
-	}
-	convByID := map[string]datasets.Conversation{}
-	for _, c := range convs {
-		convByID[c.ID] = c
+	defer f.Close() //nolint:errcheck
+	convs, questions, err := spec.Normalize(f)
+	if err != nil {
+		t.Fatalf("normalize %s: %v", datasetName, err)
 	}
 
 	srv := NewTestServer(t, "eval-full")
-	// Rerank ENABLED in full mode (D-075): the runner issues precise-profile
-	// retrieves so the cross-encoder pass runs against the bifrost-wired rerank
-	// model. Disable via STOWAGE_EVAL_RERANK_MODEL="" (then the harness skips the
-	// WithRerankModel wiring and precise just runs without a rerank model).
+	// Rerank ENABLED in full mode (D-075): precise-profile retrieves run the
+	// cross-encoder pass against the bifrost-wired rerank model. Disable with
+	// STOWAGE_EVAL_RERANK_MODEL="".
 	runner := NewRunner(srv, RunConfig{EnableRerank: os.Getenv("STOWAGE_EVAL_RERANK_MODEL") != ""})
 
 	ctx := context.Background()
 
-	// Fail fast on a bad/unreachable gateway. A bad key otherwise 401s on every
-	// call and the settle loop grinds ~10 min before the test times out (REPORT.md
-	// wart). Probe validates reachability + model/dims in seconds.
+	// Fail fast on a bad/unreachable gateway (a bad key otherwise 401s every call
+	// and the settle loop grinds until timeout — REPORT.md wart).
 	if err := srv.Gateway().Probe(ctx); err != nil {
 		t.Fatalf("gateway probe failed — check STOWAGE_EVAL_* / OPENROUTER_API_KEY: %v", err)
 	}
 
-	start := time.Now()
-	for id := range need {
-		c, ok := convByID[id]
-		if !ok {
-			t.Fatalf("question references unknown conversation %s", id)
-		}
-		fix := toFixture(c)
-		if _, err := ingestFlushFull(ctx, runner, &fix); err != nil {
-			t.Fatalf("ingest %s: %v", id, err)
-		}
-		// Pace ingestion: settle each conversation before the next so the
-		// bounded pipeline channel never sees a burst (real deployments see
-		// conversations over time, not the whole haystack in one second).
-		if err := srv.WaitForQuiescence(ctx, 5*time.Minute); err != nil {
-			t.Logf("conversation %s slow to settle (re-enqueue sweep will recover): %v", id, err)
-		}
-	}
-	// Real extraction is async: hard settle barrier — scoring against a
-	// partially-ingested store invalidates the run (2026-06-12 lesson).
 	settle := 20 * time.Minute
 	if v := os.Getenv("STOWAGE_EVAL_SETTLE_TIMEOUT"); v != "" {
 		if d, err := time.ParseDuration(v); err == nil && d > 0 {
 			settle = d
 		}
 	}
-	if err := srv.WaitForQuiescence(ctx, settle); err != nil {
-		t.Fatalf("pipeline did not settle — run would be invalid: %v", err)
-	}
-	t.Logf("pipeline quiescent: %d active memories from %d conversations", srv.ActiveMemoryCount(ctx), len(need))
-	time.Sleep(10 * time.Second) // embed backfill settle
 
-	// Opt-in judged-QA mode (Phase 20, D-076): a reader answers from the retrieved
-	// context and an LLM judge grades it vs the gold answer. Reader+judge share the
-	// configured gateway model. Never in CI (STOWAGE_EVAL_GATEWAY gates full mode).
-	judged := os.Getenv("STOWAGE_EVAL_JUDGE") != ""
-	var verdicts []string
-	consecJudgeErr := 0
-
-	results := make([]QuestionResult, 0, len(questions))
-	for _, q := range questions {
-		qr, err := runner.scoreQuestion(ctx, QuestionFixture{
-			ID: q.ID, Text: q.Text, ConvID: q.ConvID, Category: q.Category,
-			Expected: struct {
-				Answer string `json:"answer"`
-			}{Answer: q.Expected.Answer},
-		})
-		if err != nil {
-			t.Fatalf("score %s: %v", q.ID, err)
-		}
-		if judged {
-			jr, jerr := JudgeQuestion(ctx, srv.Gateway(), q.Text, q.Expected.Answer, qr.Items)
-			if jerr != nil {
-				consecJudgeErr++
-				t.Logf("judge %s failed (%d consecutive): %v", q.ID, consecJudgeErr, jerr)
-				// Fail fast: 5 consecutive judge errors means the gateway/model is
-				// broken — don't burn the rest of the run.
-				if consecJudgeErr >= 5 {
-					t.Fatalf("judged-QA aborted after %d consecutive gateway errors: %v", consecJudgeErr, jerr)
-				}
-			} else {
-				consecJudgeErr = 0
-				qr.ReaderAnswer = jr.Answer
-				qr.JudgeVerdict = jr.Verdict
-				qr.JudgeJustification = jr.Justification
-				verdicts = append(verdicts, jr.Verdict)
-			}
-		}
-		results = append(results, qr)
+	start := time.Now()
+	res, err := RunDataset(ctx, srv, runner, convs, questions, RunDatasetOpts{
+		Limit:         limit,
+		Judge:         os.Getenv("STOWAGE_EVAL_JUDGE") != "", // Phase 20, D-076 — reader+judge
+		Settle:        settle,
+		PerConvSettle: 5 * time.Minute,
+		EmbedSettle:   10 * time.Second, // async embed backfill before scoring
+	})
+	if err != nil {
+		t.Fatalf("run dataset %s: %v", datasetName, err)
 	}
-	scores := ComputeScores(results)
-	if judged && len(verdicts) > 0 {
-		quality, n := JudgedQuality(verdicts)
-		scores.AnswerQuality = &quality
-		scores.JudgedCount = n
-	}
+	scores := res.Scores
+	t.Logf("pipeline quiescent: %d active memories; judge_errors=%d", srv.ActiveMemoryCount(ctx), res.JudgeErrors)
 
 	outDir, _ := filepath.Abs("../../eval/results")
 	_ = os.MkdirAll(outDir, 0o750)
-	out := filepath.Join(outDir, fmt.Sprintf("longmemeval-n%d-%s.jsonl", len(questions), time.Now().UTC().Format("20060102T150405Z")))
+	out := filepath.Join(outDir, fmt.Sprintf("%s-n%d-%s.jsonl", datasetName, len(res.Results), time.Now().UTC().Format("20060102T150405Z")))
 	w, err := os.Create(out) //nolint:gosec
 	if err != nil {
 		t.Fatalf("create results: %v", err)
 	}
 	defer w.Close() //nolint:errcheck
 	enc := json.NewEncoder(w)
-	for _, r := range results {
+	for _, r := range res.Results {
 		_ = enc.Encode(r)
 	}
-	// Honest dataset label: the fetcher defaults to the oracle variant; the
-	// distractor haystack is selected via STOWAGE_EVAL_LONGMEMEVAL_URL (…_s.json).
-	datasetLabel := "longmemeval_oracle_cleaned"
-	if strings.Contains(os.Getenv("STOWAGE_EVAL_LONGMEMEVAL_URL"), "_s") {
-		datasetLabel = "longmemeval_s_cleaned"
-	}
-	summary := map[string]any{"summary": scores, "wall_time_sec": time.Since(start).Seconds(), "dataset": datasetLabel, "n": len(questions)}
+	summary := map[string]any{"summary": scores, "wall_time_sec": time.Since(start).Seconds(), "dataset": datasetName, "n": len(res.Results)}
 	_ = enc.Encode(summary)
 
 	quality := "n/a (judging off)"
 	if scores.AnswerQuality != nil {
 		quality = fmt.Sprintf("%.4f (%d judged)", *scores.AnswerQuality, scores.JudgedCount)
 	}
-	t.Logf("FULL-MODE n=%d dataset=%s answer_context_hit=%.4f (%d/%d) answer_quality=%s p50=%.0fms p95=%.0fms results=%s",
-		len(questions), datasetLabel, scores.AnswerContextHit, scores.HitCount, scores.TotalQuestions, quality, scores.P50LatencyMs, scores.P95LatencyMs, out)
-}
-
-func toFixture(c datasets.Conversation) ConvFixture {
-	fix := ConvFixture{ID: c.ID}
-	for _, s := range c.Sessions {
-		sf := SessionFixture{ID: s.ID}
-		for _, turn := range s.Turns {
-			sf.Turns = append(sf.Turns, TurnFixture{Role: turn.Role, Content: turn.Content})
-		}
-		fix.Sessions = append(fix.Sessions, sf)
-	}
-	return fix
-}
-
-// ingestFlushFull ingests a conversation and explicitly flushes its buffer
-// (full mode: no mock scripts — the real gateway extracts).
-func ingestFlushFull(ctx context.Context, r *Runner, fix *ConvFixture) ([]string, error) {
-	ids, err := r.ingestConversation(ctx, fix)
-	if err != nil {
-		return nil, err
-	}
-	if err := r.flushBuffer(ctx, fix.ID); err != nil {
-		return nil, err
-	}
-	return ids, nil
+	t.Logf("FULL-MODE dataset=%s n=%d answer_context_hit=%.4f (%d/%d) answer_quality=%s p50=%.0fms p95=%.0fms results=%s",
+		datasetName, len(res.Results), scores.AnswerContextHit, scores.HitCount, scores.TotalQuestions, quality, scores.P50LatencyMs, scores.P95LatencyMs, out)
 }

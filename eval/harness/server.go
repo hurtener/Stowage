@@ -324,6 +324,30 @@ func (s *TestServer) PushExtractionScript(entry json.RawMessage) {
 	drv.PushScript(gwtmock.Script{JSON: entry})
 }
 
+// WaitForBuffered polls until at least minItems unflushed items exist under
+// bufferKey, or the deadline. Ingest enqueues to the buffer stage ASYNCHRONOUSLY
+// (records_handler.go: non-blocking channel send → stage goroutine writes
+// buffer_items), so a flush issued immediately after the ingest ACK can race the
+// buffer-append and no-op. RunDataset calls this before each flush so the flush
+// deterministically sees the conversation's records (D-096).
+func (s *TestServer) WaitForBuffered(ctx context.Context, bufferKey string, minItems int) error {
+	deadline := time.Now().Add(30 * time.Second)
+	scope := s.Scope()
+	for time.Now().Before(deadline) {
+		items, err := s.Store.Buffers().ListDue(ctx, scope, bufferKey, 500)
+		if err == nil && len(items) >= minItems {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(100 * time.Millisecond):
+		}
+	}
+	items, _ := s.Store.Buffers().ListDue(ctx, scope, bufferKey, 500)
+	return fmt.Errorf("timeout waiting for %d buffered items under %q: have %d", minItems, bufferKey, len(items))
+}
+
 // ActiveMemoryCount returns the number of active memories currently stored in
 // the eval tenant scope. Used by the runner's per-conversation fixture integrity
 // check to detect when a conversation produced zero committed memories.
