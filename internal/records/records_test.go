@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/hurtener/stowage/internal/records"
+	"github.com/hurtener/stowage/internal/tokenize"
 )
 
 func TestNew_Valid(t *testing.T) {
@@ -28,8 +29,8 @@ func TestNew_Valid(t *testing.T) {
 	if rec.OccurredAt == 0 {
 		t.Error("OccurredAt must be stamped when not provided")
 	}
-	if rec.TokenEstimate != int64(len("hello world"))/4 {
-		t.Errorf("TokenEstimate: got %d want %d", rec.TokenEstimate, int64(len("hello world"))/4)
+	if want := int64(tokenize.Estimate("hello world")); rec.TokenEstimate != want {
+		t.Errorf("TokenEstimate: got %d want %d", rec.TokenEstimate, want)
 	}
 	if rec.TenantID != "tenant-1" {
 		t.Errorf("TenantID: got %q want tenant-1", rec.TenantID)

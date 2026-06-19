@@ -2424,3 +2424,35 @@ WIDENS what the LLM sees; the LLM (not a threshold) decides dedup vs supersede.
 Degraded-safe (D-036): when the vindex/gateway is unwired or the embed/search fails,
 reconcile falls back to structural-only neighbors (the prior behaviour) — no write-path
 hard dependency on the gateway. Wired via `ReconcileStage.SetVIndex` in boot.
+
+## D-091 — Shared char/word-blended token ESTIMATE in internal/tokenize (BPE rejected)
+
+2026-06-19. Bar-remediation (simplification A1). Three call sites estimated token counts
+with an inlined `len(s)/4` — the extraction transcript clamp (pipeline.roughTokens), the
+playbook budget (playbook.estimateTokens), and the day-one record TokenEstimate signal
+(records.New, D-024). Three copies of one heuristic is drift, and bare `len/4` under-counts
+normal prose by ~25% (English averages ~0.75 words/token, i.e. ~4.7 chars/token only for
+dense text; whitespace makes prose cheaper per char but the WORD count then dominates).
+
+**One leaf package.** `internal/tokenize` (zero deps) owns the single `Estimate(s) int`;
+the three sites now delegate. It is an ESTIMATE driving clamping/budgeting, never
+correctness or billing (the gateway meters real provider tokens, D-088).
+
+**Algorithm: MAX of the two rules of thumb**, not mean. `max(bytes/4, ceil(words/0.75))`.
+Because the estimate gates a CLAMP/BUDGET, under-counting is the dangerous direction (it
+would silently overflow the context window); max never under-counts versus either rule.
+Whitespace-sparse text (code, base64 blobs, CJK) tracks the byte rule; word-spaced text
+tracks the word rule. Always ≥1 for non-empty input ("a tiny memory is never free").
+
+The byte rule uses `len(s)` (bytes), NOT rune count — deliberately. Multibyte scripts
+(CJK) cost ~1 BPE token per CHARACTER, far more than bytes/4, so counting runes would
+under-count them (the dangerous direction). Bytes/4 is also the exact conservative
+heuristic the three call sites used before this package, so no site's estimate dropped.
+
+**Pure-Go BPE tokenizer REJECTED (reversing an earlier lean toward tiktoken-go).** An
+exact tokenizer (tiktoken port) would either fetch the BPE vocab over HTTP at runtime —
+breaking the offline single-binary guarantee — or embed it: cl100k ~1.6MB + o200k ~3.4MB
+(~6.7MB total with the others) baked into an otherwise lean CGo-free static binary. That
+is a poor trade for an estimate that never affects correctness, and it couples the binary
+to a specific provider's vocab when the gateway is provider-agnostic (P5). The lean binary
+is a differentiator; a clamping estimate does not justify spending multiple MB on it.
