@@ -392,6 +392,37 @@ type TraceResponse struct {
 	Signature string `json:"signature,omitempty"`
 }
 
+// ---- Proactive suggestions (Phase 27, RFC §6d, D-087) ------------------------
+
+// SuggestionsRequest drives the proactive pull. Action ∈ {list (default), accept,
+// dismiss}. list evaluates+offers for SessionID (with the optional Query context);
+// accept/dismiss resolve the offer ID with feedback.
+type SuggestionsRequest struct {
+	Action    string // "list" | "accept" | "dismiss"
+	SessionID string
+	Query     string
+	ID        string // the suggestion id (accept/dismiss)
+}
+
+// Suggestion is one proactive offer (byte-identical to the HTTP/MCP shape).
+type Suggestion struct {
+	ID          string  `json:"id"`
+	TriggerKind string  `json:"trigger_kind"`
+	MemoryID    string  `json:"memory_id"`
+	EpisodeID   string  `json:"episode_id,omitempty"`
+	Title       string  `json:"title"`
+	Score       float64 `json:"score"`
+}
+
+// SuggestionsResponse carries the offers (list) or the resolved ID+Status
+// (accept/dismiss).
+type SuggestionsResponse struct {
+	Suggestions []Suggestion `json:"suggestions"`
+	Degraded    bool         `json:"degraded,omitempty"`
+	ID          string       `json:"id,omitempty"`
+	Status      string       `json:"status,omitempty"`
+}
+
 // ---- Memory / reversibility types (D-070) -----------------------------------
 
 // Memory mirrors the HTTP memoryJSON wire type. It is returned by Rollback and

@@ -356,6 +356,50 @@ func (c *httpClient) Trace(ctx context.Context, req TraceRequest) (TraceResponse
 	return resp, nil
 }
 
+// Suggestions implements Client via GET /v1/suggestions (list) + POST
+// /v1/suggestions/{id} (accept/dismiss) (RFC §6d, D-087).
+func (c *httpClient) Suggestions(ctx context.Context, req SuggestionsRequest) (SuggestionsResponse, error) {
+	action := req.Action
+	if action == "" {
+		action = "list"
+	}
+	switch action {
+	case "list":
+		v := url.Values{}
+		if req.SessionID != "" {
+			v.Set("session_id", req.SessionID)
+		}
+		if req.Query != "" {
+			v.Set("query", req.Query)
+		}
+		path := "/v1/suggestions"
+		if enc := v.Encode(); enc != "" {
+			path += "?" + enc
+		}
+		var resp SuggestionsResponse
+		if err := c.do(ctx, http.MethodGet, path, nil, &resp); err != nil {
+			return SuggestionsResponse{}, err
+		}
+		if resp.Suggestions == nil {
+			resp.Suggestions = []Suggestion{}
+		}
+		return resp, nil
+	case "accept", "dismiss":
+		if req.ID == "" {
+			return SuggestionsResponse{}, fmt.Errorf("sdk: suggestions: id is required for %s", action)
+		}
+		var resp SuggestionsResponse
+		body := map[string]string{"action": action}
+		if err := c.do(ctx, http.MethodPost, "/v1/suggestions/"+url.PathEscape(req.ID), body, &resp); err != nil {
+			return SuggestionsResponse{}, err
+		}
+		resp.Suggestions = []Suggestion{}
+		return resp, nil
+	default:
+		return SuggestionsResponse{}, fmt.Errorf("sdk: suggestions: action must be list, accept, or dismiss")
+	}
+}
+
 // GetMemory implements Client via GET /v1/memories/{id} (D-070).
 func (c *httpClient) GetMemory(ctx context.Context, id string) (GetMemoryResponse, error) {
 	if id == "" {

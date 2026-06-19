@@ -15,6 +15,7 @@ import (
 	"github.com/hurtener/stowage/internal/identity"
 	"github.com/hurtener/stowage/internal/pipeline"
 	"github.com/hurtener/stowage/internal/playbook"
+	"github.com/hurtener/stowage/internal/proactive"
 	"github.com/hurtener/stowage/internal/reconcile"
 	"github.com/hurtener/stowage/internal/records"
 	"github.com/hurtener/stowage/internal/retrieval"
@@ -1119,4 +1120,113 @@ func makeTraceHandler(svc *Services) tool.Handler[TraceInput, traces.Bundle] {
 			Structured: bundle,
 		}, nil
 	}
+}
+
+// ─── memory_suggestions (Phase 27, D-087) ──────────────────────────────────────
+
+// makeSuggestionsHandler implements memory_suggestions (RFC §6d): the proactive
+// pull (action=list evaluates+offers) and feedback (accept|dismiss resolve an
+// offer). Single-user tier; mirrors GET /v1/suggestions + POST /v1/suggestions/{id}
+// and the embedded SDK Suggestions. Scope resolved via svc.ScopeFn.
+func makeSuggestionsHandler(svc *Services) tool.Handler[SuggestionsInput, SuggestionsOutput] {
+	return func(ctx context.Context, in SuggestionsInput) (tool.Result[SuggestionsOutput], error) {
+		scope, err := svc.ScopeFn(ctx)
+		if err != nil {
+			return tool.Result[SuggestionsOutput]{}, fmt.Errorf("memory_suggestions: resolve scope: %w", err)
+		}
+		action := in.Action
+		if action == "" {
+			action = "list"
+		}
+		switch action {
+		case "list":
+			cfg, rerr := proactive.Resolve(ctx, svc.Store.ScopeSettings(), scope, proactiveProfileDefault(svc.Profile))
+			if rerr != nil {
+				return tool.Result[SuggestionsOutput]{}, fmt.Errorf("memory_suggestions: %w", rerr)
+			}
+			offers, degraded, eerr := proactive.Evaluate(ctx, svc.Store, svc.Retriever, scope, in.SessionID, in.Query, cfg, time.Now().UnixMilli())
+			if eerr != nil {
+				return tool.Result[SuggestionsOutput]{}, fmt.Errorf("memory_suggestions: %w", eerr)
+			}
+			out := SuggestionsOutput{Suggestions: make([]SuggestionItem, 0, len(offers)), Degraded: degraded}
+			for _, o := range offers {
+				out.Suggestions = append(out.Suggestions, SuggestionItem{
+					ID: o.ID, TriggerKind: o.TriggerKind, MemoryID: o.MemoryID,
+					EpisodeID: o.EpisodeID, Title: o.Title, Score: o.Score,
+				})
+			}
+			return tool.Result[SuggestionsOutput]{
+				Text: fmt.Sprintf("Suggestions: %d offered (degraded=%v)", len(out.Suggestions), degraded), Structured: out,
+			}, nil
+		case "accept", "dismiss":
+			if in.ID == "" {
+				return tool.Result[SuggestionsOutput]{}, fmt.Errorf("memory_suggestions: id is required for %s", action)
+			}
+			sug, rerr := proactive.ResolveOffer(ctx, svc.Store, scope, in.ID, action, time.Now().UnixMilli())
+			if errors.Is(rerr, store.ErrNotPending) || errors.Is(rerr, store.ErrNotFound) {
+				return tool.Result[SuggestionsOutput]{}, fmt.Errorf("memory_suggestions: suggestion not found or already resolved")
+			}
+			if rerr != nil {
+				return tool.Result[SuggestionsOutput]{}, fmt.Errorf("memory_suggestions: %w", rerr)
+			}
+			out := SuggestionsOutput{Suggestions: []SuggestionItem{}, ID: sug.ID, Status: sug.Status}
+			return tool.Result[SuggestionsOutput]{Text: fmt.Sprintf("Suggestion %s: %s", sug.ID, sug.Status), Structured: out}, nil
+		default:
+			return tool.Result[SuggestionsOutput]{}, fmt.Errorf("memory_suggestions: action must be list, accept, or dismiss")
+		}
+	}
+}
+
+// ─── memory_proactive_config (Phase 27, D-087) ──────────────────────────────────
+
+// makeProactiveConfigHandler implements memory_proactive_config (admin tier):
+// action=get returns the scope's effective governance; action=set stores the
+// override. Mirrors GET/PUT /v1/admin/proactive. Scope resolved via svc.ScopeFn,
+// refined by User/Project.
+func makeProactiveConfigHandler(svc *Services) tool.Handler[ProactiveConfigInput, ProactiveConfigOutput] {
+	return func(ctx context.Context, in ProactiveConfigInput) (tool.Result[ProactiveConfigOutput], error) {
+		base, err := svc.ScopeFn(ctx)
+		if err != nil {
+			return tool.Result[ProactiveConfigOutput]{}, fmt.Errorf("memory_proactive_config: resolve scope: %w", err)
+		}
+		scope := identity.Scope{Tenant: base.Tenant, User: in.User, Project: in.Project}
+		action := in.Action
+		if action == "" {
+			action = "get"
+		}
+		switch action {
+		case "set":
+			value, merr := proactive.MarshalConfig(proactive.Config{
+				Enabled: in.Enabled, Threshold: in.Threshold, Budget: in.Budget, Classes: in.Classes,
+			})
+			if merr != nil {
+				return tool.Result[ProactiveConfigOutput]{}, fmt.Errorf("memory_proactive_config: %w", merr)
+			}
+			if serr := svc.Store.ScopeSettings().Set(ctx, scope, "proactive", value, time.Now().UnixMilli()); serr != nil {
+				return tool.Result[ProactiveConfigOutput]{}, fmt.Errorf("memory_proactive_config: %w", serr)
+			}
+		case "get":
+			// no-op; falls through to resolve+return
+		default:
+			return tool.Result[ProactiveConfigOutput]{}, fmt.Errorf("memory_proactive_config: action must be get or set")
+		}
+		cfg, rerr := proactive.Resolve(ctx, svc.Store.ScopeSettings(), scope, proactiveProfileDefault(svc.Profile))
+		if rerr != nil {
+			return tool.Result[ProactiveConfigOutput]{}, fmt.Errorf("memory_proactive_config: %w", rerr)
+		}
+		classes := cfg.Classes
+		if classes == nil {
+			classes = map[string]bool{}
+		}
+		out := ProactiveConfigOutput{Enabled: cfg.Enabled, Threshold: cfg.Threshold, Budget: cfg.Budget, Classes: classes}
+		return tool.Result[ProactiveConfigOutput]{
+			Text: fmt.Sprintf("Proactive: enabled=%v threshold=%.2f budget=%d", cfg.Enabled, cfg.Threshold, cfg.Budget), Structured: out,
+		}, nil
+	}
+}
+
+// proactiveProfileDefault maps the profile's proactive defaults onto proactive.Config.
+func proactiveProfileDefault(profile string) proactive.Config {
+	pc := config.ProactiveConfigForProfile(profile)
+	return proactive.Config{Enabled: pc.Enabled, Threshold: pc.Threshold, Budget: pc.Budget, Classes: pc.Classes}
 }

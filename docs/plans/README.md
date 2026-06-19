@@ -142,7 +142,7 @@ match table slots 19–21.
 
 | # | Phase | Owns | RFC |
 |---|-------|------|-----|
-| 27 | Proactive trigger engine | `internal/proactive`: triggers, threshold scoring, per-tenant governance, accept/dismiss tuning | §6d |
+| 27 | Proactive trigger engine | `internal/proactive`: three trigger rules (recent/similar episode, expiring) scored by `scoring.Score`; per-scope governance (threshold+budget+classes) in `scope_settings`, profile-defaulted + opt-out; accept/dismiss confidence tuning; `memory_suggestions` {SDK,HTTP,MCP} + `memory_proactive_config` admin-tier {HTTP,MCP}; gateway-free expiry sweep; no new schema — D-087 | §6d |
 
 ### Backlog (no phase until pulled)
 

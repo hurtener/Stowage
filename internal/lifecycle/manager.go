@@ -80,6 +80,14 @@ type Profile struct {
 	ThreadMinOverlap float64       // entity/keyword Jaccard threshold to thread two episodes; default 0.3
 	ThreadWindow     time.Duration // max temporal gap between threaded episodes; default 30 days
 	ThreadBatchSize  int           // recent narrated episodes scanned per tenant per sweep; default 50
+
+	// Proactive-suggestion expiry (Phase 27, D-087). A gateway-free sweep that GCs
+	// stale PENDING offers the agent never resolved, so a missed offer does not
+	// suppress future ones (the engine dedupes against any-status history). Always
+	// registered (cheap no-op when no suggestions exist).
+	SuggestExpireInterval time.Duration // sweep cadence; default 15m
+	SuggestTTL            time.Duration // age at which a pending offer expires; default 24h
+	SuggestExpireBatch    int           // pending offers expired per tenant per sweep; default 200
 }
 
 // DefaultProfile returns the profile with sensible production defaults.
@@ -120,6 +128,10 @@ func DefaultProfile() Profile {
 		ThreadMinOverlap: 0.3,
 		ThreadWindow:     30 * 24 * time.Hour,
 		ThreadBatchSize:  50,
+
+		SuggestExpireInterval: 15 * time.Minute,
+		SuggestTTL:            24 * time.Hour,
+		SuggestExpireBatch:    200,
 	}
 }
 
@@ -291,6 +303,9 @@ func (m *Manager) Start(ctx context.Context) {
 	if m.threadingOn() {
 		m.startSweep(ctx, "episode-thread", m.profile.ThreadInterval, m.runThreadEpisodes)
 	}
+	if m.profile.SuggestExpireInterval > 0 {
+		m.startSweep(ctx, "suggest-expire", m.profile.SuggestExpireInterval, m.runExpireSuggestions)
+	}
 }
 
 // Stop signals all sweeps to stop and waits for them to finish.
@@ -346,5 +361,8 @@ func (m *Manager) RunForce(ctx context.Context) {
 	}
 	if m.threadingOn() {
 		m.runThreadEpisodes(ctx)
+	}
+	if m.profile.SuggestExpireInterval > 0 {
+		m.runExpireSuggestions(ctx)
 	}
 }

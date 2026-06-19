@@ -2244,3 +2244,60 @@ sign with the same key. `internal/traces` imports no gateway (deterministic read
 
 **No new schema.** Reconstruction reuses injections/events/records/provenance/links;
 capture rides the events JSON payload. No table/column added; no RFC §8.1 amendment.
+
+## D-087 — Proactive engine: gateway-light trigger rules, per-scope governance, accept/dismiss confidence tuning, no new schema (Phase 27)
+
+2026-06-18. Phase 27 (RFC §6d) ships the proactive trigger engine and settles how
+"the memory volunteers context" is realised without a knob explosion or a new table.
+
+**Pull model, agent-initiated.** Stowage owns no session lifecycle (Harbor does), so
+the agent PULLS at turn start: `GET /v1/suggestions?session_id=&query=` evaluates the
+scope's enabled trigger rules and returns the budgeted, governance-gated offers. The
+list endpoint is a write — it persists each offer as a `pending` suggestion (the
+feedback + dedupe record) and emits a `suggestion.offered` event — so a repeated call
+within a session does not re-offer the same memory (dedupe against the session's
+any-status history). `POST /v1/suggestions/{id}` `{action: accept|dismiss}` resolves
+an offer via compare-and-swap on `status='pending'` (double-resolve ⇒ `ErrNotPending`
+⇒ 404). The CAS + its audit event (`suggestion.accepted`/`suggestion.dismissed`) live
+in one `proactive.ResolveOffer` core that all three surfaces call (D-067 — no surface
+can omit the event); the lifecycle sweep emits `suggestion.expired`. All four §6d
+lifecycle events ship (§8 audit trail).
+
+**Three trigger rules, scored by the retrieval scorer (no new scoring).** `recent_episode`
+(the scope's most recent narrated episode ended within 7 days) and `expiring` (an
+active memory whose `valid_until` is within 3 days) are **gateway-free**;
+`similar_episode` (the past episode whose narrative resembles the query) embeds via the
+injected `NarrativeSearcher` and is **degraded-safe** (D-036). Each rule's pre-utility
+relevance becomes the `FusedScore` fed to `scoring.Score`, so a proactively-pushed
+memory is subject to the same use/noise/decay/trust shaping as a pulled one — a noisy
+or decayed memory can never be louder when pushed than when retrieved.
+
+**Feedback tuning realises §6d "nothing static" (P4).** Per-`(scope, trigger_class)`
+accept/dismiss tallies (the suggestions table's two counters — NOT the six memory
+counters) drive a Laplace-smoothed confidence multiplier
+`(accepted+1)/(accepted+dismissed+1)`, clamped to `[0.2, 1]`: a class the scope keeps
+dismissing decays toward the floor and falls under the threshold; accepts restore it.
+The multiplier scales the class's candidate scores before the threshold/budget gate.
+
+**Per-scope governance in `scope_settings`, profile-defaulted, opt-out.** The effective
+config (`enabled`, `threshold`, `budget ≤ 20`, `classes`) is the profile default
+overlaid by the scope's stored `proactive` setting (RFC §6d "stored scope settings, not
+config files"); a malformed stored setting fails safe to OFF. Profile defaults are
+profile-internal (NOT top-level knobs, D-034): assistant on (threshold 0.45, budget 2),
+fleet on (0.55, budget 1), coding-agent off — and the gateway-touching `similar_episode`
+class is **off by default in every profile**, so a zero-config start makes no proactive
+gateway calls (D-036/D-034). Governance read/write is an **admin-tier** capability
+(`GET/PUT /v1/admin/proactive` + `memory_proactive_config`, {HTTP, MCP} only, D-067);
+the single-user `memory_suggestions` ships on {SDK, HTTP, MCP}.
+
+**Forgetting (P4).** An expiry sweep (`internal/lifecycle`, gateway-free, advisory-locked,
+jittered, idempotent) GCs `pending` offers older than 24h (`status → 'expired'`, not
+counted as accept or dismiss) so a missed offer does not permanently suppress
+re-offering. Suggestions are derived/disposable — no provenance, no reconciliation.
+
+**No new schema.** The `suggestions` and `scope_settings` tables are already day-one
+§8.1 inventory; Phase 27 only wires them through the Store seam (both drivers + shared
+conformance) and adds one index-only migration (`0010`). Tool count 18 → 20.
+
+**Deferred (recorded, not dropped).** Temporal pattern-mining (time-series frequency
+analysis + an automation surface) is out of scope for v1 — a stretch follow-up.

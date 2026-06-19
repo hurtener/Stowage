@@ -120,7 +120,7 @@ else
   NAMES=""
 fi
 
-WANT=18
+WANT=20
 if [ "$TOOL_COUNT" -eq "$WANT" ]; then
   ok "tools/list returned exactly $WANT tools (AC-1)"
 else
@@ -142,10 +142,12 @@ memory_get
 memory_grants
 memory_ingest
 memory_playbook
+memory_proactive_config
 memory_resolve
 memory_retrieve
 memory_review
 memory_rollback
+memory_suggestions
 memory_topics
 memory_trace
 memory_verify"

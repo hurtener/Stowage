@@ -1,0 +1,55 @@
+{
+  "type": "object",
+  "properties": {
+    "suggestions": {
+      "type": [
+        "null",
+        "array"
+      ],
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "trigger_kind": {
+            "type": "string"
+          },
+          "memory_id": {
+            "type": "string"
+          },
+          "episode_id": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "score": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "id",
+          "trigger_kind",
+          "memory_id",
+          "title",
+          "score"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "degraded": {
+      "type": "boolean"
+    },
+    "id": {
+      "type": "string"
+    },
+    "status": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "suggestions"
+  ],
+  "additionalProperties": false
+}

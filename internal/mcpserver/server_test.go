@@ -47,29 +47,31 @@ func TestNew_SevenToolsRegistered(t *testing.T) {
 	}
 
 	tools := srv.Tools()
-	if len(tools) != 18 {
-		t.Fatalf("expected 18 tools registered, got %d: %v", len(tools), tools)
+	if len(tools) != 20 {
+		t.Fatalf("expected 20 tools registered, got %d: %v", len(tools), tools)
 	}
 
 	want := map[string]bool{
-		"memory_ingest":    true,
-		"memory_retrieve":  true,
-		"memory_playbook":  true,
-		"memory_episodes":  true,
-		"memory_causal":    true,
-		"memory_verify":    true,
-		"memory_review":    true,
-		"memory_trace":     true,
-		"memory_drilldown": true,
-		"memory_feedback":  true,
-		"memory_assert":    true,
-		"memory_topics":    true,
-		"memory_get":       true,
-		"memory_rollback":  true,
-		"memory_resolve":   true,
-		"memory_flush":     true,
-		"memory_branch":    true,
-		"memory_grants":    true,
+		"memory_ingest":           true,
+		"memory_retrieve":         true,
+		"memory_playbook":         true,
+		"memory_episodes":         true,
+		"memory_causal":           true,
+		"memory_verify":           true,
+		"memory_review":           true,
+		"memory_trace":            true,
+		"memory_drilldown":        true,
+		"memory_feedback":         true,
+		"memory_assert":           true,
+		"memory_topics":           true,
+		"memory_get":              true,
+		"memory_rollback":         true,
+		"memory_resolve":          true,
+		"memory_flush":            true,
+		"memory_branch":           true,
+		"memory_grants":           true,
+		"memory_suggestions":      true,
+		"memory_proactive_config": true,
 	}
 	for _, name := range tools {
 		if !want[name] {
@@ -114,8 +116,8 @@ func TestNew_ConcurrentCreation(t *testing.T) {
 			t.Errorf("goroutine %d: nil server", i)
 			continue
 		}
-		if n := len(srv.Tools()); n != 18 {
-			t.Errorf("goroutine %d: expected 18 tools, got %d", i, n)
+		if n := len(srv.Tools()); n != 20 {
+			t.Errorf("goroutine %d: expected 20 tools, got %d", i, n)
 		}
 	}
 }

@@ -193,6 +193,23 @@ func New(info server.Info, svc *Services) (*server.Server, error) {
 		return nil, err
 	}
 
+	// Phase 27: proactive suggestions (RFC §6d, D-087) — single-user tier.
+	if err := tool.New[SuggestionsInput, SuggestionsOutput]("memory_suggestions").
+		Describe("Proactive memory suggestions (RFC §6d, D-087): action=list evaluates the scope's trigger rules (recent/similar episodes, expiring memories) and offers the budgeted, governance-gated set for a session (mirrors GET /v1/suggestions); action=accept|dismiss resolves an offer id and tunes per-trigger confidence (mirrors POST /v1/suggestions/{id}). The agent PULLS at turn start; the memory decides what is worth surfacing.").
+		Handler(makeSuggestionsHandler(svc)).
+		Register(srv); err != nil {
+		return nil, err
+	}
+
+	// Phase 27: proactive governance (RFC §6d, D-087) — admin tier; deliberately
+	// ABSENT from the single-user SDK (D-067).
+	if err := tool.New[ProactiveConfigInput, ProactiveConfigOutput]("memory_proactive_config").
+		Describe("Read or write a scope's proactive governance (RFC §6d, D-087): action=get returns the effective config (profile default overlaid by the scope's stored override); action=set writes the override (enabled, threshold, budget, classes). Mirrors GET/PUT /v1/admin/proactive. Opt-out is enabled=false.").
+		Handler(makeProactiveConfigHandler(svc)).
+		Register(srv); err != nil {
+		return nil, err
+	}
+
 	// Tier-B admin verb (D-071) — multi-user; matches the HTTP admin routes,
 	// deliberately ABSENT from the single-user SDK (D-067).
 	if err := tool.New[GrantsInput, GrantsOutput]("memory_grants").

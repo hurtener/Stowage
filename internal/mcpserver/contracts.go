@@ -572,3 +572,58 @@ type ResolveOutput struct {
 	ID     string `json:"id"`
 	Status string `json:"status"`
 }
+
+// ─── memory_suggestions (Phase 27, D-087) ──────────────────────────────────────
+
+// SuggestionsInput is the memory_suggestions tool input (RFC §6d). Action ∈
+// {list (default), accept, dismiss}. list evaluates+offers for SessionID (+Query);
+// accept/dismiss resolve the offer ID with feedback.
+type SuggestionsInput struct {
+	Action    string `json:"action,omitempty"` // "list" | "accept" | "dismiss"
+	SessionID string `json:"session_id,omitempty"`
+	Query     string `json:"query,omitempty"`
+	ID        string `json:"id,omitempty"` // the suggestion id (accept/dismiss)
+}
+
+// SuggestionItem is one proactive offer (byte-identical to the HTTP/SDK shape).
+type SuggestionItem struct {
+	ID          string  `json:"id"`
+	TriggerKind string  `json:"trigger_kind"`
+	MemoryID    string  `json:"memory_id"`
+	EpisodeID   string  `json:"episode_id,omitempty"`
+	Title       string  `json:"title"`
+	Score       float64 `json:"score"`
+}
+
+// SuggestionsOutput is the memory_suggestions tool output. For list it carries the
+// offers (+Degraded); for accept/dismiss it carries the resolved ID + Status.
+type SuggestionsOutput struct {
+	Suggestions []SuggestionItem `json:"suggestions"`
+	Degraded    bool             `json:"degraded,omitempty"`
+	ID          string           `json:"id,omitempty"`
+	Status      string           `json:"status,omitempty"`
+}
+
+// ─── memory_proactive_config (Phase 27, D-087) ──────────────────────────────────
+
+// ProactiveConfigInput is the memory_proactive_config tool input (admin tier).
+// Action ∈ {get (default), set}. set writes the scope's governance override;
+// User/Project refine the scope. The governance fields are used only on set.
+type ProactiveConfigInput struct {
+	Action    string          `json:"action,omitempty"` // "get" | "set"
+	User      string          `json:"user,omitempty"`
+	Project   string          `json:"project,omitempty"`
+	Enabled   bool            `json:"enabled,omitempty"`
+	Threshold float64         `json:"threshold,omitempty"`
+	Budget    int             `json:"budget,omitempty"`
+	Classes   map[string]bool `json:"classes,omitempty"`
+}
+
+// ProactiveConfigOutput is the memory_proactive_config tool output: the effective
+// (resolved + clamped) governance for the scope.
+type ProactiveConfigOutput struct {
+	Enabled   bool            `json:"enabled"`
+	Threshold float64         `json:"threshold"`
+	Budget    int             `json:"budget"`
+	Classes   map[string]bool `json:"classes"`
+}

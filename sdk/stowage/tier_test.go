@@ -22,7 +22,9 @@ func TestClientTierBoundary(t *testing.T) {
 	}
 
 	// Tier-B verbs (multi-user/admin) must be ABSENT from the single-user SDK.
-	forbidden := []string{"Group", "Grant", "Member", "Contribute"}
+	// ProactiveConfig is the admin governance verb (memory_proactive_config) — it
+	// is {HTTP, MCP} only; the single-user pull (Suggestions) IS on the SDK (D-087).
+	forbidden := []string{"Group", "Grant", "Member", "Contribute", "ProactiveConfig"}
 	for name := range methods {
 		for _, f := range forbidden {
 			if strings.Contains(name, f) {
@@ -35,6 +37,7 @@ func TestClientTierBoundary(t *testing.T) {
 	for _, want := range []string{
 		"UpsertTopics", "DeleteTopic", "Flush",
 		"ForkBranch", "MergeBranch", "DiscardBranch", "Assert",
+		"Suggestions", // proactive pull is single-user tier (D-087)
 	} {
 		if !methods[want] {
 			t.Errorf("Tier-A verb missing from the SDK Client: %s (must be reachable on {SDK, MCP, HTTP}; D-071)", want)

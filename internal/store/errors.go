@@ -32,3 +32,8 @@ var ErrBadCursor = errors.New("store: bad cursor")
 // committed an identical-hash memory. Reconcile handles this as exact-dedup:
 // IncrementCounter("match") on the existing row, candidate discarded (m7).
 var ErrDuplicateContent = errors.New("store: duplicate content hash")
+
+// ErrNotPending is returned by SuggestionStore.Resolve when the suggestion is not in
+// the 'pending' state (already accepted/dismissed/expired, or absent) — the
+// compare-and-swap found no pending row (Phase 27, D-087).
+var ErrNotPending = errors.New("store: suggestion is not pending")
