@@ -2,6 +2,7 @@ package reconcile_test
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 	"time"
 
@@ -26,37 +27,45 @@ func (g *constVecGateway) Embed(_ context.Context, _ gateway.EmbedRequest) (gate
 	return gateway.EmbedResponse{Vectors: [][]float32{g.vec}}, nil
 }
 
-// TestStageVectorNeighborNearDup proves A4+A5: a candidate that shares NO entity/
-// keyword token with an existing memory (so structural FindNeighbors misses it) but is
-// semantically identical (cosine ≥ threshold) is caught as a near-dup via the vector
-// lane — match_count bumped, no duplicate memory created, no LLM call.
-func TestStageVectorNeighborNearDup(t *testing.T) {
+// TestStageVectorNeighborDrivesSupersede proves A4 done right: a candidate that shares
+// NO entity/keyword token with an existing memory (so structural FindNeighbors misses
+// it) but is semantically related (cosine ≥ floor) reaches the LLM reconcile DECISION
+// via the vector lane — which can then SUPERSEDE (the contradiction-handling path the
+// cosine-only auto-discard would have silently swallowed). Without the augmentation this
+// would be a fast-add (no LLM call), leaving the stale memory un-superseded.
+func TestStageVectorNeighborDrivesSupersede(t *testing.T) {
 	st, cleanup := newTestStore(t)
 	defer cleanup()
 	ctx := context.Background()
-	scope := tenantScope("t-vec-neardup")
+	scope := tenantScope("t-vec-supersede")
 
 	vec := []float32{1, 0, 0, 0}
 	vi := vindex.New(st.Vectors(), 4, "test-model")
 
-	// Existing memory M with its vector. Different content + entity from the candidate.
+	// Existing (stale) memory M with its vector. Different content + tokens from the candidate.
 	target := store.Memory{
-		ID: ulid.Make().String(), Kind: "fact", Content: "Guido created Python",
+		ID: ulid.Make().String(), Kind: "fact", Content: "The deploy script runs on push",
 		Status: "active", Confidence: 0.8, TrustSource: "llm_extracted", Stability: 1.0,
-		ContentHash: reconcile.ContentHash(reconcile.NormalizeContent("Guido created Python")),
+		ContentHash: reconcile.ContentHash(reconcile.NormalizeContent("The deploy script runs on push")),
 		CreatedAt:   time.Now().UnixMilli(), UpdatedAt: time.Now().UnixMilli(),
 	}
-	insertTestMemory(t, st, scope, target, []string{"ent-guido"}, []string{"kw-python"})
+	insertTestMemory(t, st, scope, target, []string{"ent-deploy"}, []string{"kw-push"})
 	if err := vi.Upsert(ctx, scope, target.ID, vec); err != nil {
 		t.Fatalf("vindex upsert: %v", err)
 	}
 
-	// Candidate: lexically unrelated, no shared entity/keyword → structural miss; the
-	// const gateway embeds it to the SAME vector → vector neighbor finds M at cosine 1.
-	cand := newCandidate("fact", "The Python language was authored by its BDFL", 4, 0.9, "ent-bdfl")
-	cand.Keywords = []string{"kw-bdfl"}
+	// Candidate: a CORRECTION phrased with no shared token → structural miss; the const
+	// gateway embeds it to the same vector → vector neighbor finds M. The LLM (stub)
+	// returns supersede(M) — the contradiction path that must stay reachable.
+	cand := newCandidate("fact", "Deployment is now triggered manually only", 4, 0.9, "ent-manual")
+	cand.Keywords = []string{"kw-manual"}
 
-	gw := &constVecGateway{vec: vec}
+	gw := &constVecGateway{
+		stubGateway: stubGateway{responses: []gateway.CompleteResponse{
+			{JSON: json.RawMessage(`{"action":"supersede","target_ids":["` + target.ID + `"],"reason":"correction"}`)},
+		}},
+		vec: vec,
+	}
 	ch := make(chan pipeline.CandidateBatch, 1)
 	ch <- pipeline.CandidateBatch{Scope: scope, Candidates: []pipeline.Candidate{cand}}
 	close(ch)
@@ -67,21 +76,16 @@ func TestStageVectorNeighborNearDup(t *testing.T) {
 	stage.Start(sctx)
 	stage.Drain(sctx)
 
-	// No new memory (the semantic near-dup was discarded).
-	mems, _, _ := st.Memories().ListByStatus(ctx, scope, "active", 10, "")
-	if len(mems) != 1 {
-		t.Fatalf("semantic near-dup: got %d active memories, want 1 (vector neighbor not consulted?)", len(mems))
+	// The LLM reconcile WAS consulted (the semantic neighbor prevented a silent fast-add).
+	if gw.calls != 1 {
+		t.Errorf("gateway Complete called %d times, want 1 (semantic neighbor should reach the LLM)", gw.calls)
 	}
-	// The LLM reconcile path must NOT have been called (near-dup fires first).
-	if gw.calls != 0 {
-		t.Errorf("semantic near-dup: gateway Complete called %d times, want 0", gw.calls)
-	}
-	// match_count bumped on the existing memory.
+	// The stale memory was SUPERSEDED — the contradiction was handled, not swallowed.
 	updated, err := st.Memories().Get(ctx, scope, target.ID)
 	if err != nil {
 		t.Fatalf("get target: %v", err)
 	}
-	if updated.MatchCount != 1 {
-		t.Errorf("match_count = %d, want 1 (semantic near-dup should bump it)", updated.MatchCount)
+	if updated.Status != "superseded" {
+		t.Errorf("stale memory status = %q, want superseded (semantic neighbor must drive the supersede path)", updated.Status)
 	}
 }

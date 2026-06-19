@@ -2409,11 +2409,17 @@ surfaced as a neighbor (missed dedup + missed contradiction/supersede). The vect
 was fully built and stored but not consulted by reconcile.
 
 Reconcile now embeds each candidate's enriched text (content+entities+keywords+queries,
-reusing the D-047 builder) and runs a vindex search, MERGING the semantic neighbors into
-the structural set (dedup by id). The near-dup pre-filter (A5) gains a SEMANTIC arm: a
-neighbor with cosine ≥ 0.95 (conservative; only true paraphrases) is treated as the same
-fact alongside the lexical bigram-Jaccard ≥ 0.85 gate. Reflection candidates restrict the
-vector search to reflection kinds, mirroring the structural filter (D-077 #5).
+reusing the D-047 builder) and runs a vindex search, MERGING the semantic neighbors
+(cosine ≥ 0.70 floor) into the structural set so the candidate reaches the LLM reconcile
+DECISION. Reflection candidates restrict the vector search to reflection kinds, mirroring
+the structural filter (D-077 #5).
+
+**Cosine drives RECALL, never auto-discard (A5, review-corrected).** The fast near-dup
+auto-discard stays LEXICAL only (bigram-Jaccard ≥ 0.85 = near-identical surface form). A
+cosine-only auto-discard would silently swallow corrections — a polarity flip ("X works"
+vs "X does not work") embeds at high cosine but must reach the LLM, which detects the
+contradiction and SUPERSEDES (Pearce-Hall, P4, brief 02). So semantic similarity only
+WIDENS what the LLM sees; the LLM (not a threshold) decides dedup vs supersede.
 
 Degraded-safe (D-036): when the vindex/gateway is unwired or the embed/search fails,
 reconcile falls back to structural-only neighbors (the prior behaviour) — no write-path
