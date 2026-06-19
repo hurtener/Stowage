@@ -90,7 +90,10 @@ func (r *ReconcileStage) augmentWithVectorNeighbors(ctx context.Context, scope i
 	if text == "" {
 		return structural
 	}
-	resp, err := r.gw.Embed(ctx, gateway.EmbedRequest{Inputs: []string{text}})
+	// Scope the ctx so the embed call is attributed in the usage-event stream (§10),
+	// matching the extract/reflect pattern; the reconcile stage runs on a scope-less
+	// background ctx (D-088).
+	resp, err := r.gw.Embed(identity.WithScope(ctx, scope), gateway.EmbedRequest{Inputs: []string{text}})
 	if err != nil || len(resp.Vectors) == 0 {
 		// Gateway down ⇒ structural-only neighbors (D-036 degraded write path).
 		return structural

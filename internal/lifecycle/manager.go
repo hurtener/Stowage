@@ -77,7 +77,7 @@ type Profile struct {
 	// enablement is gated on an episodic-eval win (D-035).
 	ThreadingEnabled bool          // master switch; default false
 	ThreadInterval   time.Duration // sweep cadence; default 30m
-	ThreadMinOverlap float64       // entity/keyword Jaccard threshold to thread two episodes; default 0.3
+	ThreadMinOverlap float64       // content-word Jaccard threshold to thread two episodes (lexical signal; the semantic signal is the threadMinCosine const, D-093); default 0.3
 	ThreadWindow     time.Duration // max temporal gap between threaded episodes; default 30 days
 	ThreadBatchSize  int           // recent narrated episodes scanned per tenant per sweep; default 50
 
