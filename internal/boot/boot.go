@@ -133,8 +133,11 @@ func Open(ctx context.Context, cfg *config.Config) (*Stack, error) {
 	s.closers = append(s.closers, s.Gateway.Close)
 
 	// Wire gateway-call usage events onto the meter (§8/§10): every provider call is
-	// emitted to the event stream for cost governance + audit, scoped to the caller.
-	wireGatewayUsageEvents(s.Gateway, s.Store.Events(), s.Log)
+	// emitted (async, non-blocking) to the event stream for cost governance + audit,
+	// scoped to the caller. The emitter's drain goroutine is closed at shutdown.
+	if em := wireGatewayUsageEvents(s.Gateway, s.Store.Events(), s.Log); em != nil { //nolint:contextcheck // emitter drain goroutine owns its background ctx (D-025 pattern)
+		s.closers = append(s.closers, em.Close)
+	}
 
 	if probeErr := s.Gateway.Probe(ctx); probeErr != nil {
 		s.Log.Warn("boot: gateway probe failed (degraded mode — vector lane disabled until provider recovers)",
@@ -152,9 +155,14 @@ func Open(ctx context.Context, cfg *config.Config) (*Stack, error) {
 	// never a silent mix of incompatible embeddings. If any persisted vector was
 	// written with an embedding model other than the configured one, fail loud — the
 	// operator must reindex (re-embed) under the new model before serving.
-	if models, merr := s.Store.Vectors().DistinctModels(ctx); merr != nil {
-		s.Log.Warn("boot: could not check persisted embedding model — skipping reindex guard", "err", merr)
-	} else if gerr := checkEmbedModel(models, cfg.Gateway.EmbedModel); gerr != nil {
+	models, merr := s.Store.Vectors().DistinctModels(ctx)
+	if merr != nil {
+		// Fail closed: a store that cannot answer this at boot (post-migration) is
+		// unhealthy; serving could silently mix incompatible embeddings.
+		_ = s.close(ctx)
+		return nil, fmt.Errorf("boot: reindex guard: read persisted embedding models: %w", merr)
+	}
+	if gerr := checkEmbedModel(models, cfg.Gateway.EmbedModel); gerr != nil {
 		_ = s.close(ctx)
 		return nil, fmt.Errorf("boot: %w", gerr)
 	}

@@ -2315,3 +2315,43 @@ deferred: per-scope (vs per-session) "already-offered" tracking; enabling the
 gateway-backed `similar_episode` class by default (off everywhere for zero-config);
 a uniform MCP-transport admin role gate (HTTP enforces it; MCP follows the existing
 `memory_grants` tenant-scoped pattern).
+
+## D-088 — Gateway-call usage events: async + scoped for complete/rerank; batched embed is Prom-metered only
+
+2026-06-19. Bar-remediation (audit #2). §10 requires every gateway call to be metered
+AND emitted as an event; the meter previously only drove Prometheus counters (a false
+"Phase 05 wires the Meter to the event store" comment masked the gap), so cost
+governance and the audit trail saw no provider usage.
+
+**The PromMeter drives an optional `UsageEventEmitter`** (interface defined in the
+gateway seam, no store import) wired at boot to a store-backed adapter. It emits a
+`gateway.call` (complete) / `gateway.rerank` event carrying `{op, model, tokens/units,
+cost}`.
+
+**Async + non-blocking (§8).** The adapter enqueues onto a bounded channel (cap 512,
+drop-on-full like the injection writer, D-025) and a drain goroutine performs the
+durable `Events().Emit`. So a gateway call on the SLO-bound retrieval read path
+(rerank, query embed) is never delayed by an events INSERT; the emitter's drain
+goroutine is closed at shutdown.
+
+**Scoped to the caller.** Events are attributed to the scope in ctx. Request-path
+calls (retrieve, verify) already carry scope from the API boundary; the scope-less
+pipeline/sweep calls (extract, reflect, narrate, causal-infer) now `identity.WithScope`
+their ctx before the gateway call.
+
+**Batched embed is Prom-metered ONLY (deliberate).** The embed path runs through the
+async batcher, which coalesces inputs **across tenants** into one provider call on a
+background ctx — so no single tenant legitimately owns the cost and the tenant-scoped
+events table cannot attribute it. Embed token/cost therefore stays governed at the
+Prometheus layer (`gateway_*_tokens_total{op="embed"}`); a process-level embed usage
+event is deferred to the future `events/v1` stream (which is not tenant-scoped). This
+is a documented boundary, not a silent gap.
+
+**Reindex guard (audit #6).** Boot reads the distinct persisted embedding models
+(`VectorStore.DistinctModels`, both drivers) and FAILS CLOSED if any differs from
+`config.gateway.embed_model` or if the read errors — a model change is an explicit
+reindex, never a silent mix of incompatible embeddings (§10).
+
+**New event types.** `gateway.call`, `gateway.rerank` join the `subsystem.event`
+convention; `Event.Type` is free-form so no enum change. Recorded here as the event-
+stream contract addition (§8).

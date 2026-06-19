@@ -3,6 +3,7 @@ package gateway
 import (
 	"context"
 	"log/slog"
+	"sync/atomic"
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
@@ -37,12 +38,12 @@ type PromMeter struct {
 	calls        *prometheus.CounterVec
 	searchUnits  *prometheus.CounterVec
 	rerankCalls  *prometheus.CounterVec
-	emitter      UsageEventEmitter // optional; nil ⇒ no events (Prom-only)
+	emitter      atomic.Pointer[UsageEventEmitter] // optional; nil ⇒ no events (Prom-only)
 }
 
-// SetEmitter wires the optional event sink (boot, before serving). Single-writer at
-// construction time — not safe to call concurrently with Record.
-func (m *PromMeter) SetEmitter(e UsageEventEmitter) { m.emitter = e }
+// SetEmitter wires the optional event sink (boot, before serving). Stored atomically
+// so it is safe against the batcher goroutine reading it in Record.
+func (m *PromMeter) SetEmitter(e UsageEventEmitter) { m.emitter.Store(&e) }
 
 // NewPromMeter returns a Meter backed by a scoped Prometheus registry and slog.
 func NewPromMeter(log *slog.Logger, prom *prometheus.Registry) *PromMeter {
@@ -88,8 +89,8 @@ func (m *PromMeter) RecordRerank(ctx context.Context, model string, usage Rerank
 		slog.Int("search_units", usage.SearchUnits),
 		slog.Float64("cost_usd", usage.CostUSD),
 	)
-	if m.emitter != nil {
-		m.emitter.EmitRerankUsage(ctx, model, usage.SearchUnits, usage.CostUSD)
+	if ep := m.emitter.Load(); ep != nil {
+		(*ep).EmitRerankUsage(ctx, model, usage.SearchUnits, usage.CostUSD)
 	}
 }
 
@@ -106,7 +107,7 @@ func (m *PromMeter) Record(ctx context.Context, op, model string, usage Usage) {
 		slog.Int("output_tokens", usage.OutputTokens),
 		slog.Float64("cost_usd", usage.CostUSD),
 	)
-	if m.emitter != nil {
-		m.emitter.EmitUsage(ctx, op, model, usage.InputTokens, usage.OutputTokens, usage.CostUSD)
+	if ep := m.emitter.Load(); ep != nil {
+		(*ep).EmitUsage(ctx, op, model, usage.InputTokens, usage.OutputTokens, usage.CostUSD)
 	}
 }
