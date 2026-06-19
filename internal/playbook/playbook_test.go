@@ -286,7 +286,8 @@ func TestAssembleAttachesProvenance(t *testing.T) {
 	}
 }
 
-// TestAssembleTinyContent exercises the estimateTokens floor (len<4 → 1 token).
+// TestAssembleTinyContent exercises the estimateTokens floor: a non-empty memory is
+// never "free" (≥1 token) so a tiny memory still consumes budget (tokenize.Estimate).
 func TestAssembleTinyContent(t *testing.T) {
 	st, cleanup := newTestStore(t)
 	defer cleanup()
@@ -298,8 +299,8 @@ func TestAssembleTinyContent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("assemble: %v", err)
 	}
-	if pb.Budget.TokensUsed != 1 {
-		t.Errorf("tiny content tokens = %d, want 1", pb.Budget.TokensUsed)
+	if pb.Budget.TokensUsed < 1 {
+		t.Errorf("tiny content tokens = %d, want >= 1 (non-empty is never free)", pb.Budget.TokensUsed)
 	}
 }
 

@@ -22,7 +22,10 @@
 // collapse that context; here there is no rewrite, only re-projection.
 package playbook
 
-import "github.com/hurtener/stowage/internal/store"
+import (
+	"github.com/hurtener/stowage/internal/store"
+	"github.com/hurtener/stowage/internal/tokenize"
+)
 
 // Options tunes a single Assemble call.
 //
@@ -111,13 +114,7 @@ func Kinds() []string {
 // estimateTokens approximates the token count of s using the 4-chars ≈ 1 token
 // heuristic shared with records.New / pipeline.roughTokens (D-024). Non-empty
 // content always costs at least one token so a tiny memory is never "free".
-func estimateTokens(s string) int {
-	n := len(s) / 4
-	if n < 1 && len(s) > 0 {
-		return 1
-	}
-	return n
-}
+func estimateTokens(s string) int { return tokenize.Estimate(s) }
 
 // toProvRefs maps store provenance rows to compact refs (used by assemble.go).
 func toProvRefs(rows []store.Provenance) []ProvenanceRef {

@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/hurtener/stowage/internal/store"
+	"github.com/hurtener/stowage/internal/tokenize"
 )
 
 // PromptTemplateVersion is the version of the extraction prompt template.
@@ -74,13 +75,7 @@ func tokenBudgetForProfile(profile string) int {
 
 // roughTokens estimates the token count of s using the 4-chars ≈ 1 token
 // heuristic. Used for transcript clamping — not charged to the provider.
-func roughTokens(s string) int {
-	n := len(s) / 4
-	if n < 1 && len(s) > 0 {
-		return 1
-	}
-	return n
-}
+func roughTokens(s string) int { return tokenize.Estimate(s) }
 
 // BuildPrompt assembles the extraction prompt from active topic descriptions
 // and the hydrated records for the flush.

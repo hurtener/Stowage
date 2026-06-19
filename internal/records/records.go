@@ -1,7 +1,7 @@
 // Package records defines the verbatim Record domain type and its constructor.
 //
 // A Record is the immutable fidelity unit (RFC P1, §5.1). New stamps a ULID,
-// created_at, and a len/4 token estimate, then validates the input. No heavier
+// created_at, and a token estimate (tokenize.Estimate), then validates the input. No heavier
 // work happens here — extraction, embedding, and reconciliation are pipeline
 // stages (P2).
 package records
@@ -12,6 +12,8 @@ import (
 	"time"
 
 	"github.com/oklog/ulid/v2"
+
+	"github.com/hurtener/stowage/internal/tokenize"
 )
 
 // ValidRoles is the set of allowed role values (mirrors the store schema).
@@ -80,8 +82,8 @@ type Input struct {
 // New validates in and returns a stamped Record.
 //
 // Stamped fields: ID (ULID), CreatedAt (now), OccurredAt (in.OccurredAt or now),
-// TokenEstimate (len(in.Content)/4 heuristic — D-024 day-one signal, revisit
-// with eval data if the heuristic proves too crude).
+// TokenEstimate (tokenize.Estimate, a char/word-blended heuristic — D-024 day-one
+// signal; D-091).
 func New(in Input) (*Record, error) {
 	if in.TenantID == "" {
 		return nil, ErrTenantRequired
@@ -115,7 +117,7 @@ func New(in Input) (*Record, error) {
 		ResponseID:    in.ResponseID,
 		Outcome:       in.Outcome,
 		OutcomeDetail: in.OutcomeDetail,
-		TokenEstimate: int64(len(in.Content)) / 4,
+		TokenEstimate: int64(tokenize.Estimate(in.Content)),
 		OccurredAt:    occurredAt,
 		CreatedAt:     now,
 	}, nil
