@@ -157,6 +157,26 @@ func TestWriteGovernance_ResolveError(t *testing.T) {
 	}
 }
 
+// nilReturningSearcher is a concrete NarrativeSearcher type used to build a typed-nil.
+type nilReturningSearcher struct{}
+
+func (*nilReturningSearcher) SimilarNarratives(context.Context, identity.Scope, string, int) ([]string, []float64, bool, error) {
+	return nil, nil, false, nil
+}
+
+func TestIsNilSearcher(t *testing.T) {
+	if !isNilSearcher(nil) {
+		t.Error("a nil interface should be nil")
+	}
+	var typedNil *nilReturningSearcher // nil pointer …
+	if !isNilSearcher(typedNil) {      // … wrapped in a non-nil interface
+		t.Error("a typed-nil *retriever must be detected as nil (else similar_episode panics)")
+	}
+	if isNilSearcher(&nilReturningSearcher{}) {
+		t.Error("a real searcher must not be reported nil")
+	}
+}
+
 func TestClassMultiplier(t *testing.T) {
 	cases := []struct {
 		acc, dis int

@@ -217,11 +217,9 @@ func classMultipliers(ctx context.Context, ss store.SuggestionStore, scope ident
 
 // sessionOfferedMemories returns the set of memory IDs already offered in this
 // session (any status), so the engine never re-surfaces a memory the session has
-// already seen.
+// already seen. sessionID is non-empty by the time this runs (Evaluate rejects an
+// empty session up front).
 func sessionOfferedMemories(ctx context.Context, ss store.SuggestionStore, scope identity.Scope, sessionID string) (map[string]bool, error) {
-	if sessionID == "" {
-		return map[string]bool{}, nil
-	}
 	prior, err := ss.ListBySession(ctx, scope, sessionID, "", dedupeScanLimit)
 	if err != nil {
 		return nil, fmt.Errorf("proactive: load session suggestions: %w", err)
