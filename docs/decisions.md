@@ -2499,3 +2499,38 @@ the threshold of 4 distinct clusters).
 injections) or the HubSignals query errors, retrieval applies NO dampening (signals = 0) and
 logs — never a hard dependency on the read. Empty-query_sig rows (pre-migration / non-retrieve
 injections) are excluded from the count, so the migration is backfill-free.
+
+## D-093 — Episode threading uses narrative-vector similarity, not word-overlap alone
+
+2026-06-19. Bar-remediation (simplification A7). The episode-threading sweep
+(`internal/lifecycle/threading.go`, Phase 24b, D-081) grouped cross-session episodes into
+arcs by a single LEXICAL signal — content-word Jaccard overlap between the episodes'
+narrative memories. Word overlap misses the case embeddings exist to catch: two episodes
+that are the SAME arc described with different vocabulary share few literal words but sit
+close in vector space. The narratives are already embedded (the embed sweep wrote their
+vectors; retrieval's SimilarNarratives consumes them, D-082) — the threading sweep simply
+wasn't reading them. A lexical-only threading signal is a v1- simplification.
+
+**Add the semantic signal, gateway-free.** threadTenant now scans the tenant's stored
+narrative-kind vectors once (`VectorStore.Scan`, kind="narrative") and attaches each
+candidate's embedding. A pair threads on EITHER signal: `wordJaccard ≥ ThreadMinOverlap`
+OR `cosine ≥ threadMinCosine`. The OR WIDENS recall (semantic similarity adds same-arc
+pairs lexical overlap misses); it never narrows it. The sweep stays gateway-free (D-081)
+— it reads the SAME stored vectors the embed sweep already wrote, never calling the
+gateway to embed. The recorded link confidence is the stronger of the two qualifying
+signals.
+
+**Cosine floor is a package const (0.82), not a knob.** `threadMinCosine` mirrors the
+reconcile cosine-floor precedent (D-090): a recall-widening threshold internal to the
+algorithm, not a tunable surface, so it skips the D-034 knob ceremony. Narrative prose is
+long, so genuinely-related arcs embed high; 0.82 is conservative against spurious
+cross-arc edges. The existing `ThreadMinOverlap` (lexical) knob is unchanged.
+
+**Degraded-safe (D-036).** When the vector scan fails, the vindex is unwired, or a
+narrative was never embedded (degraded ingest), `narrativeCosine` returns 0 and the pair
+relies on the lexical signal alone — exactly the prior behaviour. No write-path hard
+dependency on vectors; the whole sweep remains OFF BY DEFAULT and eval-gated (D-035).
+
+**Non-destructive, reversible.** Threading only writes `relates_to` edges (Source=
+"inferred") over immutable narratives — the same reversible, idempotent edges as before;
+only the candidate-selection signal widened. No schema change, no new config.
