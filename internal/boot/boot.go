@@ -132,6 +132,10 @@ func Open(ctx context.Context, cfg *config.Config) (*Stack, error) {
 	}
 	s.closers = append(s.closers, s.Gateway.Close)
 
+	// Wire gateway-call usage events onto the meter (§8/§10): every provider call is
+	// emitted to the event stream for cost governance + audit, scoped to the caller.
+	wireGatewayUsageEvents(s.Gateway, s.Store.Events(), s.Log)
+
 	if probeErr := s.Gateway.Probe(ctx); probeErr != nil {
 		s.Log.Warn("boot: gateway probe failed (degraded mode — vector lane disabled until provider recovers)",
 			"err", probeErr)
@@ -142,6 +146,17 @@ func Open(ctx context.Context, cfg *config.Config) (*Stack, error) {
 	if err != nil {
 		_ = s.close(ctx)
 		return nil, fmt.Errorf("boot: vindex: %w", err)
+	}
+
+	// 4a. Reindex guard (§10 gateway-seam rule): a model change is an EXPLICIT reindex,
+	// never a silent mix of incompatible embeddings. If any persisted vector was
+	// written with an embedding model other than the configured one, fail loud — the
+	// operator must reindex (re-embed) under the new model before serving.
+	if models, merr := s.Store.Vectors().DistinctModels(ctx); merr != nil {
+		s.Log.Warn("boot: could not check persisted embedding model — skipping reindex guard", "err", merr)
+	} else if gerr := checkEmbedModel(models, cfg.Gateway.EmbedModel); gerr != nil {
+		_ = s.close(ctx)
+		return nil, fmt.Errorf("boot: %w", gerr)
 	}
 
 	// 5. Embedder — create and start the background embedding goroutine.

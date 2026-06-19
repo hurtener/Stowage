@@ -284,6 +284,7 @@ func (errVS) Scan(_ context.Context, _ identity.Scope, _ []string, _ store.Windo
 func (errVS) ListWithoutVectors(_ context.Context, _ int) ([]store.MemoryForEmbed, error) {
 	return nil, nil
 }
+func (errVS) DistinctModels(_ context.Context) ([]string, error) { return nil, nil }
 
 // TestSearch_ScanError proves Search propagates errors returned by VectorStore.Scan.
 func TestSearch_ScanError(t *testing.T) {

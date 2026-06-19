@@ -762,6 +762,7 @@ func (m *benchVS) Scan(_ context.Context, _ identity.Scope, _ []string, _ store.
 func (m *benchVS) ListWithoutVectors(_ context.Context, _ int) ([]store.MemoryForEmbed, error) {
 	return nil, nil
 }
+func (m *benchVS) DistinctModels(_ context.Context) ([]string, error) { return nil, nil }
 
 func benchVec(rng *rand.Rand, dims int) []float32 { //nolint:gocritic
 	v := make([]float32, dims)

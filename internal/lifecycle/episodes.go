@@ -110,7 +110,10 @@ func (m *Manager) runNarrateEpisodes(ctx context.Context) {
 		if len(recs) == 0 {
 			continue
 		}
-		narr, nerr := episodes.Narrate(ctx, m.gw, recs)
+		// Scope the ctx so narration + causal-inference gateway calls are attributed in
+		// the usage event stream (§10); the sweep runs on a scope-less background ctx.
+		gwCtx := identity.WithScope(ctx, scope)
+		narr, nerr := episodes.Narrate(gwCtx, m.gw, recs)
 		if nerr != nil {
 			m.log.WarnContext(ctx, "lifecycle/episode-narrate: narrate failed; will retry", "episode", ep.ID, "err", nerr)
 			continue
@@ -132,7 +135,7 @@ func (m *Manager) runNarrateEpisodes(ctx context.Context) {
 		// commit them ATOMICALLY with the narrative (one CommitSet) — runs exactly once
 		// per episode (gated by the narrative-creation that follows). Best-effort: a
 		// gateway/inference failure leaves the episode narrated without edges.
-		links, events := m.inferCausalLinks(ctx, scope, ep, recs, narr.Narrative, now)
+		links, events := m.inferCausalLinks(gwCtx, scope, ep, recs, narr.Narrative, now)
 		cerr := m.st.Memories().Commit(ctx, scope, store.CommitSet{Action: store.ActionAdd, Memory: mem, Provenance: prov, Links: links, Events: events, Scope: scope})
 		if errors.Is(cerr, store.ErrDuplicateContent) {
 			// A memory with this narrative already exists (e.g. a prior sweep

@@ -83,7 +83,9 @@ func (m *Manager) reflectTenant(ctx context.Context, tenant string, since, epoch
 		if !fresh {
 			continue // already reflected this trajectory this epoch
 		}
-		cands, err := reflect.Reflect(ctx, m.gw, scope, traj)
+		// Scope the ctx so the reflection gateway call is attributed in the usage
+		// event stream (§10); the sweep otherwise runs on a scope-less background ctx.
+		cands, err := reflect.Reflect(identity.WithScope(ctx, scope), m.gw, scope, traj)
 		if err != nil {
 			m.log.WarnContext(ctx, "lifecycle/reflect: reflect failed", "tenant", tenant, "session", traj.SessionID, "err", err)
 			continue

@@ -438,3 +438,33 @@ func FuzzSchemaValidation(f *testing.F) {
 		_ = gateway.ValidateJSON(sch, json.RawMessage(input))
 	})
 }
+
+// fakeUsageEmitter captures emitted usage for the meter wiring test.
+type fakeUsageEmitter struct {
+	usage  int
+	rerank int
+}
+
+func (f *fakeUsageEmitter) EmitUsage(_ context.Context, _, _ string, _, _ int, _ float64) { f.usage++ }
+func (f *fakeUsageEmitter) EmitRerankUsage(_ context.Context, _ string, _ int, _ float64) { f.rerank++ }
+
+func TestPromMeter_EmitsUsageEvents(t *testing.T) {
+	m := gateway.NewPromMeter(slog.New(slog.NewTextHandler(io.Discard, nil)), prometheus.NewRegistry())
+	em := &fakeUsageEmitter{}
+	m.SetEmitter(em)
+
+	m.Record(context.Background(), "embed", "m-1", gateway.Usage{InputTokens: 10, OutputTokens: 0, CostUSD: 0.001})
+	m.Record(context.Background(), "complete", "m-2", gateway.Usage{InputTokens: 100, OutputTokens: 50, CostUSD: 0.02})
+	m.RecordRerank(context.Background(), "rr", gateway.RerankUsage{SearchUnits: 3, CostUSD: 0.005})
+
+	if em.usage != 2 {
+		t.Errorf("EmitUsage called %d times, want 2", em.usage)
+	}
+	if em.rerank != 1 {
+		t.Errorf("EmitRerankUsage called %d times, want 1", em.rerank)
+	}
+
+	// No emitter ⇒ no panic, Prom-only.
+	m2 := gateway.NewPromMeter(slog.New(slog.NewTextHandler(io.Discard, nil)), prometheus.NewRegistry())
+	m2.Record(context.Background(), "embed", "m", gateway.Usage{InputTokens: 1})
+}

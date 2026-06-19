@@ -212,6 +212,9 @@ func jaccardOverlap(a, b map[string]struct{}) float64 {
 // Probe always succeeds for the mock driver.
 func (d *Driver) Probe(_ context.Context) error { return nil }
 
+// SetUsageEmitter wires the gateway-call event sink onto the meter (§10).
+func (d *Driver) SetUsageEmitter(e gateway.UsageEventEmitter) { d.meter.SetEmitter(e) }
+
 // Close is a no-op for the mock driver.
 func (d *Driver) Close(_ context.Context) error { return nil }
 

@@ -349,6 +349,10 @@ func (d *Driver) Probe(ctx context.Context) error {
 // Close flushes pending batches and shuts down the underlying bifrost instance.
 // Bifrost owns goroutines for the queue/dispatcher — Shutdown() joins the
 // per-provider worker pools. Idempotent: subsequent calls return nil.
+// SetUsageEmitter wires the gateway-call event sink onto the meter (§10). Optional,
+// discovered by boot via type assertion; call once before serving.
+func (d *Driver) SetUsageEmitter(e gateway.UsageEventEmitter) { d.meter.SetEmitter(e) }
+
 func (d *Driver) Close(_ context.Context) error {
 	if !d.closed.CompareAndSwap(false, true) {
 		return nil

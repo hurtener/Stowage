@@ -73,6 +73,42 @@ func testVec(dims int, val float32) []float32 {
 
 // --- VectorStore conformance ------------------------------------------------
 
+// testVectorDistinctModels verifies the reindex-guard support method: distinct
+// embedding model names across all vectors (unscoped).
+func testVectorDistinctModels(t *testing.T, factory Factory) {
+	t.Helper()
+	s, cleanup := factory()
+	defer cleanup()
+	ctx := context.Background()
+
+	// Empty store ⇒ empty slice.
+	got, err := s.Vectors().DistinctModels(ctx)
+	if err != nil {
+		t.Fatalf("empty: %v", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("empty store: got %v want []", got)
+	}
+
+	scope := tenantScope("t-" + newID())
+	m1 := insertActiveMemory(t, s, scope, "v1", "fact", nil, nil, nil)
+	m2 := insertActiveMemory(t, s, scope, "v2", "fact", nil, nil, nil)
+	if err := s.Vectors().Upsert(ctx, scope, store.StoredVector{MemoryID: m1, Model: "model-a", Dims: 4, Vec: testVec(4, 0.5)}); err != nil {
+		t.Fatalf("upsert m1: %v", err)
+	}
+	if err := s.Vectors().Upsert(ctx, scope, store.StoredVector{MemoryID: m2, Model: "model-b", Dims: 4, Vec: testVec(4, 0.5)}); err != nil {
+		t.Fatalf("upsert m2: %v", err)
+	}
+
+	got, err = s.Vectors().DistinctModels(ctx)
+	if err != nil {
+		t.Fatalf("distinct: %v", err)
+	}
+	if len(got) != 2 || got[0] != "model-a" || got[1] != "model-b" {
+		t.Fatalf("expected sorted [model-a, model-b], got %v", got)
+	}
+}
+
 func testVectorUpsertScan(t *testing.T, factory Factory) {
 	t.Helper()
 	s, cleanup := factory()

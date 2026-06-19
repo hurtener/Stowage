@@ -428,6 +428,12 @@ type VectorStore interface {
 	// entry, including junction rows needed to build enriched embed text (D-047).
 	// Unscoped — scans all tenants like RecordStore.ListUnprocessed.
 	ListWithoutVectors(ctx context.Context, limit int) ([]MemoryForEmbed, error)
+
+	// DistinctModels returns the distinct embedding model names present across all
+	// persisted vectors (unscoped). Used at boot to detect a silent model swap: a
+	// model change requires an explicit reindex, never a silent mix of incompatible
+	// embeddings (gateway-seam rule, §10). Empty store ⇒ empty slice.
+	DistinctModels(ctx context.Context) ([]string, error)
 }
 
 // InjectionStore records retrieval injections for attribution (Phase 11, D-025, D-051).
