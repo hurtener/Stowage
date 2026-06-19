@@ -2399,3 +2399,28 @@ heavily-filtered grant can consume ranking budget with non-matching memories and
 recall of the caller's own results; pushing kind_filter into the per-scope lane queries
 (LexicalSearch/FindNeighbors/vindex already accept Kinds) is a recall optimization for a
 follow-up. Neither affects the security property (filtering only ever drops, never adds).
+
+## D-090 — Reconcile augments structural neighbors with semantic (vector) neighbors
+
+2026-06-19. Bar-remediation (simplifications A4/A5). Reconciliation found dedup/update/
+supersede candidates ONLY by exact entity/keyword token overlap (structural) — so a
+candidate that is the SAME fact phrased differently, sharing no token, was never
+surfaced as a neighbor (missed dedup + missed contradiction/supersede). The vector lane
+was fully built and stored but not consulted by reconcile.
+
+Reconcile now embeds each candidate's enriched text (content+entities+keywords+queries,
+reusing the D-047 builder) and runs a vindex search, MERGING the semantic neighbors
+(cosine ≥ 0.70 floor) into the structural set so the candidate reaches the LLM reconcile
+DECISION. Reflection candidates restrict the vector search to reflection kinds, mirroring
+the structural filter (D-077 #5).
+
+**Cosine drives RECALL, never auto-discard (A5, review-corrected).** The fast near-dup
+auto-discard stays LEXICAL only (bigram-Jaccard ≥ 0.85 = near-identical surface form). A
+cosine-only auto-discard would silently swallow corrections — a polarity flip ("X works"
+vs "X does not work") embeds at high cosine but must reach the LLM, which detects the
+contradiction and SUPERSEDES (Pearce-Hall, P4, brief 02). So semantic similarity only
+WIDENS what the LLM sees; the LLM (not a threshold) decides dedup vs supersede.
+
+Degraded-safe (D-036): when the vindex/gateway is unwired or the embed/search fails,
+reconcile falls back to structural-only neighbors (the prior behaviour) — no write-path
+hard dependency on the gateway. Wired via `ReconcileStage.SetVIndex` in boot.

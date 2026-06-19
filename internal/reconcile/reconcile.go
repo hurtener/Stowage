@@ -14,6 +14,7 @@ import (
 	"github.com/hurtener/stowage/internal/identity"
 	"github.com/hurtener/stowage/internal/pipeline"
 	"github.com/hurtener/stowage/internal/store"
+	"github.com/hurtener/stowage/internal/vindex"
 )
 
 const (
@@ -38,6 +39,16 @@ const (
 	// neighborLimit is the default maximum number of neighbors returned by
 	// FindNeighbors for the decision context window.
 	neighborLimit = 8
+
+	// augmentCosineFloor is the minimum cosine for a vector neighbor to be added to the
+	// LLM reconcile decision context (A4). A floor keeps the prompt focused on genuinely
+	// related memories — weakly-related top-k hits in a sparse scope are dropped. The
+	// LLM (not a threshold) decides dedup vs supersede, so this is a recall knob, never
+	// an auto-discard gate.
+	augmentCosineFloor = 0.70
+
+	// vectorNeighborK bounds the semantic neighbor search per candidate (A4).
+	vectorNeighborK = 8
 )
 
 // ScopeInvalidator invalidates cached retrieval results after a content-changing
@@ -60,8 +71,68 @@ type ReconcileStage struct {
 	in          <-chan pipeline.CandidateBatch
 	wg          sync.WaitGroup
 	embedder    *Embedder        // optional; nil = no embedding (degraded-embed mode)
+	vi          vindex.Index     // optional; nil = structural neighbors only (A4)
 	invalidator ScopeInvalidator // optional; nil = cache invalidation disabled (Phase 12, D-053)
 }
+
+// augmentWithVectorNeighbors merges SEMANTIC neighbors (vector lane, cosine ≥ floor)
+// into the structural neighbor set so a same-fact candidate sharing no exact token
+// still reaches the LLM reconcile DECISION (A4). It NEVER auto-discards — the LLM
+// decides dedup vs supersede. Degraded-safe: nil vindex/gateway or an embed/search
+// failure returns the structural set unchanged.
+func (r *ReconcileStage) augmentWithVectorNeighbors(ctx context.Context, scope identity.Scope, c pipeline.Candidate, structural []store.Memory) []store.Memory {
+	if r.vi == nil || r.gw == nil {
+		return structural
+	}
+	text := buildEnrichedText(store.MemoryForEmbed{
+		Content: c.Content, Entities: c.Entities, Keywords: c.Keywords, Queries: c.AnticipatedQueries,
+	})
+	if text == "" {
+		return structural
+	}
+	resp, err := r.gw.Embed(ctx, gateway.EmbedRequest{Inputs: []string{text}})
+	if err != nil || len(resp.Vectors) == 0 {
+		// Gateway down ⇒ structural-only neighbors (D-036 degraded write path).
+		return structural
+	}
+	f := vindex.Filter{}
+	if pipeline.IsReflectionKind(c.Kind) {
+		f.Kinds = pipeline.ReflectionKindList()
+	}
+	hits, err := r.vi.Search(ctx, scope, resp.Vectors[0], vectorNeighborK, f)
+	if err != nil {
+		r.log.WarnContext(ctx, "reconcile: vector neighbor search failed — structural only", "err", err)
+		return structural
+	}
+	have := make(map[string]bool, len(structural))
+	for _, n := range structural {
+		have[n.ID] = true
+	}
+	var newIDs []string
+	for _, h := range hits {
+		if h.Score < augmentCosineFloor || have[h.MemoryID] {
+			continue // weakly related, or already a structural neighbor
+		}
+		have[h.MemoryID] = true
+		newIDs = append(newIDs, h.MemoryID)
+	}
+	if len(newIDs) > 0 {
+		extra, gerr := r.mem.GetMany(ctx, scope, newIDs)
+		if gerr != nil {
+			r.log.WarnContext(ctx, "reconcile: GetMany vector neighbors failed", "err", gerr)
+		} else {
+			structural = append(structural, extra...)
+		}
+	}
+	return structural
+}
+
+// SetVIndex wires the vector index so reconcile augments its structural (entity/keyword)
+// neighbor set with SEMANTIC neighbors (A4, brief 02): a candidate that is the same fact
+// as an existing memory but shares no exact token is still caught for dedup/supersede.
+// Best-effort and degraded-safe: a gateway/search failure falls back to structural-only.
+// Call once before Start.
+func (r *ReconcileStage) SetVIndex(vi vindex.Index) { r.vi = vi }
 
 // New creates a ReconcileStage wired to the given dependencies.
 // in is the read-end of the CandidateBatch channel produced by the extract stage.
@@ -198,9 +269,17 @@ func (r *ReconcileStage) processCandidate(ctx context.Context, scope identity.Sc
 		return fmt.Errorf("reconcile: FindNeighbors: %w", err)
 	}
 
-	// Step 4: Near-dup pre-filter (D-044).
-	// bigram-Jaccard ≥ nearDupThreshold against any retrieved neighbor treats
-	// the candidate as the same fact: bump match_count and discard.
+	// Step 3b: Augment with SEMANTIC neighbors from the vector lane (A4, brief 02) —
+	// catches a same-fact candidate that shares no exact entity/keyword token, so it
+	// reaches the LLM reconcile DECISION (dedup OR supersede). Degraded-safe.
+	neighbors = r.augmentWithVectorNeighbors(ctx, scope, c, neighbors)
+
+	// Step 4: Near-dup pre-filter (D-044). The fast auto-discard stays LEXICAL only
+	// (bigram-Jaccard ≥ nearDupThreshold = near-identical surface form): a polarity flip
+	// ("X works" vs "X does not work") embeds at high cosine but is NOT lexically
+	// near-identical, so it correctly falls through to the LLM, which detects the
+	// contradiction and supersedes (Pearce-Hall, P4). A cosine arm here would silently
+	// swallow corrections — semantic similarity drives RECALL (above), never auto-discard.
 	for _, n := range neighbors {
 		if BigramJaccard(normalized, n.Content) >= nearDupThreshold {
 			if incErr := r.mem.IncrementCounter(ctx, scope, n.ID, "match"); incErr != nil {
