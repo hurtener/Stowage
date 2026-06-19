@@ -88,8 +88,11 @@ func TestHandlerProactiveConfig_GetSet(t *testing.T) {
 		t.Errorf("assistant default should be enabled, got %+v", got.Structured)
 	}
 
-	// set an opt-out override and confirm the resolved echo is disabled.
-	set, err := h(ctx, ProactiveConfigInput{Action: "set", Enabled: false, Threshold: 0.5, Budget: 1,
+	// set a full override and confirm the resolved echo reflects it.
+	no := false
+	half := 0.5
+	one := 1
+	set, err := h(ctx, ProactiveConfigInput{Action: "set", Enabled: &no, Threshold: &half, Budget: &one,
 		Classes: map[string]bool{"expiring": true}})
 	if err != nil {
 		t.Fatalf("set: %v", err)
@@ -102,6 +105,35 @@ func TestHandlerProactiveConfig_GetSet(t *testing.T) {
 	again, _ := h(ctx, ProactiveConfigInput{Action: "get"})
 	if again.Structured.Enabled {
 		t.Errorf("stored override not reflected: %+v", again.Structured)
+	}
+}
+
+// TestHandlerProactiveConfig_PartialPatch proves a one-field set does NOT zero-wipe
+// the rest of the config (the patch-semantics fix).
+func TestHandlerProactiveConfig_PartialPatch(t *testing.T) {
+	svc := newHandlerServices(t)
+	svc.Profile = "assistant" // default: enabled, threshold 0.45, budget 2, {recent_episode, expiring}
+	h := makeProactiveConfigHandler(svc)
+	ctx := context.Background()
+
+	// Patch ONLY the threshold.
+	newThresh := 0.8
+	res, err := h(ctx, ProactiveConfigInput{Action: "set", Threshold: &newThresh})
+	if err != nil {
+		t.Fatalf("set: %v", err)
+	}
+	// enabled/budget/classes must be preserved from the profile default, not wiped.
+	if !res.Structured.Enabled {
+		t.Errorf("partial set wiped enabled: %+v", res.Structured)
+	}
+	if res.Structured.Budget != 2 {
+		t.Errorf("partial set wiped budget (want 2): %+v", res.Structured)
+	}
+	if res.Structured.Threshold != 0.8 {
+		t.Errorf("threshold not applied: %+v", res.Structured)
+	}
+	if !res.Structured.Classes["expiring"] {
+		t.Errorf("partial set wiped classes: %+v", res.Structured)
 	}
 }
 

@@ -12,6 +12,7 @@ package proactive
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sort"
 
@@ -23,15 +24,23 @@ import (
 )
 
 // Offer is one surfaced proactive suggestion, returned to the caller and persisted
-// as a pending suggestion row.
+// as a pending suggestion row. Content carries the offered memory's text inline so
+// the agent can act on the offer without a second round-trip (the offer IS the
+// volunteered context, not a pointer to it).
 type Offer struct {
 	ID          string  `json:"id"`
 	TriggerKind string  `json:"trigger_kind"`
 	MemoryID    string  `json:"memory_id"`
 	EpisodeID   string  `json:"episode_id,omitempty"`
 	Title       string  `json:"title"`
+	Content     string  `json:"content"`
 	Score       float64 `json:"score"`
 }
+
+// ErrSessionRequired is returned by Evaluate when no session id is supplied: the
+// per-session dedupe (the primary anti-spam defence) is keyed on it, so evaluating
+// without one would re-offer the same context every call. Surfaces map it to 400.
+var ErrSessionRequired = errors.New("proactive: session_id is required to evaluate suggestions")
 
 // Evaluate produces the proactive offers for one session turn. It is the single
 // logic core behind every surface (HTTP/MCP/SDK GET suggestions). cfg is the
@@ -42,6 +51,11 @@ type Offer struct {
 // hard store failure — a per-rule failure degrades that rule, it does not fail the
 // turn.
 func Evaluate(ctx context.Context, st store.Store, searcher episodes.NarrativeSearcher, scope identity.Scope, sessionID, query string, cfg Config, now int64) ([]Offer, bool, error) {
+	if sessionID == "" {
+		// Per-session dedupe is the primary anti-spam defence; without a session id it
+		// would silently re-offer the same context every call. Fail loud, don't spam.
+		return nil, false, ErrSessionRequired
+	}
 	if !cfg.Enabled || cfg.Budget <= 0 {
 		return nil, false, nil // opted out — silence over spam
 	}
@@ -74,7 +88,10 @@ func Evaluate(ctx context.Context, st store.Store, searcher episodes.NarrativeSe
 	}
 
 	// 2. Per-class feedback multiplier (one query per class actually present).
-	multByClass, err := classMultipliers(ctx, st.Suggestions(), scope, cands)
+	//    The tally is windowed to the trailing feedbackWindowMs so old dismissals age
+	//    out — a class the scope stopped disliking recovers instead of being silenced
+	//    forever (RFC §6d "triggers that annoy decay" is recoverable, not permanent).
+	multByClass, err := classMultipliers(ctx, st.Suggestions(), scope, cands, now-feedbackWindowMs)
 	if err != nil {
 		return nil, degraded, err
 	}
@@ -84,8 +101,10 @@ func Evaluate(ctx context.Context, st store.Store, searcher episodes.NarrativeSe
 	//    same use/noise/decay/trust shaping as a pulled one, then knocked down by
 	//    the class's accept/dismiss confidence.
 	type scored struct {
-		cand  Candidate
-		final float64
+		cand    Candidate
+		final   float64
+		content string // the offered memory's text, carried inline (UX: no round-trip)
+		title   string
 	}
 	out := make([]scored, 0, len(cands))
 	for _, cand := range cands {
@@ -97,13 +116,19 @@ func Evaluate(ctx context.Context, st store.Store, searcher episodes.NarrativeSe
 			Memory:      memoryFacts(mem),
 			FusedScore:  cand.Relevance,
 			Now:         now,
-			SameSession: sessionID != "" && sessionID == mem.SessionID,
+			SameSession: sessionID == mem.SessionID,
 		})
 		final := base * multByClass[cand.TriggerKind]
 		if final < cfg.Threshold {
 			continue // below the scope's governance bar
 		}
-		out = append(out, scored{cand: cand, final: final})
+		// Title falls back to a content snippet when the source has none (e.g. an
+		// untitled episode) so an offer is never a bare id with no label.
+		title := cand.Title
+		if title == "" {
+			title = truncate(mem.Content, 64)
+		}
+		out = append(out, scored{cand: cand, final: final, content: mem.Content, title: title})
 	}
 	if len(out) == 0 {
 		return nil, degraded, nil
@@ -143,7 +168,7 @@ func Evaluate(ctx context.Context, st store.Store, searcher episodes.NarrativeSe
 		id := ulid.Make().String()
 		offers = append(offers, Offer{
 			ID: id, TriggerKind: s.cand.TriggerKind, MemoryID: s.cand.MemoryID,
-			EpisodeID: s.cand.EpisodeID, Title: s.cand.Title, Score: s.final,
+			EpisodeID: s.cand.EpisodeID, Title: s.title, Content: s.content, Score: s.final,
 		})
 		rows = append(rows, store.Suggestion{
 			ID: id, TenantID: scope.Tenant, ProjectID: scope.Project, UserID: scope.User,
@@ -166,15 +191,22 @@ func Evaluate(ctx context.Context, st store.Store, searcher episodes.NarrativeSe
 	return offers, degraded, nil
 }
 
+// feedbackWindowMs bounds how far back accept/dismiss feedback counts toward a
+// class's confidence multiplier. Feedback older than this ages out, so a class the
+// scope kept dismissing months ago is not suppressed forever — it gets a fresh
+// chance once the recent tally clears (the recovery path RFC §6d implies).
+const feedbackWindowMs = int64(30 * 24 * 60 * 60 * 1000) // 30 days
+
 // classMultipliers computes the feedback multiplier for each trigger class present
-// in cands (one CountByTrigger query per distinct class).
-func classMultipliers(ctx context.Context, ss store.SuggestionStore, scope identity.Scope, cands []Candidate) (map[string]float64, error) {
+// in cands (one CountByTrigger query per distinct class), counting only feedback at
+// or after `since`.
+func classMultipliers(ctx context.Context, ss store.SuggestionStore, scope identity.Scope, cands []Candidate, since int64) (map[string]float64, error) {
 	out := make(map[string]float64, 3)
 	for _, c := range cands {
 		if _, ok := out[c.TriggerKind]; ok {
 			continue
 		}
-		acc, dis, err := ss.CountByTrigger(ctx, scope, c.TriggerKind)
+		acc, dis, err := ss.CountByTrigger(ctx, scope, c.TriggerKind, since)
 		if err != nil {
 			return nil, fmt.Errorf("proactive: count %s: %w", c.TriggerKind, err)
 		}

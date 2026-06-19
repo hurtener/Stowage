@@ -55,8 +55,21 @@ func (c Config) clamp() Config {
 	return c
 }
 
-// Resolve merges the profile default with the scope's stored "proactive" setting (the
-// override wins for any field present; an absent setting ⇒ the profile default). The
+// ConfigPatch is a partial governance update: a nil field is left unchanged, a
+// non-nil field overwrites. It lets the admin surfaces PATCH a single field (e.g.
+// raise the threshold) without zero-wiping the rest of the config (a real footgun
+// when Go zero-values stand in for "omitted").
+type ConfigPatch struct {
+	Enabled   *bool
+	Threshold *float64
+	Budget    *int
+	Classes   map[string]bool // nil = leave classes unchanged; non-nil (even empty) replaces
+}
+
+// Resolve reads the scope's effective governance: the profile default unless the
+// scope has a stored "proactive" setting, in which case that stored config REPLACES
+// the default wholesale (the stored value is always a complete, clamped Config —
+// partial merges happen at write time via WriteGovernance, never at storage). The
 // resolution reads the EXACT scope given — callers pass the most-specific scope they
 // hold (user/tenant); a future enhancement may walk scope precedence.
 func Resolve(ctx context.Context, ss store.ScopeSettingsStore, scope identity.Scope, profileDefault Config) (Config, error) {
@@ -86,4 +99,36 @@ func MarshalConfig(c Config) (string, error) {
 		return "", fmt.Errorf("proactive: marshal config: %w", err)
 	}
 	return string(b), nil
+}
+
+// WriteGovernance is the single logic core behind the admin governance write (D-067):
+// it applies a partial patch on top of the scope's CURRENT effective config and
+// stores the complete clamped result, so a one-field update never silently disables
+// the rest. Every surface (HTTP PUT, MCP set) calls it. Returns the stored config.
+func WriteGovernance(ctx context.Context, ss store.ScopeSettingsStore, scope identity.Scope, profileDefault Config, patch ConfigPatch, now int64) (Config, error) {
+	cur, err := Resolve(ctx, ss, scope, profileDefault)
+	if err != nil {
+		return Config{}, err
+	}
+	if patch.Enabled != nil {
+		cur.Enabled = *patch.Enabled
+	}
+	if patch.Threshold != nil {
+		cur.Threshold = *patch.Threshold
+	}
+	if patch.Budget != nil {
+		cur.Budget = *patch.Budget
+	}
+	if patch.Classes != nil {
+		cur.Classes = patch.Classes
+	}
+	cur = cur.clamp()
+	value, err := MarshalConfig(cur)
+	if err != nil {
+		return Config{}, err
+	}
+	if err := ss.Set(ctx, scope, settingKey, value, now); err != nil {
+		return Config{}, fmt.Errorf("proactive: store governance: %w", err)
+	}
+	return cur, nil
 }

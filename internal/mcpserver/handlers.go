@@ -1152,7 +1152,7 @@ func makeSuggestionsHandler(svc *Services) tool.Handler[SuggestionsInput, Sugges
 			for _, o := range offers {
 				out.Suggestions = append(out.Suggestions, SuggestionItem{
 					ID: o.ID, TriggerKind: o.TriggerKind, MemoryID: o.MemoryID,
-					EpisodeID: o.EpisodeID, Title: o.Title, Score: o.Score,
+					EpisodeID: o.EpisodeID, Title: o.Title, Content: o.Content, Score: o.Score,
 				})
 			}
 			return tool.Result[SuggestionsOutput]{
@@ -1194,23 +1194,19 @@ func makeProactiveConfigHandler(svc *Services) tool.Handler[ProactiveConfigInput
 		if action == "" {
 			action = "get"
 		}
+		var cfg proactive.Config
+		var rerr error
 		switch action {
 		case "set":
-			value, merr := proactive.MarshalConfig(proactive.Config{
-				Enabled: in.Enabled, Threshold: in.Threshold, Budget: in.Budget, Classes: in.Classes,
-			})
-			if merr != nil {
-				return tool.Result[ProactiveConfigOutput]{}, fmt.Errorf("memory_proactive_config: %w", merr)
-			}
-			if serr := svc.Store.ScopeSettings().Set(ctx, scope, "proactive", value, time.Now().UnixMilli()); serr != nil {
-				return tool.Result[ProactiveConfigOutput]{}, fmt.Errorf("memory_proactive_config: %w", serr)
-			}
+			// PATCH semantics (D-067 core): only the provided fields overwrite, so a
+			// one-field set never zero-wipes the rest of the config.
+			patch := proactive.ConfigPatch{Enabled: in.Enabled, Threshold: in.Threshold, Budget: in.Budget, Classes: in.Classes}
+			cfg, rerr = proactive.WriteGovernance(ctx, svc.Store.ScopeSettings(), scope, proactiveProfileDefault(svc.Profile), patch, time.Now().UnixMilli())
 		case "get":
-			// no-op; falls through to resolve+return
+			cfg, rerr = proactive.Resolve(ctx, svc.Store.ScopeSettings(), scope, proactiveProfileDefault(svc.Profile))
 		default:
 			return tool.Result[ProactiveConfigOutput]{}, fmt.Errorf("memory_proactive_config: action must be get or set")
 		}
-		cfg, rerr := proactive.Resolve(ctx, svc.Store.ScopeSettings(), scope, proactiveProfileDefault(svc.Profile))
 		if rerr != nil {
 			return tool.Result[ProactiveConfigOutput]{}, fmt.Errorf("memory_proactive_config: %w", rerr)
 		}

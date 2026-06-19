@@ -2,6 +2,7 @@ package proactive
 
 import (
 	"context"
+	"reflect"
 
 	"github.com/hurtener/stowage/internal/episodes"
 	"github.com/hurtener/stowage/internal/identity"
@@ -56,7 +57,10 @@ func recentEpisodeCandidates(ctx context.Context, st store.Store, scope identity
 // query — "this looks like the migration you did in March." Gateway-dependent
 // (embeds the query); degraded=true ⇒ the caller skips this class.
 func similarEpisodeCandidates(ctx context.Context, st store.Store, searcher episodes.NarrativeSearcher, scope identity.Scope, query string) ([]Candidate, bool, error) {
-	if query == "" || searcher == nil {
+	// A surface that wires no retriever passes a typed-nil *retrieval.Retriever, which
+	// is a non-nil interface — guard against both so the class degrades cleanly
+	// instead of panicking when enabled without a gateway.
+	if query == "" || isNilSearcher(searcher) {
 		return nil, false, nil
 	}
 	views, degraded, err := episodes.Similar(ctx, st, searcher, scope, query, ruleCandidateCap)
@@ -101,6 +105,17 @@ func expiringCandidates(ctx context.Context, st store.Store, scope identity.Scop
 		}
 	}
 	return out, nil
+}
+
+// isNilSearcher reports whether the searcher is nil — either a nil interface or a
+// non-nil interface wrapping a nil pointer (the typed-nil a surface produces when it
+// passes a nil *retrieval.Retriever).
+func isNilSearcher(s episodes.NarrativeSearcher) bool {
+	if s == nil {
+		return true
+	}
+	v := reflect.ValueOf(s)
+	return v.Kind() == reflect.Pointer && v.IsNil()
 }
 
 func clamp01(v float64) float64 {

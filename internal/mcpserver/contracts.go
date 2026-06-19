@@ -592,6 +592,7 @@ type SuggestionItem struct {
 	MemoryID    string  `json:"memory_id"`
 	EpisodeID   string  `json:"episode_id,omitempty"`
 	Title       string  `json:"title"`
+	Content     string  `json:"content"`
 	Score       float64 `json:"score"`
 }
 
@@ -607,15 +608,16 @@ type SuggestionsOutput struct {
 // ─── memory_proactive_config (Phase 27, D-087) ──────────────────────────────────
 
 // ProactiveConfigInput is the memory_proactive_config tool input (admin tier).
-// Action ∈ {get (default), set}. set writes the scope's governance override;
-// User/Project refine the scope. The governance fields are used only on set.
+// Action ∈ {get (default), set}. set PATCHES the scope's governance: each governance
+// field is optional (pointer) and only overwrites when present, so setting one field
+// (e.g. threshold) never zero-wipes the rest. User/Project refine the scope.
 type ProactiveConfigInput struct {
 	Action    string          `json:"action,omitempty"` // "get" | "set"
 	User      string          `json:"user,omitempty"`
 	Project   string          `json:"project,omitempty"`
-	Enabled   bool            `json:"enabled,omitempty"`
-	Threshold float64         `json:"threshold,omitempty"`
-	Budget    int             `json:"budget,omitempty"`
+	Enabled   *bool           `json:"enabled,omitempty"`
+	Threshold *float64        `json:"threshold,omitempty"`
+	Budget    *int            `json:"budget,omitempty"`
 	Classes   map[string]bool `json:"classes,omitempty"`
 }
 

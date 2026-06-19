@@ -2,6 +2,7 @@ package proactive_test
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"testing"
 	"time"
@@ -244,6 +245,70 @@ func TestEvaluate_ExpiringOffered(t *testing.T) {
 	}
 }
 
+func TestEvaluate_RequiresSession(t *testing.T) {
+	st := newStore(t)
+	scope := identity.Scope{Tenant: "acme"}
+	now := time.Now().UnixMilli()
+	seedExpiring(t, st, scope, now, int64(time.Hour/time.Millisecond), "note")
+
+	_, _, err := proactive.Evaluate(context.Background(), st, nil, scope, "", "", expiringCfg(0.0, 5), now)
+	if !errors.Is(err, proactive.ErrSessionRequired) {
+		t.Fatalf("empty session must return ErrSessionRequired, got %v", err)
+	}
+}
+
+func TestEvaluate_OfferCarriesContent(t *testing.T) {
+	st := newStore(t)
+	scope := identity.Scope{Tenant: "acme"}
+	now := time.Now().UnixMilli()
+	seedExpiring(t, st, scope, now, int64(time.Hour/time.Millisecond), "rotate the staging cert")
+
+	offers, _, err := proactive.Evaluate(context.Background(), st, nil, scope, "s1", "", expiringCfg(0.0, 5), now)
+	if err != nil || len(offers) != 1 {
+		t.Fatalf("evaluate: %v / %d", err, len(offers))
+	}
+	if offers[0].Content != "rotate the staging cert" {
+		t.Errorf("offer should carry the memory content inline, got %q", offers[0].Content)
+	}
+}
+
+// TestEvaluate_FeedbackRecovers proves a class suppressed by OLD dismissals recovers
+// once the feedback ages out of the trailing window.
+func TestEvaluate_FeedbackRecovers(t *testing.T) {
+	st := newStore(t)
+	scope := identity.Scope{Tenant: "acme"}
+	hour := int64(time.Hour / time.Millisecond)
+
+	// Establish the neutral base score and a gate just under it.
+	base, _, _ := func() ([]proactive.Offer, bool, error) {
+		seedExpiring(t, st, scope, time.Now().UnixMilli(), hour, "n")
+		return proactive.Evaluate(context.Background(), st, nil, scope, "s0", "", expiringCfg(0.0, 5), time.Now().UnixMilli())
+	}()
+	if len(base) == 0 {
+		t.Fatal("setup: no base offer")
+	}
+	gate := base[0].Score * 0.9
+
+	// Accumulate dismissals dated ~60 days ago (older than the 30-day feedback window).
+	old := time.Now().UnixMilli() - int64(60*24*time.Hour/time.Millisecond)
+	for i := 0; i < 14; i++ {
+		seedExpiring(t, st, scope, old, hour, "old noise")
+		os, _, _ := proactive.Evaluate(context.Background(), st, nil, scope, "sold", "", expiringCfg(0.0, 5), old)
+		for _, o := range os {
+			_, _ = proactive.ResolveOffer(context.Background(), st, scope, o.ID, "dismiss", old)
+		}
+	}
+
+	// Now, today: the old dismissals are outside the window, so the class is NOT
+	// suppressed — a fresh offer clears the gate.
+	now := time.Now().UnixMilli()
+	seedExpiring(t, st, scope, now, hour, "fresh")
+	offers, _, _ := proactive.Evaluate(context.Background(), st, nil, scope, "snew", "", expiringCfg(gate, 5), now)
+	if len(offers) == 0 {
+		t.Fatalf("a class dismissed only long ago should recover and clear gate %.4f", gate)
+	}
+}
+
 func TestEvaluate_OutsideWindowNotOffered(t *testing.T) {
 	st := newStore(t)
 	scope := identity.Scope{Tenant: "acme"}
@@ -355,7 +420,7 @@ func TestEvaluate_FeedbackTuningSuppresses(t *testing.T) {
 			}
 		}
 	}
-	acc, dismissed, err := dis.Suggestions().CountByTrigger(context.Background(), dScope, proactive.ClassExpiring)
+	acc, dismissed, err := dis.Suggestions().CountByTrigger(context.Background(), dScope, proactive.ClassExpiring, 0)
 	if err != nil {
 		t.Fatalf("count: %v", err)
 	}

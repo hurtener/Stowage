@@ -108,8 +108,11 @@ type Client interface {
 
 	// Suggestions is the proactive pull (RFC §6d, D-087). Action=list evaluates the
 	// scope's trigger rules and offers the budgeted, governance-gated set for a
-	// session; action=accept|dismiss resolves an offer id and tunes per-trigger
-	// confidence. The memory decides what is worth surfacing; the agent pulls at
-	// turn start. Governance is admin-tier (HTTP/MCP only), not on the SDK.
+	// session (SessionID is REQUIRED — it keys the per-session dedupe); each offer
+	// carries the memory content inline. list is a WRITE: each offer is recorded once
+	// per session, so a repeat list does not re-offer the same memory. action=accept|
+	// dismiss resolves an offer id and tunes that trigger's confidence (accept is
+	// feedback, not a memory mutation). Score is a relative utility weight, not a
+	// probability. Governance is admin-tier (HTTP/MCP only), not on the SDK.
 	Suggestions(ctx context.Context, req SuggestionsRequest) (SuggestionsResponse, error)
 }

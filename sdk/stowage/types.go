@@ -404,13 +404,15 @@ type SuggestionsRequest struct {
 	ID        string // the suggestion id (accept/dismiss)
 }
 
-// Suggestion is one proactive offer (byte-identical to the HTTP/MCP shape).
+// Suggestion is one proactive offer (byte-identical to the HTTP/MCP shape). Content
+// carries the offered memory's text inline so the agent can act without a round-trip.
 type Suggestion struct {
 	ID          string  `json:"id"`
 	TriggerKind string  `json:"trigger_kind"`
 	MemoryID    string  `json:"memory_id"`
 	EpisodeID   string  `json:"episode_id,omitempty"`
 	Title       string  `json:"title"`
+	Content     string  `json:"content"`
 	Score       float64 `json:"score"`
 }
 

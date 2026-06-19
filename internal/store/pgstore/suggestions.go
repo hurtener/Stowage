@@ -75,13 +75,13 @@ func (ss *suggestionStore) ListBySession(ctx context.Context, scope identity.Sco
 }
 
 func (ss *suggestionStore) Get(ctx context.Context, scope identity.Scope, id string) (*store.Suggestion, error) {
-	if scope.Tenant == "" {
-		return nil, store.ErrScopeRequired
+	whereClause, args, next, err := buildScopeWhere(scope, 1) // full scope (P3)
+	if err != nil {
+		return nil, err
 	}
-	row := ss.s.pool.QueryRow(ctx,
-		`SELECT `+suggestionCols+` FROM suggestions WHERE tenant_id = $1 AND id = $2`,
-		scope.Tenant, id,
-	)
+	args = append(args, id)
+	q := fmt.Sprintf(`SELECT `+suggestionCols+` FROM suggestions WHERE `+whereClause+` AND id = $%d`, next)
+	row := ss.s.pool.QueryRow(ctx, q, args...)
 	g, err := scanSuggestion(row)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, store.ErrNotFound
@@ -102,14 +102,21 @@ func (ss *suggestionStore) Resolve(ctx context.Context, scope identity.Scope, id
 	default:
 		return nil, fmt.Errorf("pgstore: resolve suggestion: invalid action %q", action)
 	}
+	// Full scope (P3): tenant+project+user+session, not tenant-only.
+	whereClause, scopeArgs, next, werr := buildScopeWhere(scope, 3) // $1=status, $2=now
+	if werr != nil {
+		return nil, werr
+	}
 	tx, err := ss.s.pool.Begin(ctx)
 	if err != nil {
 		return nil, err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
+	updArgs := append([]interface{}{status, now}, scopeArgs...)
+	updArgs = append(updArgs, id)
 	tag, err := tx.Exec(ctx, //nolint:gosec
-		`UPDATE suggestions SET status = $1, `+col+` = `+col+` + 1, updated_at = $2 WHERE tenant_id = $3 AND id = $4 AND status = 'pending'`,
-		status, now, scope.Tenant, id,
+		fmt.Sprintf(`UPDATE suggestions SET status = $1, `+col+` = `+col+` + 1, updated_at = $2 WHERE `+whereClause+` AND id = $%d AND status = 'pending'`, next),
+		updArgs...,
 	)
 	if err != nil {
 		return nil, err
@@ -117,7 +124,11 @@ func (ss *suggestionStore) Resolve(ctx context.Context, scope identity.Scope, id
 	if tag.RowsAffected() == 0 {
 		return nil, store.ErrNotPending
 	}
-	row := tx.QueryRow(ctx, `SELECT `+suggestionCols+` FROM suggestions WHERE tenant_id = $1 AND id = $2`, scope.Tenant, id)
+	// Re-number the scope predicates for the SELECT ($1=id, $2.. = scope).
+	selWhere, selScopeArgs, selNext, _ := buildScopeWhere(scope, 2)
+	selArgs := append([]interface{}{id}, selScopeArgs...)
+	_ = selNext
+	row := tx.QueryRow(ctx, `SELECT `+suggestionCols+` FROM suggestions WHERE id = $1 AND `+selWhere, selArgs...)
 	g, err := scanSuggestion(row)
 	if err != nil {
 		return nil, err
@@ -128,13 +139,18 @@ func (ss *suggestionStore) Resolve(ctx context.Context, scope identity.Scope, id
 	return g, nil
 }
 
-func (ss *suggestionStore) CountByTrigger(ctx context.Context, scope identity.Scope, triggerKind string) (int, int, error) {
+func (ss *suggestionStore) CountByTrigger(ctx context.Context, scope identity.Scope, triggerKind string, since int64) (int, int, error) {
 	whereClause, args, next, err := buildScopeWhere(scope, 1)
 	if err != nil {
 		return 0, 0, err
 	}
 	whereClause += fmt.Sprintf(" AND trigger_kind = $%d", next)
 	args = append(args, triggerKind)
+	next++
+	if since > 0 { // trailing-window feedback so old dismissals age out (recovery path)
+		whereClause += fmt.Sprintf(" AND updated_at >= $%d", next)
+		args = append(args, since)
+	}
 	q := `SELECT
 			COALESCE(SUM(CASE WHEN status='accepted' THEN 1 ELSE 0 END),0),
 			COALESCE(SUM(CASE WHEN status='dismissed' THEN 1 ELSE 0 END),0)
@@ -165,12 +181,12 @@ func (ss *suggestionStore) ListPendingBefore(ctx context.Context, scope identity
 	return scanSuggestions(rows)
 }
 
-func (ss *suggestionStore) ExpirePending(ctx context.Context, scope identity.Scope, ids []string, now int64) error {
+func (ss *suggestionStore) ExpirePending(ctx context.Context, scope identity.Scope, ids []string, now int64) ([]string, error) {
 	if scope.Tenant == "" {
-		return store.ErrScopeRequired
+		return nil, store.ErrScopeRequired
 	}
 	if len(ids) == 0 {
-		return nil
+		return nil, nil
 	}
 	ph := make([]string, len(ids))
 	args := make([]interface{}, 0, len(ids)+2)
@@ -179,11 +195,25 @@ func (ss *suggestionStore) ExpirePending(ctx context.Context, scope identity.Sco
 		ph[i] = fmt.Sprintf("$%d", i+3)
 		args = append(args, id)
 	}
-	_, err := ss.s.pool.Exec(ctx, //nolint:gosec
-		`UPDATE suggestions SET status='expired', updated_at=$1 WHERE tenant_id=$2 AND status='pending' AND id IN (`+strings.Join(ph, ",")+`)`,
+	// RETURNING reports the rows the CAS actually transitioned (still pending), so the
+	// caller emits suggestion.expired only for genuinely-expired offers.
+	rows, err := ss.s.pool.Query(ctx, //nolint:gosec
+		`UPDATE suggestions SET status='expired', updated_at=$1 WHERE tenant_id=$2 AND status='pending' AND id IN (`+strings.Join(ph, ",")+`) RETURNING id`,
 		args...,
 	)
-	return err
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var expired []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		expired = append(expired, id)
+	}
+	return expired, rows.Err()
 }
 
 type suggestionScanner interface{ Scan(dest ...any) error }

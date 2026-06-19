@@ -59,11 +59,12 @@ func StdioScopeFn(tenant string) ScopeFn {
 	}
 }
 
-// New creates a Dockyard *server.Server with all 17 Stowage MCP tools registered:
+// New creates a Dockyard *server.Server with all 20 Stowage MCP tools registered:
 // the original seven, the D-070 reversibility trio (memory_get, memory_rollback,
 // memory_resolve), the D-071 Tier control verbs (memory_flush, memory_branch, and the
-// Tier-B memory_grants), the episodic reads (memory_episodes, memory_causal), and the
-// §6c trust verbs (memory_verify, memory_review).
+// Tier-B memory_grants), the episodic reads (memory_episodes, memory_causal), the
+// §6c trust verbs (memory_verify, memory_review), the §6c trace export (memory_trace),
+// and the §6d proactive verbs (memory_suggestions, memory_proactive_config).
 // It returns an error when any tool fails to register (type mismatch, missing
 // handler) — the caller must handle the error and exit non-zero (AGENTS.md §5).
 func New(info server.Info, svc *Services) (*server.Server, error) {
@@ -195,7 +196,7 @@ func New(info server.Info, svc *Services) (*server.Server, error) {
 
 	// Phase 27: proactive suggestions (RFC §6d, D-087) — single-user tier.
 	if err := tool.New[SuggestionsInput, SuggestionsOutput]("memory_suggestions").
-		Describe("Proactive memory suggestions (RFC §6d, D-087): action=list evaluates the scope's trigger rules (recent/similar episodes, expiring memories) and offers the budgeted, governance-gated set for a session (mirrors GET /v1/suggestions); action=accept|dismiss resolves an offer id and tunes per-trigger confidence (mirrors POST /v1/suggestions/{id}). The agent PULLS at turn start; the memory decides what is worth surfacing.").
+		Describe("Proactive memory suggestions (RFC §6d, D-087): action=list evaluates the scope's trigger rules (recent/similar episodes, expiring memories) and offers the budgeted, governance-gated set for a session — each offer carries the memory's content inline (no extra fetch needed). session_id is REQUIRED (it keys the per-session dedupe). NOTE: list is a write — each offer is recorded once per session, so a second list does not re-offer the same memory. action=accept|dismiss resolves an offer id and tunes that trigger's confidence; accept is acknowledgement/feedback, NOT a memory mutation (to keep an 'expiring' memory alive, reaffirm it with memory_assert). score is a relative utility weight (higher = stronger), not a 0-1 probability. Mirrors GET /v1/suggestions + POST /v1/suggestions/{id}.").
 		Handler(makeSuggestionsHandler(svc)).
 		Register(srv); err != nil {
 		return nil, err

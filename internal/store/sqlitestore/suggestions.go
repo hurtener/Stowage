@@ -68,13 +68,13 @@ func (ss *suggestionStore) ListBySession(ctx context.Context, scope identity.Sco
 }
 
 func (ss *suggestionStore) Get(ctx context.Context, scope identity.Scope, id string) (*store.Suggestion, error) {
-	if scope.Tenant == "" {
-		return nil, store.ErrScopeRequired
+	whereClause, args, err := buildScopeWhere(scope) // full scope (P3): tenant+project+user+session, not tenant-only
+	if err != nil {
+		return nil, err
 	}
-	row := ss.s.rdb.QueryRowContext(ctx,
-		`SELECT `+suggestionCols+` FROM suggestions WHERE tenant_id = ? AND id = ?`,
-		scope.Tenant, id,
-	)
+	args = append(args, id)
+	q := `SELECT ` + suggestionCols + ` FROM suggestions WHERE ` + whereClause + ` AND id = ?` //nolint:gosec
+	row := ss.s.rdb.QueryRowContext(ctx, q, args...)
 	g, err := scanSuggestion(row)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, store.ErrNotFound
@@ -95,13 +95,19 @@ func (ss *suggestionStore) Resolve(ctx context.Context, scope identity.Scope, id
 	default:
 		return nil, fmt.Errorf("sqlitestore: resolve suggestion: invalid action %q (want accept|dismiss)", action)
 	}
+	whereClause, scopeArgs, werr := buildScopeWhere(scope) // full scope (P3)
+	if werr != nil {
+		return nil, werr
+	}
 	var resolved *store.Suggestion
 	err := ss.s.exec(ctx, func(tx *sql.Tx) error {
-		// CAS: only a pending row transitions (no double-resolve race, D-085 lesson).
-		// col is one of two hardcoded column names from the action switch above —
-		// never user input (gosec G202 false positive).
-		q := `UPDATE suggestions SET status = ?, ` + col + ` = ` + col + ` + 1, updated_at = ? WHERE tenant_id = ? AND id = ? AND status = 'pending'` //nolint:gosec
-		res, err := tx.Exec(q, status, now, scope.Tenant, id)
+		// CAS: only a pending row in the caller's scope transitions (no double-resolve
+		// race, D-085 lesson). col is one of two hardcoded column names from the action
+		// switch above — never user input (gosec G202 false positive).
+		q := `UPDATE suggestions SET status = ?, ` + col + ` = ` + col + ` + 1, updated_at = ? WHERE ` + whereClause + ` AND id = ? AND status = 'pending'` //nolint:gosec
+		args := append([]interface{}{status, now}, scopeArgs...)
+		args = append(args, id)
+		res, err := tx.Exec(q, args...)
 		if err != nil {
 			return err
 		}
@@ -109,7 +115,9 @@ func (ss *suggestionStore) Resolve(ctx context.Context, scope identity.Scope, id
 		if n == 0 {
 			return store.ErrNotPending
 		}
-		row := tx.QueryRow(`SELECT `+suggestionCols+` FROM suggestions WHERE tenant_id = ? AND id = ?`, scope.Tenant, id)
+		selQ := `SELECT ` + suggestionCols + ` FROM suggestions WHERE ` + whereClause + ` AND id = ?` //nolint:gosec
+		selArgs := append(append([]interface{}{}, scopeArgs...), id)
+		row := tx.QueryRow(selQ, selArgs...)
 		resolved, err = scanSuggestion(row)
 		return err
 	})
@@ -119,13 +127,17 @@ func (ss *suggestionStore) Resolve(ctx context.Context, scope identity.Scope, id
 	return resolved, nil
 }
 
-func (ss *suggestionStore) CountByTrigger(ctx context.Context, scope identity.Scope, triggerKind string) (accepted, dismissed int, err error) {
+func (ss *suggestionStore) CountByTrigger(ctx context.Context, scope identity.Scope, triggerKind string, since int64) (accepted, dismissed int, err error) {
 	whereClause, args, werr := buildScopeWhere(scope)
 	if werr != nil {
 		return 0, 0, werr
 	}
 	whereClause += " AND trigger_kind = ?"
 	args = append(args, triggerKind)
+	if since > 0 { // trailing-window feedback so old dismissals age out (recovery path)
+		whereClause += " AND updated_at >= ?"
+		args = append(args, since)
+	}
 	q := `SELECT
 			COALESCE(SUM(CASE WHEN status='accepted' THEN 1 ELSE 0 END),0),
 			COALESCE(SUM(CASE WHEN status='dismissed' THEN 1 ELSE 0 END),0)
@@ -154,14 +166,19 @@ func (ss *suggestionStore) ListPendingBefore(ctx context.Context, scope identity
 	return scanSuggestions(rows)
 }
 
-func (ss *suggestionStore) ExpirePending(ctx context.Context, scope identity.Scope, ids []string, now int64) error {
+// ExpirePending transitions the given pending offers to 'expired' and returns the
+// ids it ACTUALLY changed (those still pending at execution time) — so the caller
+// emits suggestion.expired only for genuinely-expired offers, never for one an
+// agent accepted in the race window between listing and expiring.
+func (ss *suggestionStore) ExpirePending(ctx context.Context, scope identity.Scope, ids []string, now int64) ([]string, error) {
 	if scope.Tenant == "" {
-		return store.ErrScopeRequired
+		return nil, store.ErrScopeRequired
 	}
 	if len(ids) == 0 {
-		return nil
+		return nil, nil
 	}
-	return ss.s.exec(ctx, func(tx *sql.Tx) error {
+	var expired []string
+	err := ss.s.exec(ctx, func(tx *sql.Tx) error {
 		ph := make([]string, len(ids))
 		args := make([]interface{}, 0, len(ids)+2)
 		args = append(args, now, scope.Tenant)
@@ -170,11 +187,27 @@ func (ss *suggestionStore) ExpirePending(ctx context.Context, scope identity.Sco
 			args = append(args, id)
 		}
 		// The interpolated fragment is only "?" placeholders (one per id); the ids
-		// themselves are bound parameters (gosec G202 false positive).
-		q := `UPDATE suggestions SET status='expired', updated_at=? WHERE tenant_id=? AND status='pending' AND id IN (` + strings.Join(ph, ",") + `)` //nolint:gosec
-		_, err := tx.Exec(q, args...)
-		return err
+		// themselves are bound parameters (gosec G202 false positive). RETURNING (SQLite
+		// 3.35+) reports the rows the CAS actually transitioned.
+		q := `UPDATE suggestions SET status='expired', updated_at=? WHERE tenant_id=? AND status='pending' AND id IN (` + strings.Join(ph, ",") + `) RETURNING id` //nolint:gosec
+		rows, err := tx.Query(q, args...)
+		if err != nil {
+			return err
+		}
+		defer rows.Close() //nolint:errcheck
+		for rows.Next() {
+			var id string
+			if err := rows.Scan(&id); err != nil {
+				return err
+			}
+			expired = append(expired, id)
+		}
+		return rows.Err()
 	})
+	if err != nil {
+		return nil, err
+	}
+	return expired, nil
 }
 
 type suggestionScanner interface {

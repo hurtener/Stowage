@@ -95,15 +95,19 @@ type SuggestionStore interface {
 	Resolve(ctx context.Context, scope identity.Scope, id, action string, now int64) (*Suggestion, error)
 
 	// CountByTrigger returns the accepted/dismissed suggestion counts for a trigger
-	// kind within scope — the per-class feedback-tuning signal.
-	CountByTrigger(ctx context.Context, scope identity.Scope, triggerKind string) (accepted, dismissed int, err error)
+	// kind within scope — the per-class feedback-tuning signal. `since` (unix ms; 0 =
+	// all-time) windows the tally so old feedback ages out, giving a suppressed class
+	// a recovery path.
+	CountByTrigger(ctx context.Context, scope identity.Scope, triggerKind string, since int64) (accepted, dismissed int, err error)
 
 	// ListPendingBefore returns pending suggestions created before `before` (for the
 	// expiry sweep), capped at limit. Scope-enforced.
 	ListPendingBefore(ctx context.Context, scope identity.Scope, before int64, limit int) ([]Suggestion, error)
 
-	// ExpirePending sets the given pending suggestions to 'expired' (idempotent).
-	ExpirePending(ctx context.Context, scope identity.Scope, ids []string, now int64) error
+	// ExpirePending sets the given pending suggestions to 'expired' (idempotent) and
+	// returns the ids it ACTUALLY transitioned (those still pending at execution time),
+	// so the caller can emit suggestion.expired only for genuinely-expired offers.
+	ExpirePending(ctx context.Context, scope identity.Scope, ids []string, now int64) ([]string, error)
 }
 
 // ScopeSettingsStore is the per-scope settings KV (RFC §6d governance, Phase 27,

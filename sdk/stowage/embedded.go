@@ -905,7 +905,7 @@ func (c *embeddedClient) Suggestions(ctx context.Context, req SuggestionsRequest
 		for _, o := range offers {
 			out.Suggestions = append(out.Suggestions, Suggestion{
 				ID: o.ID, TriggerKind: o.TriggerKind, MemoryID: o.MemoryID,
-				EpisodeID: o.EpisodeID, Title: o.Title, Score: o.Score,
+				EpisodeID: o.EpisodeID, Title: o.Title, Content: o.Content, Score: o.Score,
 			})
 		}
 		return out, nil

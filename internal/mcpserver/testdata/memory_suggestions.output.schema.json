@@ -24,6 +24,9 @@
           "title": {
             "type": "string"
           },
+          "content": {
+            "type": "string"
+          },
           "score": {
             "type": "number"
           }
@@ -33,6 +36,7 @@
           "trigger_kind",
           "memory_id",
           "title",
+          "content",
           "score"
         ],
         "additionalProperties": false

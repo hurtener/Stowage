@@ -2,6 +2,7 @@ package proactive
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/hurtener/stowage/internal/identity"
@@ -105,6 +106,54 @@ func TestMarshalConfig_Roundtrip(t *testing.T) {
 	got, _ := Resolve(context.Background(), ss, identity.Scope{Tenant: "t"}, defaultCfg())
 	if got.Threshold != 0.42 || got.Budget != 3 || !got.classEnabled(ClassExpiring) {
 		t.Fatalf("roundtrip mismatch: %+v", got)
+	}
+}
+
+func boolp(b bool) *bool      { return &b }
+func f64p(f float64) *float64 { return &f }
+func intp(i int) *int         { return &i }
+
+func TestWriteGovernance_FullPatch(t *testing.T) {
+	ss := &fakeScopeSettings{}
+	got, err := WriteGovernance(context.Background(), ss, identity.Scope{Tenant: "t"}, defaultCfg(),
+		ConfigPatch{Enabled: boolp(false), Threshold: f64p(0.7), Budget: intp(1), Classes: map[string]bool{ClassRecentEpisode: true}}, 1)
+	if err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if got.Enabled || got.Threshold != 0.7 || got.Budget != 1 || !got.classEnabled(ClassRecentEpisode) {
+		t.Fatalf("full patch not applied: %+v", got)
+	}
+	// Stored value is the complete clamped config.
+	raw := ss.vals[settingKey]
+	if raw == "" {
+		t.Fatal("nothing stored")
+	}
+}
+
+func TestWriteGovernance_PartialPatchPreserves(t *testing.T) {
+	ss := &fakeScopeSettings{}
+	base := defaultCfg() // Enabled, threshold 0.5, budget 2, {expiring}
+	// Patch ONLY the threshold; the rest must survive.
+	got, err := WriteGovernance(context.Background(), ss, identity.Scope{Tenant: "t"}, base,
+		ConfigPatch{Threshold: f64p(0.9)}, 1)
+	if err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if !got.Enabled || got.Budget != 2 || got.Threshold != 0.9 || !got.classEnabled(ClassExpiring) {
+		t.Fatalf("partial patch wiped fields: %+v", got)
+	}
+	// A second partial patch builds on the stored override, not the profile default.
+	got2, _ := WriteGovernance(context.Background(), ss, identity.Scope{Tenant: "t"}, base,
+		ConfigPatch{Budget: intp(5)}, 2)
+	if got2.Threshold != 0.9 || got2.Budget != 5 {
+		t.Fatalf("second patch lost the first: %+v", got2)
+	}
+}
+
+func TestWriteGovernance_ResolveError(t *testing.T) {
+	ss := &fakeScopeSettings{err: errors.New("boom")}
+	if _, err := WriteGovernance(context.Background(), ss, identity.Scope{Tenant: "t"}, defaultCfg(), ConfigPatch{}, 1); err == nil {
+		t.Fatal("expected error when the store read fails")
 	}
 }
 

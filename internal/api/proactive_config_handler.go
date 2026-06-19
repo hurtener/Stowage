@@ -9,14 +9,23 @@ import (
 	"github.com/hurtener/stowage/internal/proactive"
 )
 
-// proactiveConfigJSON is the GET/PUT /v1/admin/proactive envelope — the scope's
-// effective proactive governance (RFC §6d, D-087). GET returns the resolved config
-// (profile default ⊕ stored override); PUT stores the scope's override.
+// proactiveConfigJSON is the GET /v1/admin/proactive response — the scope's
+// effective proactive governance (RFC §6d, D-087).
 type proactiveConfigJSON struct {
 	Enabled   bool            `json:"enabled"`
 	Threshold float64         `json:"threshold"`
 	Budget    int             `json:"budget"`
 	Classes   map[string]bool `json:"classes"`
+}
+
+// proactiveConfigPatchJSON is the PUT /v1/admin/proactive body. Every field is
+// optional (pointer); an omitted field is left unchanged so a partial update never
+// zero-wipes the rest of the config. Opt-out is {"enabled": false}.
+type proactiveConfigPatchJSON struct {
+	Enabled   *bool           `json:"enabled,omitempty"`
+	Threshold *float64        `json:"threshold,omitempty"`
+	Budget    *int            `json:"budget,omitempty"`
+	Classes   map[string]bool `json:"classes,omitempty"`
 }
 
 // handleGetProactiveConfig implements GET /v1/admin/proactive (admin tier). It
@@ -43,32 +52,19 @@ func (s *Server) handlePutProactiveConfig(w http.ResponseWriter, r *http.Request
 	q := r.URL.Query()
 	scope := identity.Scope{Tenant: authKey.TenantID, User: q.Get("user"), Project: q.Get("project")}
 
-	var body proactiveConfigJSON
+	var body proactiveConfigPatchJSON
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		respondJSON(w, http.StatusBadRequest, errBody("invalid request body"))
 		return
 	}
-	cfg := proactive.Config{Enabled: body.Enabled, Threshold: body.Threshold, Budget: body.Budget, Classes: body.Classes}
-	value, err := proactive.MarshalConfig(cfg)
+	patch := proactive.ConfigPatch{Enabled: body.Enabled, Threshold: body.Threshold, Budget: body.Budget, Classes: body.Classes}
+	stored, err := proactive.WriteGovernance(r.Context(), s.st.ScopeSettings(), scope, proactiveDefault(s.profile), patch, time.Now().UnixMilli())
 	if err != nil {
-		s.log.ErrorContext(r.Context(), "api: proactive config: marshal failed", "err", err)
-		respondJSON(w, http.StatusInternalServerError, errBody("proactive config marshal failed"))
+		s.log.ErrorContext(r.Context(), "api: proactive config: write failed", "err", err)
+		respondJSON(w, http.StatusInternalServerError, errBody("proactive config write failed"))
 		return
 	}
-	if err := s.st.ScopeSettings().Set(r.Context(), scope, "proactive", value, time.Now().UnixMilli()); err != nil {
-		s.log.ErrorContext(r.Context(), "api: proactive config: store failed", "err", err)
-		respondJSON(w, http.StatusInternalServerError, errBody("proactive config store failed"))
-		return
-	}
-	// Echo the canonical (clamped) config exactly as stored — `value` is the
-	// marshaled clamped form, so decoding it back is the resolved config without a
-	// second store round-trip.
-	var stored proactiveConfigJSON
-	_ = json.Unmarshal([]byte(value), &stored)
-	if stored.Classes == nil {
-		stored.Classes = map[string]bool{}
-	}
-	respondJSON(w, http.StatusOK, stored)
+	respondJSON(w, http.StatusOK, proactiveConfigToJSON(stored))
 }
 
 func proactiveConfigToJSON(cfg proactive.Config) proactiveConfigJSON {

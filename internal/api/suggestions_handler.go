@@ -25,6 +25,7 @@ type suggestionJSON struct {
 	MemoryID    string  `json:"memory_id"`
 	EpisodeID   string  `json:"episode_id,omitempty"`
 	Title       string  `json:"title"`
+	Content     string  `json:"content"`
 	Score       float64 `json:"score"`
 }
 
@@ -62,6 +63,10 @@ func (s *Server) handleSuggestions(w http.ResponseWriter, r *http.Request) {
 	}
 
 	offers, degraded, err := proactive.Evaluate(r.Context(), s.st, s.retriever, scope, sessionID, query, cfg, time.Now().UnixMilli())
+	if errors.Is(err, proactive.ErrSessionRequired) {
+		respondJSON(w, http.StatusBadRequest, errBody("session_id is required"))
+		return
+	}
 	if err != nil {
 		s.log.ErrorContext(r.Context(), "api: suggestions: evaluate failed", "err", err)
 		respondJSON(w, http.StatusInternalServerError, errBody("suggestions evaluate failed"))
@@ -115,7 +120,7 @@ func suggestionsToJSON(offers []proactive.Offer, degraded bool) suggestionsRespo
 	for _, o := range offers {
 		out.Suggestions = append(out.Suggestions, suggestionJSON{
 			ID: o.ID, TriggerKind: o.TriggerKind, MemoryID: o.MemoryID,
-			EpisodeID: o.EpisodeID, Title: o.Title, Score: o.Score,
+			EpisodeID: o.EpisodeID, Title: o.Title, Content: o.Content, Score: o.Score,
 		})
 	}
 	return out

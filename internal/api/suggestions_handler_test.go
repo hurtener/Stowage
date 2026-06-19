@@ -289,6 +289,46 @@ func TestProactiveConfig_UserScoped(t *testing.T) {
 	}
 }
 
+func TestSuggestions_MissingSessionIs400(t *testing.T) {
+	t.Parallel()
+	_, ts, st := newTestServer(t)
+	tenant := "tenant-suggest-nosess"
+	_, agentKey := mustCreateAgentKey(t, st, tenant)
+	seedExpiringMemory(t, st, identity.Scope{Tenant: tenant})
+
+	r, _ := doRequest(t, http.MethodGet, ts.URL+"/v1/suggestions", nil, agentKey)
+	defer drainClose(r.Body)
+	if r.StatusCode != http.StatusBadRequest {
+		t.Fatalf("missing session_id want 400, got %d", r.StatusCode)
+	}
+}
+
+func TestProactiveConfig_PartialPatchPreserves(t *testing.T) {
+	t.Parallel()
+	_, ts, st := newTestServer(t)
+	tenant := "tenant-gov-patch"
+	_, adminKey := mustCreateAdminKey(t, st, tenant)
+
+	// PUT only threshold; enabled/budget/classes must survive (assistant default).
+	r, _ := doRequest(t, http.MethodPut, ts.URL+"/v1/admin/proactive", jsonBody(t, map[string]any{"threshold": 0.8}), adminKey)
+	defer drainClose(r.Body)
+	if r.StatusCode != http.StatusOK {
+		t.Fatalf("partial PUT want 200, got %d", r.StatusCode)
+	}
+	var cfg struct {
+		Enabled   bool            `json:"enabled"`
+		Threshold float64         `json:"threshold"`
+		Budget    int             `json:"budget"`
+		Classes   map[string]bool `json:"classes"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&cfg); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if !cfg.Enabled || cfg.Budget != 2 || cfg.Threshold != 0.8 || !cfg.Classes["expiring"] {
+		t.Fatalf("partial patch wiped fields: %+v", cfg)
+	}
+}
+
 func TestProactiveConfig_RequiresAdmin(t *testing.T) {
 	t.Parallel()
 	_, ts, st := newTestServer(t)

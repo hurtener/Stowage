@@ -68,17 +68,27 @@ func (m *Manager) expireSuggestionsTenant(ctx context.Context, tenant string) {
 		ids[i] = s.ID
 	}
 	now := time.Now().UnixMilli()
-	if err := m.st.Suggestions().ExpirePending(ctx, scope, ids, now); err != nil {
+	expiredIDs, err := m.st.Suggestions().ExpirePending(ctx, scope, ids, now)
+	if err != nil {
 		m.log.WarnContext(ctx, "lifecycle/suggest-expire: expire failed", "tenant", tenant, "err", err)
 		return
 	}
-	// Audit trail (§8): one suggestion.expired event per GC'd offer.
+	if len(expiredIDs) == 0 {
+		return
+	}
+	// Audit trail (§8): one suggestion.expired event per offer the sweep ACTUALLY
+	// transitioned — never for one an agent accepted/dismissed in the race window
+	// between listing and expiring (ExpirePending reports the real set).
+	sessionByID := make(map[string]string, len(stale))
 	for _, s := range stale {
+		sessionByID[s.ID] = s.SessionID
+	}
+	for _, id := range expiredIDs {
 		_ = m.st.Events().Emit(ctx, scope, store.Event{
-			ID: ulid.Make().String(), SessionID: s.SessionID,
-			Type: "suggestion.expired", SubjectID: s.ID,
+			ID: ulid.Make().String(), SessionID: sessionByID[id],
+			Type: "suggestion.expired", SubjectID: id,
 			Reason: "proactive offer expired (unresolved past TTL)", Payload: "{}", CreatedAt: now,
 		})
 	}
-	m.log.InfoContext(ctx, "lifecycle/suggest-expire: expired stale offers", "tenant", tenant, "count", len(ids))
+	m.log.InfoContext(ctx, "lifecycle/suggest-expire: expired stale offers", "tenant", tenant, "count", len(expiredIDs))
 }

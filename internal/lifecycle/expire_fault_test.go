@@ -27,9 +27,9 @@ func (f faultSuggestions) ListPendingBefore(ctx context.Context, scope identity.
 	return f.SuggestionStore.ListPendingBefore(ctx, scope, before, limit)
 }
 
-func (f faultSuggestions) ExpirePending(ctx context.Context, scope identity.Scope, ids []string, now int64) error {
+func (f faultSuggestions) ExpirePending(ctx context.Context, scope identity.Scope, ids []string, now int64) ([]string, error) {
 	if f.failExpire {
-		return errors.New("injected expire failure")
+		return nil, errors.New("injected expire failure")
 	}
 	return f.SuggestionStore.ExpirePending(ctx, scope, ids, now)
 }

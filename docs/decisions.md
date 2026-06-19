@@ -2299,5 +2299,19 @@ re-offering. Suggestions are derived/disposable — no provenance, no reconcilia
 §8.1 inventory; Phase 27 only wires them through the Store seam (both drivers + shared
 conformance) and adds one index-only migration (`0010`). Tool count 18 → 20.
 
+**Review-hardened behaviours (two adversarial passes — UX/value + depth/breadth).**
+(a) Offers carry the memory's **content inline** — the offer is the volunteered
+context, not a pointer. (b) `session_id` is **required** for list (`ErrSessionRequired`
+→ 400): the per-session dedupe is the anti-spam defence. (c) Admin governance writes
+**PATCH** (`proactive.WriteGovernance` core) — a one-field set never zero-wipes the
+rest. (d) Feedback is **windowed to 30 days** so a suppressed class recovers (not
+silenced forever). (e) `Get`/`Resolve` enforce **full scope** (P3 — no cross-user
+resolve within a tenant). (f) `suggestion.expired` fires only for offers the sweep
+**actually** transitioned (`ExpirePending` returns the real set via `RETURNING`).
+
 **Deferred (recorded, not dropped).** Temporal pattern-mining (time-series frequency
-analysis + an automation surface) is out of scope for v1 — a stretch follow-up.
+analysis + an automation surface) is out of scope for v1 — a stretch follow-up. Also
+deferred: per-scope (vs per-session) "already-offered" tracking; enabling the
+gateway-backed `similar_episode` class by default (off everywhere for zero-config);
+a uniform MCP-transport admin role gate (HTTP enforces it; MCP follows the existing
+`memory_grants` tenant-scoped pattern).

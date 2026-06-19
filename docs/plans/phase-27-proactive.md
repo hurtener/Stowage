@@ -275,6 +275,44 @@ expiry sweep present + gateway-free; unit + parity + conformance tests; eval-ci 
    the feature staying on. Tenant discovery is `memories ∪ records` (a suggestion always
    references a memory in its tenant).
 
+## Post-landing adversarial-review fixes (UX/value + depth/breadth passes)
+
+The two required adversarial passes drove these changes (all in this PR):
+
+1. **Offers carry content inline** (UX): `Offer.Content` (+ all wire types) holds the
+   offered memory's text — the engine already fetched it to score — so an agent acts on
+   an offer without a second `memory_get`. The offer IS the volunteered context.
+2. **`session_id` is required for list** (anti-spam): `Evaluate` returns
+   `ErrSessionRequired` (surfaces → 400) when absent — the per-session dedupe is keyed
+   on it, so an empty session would silently re-offer every call.
+3. **Governance writes PATCH, not replace** (UX footgun): `proactive.WriteGovernance`
+   is the D-067 core for the admin set — it overlays only the provided (pointer) fields
+   on the current effective config, so `set{threshold:0.6}` no longer zero-wipes
+   enabled/budget/classes. HTTP PUT + MCP set both call it.
+4. **Feedback has a 30-day recency window** (recovery): `CountByTrigger` gains a `since`
+   bound; the engine passes `now-30d` so old dismissals age out and a suppressed class
+   recovers (RFC §6d "annoying triggers decay" is recoverable, not permanent).
+5. **Full-scope `Get`/`Resolve`** (P3): both routed through `buildScopeWhere`
+   (tenant+project+user+session), not tenant+id — a cross-user resolve within a tenant
+   is now impossible. Covered by `testSuggestionScopeUserIsolation` on both drivers.
+6. **`suggestion.expired` only for genuinely-expired offers**: `ExpirePending` returns
+   the ids it actually transitioned (via `RETURNING`), so an offer accepted in the
+   race window between list and expire never gets a false `expired` event.
+7. **Typed-nil retriever guard**: `isNilSearcher` (reflect) so enabling `similar_episode`
+   on a stack with no retriever degrades cleanly instead of panicking.
+8. **Honest surface docs**: tool/SDK descriptions state that list is a write, accept is
+   acknowledgement (reaffirming an expiring memory is a separate `memory_assert`), and
+   score is a relative weight (not a 0-1 probability).
+
+### Deferred (recorded, not blocking)
+- **`similar_episode` (the query-relevant trigger) is off by default in every profile**
+  to preserve the zero-gateway-call invariant — operators opt in per scope. Documented.
+- **Per-session (not per-scope) dedupe**: the same recent episode can re-offer in a new
+  session for up to 7 days; per-scope "already offered" tracking is a follow-up.
+- **MCP admin verbs (`memory_proactive_config`, like `memory_grants`) are tenant-scoped
+  but not role-gated** on the MCP transport — a pre-existing pattern, not a Phase-27
+  regression; HTTP enforces admin role. A uniform MCP role gate is a separate decision.
+
 ## Decisions filed
 
 - **D-087** — Phase 27 implements D-028. Proactive offers are produced by a trigger

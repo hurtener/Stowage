@@ -11,13 +11,22 @@
       "type": "string"
     },
     "enabled": {
-      "type": "boolean"
+      "type": [
+        "null",
+        "boolean"
+      ]
     },
     "threshold": {
-      "type": "number"
+      "type": [
+        "null",
+        "number"
+      ]
     },
     "budget": {
-      "type": "integer"
+      "type": [
+        "null",
+        "integer"
+      ]
     },
     "classes": {
       "type": "object",

@@ -190,12 +190,13 @@ type offerShape struct {
 	TriggerKind string
 	MemoryID    string
 	Title       string
+	Content     string
 }
 
 func shapeOf(r stowage.SuggestionsResponse) []offerShape {
 	out := make([]offerShape, 0, len(r.Suggestions))
 	for _, s := range r.Suggestions {
-		out = append(out, offerShape{s.TriggerKind, s.MemoryID, s.Title})
+		out = append(out, offerShape{s.TriggerKind, s.MemoryID, s.Title, s.Content})
 	}
 	return out
 }
@@ -209,7 +210,7 @@ func TestSuggestionsParity_AllSurfaces(t *testing.T) {
 	htp, _ := suggestHTTP(t, cfg, "s-http")
 	mcp := suggestMCP(t, cfg, "s-mcp")
 
-	want := []offerShape{{TriggerKind: "expiring", MemoryID: "01SUGEXPAAAAAAAAAAAAAAAAAA", Title: "rotate the staging cert"}}
+	want := []offerShape{{TriggerKind: "expiring", MemoryID: "01SUGEXPAAAAAAAAAAAAAAAAAA", Title: "rotate the staging cert", Content: "rotate the staging cert"}}
 	if got := shapeOf(emb); canonicalJSON(t, got) != canonicalJSON(t, want) {
 		t.Fatalf("embedded offer shape = %s, want %s", canonicalJSON(t, got), canonicalJSON(t, want))
 	}
