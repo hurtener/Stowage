@@ -284,3 +284,42 @@ func TestDecaySweepMultipleTenants(t *testing.T) {
 		t.Error("tenant-beta: expected valid_until set")
 	}
 }
+
+// TestDecaySweepActivityAxisDrivesDecay proves A3: the decay sweep now decays on the
+// ACTIVITY axis (records since last_accessed), not only wall-clock. Two memories with
+// negligible time-decay differ only in how many records were created after they were
+// last accessed: the one with many intervening records falls below floor; the one
+// accessed after those records stays healthy. (Before the fix, activityTurns was
+// hardcoded 0 and BOTH stayed healthy.)
+func TestDecaySweepActivityAxisDrivesDecay(t *testing.T) {
+	st, cleanup := newTestStore(t)
+	defer cleanup()
+	scope := identity.Scope{Tenant: "t-activity"}
+	now := time.Now().UnixMilli()
+	hour := int64(time.Hour / time.Millisecond)
+
+	// 5 records created ~1h ago.
+	recTime := now - hour
+	recs := make([]store.Record, 0, 5)
+	for i := 0; i < 5; i++ {
+		recs = append(recs, store.Record{ID: ulid.Make().String(), Role: "user", Content: "r", CreatedAt: recTime, OccurredAt: recTime})
+	}
+	if err := st.Records().Append(context.Background(), scope, recs); err != nil {
+		t.Fatalf("append records: %v", err)
+	}
+
+	// Stale: last accessed BEFORE the records (~2h ago) ⇒ 5 activity turns ⇒ decays.
+	stale := insertMemory(t, st, scope, store.Memory{Stability: 1.0, LastAccessedAt: now - 2*hour})
+	// Fresh: last accessed AFTER the records (~30m ago) ⇒ 0 activity turns ⇒ healthy.
+	fresh := insertMemory(t, st, scope, store.Memory{Stability: 1.0, LastAccessedAt: now - hour/2})
+
+	mgr := lifecycle.New(st, testLogger(), lifecycle.Profile{DecayInterval: 10 * time.Minute, DecayBatchSize: 100, DecayGraceSweeps: 2}, make(chan pipeline.Item, 8))
+	mgr.SweepDecayOnce(context.Background())
+
+	if m := getMemory(t, st, scope, stale); m.ValidUntil == 0 {
+		t.Errorf("stale memory (5 activity turns) should be below floor → valid_until set; got 0")
+	}
+	if m := getMemory(t, st, scope, fresh); m.ValidUntil != 0 {
+		t.Errorf("fresh memory (0 activity turns) should stay healthy; got valid_until=%d", m.ValidUntil)
+	}
+}

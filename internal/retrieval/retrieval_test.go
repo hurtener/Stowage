@@ -977,6 +977,44 @@ func TestInjectionWriterNonBlocking(t *testing.T) {
 	r.Close()
 }
 
+// TestInjectionWriterIncrementsInjectCount proves the injection writer bumps
+// inject_count once per DISTINCT injected memory (the D-008 zombie-memory-killer
+// signal that was previously never incremented in production).
+func TestInjectionWriterIncrementsInjectCount(t *testing.T) {
+	t.Parallel()
+	st := openStore(t)
+	log := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	ctx := context.Background()
+	scope := identity.Scope{Tenant: "tenant-inject"}
+
+	memID := newID()
+	if err := st.Memories().Insert(ctx, scope, store.Memory{
+		ID: memID, Kind: "fact", Content: "x", Status: "active",
+		Importance: 3, Confidence: 0.8, TrustSource: "llm_extracted", Stability: 1.0,
+		CreatedAt: 1, UpdatedAt: 1,
+	}); err != nil {
+		t.Fatalf("insert memory: %v", err)
+	}
+
+	w := retrieval.NewInjectionWriterForTest(st.Injections(), log, 16)
+	w.SetMemoryCounter(st.Memories())
+	// Two injection rows for the SAME memory in one response → inject_count must
+	// increment exactly once (per distinct memory), not twice.
+	w.Enqueue(scope, []store.Injection{
+		{ID: newID(), ResponseID: "r1", MemoryID: memID, CreatedAt: 1},
+		{ID: newID(), ResponseID: "r1", MemoryID: memID, CreatedAt: 1},
+	}, nil)
+	w.Close() // drains
+
+	got, err := st.Memories().Get(ctx, scope, memID)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if got.InjectCount != 1 {
+		t.Fatalf("inject_count = %d, want 1 (once per distinct memory)", got.InjectCount)
+	}
+}
+
 // TestInjectionWriterDropsCountered verifies that the Drops() counter increments
 // when the channel is full (fill to capacity, then one more Enqueue should drop).
 func TestInjectionWriterDropsCountered(t *testing.T) {

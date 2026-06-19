@@ -157,6 +157,7 @@ func Run(t *testing.T, factory Factory) {
 	// Phase 10 — RecordStore.CountRecordsSince
 	t.Run("RecordCountRecordsSince", func(t *testing.T) { testRecordCountRecordsSince(t, factory) })
 	t.Run("RecordCountRecordsSinceScopeIsolation", func(t *testing.T) { testRecordCountRecordsSinceScopeIsolation(t, factory) })
+	t.Run("RecordCreatedAtsSince", func(t *testing.T) { testRecordCreatedAtsSince(t, factory) })
 	// Phase 11 — InjectionStore + MemoryStore.ApplyFeedback + RecordStore.GetMany
 	t.Run("InjectionAppendGet", func(t *testing.T) { testInjectionAppendGet(t, factory) })
 	t.Run("InjectionAppendIdempotent", func(t *testing.T) { testInjectionAppendIdempotent(t, factory) })
@@ -3572,6 +3573,60 @@ func testRecordCountRecordsSince(t *testing.T, factory Factory) {
 	}
 	if n != 0 {
 		t.Errorf("after-all: got %d want 0", n)
+	}
+}
+
+// testRecordCreatedAtsSince verifies the per-item ActivityTurns timestamp fetch
+// returns the scope's record created_ats strictly newer than sinceMs, ASC, capped.
+func testRecordCreatedAtsSince(t *testing.T, factory Factory) {
+	t.Helper()
+	s, cleanup := factory()
+	defer cleanup()
+	ctx := context.Background()
+	scope := tenantScope("createdats-" + ulid.Make().String())
+
+	// Empty → empty slice.
+	got, err := s.Records().RecordCreatedAtsSince(ctx, scope, 0, 100)
+	if err != nil {
+		t.Fatalf("empty: %v", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("empty store: got %d want 0", len(got))
+	}
+
+	base := int64(2_000_000_000_000)
+	for i, ts := range []int64{base + 2000, base, base + 1000} { // inserted out of order
+		rec := store.Record{ID: newID(), Role: "user", Content: fmt.Sprintf("m%d", i), CreatedAt: ts, OccurredAt: ts}
+		if err := s.Records().Append(ctx, scope, []store.Record{rec}); err != nil {
+			t.Fatalf("Append[%d]: %v", i, err)
+		}
+	}
+
+	// Since base-1 → all three, ASC.
+	got, err = s.Records().RecordCreatedAtsSince(ctx, scope, base-1, 100)
+	if err != nil {
+		t.Fatalf("all: %v", err)
+	}
+	if len(got) != 3 || got[0] != base || got[1] != base+1000 || got[2] != base+2000 {
+		t.Fatalf("expected sorted [base, base+1000, base+2000], got %v", got)
+	}
+
+	// Strictly-after semantics: since base → 2.
+	got, _ = s.Records().RecordCreatedAtsSince(ctx, scope, base, 100)
+	if len(got) != 2 || got[0] != base+1000 {
+		t.Fatalf("since base: got %v", got)
+	}
+
+	// Cap is honored.
+	got, _ = s.Records().RecordCreatedAtsSince(ctx, scope, base-1, 2)
+	if len(got) != 2 {
+		t.Fatalf("cap=2: got %d", len(got))
+	}
+
+	// Scope isolation: a different scope sees none.
+	other := tenantScope("createdats-other-" + ulid.Make().String())
+	if g, _ := s.Records().RecordCreatedAtsSince(ctx, other, 0, 100); len(g) != 0 {
+		t.Errorf("cross-scope leak: %d", len(g))
 	}
 }
 

@@ -769,3 +769,58 @@ func TestFinalScoreProductCheck(t *testing.T) {
 		t.Errorf("Breakdown.FinalScore=%.10f != returned score=%.10f", bd.FinalScore, score)
 	}
 }
+
+func TestActivityTurnsAfter(t *testing.T) {
+	asc := []int64{10, 20, 20, 30, 40} // sorted, with a duplicate
+	cases := []struct {
+		last int64
+		want int64
+	}{
+		{0, 5},   // all are after
+		{10, 4},  // strictly-after 10
+		{20, 2},  // both 20s excluded (strictly greater)
+		{40, 0},  // none after the max
+		{100, 0}, // beyond all
+	}
+	for _, c := range cases {
+		if got := scoring.ActivityTurnsAfter(asc, c.last); got != c.want {
+			t.Errorf("ActivityTurnsAfter(last=%d) = %d, want %d", c.last, got, c.want)
+		}
+	}
+	if got := scoring.ActivityTurnsAfter(nil, 5); got != 0 {
+		t.Errorf("empty: got %d want 0", got)
+	}
+}
+
+// TestZombieMemoryRanksBelowUnused proves the precision factor / exploration bonus
+// (now fed by a live inject_count) actually demote a zombie memory — injected many
+// times, never used — below an untested one, ceteris paribus.
+func TestZombieMemoryRanksBelowUnused(t *testing.T) {
+	now := int64(1_700_000_000_000)
+	mk := func(inject, use int64) scoring.Inputs {
+		return scoring.Inputs{
+			Memory: scoring.MemoryFacts{
+				InjectCount: inject, UseCount: use,
+				TrustSource: "llm_extracted", Stability: 1.0, Importance: 3,
+				LastAccessedAt: now, // == Now ⇒ no time decay, isolate precision/exploration
+			},
+			FusedScore: 1.0, Now: now,
+		}
+	}
+	unusedScore, unusedBD := scoring.Score(mk(0, 0))     // inject=0 ⇒ benefit of the doubt
+	zombieScore, zombieBD := scoring.Score(mk(10, 0))    // injected 10×, never used
+	healthyScore, healthyBD := scoring.Score(mk(10, 10)) // injected 10×, used 10×
+
+	if zombieBD.PrecisionFactor != 0.5 {
+		t.Errorf("zombie precision factor = %v, want 0.5 (floor)", zombieBD.PrecisionFactor)
+	}
+	if zombieBD.PrecisionFactor >= unusedBD.PrecisionFactor {
+		t.Errorf("zombie precision (%v) should be below unused (%v)", zombieBD.PrecisionFactor, unusedBD.PrecisionFactor)
+	}
+	if zombieScore >= unusedScore {
+		t.Errorf("zombie final (%v) should rank below unused (%v) — the zombie-killer must bite", zombieScore, unusedScore)
+	}
+	if healthyScore <= zombieScore || healthyBD.PrecisionFactor <= zombieBD.PrecisionFactor {
+		t.Errorf("a used memory (%v) must outrank a zombie (%v)", healthyScore, zombieScore)
+	}
+}

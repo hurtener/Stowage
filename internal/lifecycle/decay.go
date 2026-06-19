@@ -54,10 +54,14 @@ func (m *Manager) decayTenant(ctx context.Context, tenant string, nowMs int64) {
 			m.log.WarnContext(ctx, "lifecycle/decay: list failed", "tenant", tenant, "err", err)
 			return
 		}
-		// Approximate activity turns as 0 — conservative, uses only wall-clock delta.
-		const activityTurns int64 = 0
+		// Real per-memory activity turns (D-008): fetch the scope's record timestamps
+		// newer than the batch's oldest last_accessed_at ONCE, then count per memory in
+		// memory. Replaces the prior hardcoded 0, which silently never decayed dormant
+		// memories on the activity axis (the brief-02 blind spot the blend was meant to fix).
+		recTimes := m.activityTimes(ctx, scope, batch)
 
 		for _, mem := range batch {
+			activityTurns := scoring.ActivityTurnsAfter(recTimes, mem.LastAccessedAt)
 			m.processDecayMemory(ctx, scope, mem, nowMs, activityTurns)
 		}
 		processed += len(batch)
@@ -66,6 +70,38 @@ func (m *Manager) decayTenant(ctx context.Context, tenant string, nowMs int64) {
 		}
 		cursor = next
 	}
+}
+
+// decayActivityScanCap bounds the per-batch record-timestamp fetch for the decay
+// sweep's activity-turn computation. Same value as the retrieval read path so both
+// compute identical activity turns for the same memory (beyond the cap the decay term
+// is already pinned to the floor).
+const decayActivityScanCap = 20000
+
+// activityTimes fetches the scope's record created_at timestamps (ASC) newer than the
+// oldest last_accessed_at in the batch, for per-memory activity-turn counting. A fetch
+// error degrades to nil (activity turns 0 → wall-clock-only decay, the prior behaviour).
+func (m *Manager) activityTimes(ctx context.Context, scope identity.Scope, batch []store.Memory) []int64 {
+	if len(batch) == 0 {
+		return nil
+	}
+	// Oldest POSITIVE last_accessed_at: never-accessed memories (0) don't decay on the
+	// activity axis (scoring's recently-created assumption), so they don't widen the scan.
+	var minLast int64
+	for _, mem := range batch {
+		if mem.LastAccessedAt > 0 && (minLast == 0 || mem.LastAccessedAt < minLast) {
+			minLast = mem.LastAccessedAt
+		}
+	}
+	if minLast <= 0 {
+		return nil
+	}
+	times, err := m.st.Records().RecordCreatedAtsSince(ctx, scope, minLast, decayActivityScanCap)
+	if err != nil {
+		m.log.WarnContext(ctx, "lifecycle/decay: record timestamps fetch failed — wall-clock-only decay", "err", err)
+		return nil
+	}
+	return times
 }
 
 func (m *Manager) processDecayMemory(ctx context.Context, scope identity.Scope, mem store.Memory, nowMs int64, activityTurns int64) {

@@ -19,7 +19,23 @@
 // Both are documented here to prevent accidental merging of the two concerns.
 package scoring
 
-import "math"
+import (
+	"math"
+	"sort"
+)
+
+// ActivityTurnsAfter counts how many of the ASC-sorted record timestamps are strictly
+// greater than lastAccessed — the activity turns since a memory was last used. Shared
+// by the retrieval read path and the decay sweep so both compute the activity-turn
+// decay input identically (D-008); replaces the earlier divergent approximations
+// (a single shared count in retrieval, a hardcoded 0 in the sweep).
+func ActivityTurnsAfter(ascTimes []int64, lastAccessed int64) int64 {
+	if len(ascTimes) == 0 {
+		return 0
+	}
+	i := sort.Search(len(ascTimes), func(i int) bool { return ascTimes[i] > lastAccessed })
+	return int64(len(ascTimes) - i)
+}
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 // All constants are named with doc comments (D-034 knob guardrail). These are
@@ -192,10 +208,11 @@ type Inputs struct {
 	// Now is the current unix timestamp in milliseconds, supplied by the caller.
 	Now int64
 
-	// ActivityTurns is the count of records in the scope created after
-	// memory.LastAccessedAt. It is a batched approximation: the same value is
-	// reused for all items in one retrieve call to avoid per-item queries.
-	// Approximation is documented in internal/retrieval/retrieval.go.
+	// ActivityTurns is the PER-ITEM count of records in the scope created after this
+	// memory's LastAccessedAt (the activity axis of the decay blend, D-008). The
+	// retrieval read path and the decay sweep both compute it via ActivityTurnsAfter
+	// over one bounded record-timestamp fetch. Ignored when LastAccessedAt==0 (a
+	// never-accessed memory is treated as recently-created — no decay).
 	ActivityTurns int64
 
 	// QueryWindow, when non-nil, enables temporal-proximity boosting for
@@ -296,6 +313,11 @@ func Score(in Inputs) (float64, Breakdown) {
 		if elapsed > 0 {
 			daysNorm = elapsed / msPerDay
 		}
+	} else {
+		// Never accessed ⇒ recently-created assumption (D-008): no decay on EITHER
+		// axis. Both components are zeroed so per-item activity counting can't
+		// over-decay a fresh memory that has many intervening records.
+		turnsNorm = 0
 	}
 	delta := decayBlendAlpha*turnsNorm + (1-decayBlendAlpha)*daysNorm
 
@@ -415,6 +437,9 @@ func DecayFactor(facts MemoryFacts, nowMs int64, activityTurns int64) float64 {
 		if elapsed > 0 {
 			daysNorm = elapsed / msPerDay
 		}
+	} else {
+		// Never accessed ⇒ recently-created assumption (D-008): no decay on either axis.
+		turnsNorm = 0
 	}
 	delta := decayBlendAlpha*turnsNorm + (1-decayBlendAlpha)*daysNorm
 	df := 1.0
