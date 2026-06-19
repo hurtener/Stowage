@@ -28,7 +28,8 @@ eval-ci:
 
 # slo runs the SLO measurement rig against a live postgres instance.
 # Requires STOWAGE_TEST_PG_DSN to be set; skips gracefully when absent.
-# Results are advisory — record them in eval/SLO.md (Phase 12, D-031).
+# The gate BITES (D-095): a p99 over -slo.maxp99 (default = the 150 ms binding
+# target, D-031) fails the build. Record the reference-hardware numbers in eval/SLO.md.
 slo:
 	CGO_ENABLED=1 go test -tags=slo -v -run TestSLO ./internal/bench/slo/ \
 	  $(if $(STOWAGE_TEST_PG_DSN),-slo.dsn "$(STOWAGE_TEST_PG_DSN)",)

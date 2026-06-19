@@ -285,6 +285,11 @@ results committed; one-command reproduction; launch report includes a
 comparison table against published competitor numbers (mempalace's
 benchmark-led positioning is the model — brief 06). RFC §12.
 
+**Update (D-095, 2026-06-19):** the SLO portion of this gate is refined — the latency
+SLO is a **reference-hardware** release gate (`make slo`, fails on a p99 regression),
+deliberately not part of the noisy per-PR CI matrix; the eval benchmark suite remains the
+per-PR CI gate. See D-095 for the D-031↔D-035 reconciliation.
+
 ## D-036 — Gateway-free degraded retrieval
 
 2026-06-11. From brief 06's zero-API-call mode: the lexical,
@@ -2552,3 +2557,27 @@ verified ONCE against the full cited memory set (one claim, one entailment check
 trace capture fans out, so each contributing response's trace is complete. No new schema,
 no contract-shape change (same event type/payload, keyed per response). Scope-enforced
 (P3) and degraded-safe (gateway failure ⇒ unclear+degraded, the verdict still captured).
+
+## D-095 — The retrieval SLO gate bites; it is a reference-hardware release gate, not a per-PR CI job
+
+2026-06-19. Bar-remediation (audit finding #4). The SLO rig (`internal/bench/slo`,
+D-031) measured p99 but, on a miss, only logged an ADVISORY (`t.Logf`) — it never failed.
+And `eval/SLO.md` claimed "Phase 13 gates CI on this benchmark — a regression blocks merge",
+which was false on three counts: the rig is behind the `slo` build tag (excluded from
+`go test ./...`), skips without a postgres DSN, and never failed on a miss. A gate that is
+documented as enforcing but cannot fail is a v1- simplification.
+
+**The gate now bites.** `TestSLO` calls `t.Fatalf` when the measured p99 exceeds the budget
+(`-slo.maxp99`, default = the 150 ms binding target). A read-path change that regresses the
+SLO now fails the build when `make slo` is run.
+
+**It is a reference-hardware release gate, not a per-PR CI job — deliberately.** D-031 binds
+the 150 ms target to *reference hardware*; asserting it on noisy shared CI runners would
+flake (and seeding 10k memories + 5 000 concurrent retrieves per PR is disproportionate).
+So the SLO stays the `make slo` reference-hardware gate (operator/release-env run, numbers
+recorded in `eval/SLO.md`), while the eval benchmark suite (`make eval-ci`) is the gate that
+runs on every CI build (D-035). This reconciles D-035's "runs in CI" with D-031's "reference
+hardware": the eval benchmarks gate per-PR; the latency SLO gates on reference hardware. The
+`-slo.maxp99` flag lets a slower-than-reference environment raise the budget deliberately
+without recompiling; the binding number is always taken at 150 ms on reference hardware.
+Recording the actual numbers remains operator-run (the bar-remediation eval/SLO track).

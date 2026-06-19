@@ -3,6 +3,16 @@
 **Binding target (D-031):** `p99 ≤ 150 ms` at 1 000 concurrent sessions on
 the postgres driver on reference hardware (cache hit path ≤ 20 ms).
 
+**The gate bites (D-095).** The rig **fails the build** (`t.Fatalf`) when the measured
+p99 exceeds the budget (`-slo.maxp99`, default = the 150 ms binding target). It is **not**
+part of the default `go test ./...` / CI matrix: it is behind the `slo` build tag and
+skips without a postgres DSN, so it runs as a dedicated **reference-hardware release gate**
+via `make slo` (the binding 150 ms is measured on reference hardware, not on noisy shared
+CI runners — D-031). A slower-than-reference environment may raise the budget deliberately
+with `-slo.maxp99`; the binding number recorded below is always taken at the 150 ms target
+on reference hardware. The eval benchmark suite (`make eval-ci`) is the gate that runs on
+every CI build (D-035); the SLO is its reference-hardware counterpart.
+
 ---
 
 ## SLO Rig Description
@@ -80,5 +90,9 @@ cache    : __/__ hits (__%)
 - The result cache is active (`STOWAGE_CACHE_OFF` is not set). Cache hits should
   be substantial given the repeated query set across sessions (10 distinct query
   templates mod session+query index).
-- Phase 13 gates CI on this benchmark — a regression against the numbers here
-  blocks merge (D-035).
+- The rig **fails on a p99 regression** (`t.Fatalf` when p99 > `-slo.maxp99`), so a
+  change that regresses the SLO blocks the release gate when `make slo` is run (D-095).
+  It is a **reference-hardware** gate (D-031), deliberately kept out of the noisy
+  per-PR CI matrix; the eval suite (`make eval-ci`) is the benchmark gate that runs on
+  every CI build (D-035). Re-run `make slo` on reference hardware and update the
+  **Recorded Numbers** above whenever the read path changes materially.

@@ -53,11 +53,13 @@ var (
 	flSessions = flag.Int("slo.sessions", 1_000, "number of concurrent sessions")
 	flQueries  = flag.Int("slo.queries", 5, "retrieve calls per session")
 	flLimit    = flag.Int("slo.limit", 10, "items per retrieve call")
+	flMaxP99   = flag.Int("slo.maxp99", sloTargetP99MS, "p99 budget in ms; the rig FAILS the build when exceeded (the gate). Defaults to the binding D-031 target; a slower-than-reference environment may raise it deliberately.")
 )
 
-// sloTargetP99MS is the binding p99 target in milliseconds (D-031).
-// The test does NOT fail on a miss; it records and logs so the gate reviewer
-// captures actual numbers in eval/SLO.md.
+// sloTargetP99MS is the binding p99 target in milliseconds (D-031, reference hardware).
+// The rig FAILS (t.Fatalf) when the measured p99 exceeds the budget (-slo.maxp99,
+// default = this target) — the SLO gate bites on a regression (D-095). The binding
+// reference-hardware numbers are operator-recorded in eval/SLO.md.
 const sloTargetP99MS = 150
 
 // latencyBag collects round-trip durations.
@@ -208,14 +210,30 @@ func TestSLO(t *testing.T) {
 	t.Logf("requests : %d (%d sessions × %d queries)", total, *flSessions, *flQueries)
 	t.Logf("p50      : %d ms", p50)
 	t.Logf("p95      : %d ms", p95)
-	t.Logf("p99      : %d ms  (target ≤ %d ms)", p99, sloTargetP99MS)
+	t.Logf("p99      : %d ms  (budget ≤ %d ms; binding target %d ms)", p99, *flMaxP99, sloTargetP99MS)
 	t.Logf("cache    : %d/%d hits (%.1f%%)", hits, total, hitPct)
 
-	if p99 > sloTargetP99MS {
-		t.Logf("ADVISORY: p99 %d ms exceeds target %d ms — record in eval/SLO.md", p99, sloTargetP99MS)
-	} else {
-		t.Logf("p99 target MET ✓  %d ms ≤ %d ms", p99, sloTargetP99MS)
+	// Surface a deliberately-raised budget so the deviation is visible in the run log
+	// that gets pasted into eval/SLO.md (the binding number is always taken at 150 ms).
+	if *flMaxP99 > sloTargetP99MS {
+		t.Logf("NOTE: budget raised to %d ms above the binding D-031 target %d ms — record why in eval/SLO.md", *flMaxP99, sloTargetP99MS)
 	}
+
+	// A broken rig that measured (almost) nothing must NOT certify the SLO green: fail
+	// when too few round-trips were collected (every in-process request should succeed;
+	// tolerate a small transient-drop margin). Otherwise p99=0 would pass silently.
+	expected := *flSessions * *flQueries
+	minSamples := expected * 9 / 10
+	if lb.Len() < minSamples {
+		t.Fatalf("SLO rig collected only %d/%d samples — the rig is broken and cannot certify the SLO", lb.Len(), expected)
+	}
+
+	// The gate bites (D-095): a p99 over budget fails the build. The default budget is
+	// the binding D-031 target; record the actual numbers in eval/SLO.md after the run.
+	if int(p99) > *flMaxP99 {
+		t.Fatalf("SLO REGRESSION: p99 %d ms exceeds budget %d ms (binding target %d ms, D-031) — the gate fails the build", p99, *flMaxP99, sloTargetP99MS)
+	}
+	t.Logf("p99 budget MET ✓  %d ms ≤ %d ms", p99, *flMaxP99)
 }
 
 // rigSeedMemories inserts n active memories into the store.
