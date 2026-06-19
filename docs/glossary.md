@@ -159,10 +159,24 @@ New terms land here in the same PR that introduces them (CLAUDE.md §14).
   lookup (D-031).
 - **Preference fragments** — `preference`-kind memories from the default
   personalization topic pack ("how this user wants to be answered").
-- **Trigger** — a proactive-engine rule (session start, episode similarity,
-  expiring validity) whose confidence is tuned by accept/dismiss feedback.
-- **Suggestion** — a threshold-passing proactive offer, tracked with its own
-  utility counters (§6d).
+- **Trigger (trigger class)** — a proactive-engine rule that proposes context
+  for a session: `recent_episode` (the scope's most recent narrated episode,
+  ended within the window), `similar_episode` (a past episode whose narrative
+  resembles the query — gateway-backed, degraded-safe), or `expiring` (an active
+  memory approaching its `valid_until`). Per-`(scope, class)` accept/dismiss
+  tallies tune a confidence multiplier `[0.2, 1]` over the class's scores (§6d,
+  D-087).
+- **Suggestion (proactive offer)** — a context offer the trigger engine surfaces
+  for a session, scored with the same `scoring.Score` machinery as retrieval and
+  gated by the scope's governance threshold + budget. Persisted in the
+  `suggestions` table with `accept_count`/`dismiss_count` (the feedback signal —
+  NOT the six memory utility counters); `pending → accepted | dismissed | expired`.
+  Pulled via `GET /v1/suggestions` / `memory_suggestions` (§6d, D-087).
+- **Proactive governance** — a scope's effective proactive config (`enabled`,
+  `threshold`, `budget`, `classes`): the profile default overlaid by the scope's
+  stored `proactive` setting in `scope_settings`. Admin-tier read/write
+  (`/v1/admin/proactive`, `memory_proactive_config`); opt-out is `enabled:false`
+  (§6d, D-087).
 - **Review queue** — `pending_review` candidates (e.g. uncited agent-generated
   claims) awaiting admin approve/reject before becoming memories.
 - **Profile** — a named preset (`assistant` | `coding-agent` | `fleet`)

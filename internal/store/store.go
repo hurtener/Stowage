@@ -53,6 +53,13 @@ type Store interface {
 	// Grants returns the team-sharing sub-store (Phase 15, RFC §5.3, D-016).
 	Grants() GrantStore
 
+	// Suggestions returns the proactive-offer sub-store (Phase 27, RFC §6d, D-087).
+	Suggestions() SuggestionStore
+
+	// ScopeSettings returns the per-scope settings KV sub-store (governance;
+	// Phase 27, RFC §6d, D-087).
+	ScopeSettings() ScopeSettingsStore
+
 	// Vectors returns the float32-LE BLOB vector sub-store (Phase 09, D-046).
 	// Drivers implement brute-force scope-filtered scan; cosine is computed by
 	// the caller (internal/vindex). No pgvector dependency; CI stays postgres:17.
@@ -66,6 +73,59 @@ type Store interface {
 	// tenants and then operate per-scope (D-057). NOT a data read —
 	// only returns tenant ID strings, not scoped data.
 	Tenants(ctx context.Context) ([]string, error)
+}
+
+// SuggestionStore is the proactive-offer sub-store (RFC §6d, Phase 27, D-087). A
+// suggestion is a context offer surfaced for a session; accept/dismiss tunes the
+// trigger class. Backed by the day-one `suggestions` table. Scope-enforced (P3).
+type SuggestionStore interface {
+	// Create inserts pending suggestion rows. Duplicate IDs are ignored (idempotent).
+	Create(ctx context.Context, scope identity.Scope, sugs []Suggestion) error
+
+	// ListBySession returns a session's suggestions, optionally filtered by status
+	// ("" = any), most-recent-first, capped at limit.
+	ListBySession(ctx context.Context, scope identity.Scope, sessionID, status string, limit int) ([]Suggestion, error)
+
+	// Get returns one suggestion by id within scope (ErrNotFound when absent).
+	Get(ctx context.Context, scope identity.Scope, id string) (*Suggestion, error)
+
+	// Resolve applies accept|dismiss to a PENDING suggestion (compare-and-swap on
+	// status='pending'): increments the matching counter, sets status, stamps
+	// updated_at. ErrNotPending when the suggestion is not pending (or absent).
+	Resolve(ctx context.Context, scope identity.Scope, id, action string, now int64) (*Suggestion, error)
+
+	// CountByTrigger returns the accepted/dismissed suggestion counts for a trigger
+	// kind within scope — the per-class feedback-tuning signal. `since` (unix ms; 0 =
+	// all-time) windows the tally so old feedback ages out, giving a suppressed class
+	// a recovery path.
+	CountByTrigger(ctx context.Context, scope identity.Scope, triggerKind string, since int64) (accepted, dismissed int, err error)
+
+	// ListPendingBefore returns pending suggestions created before `before` (for the
+	// expiry sweep), capped at limit. Scope-enforced.
+	ListPendingBefore(ctx context.Context, scope identity.Scope, before int64, limit int) ([]Suggestion, error)
+
+	// ExpirePending sets the given pending suggestions to 'expired' (idempotent) and
+	// returns the ids it ACTUALLY transitioned (those still pending at execution time),
+	// so the caller can emit suggestion.expired only for genuinely-expired offers.
+	ExpirePending(ctx context.Context, scope identity.Scope, ids []string, now int64) ([]string, error)
+}
+
+// ScopeSettingsStore is the per-scope settings KV (RFC §6d governance, Phase 27,
+// D-087). Backed by the day-one `scope_settings` table (UNIQUE(scope,key)). Used for
+// runtime-changeable, admin-set proactive governance. Scope-enforced (P3).
+type ScopeSettingsStore interface {
+	// Get returns the value for key at the EXACT scope (tenant/project/user/session
+	// as given). found=false (not an error) when absent.
+	Get(ctx context.Context, scope identity.Scope, key string) (value string, found bool, err error)
+
+	// Set upserts the value for key at the exact scope.
+	Set(ctx context.Context, scope identity.Scope, key, value string, now int64) error
+
+	// List returns all settings at the exact scope as a key→value map.
+	List(ctx context.Context, scope identity.Scope) (map[string]string, error)
+
+	// Delete removes the key at the exact scope (no error when absent).
+	Delete(ctx context.Context, scope identity.Scope, key string) error
 }
 
 // RecordStore is the verbatim fidelity layer (RFC P1, D-006, D-024).

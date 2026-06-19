@@ -156,6 +156,11 @@ func New(cfg *config.Config, st store.Store, log *slog.Logger, reg *prometheus.R
 	// Phase 26: reasoning-trace audit export (RFC §6c, D-086).
 	mux.HandleFunc("GET /v1/traces/{response_id}", srv.authMiddleware(srv.handleTrace, false))
 
+	// Phase 27: proactive suggestions (RFC §6d, D-087). GET evaluates+offers
+	// (agent-initiated pull); POST resolves an offer (accept|dismiss feedback).
+	mux.HandleFunc("GET /v1/suggestions", srv.authMiddleware(srv.handleSuggestions, false))
+	mux.HandleFunc("POST /v1/suggestions/{id}", srv.authMiddleware(srv.handleResolveSuggestion, false))
+
 	// Phase 11: drill-down, feedback, and citation resolution.
 	mux.HandleFunc("POST /v1/drilldown", srv.authMiddleware(srv.handleDrilldown, false))
 	mux.HandleFunc("POST /v1/feedback", srv.authMiddleware(srv.handleFeedback, false))
@@ -170,6 +175,10 @@ func New(cfg *config.Config, st store.Store, log *slog.Logger, reg *prometheus.R
 	mux.HandleFunc("POST /v1/admin/keys", srv.handleCreateKey)
 	mux.HandleFunc("POST /v1/admin/keys/{id}/revoke", srv.authMiddleware(srv.handleRevokeKey, true))
 	mux.HandleFunc("POST /v1/admin/keys/revoke-tenant", srv.authMiddleware(srv.handleRevokeTenantKeys, true))
+
+	// Phase 27: proactive governance — admin tier (RFC §6d, D-087/D-067).
+	mux.HandleFunc("GET /v1/admin/proactive", srv.authMiddleware(srv.handleGetProactiveConfig, true))
+	mux.HandleFunc("PUT /v1/admin/proactive", srv.authMiddleware(srv.handlePutProactiveConfig, true))
 
 	// DSAR stub — returns 501 (Phase 21 retention work implements the cascade).
 	mux.HandleFunc("DELETE /v1/admin/users/{user}", srv.authMiddleware(srv.handleDSARStub, true))

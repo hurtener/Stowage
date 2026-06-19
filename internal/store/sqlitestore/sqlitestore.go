@@ -465,6 +465,9 @@ func (s *sqliteStore) Vectors() store.VectorStore       { return &vectorStore{s}
 func (s *sqliteStore) Injections() store.InjectionStore { return &injectionStore{s} }
 func (s *sqliteStore) Grants() store.GrantStore         { return &grantStore{s} }
 
+func (s *sqliteStore) Suggestions() store.SuggestionStore      { return &suggestionStore{s} }
+func (s *sqliteStore) ScopeSettings() store.ScopeSettingsStore { return &scopeSettingsStore{s} }
+
 // nullStr converts empty string to nil (for nullable TEXT columns).
 func nullStr(s string) interface{} {
 	if s == "" {

@@ -125,6 +125,49 @@ func EpisodeConfigForProfile(profile string) EpisodeConfig {
 	return ec
 }
 
+// ProactiveConfig holds the per-profile proactive-engine governance defaults
+// (Phase 27, D-087). Profile-internal (like BufferTriggers/EpisodeConfig — NOT a
+// top-level operator knob); the per-scope stored "proactive" setting overrides it
+// at runtime (RFC §6d), and the eval harness re-tunes the defaults (D-035).
+//
+// Proactive offers are PUSHED context, so the bar is deliberately high: "silence
+// over spam". Enabled where episodic memory helps (assistant, fleet) and OFF for
+// coding-agent (a coding agent drives its own context and dislikes interruptions)
+// and unknown profiles — preserving the zero-config no-surprise-gateway-calls
+// invariant (D-034): the gateway-touching similar_episode class is off by default
+// in every profile; the two gateway-free classes carry the default experience.
+type ProactiveConfig struct {
+	Enabled   bool
+	Threshold float64
+	Budget    int
+	Classes   map[string]bool
+}
+
+// ProactiveConfigForProfile returns the proactive governance defaults for the named
+// profile. The default-enabled classes are the two GATEWAY-FREE ones
+// (recent_episode, expiring); similar_episode is opt-in per scope so a zero-config
+// start makes no proactive gateway calls (D-036/D-034). Unknown profiles fall back
+// to "assistant".
+//
+//	| profile      | enabled | threshold | budget | default classes               |
+//	|--------------|---------|-----------|--------|-------------------------------|
+//	| assistant    |   ON    |    0.45   |   2    | recent_episode, expiring      |
+//	| fleet        |   ON    |    0.55   |   1    | recent_episode, expiring      |
+//	| coding-agent |   off   |    0.60   |   1    | (none)                        |
+func ProactiveConfigForProfile(profile string) ProactiveConfig {
+	gatewayFree := func() map[string]bool {
+		return map[string]bool{"recent_episode": true, "expiring": true}
+	}
+	switch profile {
+	case "fleet":
+		return ProactiveConfig{Enabled: true, Threshold: 0.55, Budget: 1, Classes: gatewayFree()}
+	case "coding-agent":
+		return ProactiveConfig{Enabled: false, Threshold: 0.60, Budget: 1, Classes: map[string]bool{}}
+	default: // "assistant" and fallback
+		return ProactiveConfig{Enabled: true, Threshold: 0.45, Budget: 2, Classes: gatewayFree()}
+	}
+}
+
 // PlaybookBudgetForProfile returns the deterministic playbook token budget for
 // the named profile (D-072). Like the buffer triggers above, this is a
 // profile-internal constant — NOT an operator-tunable top-level config knob

@@ -14,6 +14,7 @@ import (
 	"github.com/hurtener/stowage/internal/identity"
 	"github.com/hurtener/stowage/internal/pipeline"
 	"github.com/hurtener/stowage/internal/playbook"
+	"github.com/hurtener/stowage/internal/proactive"
 	"github.com/hurtener/stowage/internal/reconcile"
 	"github.com/hurtener/stowage/internal/records"
 	"github.com/hurtener/stowage/internal/retrieval"
@@ -877,6 +878,52 @@ func (c *embeddedClient) Trace(ctx context.Context, req TraceRequest) (TraceResp
 		return TraceResponse{}, fmt.Errorf("sdk: trace: %w", err)
 	}
 	return bundleToSDK(b), nil
+}
+
+// Suggestions implements Client via the proactive engine core (RFC §6d, D-087).
+// list evaluates+offers; accept/dismiss resolve an offer. Governance is resolved
+// from the profile default ⊕ the scope's stored override. Single-user tier — the
+// admin governance read/write is HTTP/MCP only (D-067), absent here by design.
+func (c *embeddedClient) Suggestions(ctx context.Context, req SuggestionsRequest) (SuggestionsResponse, error) {
+	action := req.Action
+	if action == "" {
+		action = "list"
+	}
+	switch action {
+	case "list":
+		pc := config.ProactiveConfigForProfile(c.profile)
+		def := proactive.Config{Enabled: pc.Enabled, Threshold: pc.Threshold, Budget: pc.Budget, Classes: pc.Classes}
+		cfg, err := proactive.Resolve(ctx, c.stack.Store.ScopeSettings(), c.scope, def)
+		if err != nil {
+			return SuggestionsResponse{}, fmt.Errorf("sdk: suggestions: %w", err)
+		}
+		offers, degraded, err := proactive.Evaluate(ctx, c.stack.Store, c.stack.Retriever, c.scope, req.SessionID, req.Query, cfg, time.Now().UnixMilli())
+		if err != nil {
+			return SuggestionsResponse{}, fmt.Errorf("sdk: suggestions: %w", err)
+		}
+		out := SuggestionsResponse{Suggestions: make([]Suggestion, 0, len(offers)), Degraded: degraded}
+		for _, o := range offers {
+			out.Suggestions = append(out.Suggestions, Suggestion{
+				ID: o.ID, TriggerKind: o.TriggerKind, MemoryID: o.MemoryID,
+				EpisodeID: o.EpisodeID, Title: o.Title, Content: o.Content, Score: o.Score,
+			})
+		}
+		return out, nil
+	case "accept", "dismiss":
+		if req.ID == "" {
+			return SuggestionsResponse{}, fmt.Errorf("sdk: suggestions: id is required for %s", action)
+		}
+		sug, err := proactive.ResolveOffer(ctx, c.stack.Store, c.scope, req.ID, action, time.Now().UnixMilli())
+		if errors.Is(err, store.ErrNotPending) || errors.Is(err, store.ErrNotFound) {
+			return SuggestionsResponse{}, fmt.Errorf("sdk: suggestions: suggestion not found or already resolved")
+		}
+		if err != nil {
+			return SuggestionsResponse{}, fmt.Errorf("sdk: suggestions: %w", err)
+		}
+		return SuggestionsResponse{Suggestions: []Suggestion{}, ID: sug.ID, Status: sug.Status}, nil
+	default:
+		return SuggestionsResponse{}, fmt.Errorf("sdk: suggestions: action must be list, accept, or dismiss")
+	}
 }
 
 // bundleToSDK maps the internal trace bundle onto the SDK wire type (byte-identical

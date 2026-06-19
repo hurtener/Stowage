@@ -1,0 +1,39 @@
+{
+  "type": "object",
+  "properties": {
+    "action": {
+      "type": "string"
+    },
+    "user": {
+      "type": "string"
+    },
+    "project": {
+      "type": "string"
+    },
+    "enabled": {
+      "type": [
+        "null",
+        "boolean"
+      ]
+    },
+    "threshold": {
+      "type": [
+        "null",
+        "number"
+      ]
+    },
+    "budget": {
+      "type": [
+        "null",
+        "integer"
+      ]
+    },
+    "classes": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "boolean"
+      }
+    }
+  },
+  "additionalProperties": false
+}

@@ -69,6 +69,10 @@ func Run(t *testing.T, factory Factory) {
 	t.Run("EventEmitList", func(t *testing.T) { testEventEmitList(t, factory) })
 	t.Run("EventOrdering", func(t *testing.T) { testEventOrdering(t, factory) })
 	t.Run("EventListCursor", func(t *testing.T) { testEventListCursor(t, factory) })
+	t.Run("SuggestionLifecycle", func(t *testing.T) { testSuggestionLifecycle(t, factory) })
+	t.Run("SuggestionScopeIsolation", func(t *testing.T) { testSuggestionScopeIsolation(t, factory) })
+	t.Run("SuggestionScopeUserIsolation", func(t *testing.T) { testSuggestionScopeUserIsolation(t, factory) })
+	t.Run("ScopeSettingsKV", func(t *testing.T) { testScopeSettingsKV(t, factory) })
 	t.Run("OpsDeadLetters", func(t *testing.T) { testOpsDeadLetters(t, factory) })
 	t.Run("OpsDeadLetterAllStages", func(t *testing.T) { testOpsDeadLetterAllStages(t, factory) })
 	t.Run("OpsJobMarker", func(t *testing.T) { testOpsJobMarker(t, factory) })
@@ -4007,5 +4011,207 @@ func testRecordDistinctSessions(t *testing.T, factory Factory) {
 	}
 	if _, err := s.Records().DistinctSessions(ctx, identity.Scope{}, 10000, 10); !errors.Is(err, store.ErrScopeRequired) {
 		t.Errorf("DistinctSessions(empty) = %v, want ErrScopeRequired", err)
+	}
+}
+
+// --- SuggestionStore + ScopeSettingsStore (Phase 27, D-087) -----------------
+
+func testSuggestionLifecycle(t *testing.T, factory Factory) {
+	t.Helper()
+	s, cleanup := factory()
+	defer cleanup()
+	ctx := context.Background()
+	scope := tenantScope("t-" + newID())
+	sess := "sess-" + newID()
+
+	// Empty create is a no-op, not an error.
+	if err := s.Suggestions().Create(ctx, scope, nil); err != nil {
+		t.Fatalf("empty create: %v", err)
+	}
+
+	id := newID()
+	if err := s.Suggestions().Create(ctx, scope, []store.Suggestion{{
+		ID: id, SessionID: sess, TriggerKind: "recent_episode", MemoryID: "m1", EpisodeID: "e1",
+		Status: "pending", CreatedAt: nowMs(), UpdatedAt: nowMs(),
+	}}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	// ListBySession with status="" (any) returns the pending row too.
+	if any, err := s.Suggestions().ListBySession(ctx, scope, sess, "", 10); err != nil || len(any) != 1 {
+		t.Fatalf("list any-status: %v / %d", err, len(any))
+	}
+	// Idempotent create (duplicate id ignored).
+	if err := s.Suggestions().Create(ctx, scope, []store.Suggestion{{ID: id, SessionID: sess, TriggerKind: "recent_episode", Status: "pending", CreatedAt: nowMs(), UpdatedAt: nowMs()}}); err != nil {
+		t.Fatalf("create dup: %v", err)
+	}
+
+	// ListBySession (pending).
+	got, err := s.Suggestions().ListBySession(ctx, scope, sess, "pending", 10)
+	if err != nil || len(got) != 1 || got[0].ID != id {
+		t.Fatalf("list pending: %v / %+v", err, got)
+	}
+
+	// Resolve accept (CAS pending→accepted, counter).
+	res, err := s.Suggestions().Resolve(ctx, scope, id, "accept", nowMs())
+	if err != nil || res.Status != "accepted" || res.AcceptCount != 1 {
+		t.Fatalf("accept: %v / %+v", err, res)
+	}
+	// Double-resolve ⇒ ErrNotPending (no double count).
+	if _, err := s.Suggestions().Resolve(ctx, scope, id, "dismiss", nowMs()); !errors.Is(err, store.ErrNotPending) {
+		t.Errorf("double-resolve should be ErrNotPending, got %v", err)
+	}
+	// CountByTrigger reflects the accept (all-time, since=0).
+	acc, dis, err := s.Suggestions().CountByTrigger(ctx, scope, "recent_episode", 0)
+	if err != nil || acc != 1 || dis != 0 {
+		t.Errorf("count: %v acc=%d dis=%d", err, acc, dis)
+	}
+	// Windowed CountByTrigger: a `since` past the resolve's updated_at excludes it.
+	accW, disW, _ := s.Suggestions().CountByTrigger(ctx, scope, "recent_episode", nowMs()+1_000_000)
+	if accW != 0 || disW != 0 {
+		t.Errorf("windowed count should exclude old feedback, got acc=%d dis=%d", accW, disW)
+	}
+
+	// Expiry: a second pending suggestion expired by the sweep path; ExpirePending
+	// returns the ids it actually transitioned.
+	id2 := newID()
+	_ = s.Suggestions().Create(ctx, scope, []store.Suggestion{{ID: id2, SessionID: sess, TriggerKind: "expiring", MemoryID: "m2", Status: "pending", CreatedAt: 100, UpdatedAt: 100}})
+	pend, _ := s.Suggestions().ListPendingBefore(ctx, scope, 200, 10)
+	ids := make([]string, 0, len(pend))
+	for _, p := range pend {
+		ids = append(ids, p.ID)
+	}
+	expired, eerr := s.Suggestions().ExpirePending(ctx, scope, ids, nowMs())
+	if eerr != nil {
+		t.Fatalf("expire: %v", eerr)
+	}
+	if len(expired) != 1 || expired[0] != id2 {
+		t.Errorf("ExpirePending should report exactly the transitioned id, got %v", expired)
+	}
+	g2, _ := s.Suggestions().Get(ctx, scope, id2)
+	if g2.Status != "expired" {
+		t.Errorf("suggestion should be expired, got %q", g2.Status)
+	}
+	// Re-expiring an already-expired id transitions nothing.
+	reexp, _ := s.Suggestions().ExpirePending(ctx, scope, []string{id2}, nowMs())
+	if len(reexp) != 0 {
+		t.Errorf("re-expire should report nothing, got %v", reexp)
+	}
+	// Get missing ⇒ ErrNotFound.
+	if _, err := s.Suggestions().Get(ctx, scope, "nope"); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("get missing = %v, want ErrNotFound", err)
+	}
+}
+
+// testSuggestionScopeUserIsolation proves Get/Resolve enforce FULL scope (P3): a
+// caller scoped to a different user within the same tenant cannot read or resolve
+// another user's offer.
+func testSuggestionScopeUserIsolation(t *testing.T, factory Factory) {
+	t.Helper()
+	s, cleanup := factory()
+	defer cleanup()
+	ctx := context.Background()
+	tenant := "tu-" + newID()
+	alice := identity.Scope{Tenant: tenant, User: "alice"}
+	bob := identity.Scope{Tenant: tenant, User: "bob"}
+
+	id := newID()
+	if err := s.Suggestions().Create(ctx, alice, []store.Suggestion{{ID: id, SessionID: "s", TriggerKind: "expiring", MemoryID: "m1", Status: "pending", CreatedAt: nowMs(), UpdatedAt: nowMs()}}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	// Bob cannot Get alice's offer.
+	if _, err := s.Suggestions().Get(ctx, bob, id); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("cross-user Get should be ErrNotFound, got %v", err)
+	}
+	// Bob cannot Resolve alice's offer (ErrNotPending — the CAS matches no row in bob's scope).
+	if _, err := s.Suggestions().Resolve(ctx, bob, id, "accept", nowMs()); !errors.Is(err, store.ErrNotPending) {
+		t.Errorf("cross-user Resolve should be ErrNotPending, got %v", err)
+	}
+	// Alice still can (full scope matches).
+	if _, err := s.Suggestions().Resolve(ctx, alice, id, "accept", nowMs()); err != nil {
+		t.Errorf("same-user Resolve should succeed, got %v", err)
+	}
+}
+
+func testSuggestionScopeIsolation(t *testing.T, factory Factory) {
+	t.Helper()
+	s, cleanup := factory()
+	defer cleanup()
+	ctx := context.Background()
+	a := tenantScope("ta-" + newID())
+	b := tenantScope("tb-" + newID())
+	id := newID()
+	_ = s.Suggestions().Create(ctx, a, []store.Suggestion{{ID: id, SessionID: "s", TriggerKind: "recent_episode", Status: "pending", CreatedAt: nowMs(), UpdatedAt: nowMs()}})
+	// Tenant b sees nothing and cannot resolve a's suggestion.
+	if got, _ := s.Suggestions().ListBySession(ctx, b, "s", "", 10); len(got) != 0 {
+		t.Errorf("cross-tenant suggestion leak: %d", len(got))
+	}
+	if _, err := s.Suggestions().Resolve(ctx, b, id, "accept", nowMs()); err == nil {
+		t.Error("cross-tenant resolve should fail")
+	}
+}
+
+func testScopeSettingsKV(t *testing.T, factory Factory) {
+	t.Helper()
+	s, cleanup := factory()
+	defer cleanup()
+	ctx := context.Background()
+	scope := identity.Scope{Tenant: "tk-" + newID(), User: "u1"}
+
+	// Absent ⇒ found=false.
+	if _, found, err := s.ScopeSettings().Get(ctx, scope, "proactive"); err != nil || found {
+		t.Fatalf("absent get: found=%v err=%v", found, err)
+	}
+	// Set then Get.
+	if err := s.ScopeSettings().Set(ctx, scope, "proactive", `{"enabled":true}`, nowMs()); err != nil {
+		t.Fatalf("set: %v", err)
+	}
+	v, found, err := s.ScopeSettings().Get(ctx, scope, "proactive")
+	if err != nil || !found || v != `{"enabled":true}` {
+		t.Fatalf("get: %q found=%v err=%v", v, found, err)
+	}
+	// Upsert (same scope+key) replaces, does not duplicate.
+	_ = s.ScopeSettings().Set(ctx, scope, "proactive", `{"enabled":false}`, nowMs()+1)
+	v2, _, _ := s.ScopeSettings().Get(ctx, scope, "proactive")
+	if v2 != `{"enabled":false}` {
+		t.Errorf("upsert should replace, got %q", v2)
+	}
+	if m, _ := s.ScopeSettings().List(ctx, scope); len(m) != 1 {
+		t.Errorf("list should have exactly 1 key, got %d", len(m))
+	}
+	// A DIFFERENT scope (tenant-only) is a distinct row.
+	tenantOnly := identity.Scope{Tenant: scope.Tenant}
+	_ = s.ScopeSettings().Set(ctx, tenantOnly, "proactive", `{"enabled":true}`, nowMs())
+	tv, _, _ := s.ScopeSettings().Get(ctx, tenantOnly, "proactive")
+	if tv != `{"enabled":true}` {
+		t.Errorf("tenant-scope row should be independent of user-scope, got %q", tv)
+	}
+	// Delete.
+	if err := s.ScopeSettings().Delete(ctx, scope, "proactive"); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	if _, found, _ := s.ScopeSettings().Get(ctx, scope, "proactive"); found {
+		t.Error("deleted key should be absent")
+	}
+	// Cross-tenant isolation.
+	other := identity.Scope{Tenant: "tk-other-" + newID()}
+	if _, found, _ := s.ScopeSettings().Get(ctx, other, "proactive"); found {
+		t.Error("cross-tenant settings leak")
+	}
+
+	// A scope without a tenant is rejected on every entry point (P3 — no unscoped
+	// query). Get/Set/List/Delete all fail closed.
+	noTenant := identity.Scope{User: "u"}
+	if _, _, err := s.ScopeSettings().Get(ctx, noTenant, "proactive"); !errors.Is(err, store.ErrScopeRequired) {
+		t.Errorf("Get no-tenant = %v, want ErrScopeRequired", err)
+	}
+	if err := s.ScopeSettings().Set(ctx, noTenant, "proactive", "{}", nowMs()); !errors.Is(err, store.ErrScopeRequired) {
+		t.Errorf("Set no-tenant = %v, want ErrScopeRequired", err)
+	}
+	if _, err := s.ScopeSettings().List(ctx, noTenant); !errors.Is(err, store.ErrScopeRequired) {
+		t.Errorf("List no-tenant = %v, want ErrScopeRequired", err)
+	}
+	if err := s.ScopeSettings().Delete(ctx, noTenant, "proactive"); !errors.Is(err, store.ErrScopeRequired) {
+		t.Errorf("Delete no-tenant = %v, want ErrScopeRequired", err)
 	}
 }

@@ -70,6 +70,26 @@ type Link struct {
 	CreatedAt  int64
 }
 
+// Suggestion is a proactive context offer for a session (RFC §6d, Phase 27, D-087).
+// It references the offered memory (and, for episode triggers, its episode); status
+// moves pending → accepted|dismissed|expired; accept/dismiss counters feed per-trigger
+// confidence tuning. Backed by the day-one `suggestions` table.
+type Suggestion struct {
+	ID           string
+	TenantID     string
+	ProjectID    string
+	UserID       string
+	SessionID    string
+	TriggerKind  string // "recent_episode" | "similar_episode" | "expiring"
+	MemoryID     string // the offered memory (the narrative memory for episode triggers)
+	EpisodeID    string // set for episode-derived offers
+	Status       string // "pending" | "accepted" | "dismissed" | "expired"
+	AcceptCount  int
+	DismissCount int
+	CreatedAt    int64
+	UpdatedAt    int64
+}
+
 // Provenance links a memory to a verbatim record span (RFC §5, D-006).
 type Provenance struct {
 	ID        string

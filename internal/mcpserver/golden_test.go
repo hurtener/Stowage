@@ -220,6 +220,28 @@ func buildSchemas(name string) (inJSON, outJSON []byte, err error) {
 			return nil, nil, err
 		}
 		outJSON, err = marshal(out)
+
+	case "memory_suggestions":
+		b := tool.New[mcpserver.SuggestionsInput, mcpserver.SuggestionsOutput](name)
+		in, out, e := b.Schemas()
+		if e != nil {
+			return nil, nil, e
+		}
+		if inJSON, err = marshal(in); err != nil {
+			return nil, nil, err
+		}
+		outJSON, err = marshal(out)
+
+	case "memory_proactive_config":
+		b := tool.New[mcpserver.ProactiveConfigInput, mcpserver.ProactiveConfigOutput](name)
+		in, out, e := b.Schemas()
+		if e != nil {
+			return nil, nil, e
+		}
+		if inJSON, err = marshal(in); err != nil {
+			return nil, nil, err
+		}
+		outJSON, err = marshal(out)
 	}
 
 	return inJSON, outJSON, err
@@ -251,6 +273,8 @@ func TestSchemaGoldens(t *testing.T) {
 		"memory_flush",
 		"memory_branch",
 		"memory_grants",
+		"memory_suggestions",
+		"memory_proactive_config",
 	}
 
 	for _, name := range tools {

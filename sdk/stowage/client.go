@@ -105,4 +105,14 @@ type Client interface {
 	// links, verification verdicts) reconstructed from the day-one tables, as an
 	// optionally ed25519-signed bundle. Deterministic and LLM-free.
 	Trace(ctx context.Context, req TraceRequest) (TraceResponse, error)
+
+	// Suggestions is the proactive pull (RFC §6d, D-087). Action=list evaluates the
+	// scope's trigger rules and offers the budgeted, governance-gated set for a
+	// session (SessionID is REQUIRED — it keys the per-session dedupe); each offer
+	// carries the memory content inline. list is a WRITE: each offer is recorded once
+	// per session, so a repeat list does not re-offer the same memory. action=accept|
+	// dismiss resolves an offer id and tunes that trigger's confidence (accept is
+	// feedback, not a memory mutation). Score is a relative utility weight, not a
+	// probability. Governance is admin-tier (HTTP/MCP only), not on the SDK.
+	Suggestions(ctx context.Context, req SuggestionsRequest) (SuggestionsResponse, error)
 }

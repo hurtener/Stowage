@@ -196,6 +196,9 @@ func (s *pgStore) Vectors() store.VectorStore       { return &vectorStore{s} }
 func (s *pgStore) Injections() store.InjectionStore { return &injectionStore{s} }
 func (s *pgStore) Grants() store.GrantStore         { return &grantStore{s} }
 
+func (s *pgStore) Suggestions() store.SuggestionStore      { return &suggestionStore{s} }
+func (s *pgStore) ScopeSettings() store.ScopeSettingsStore { return &scopeSettingsStore{s} }
+
 // nullStr converts empty string to nil.
 func nullStr(s string) interface{} {
 	if s == "" {
