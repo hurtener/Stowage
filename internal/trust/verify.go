@@ -124,7 +124,7 @@ func Verify(ctx context.Context, gw gateway.Gateway, claim string, cited []Cited
 // the response_id the citations belong to. Degraded-safe (gateway failure ⇒
 // unclear+degraded, no error). The capture is best-effort and never fails the verify.
 func VerifyClaim(ctx context.Context, st store.Store, gw gateway.Gateway, scope identity.Scope, claim string, citations []string) (Verdict, error) {
-	cited, responseID, err := resolveCitedWithResponse(ctx, st, scope, citations)
+	cited, responseIDs, err := resolveCitedWithResponse(ctx, st, scope, citations)
 	if err != nil {
 		return Verdict{}, err
 	}
@@ -132,30 +132,32 @@ func VerifyClaim(ctx context.Context, st store.Store, gw gateway.Gateway, scope 
 	if err != nil {
 		return Verdict{}, err
 	}
-	if responseID != "" {
+	// Capture the verdict against EVERY distinct response the citations belong to
+	// (A8, D-094) — a caller may cite memories injected across several responses, and
+	// each response's reasoning trace must record the verdict for the claim it supported.
+	for _, responseID := range responseIDs {
 		emitVerdictEvent(ctx, st, scope, responseID, claim, v)
 	}
 	return v, nil
 }
 
-// resolveCitedWithResponse resolves citations to memories AND returns the response_id
-// the citations belong to (the first resolvable injection's ResponseID), for trace
-// capture. Scope-enforced (P3).
-func resolveCitedWithResponse(ctx context.Context, st store.Store, scope identity.Scope, citations []string) ([]CitedMemory, string, error) {
+// resolveCitedWithResponse resolves citations to memories AND returns every DISTINCT
+// response_id the citations belong to (in first-seen order), for trace capture. Scope-
+// enforced (P3). A verify call normally cites one response, but a caller may mix
+// citations from several; each distinct response records the verdict (A8, D-094).
+func resolveCitedWithResponse(ctx context.Context, st store.Store, scope identity.Scope, citations []string) ([]CitedMemory, []string, error) {
 	memIDs := make([]string, 0, len(citations))
 	seen := make(map[string]bool)
-	responseID := ""
+	responseIDs := make([]string, 0, 1)
+	seenResp := make(map[string]bool)
 	for _, c := range citations {
 		inj, err := st.Injections().Get(ctx, scope, c)
 		if err != nil {
 			continue
 		}
-		// The verdict is captured against the FIRST resolvable citation's response
-		// (citations of one verify call normally belong to one response). If a caller
-		// mixes citations from several responses, only the first response's trace
-		// records the verdict — an accepted, documented simplification (D-086).
-		if responseID == "" {
-			responseID = inj.ResponseID
+		if inj.ResponseID != "" && !seenResp[inj.ResponseID] {
+			seenResp[inj.ResponseID] = true
+			responseIDs = append(responseIDs, inj.ResponseID)
 		}
 		if !seen[inj.MemoryID] {
 			seen[inj.MemoryID] = true
@@ -163,17 +165,17 @@ func resolveCitedWithResponse(ctx context.Context, st store.Store, scope identit
 		}
 	}
 	if len(memIDs) == 0 {
-		return nil, responseID, nil
+		return nil, responseIDs, nil
 	}
 	mems, err := st.Memories().GetMany(ctx, scope, memIDs)
 	if err != nil {
-		return nil, "", fmt.Errorf("trust: resolve cited: %w", err)
+		return nil, nil, fmt.Errorf("trust: resolve cited: %w", err)
 	}
 	out := make([]CitedMemory, 0, len(mems))
 	for _, m := range mems {
 		out = append(out, CitedMemory{ID: m.ID, Content: m.Content})
 	}
-	return out, responseID, nil
+	return out, responseIDs, nil
 }
 
 // emitVerdictEvent persists the verdict for the reasoning trace (Phase 26, D-086):
