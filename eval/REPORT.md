@@ -8,7 +8,41 @@
 
 - CI subset (deterministic, mock gateway): `make eval-ci`
 - Full mode (real models): see the header of `eval/harness/fullmode_test.go`
-- Datasets: `./bin/stowage eval fetch --dataset longmemeval|locomo`
+- Datasets: `./bin/stowage eval fetch --dataset longmemeval|longmemeval_s|locomo`
+
+### The public-benchmark runner (D-096)
+
+Every public benchmark flows through one path — `harness.RunDataset` — selected by
+name through the dataset **registry** (`eval/datasets`): the dataset is a parameter,
+not a forked runner. Adding a benchmark is a new `eval/datasets/<name>/` package
+(a `Fetch` + a `Normalize`) plus one `datasets.Register` call in its `init()`; the
+runner, the CLI `eval fetch`, and the full-mode entry pick it up automatically.
+
+Registered today: **longmemeval** (oracle), **longmemeval_s** (distractor haystack —
+the headline variant), **locomo**. The dataset→runner wiring is proven in CI with the
+mock gateway over a scripted extraction (`TestRunDataset_Wiring`, `TestDatasetRegistry`);
+the benchmark **numbers** are operator-run (a live gateway, never CI).
+
+Operator runs (select with `STOWAGE_EVAL_DATASET`):
+
+```bash
+# Fetch once, then run the full reader+judge pipeline (see fullmode_test.go header for
+# the STOWAGE_EVAL_* gateway env block):
+./bin/stowage eval fetch --dataset longmemeval_s
+STOWAGE_EVAL_DATASET=longmemeval_s STOWAGE_EVAL_JUDGE=1 STOWAGE_EVAL_LIMIT=50 … \
+  go test -tags=fullmode -run TestFullMode -timeout 90m ./eval/harness/
+
+./bin/stowage eval fetch --dataset locomo
+STOWAGE_EVAL_DATASET=locomo STOWAGE_EVAL_JUDGE=1 … \
+  go test -tags=fullmode -run TestFullMode -timeout 90m ./eval/harness/
+
+# Gain (memory-ON vs memory-OFF) over a dataset's questions:
+STOWAGE_EVAL_DATASET=longmemeval_s STOWAGE_EVAL_GAIN=1 STOWAGE_EVAL_LIMIT=20 … \
+  go test -tags=fullmode -run TestGainDatasetMode -timeout 90m ./eval/harness/
+```
+
+Results land in `eval/results/<dataset>-n<N>-<ts>.jsonl` (and
+`gain-<dataset>-n<N>-<ts>.jsonl`). Record headline numbers in the sections below.
 
 ## Metric definition
 
@@ -290,3 +324,51 @@ written to `eval/results/gain-n*.jsonl` and `eval/results/adapt-n*.jsonl`. The
 deterministic CI tests (`make eval-ci` + the harness unit tests) cover the scoring,
 aggregation, and loop wiring with no model; the headline gain number is **pending an
 operator run** (one command above).
+
+---
+
+## Public-benchmark headline numbers (pending operator runs — D-096)
+
+The runner wiring for these is committed and CI-proven (`TestRunDataset_Wiring`,
+`TestDatasetRegistry`, `TestGainMode` scoring); the numbers below are filled by the
+operator after running the commands in **The public-benchmark runner** section above.
+Each is a release-report line, not a per-PR CI gate (the latency SLO and the eval
+benchmarks gate per their own decisions — D-095/D-035).
+
+### longmemeval_s (distractor haystack — the headline LongMemEval variant)
+
+> **TODO (operator):** `answer_quality` (judged) + `answer_context_hit`, n, wall time,
+> from `eval/results/longmemeval_s-n*.jsonl`. Compare to published LongMemEval figures.
+
+```
+dataset            : longmemeval_s
+n                  : __
+answer_context_hit : __
+answer_quality     : __ (judged)
+p50 / p95 latency  : __ / __ ms
+```
+
+### LoCoMo
+
+> **TODO (operator):** results from `eval/results/locomo-n*.jsonl`. Compare to
+> published LoCoMo figures.
+
+```
+dataset            : locomo
+n                  : __
+answer_context_hit : __
+answer_quality     : __ (judged)
+p50 / p95 latency  : __ / __ ms
+```
+
+### Gain over a public dataset (memory-ON vs memory-OFF)
+
+> **TODO (operator):** mean gain from `eval/results/gain-<dataset>-n*.jsonl`
+> (`TestGainDatasetMode`). Mean gain ≥ 0 is the RFC §12 release gate.
+
+```
+dataset      : __ (longmemeval_s | locomo)
+n            : __
+mean_gain    : __   (mean_quality_on __ − mean_quality_off __)
+non_negative : __/__
+```

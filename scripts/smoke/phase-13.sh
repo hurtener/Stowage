@@ -6,7 +6,8 @@
 #   2. stowage eval ci prints instructions and exits 0
 #   3. stowage eval fetch --help exits 0
 #   4. stowage eval fetch --dataset=unknown exits non-zero
-#   5. go vet ./eval/... passes
+#   5. stowage eval fetch --help lists the registry-backed datasets (D-096)
+#   6. go vet ./eval/... passes
 
 set -uo pipefail
 
@@ -55,7 +56,15 @@ else
   fail "eval fetch with unknown dataset should fail (got exit 0)"
 fi
 
-# 5. go vet ./eval/... passes
+# 5. stowage eval fetch --help advertises the registry-backed datasets (D-096)
+fetch_help=$("$BIN" eval fetch --help 2>&1 || true)
+if echo "$fetch_help" | grep -q "longmemeval_s" && echo "$fetch_help" | grep -q "locomo"; then
+  ok "eval fetch --help lists longmemeval_s + locomo (registry-backed)"
+else
+  fail "eval fetch --help should list longmemeval_s and locomo datasets"
+fi
+
+# 6. go vet ./eval/... passes
 if go vet ./eval/... 2>&1; then
   ok "go vet ./eval/... clean"
 else

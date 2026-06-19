@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/hurtener/stowage/eval/datasets"
 	"github.com/hurtener/stowage/eval/gain"
 	"github.com/hurtener/stowage/internal/gateway"
 )
@@ -135,4 +136,33 @@ func RunGainScenario(ctx context.Context, srv *TestServer, runner *Runner, gw ga
 		return GainResult{}, fmt.Errorf("retrieve %s: %w", sc.ID, err)
 	}
 	return judgeOnOff(ctx, gw, sc.ID, sc.Category, sc.EvalQuestion, sc.ExpectedAnswer, qr.Items)
+}
+
+// RunGainOverDataset measures memory-on-vs-off gain for ONE public-benchmark
+// question (D-096): it ingests the conversation the question references, settles
+// the pipeline, retrieves the question's context, and judges memory-ON (with that
+// context) vs memory-OFF (none). This makes the gain metric runnable over a real
+// dataset (longmemeval_s, locomo) rather than only hand-authored scenarios, reusing
+// the same judgeOnOff primitive as RunGainScenario. Needs a live gateway
+// (operator-run); the pure scoring (judgeOnOff/AggregateGain) is CI-tested.
+func RunGainOverDataset(ctx context.Context, srv *TestServer, runner *Runner, gw gateway.Gateway, conv datasets.Conversation, q datasets.Question, settle time.Duration) (GainResult, error) {
+	fix := toFixture(conv)
+	if _, err := runner.ingestConversation(ctx, &fix); err != nil {
+		return GainResult{}, fmt.Errorf("ingest %s: %w", conv.ID, err)
+	}
+	// Operator-run (full mode) only: the deliberate flush plus the full-mode
+	// Count/MaxAge auto-flush triggers extract the buffered records, and the
+	// WaitForQuiescence barrier below gates scoring — so this needs no pre-flush
+	// WaitForBuffered (which is a mock-mode concern; see RunDataset, D-096).
+	if err := runner.flushBuffer(ctx, fix.ID); err != nil {
+		return GainResult{}, fmt.Errorf("flush %s: %w", conv.ID, err)
+	}
+	if err := srv.WaitForQuiescence(ctx, settle); err != nil {
+		return GainResult{}, fmt.Errorf("settle %s: %w", conv.ID, err)
+	}
+	qr, err := runner.scoreQuestion(ctx, toQuestionFixture(q))
+	if err != nil {
+		return GainResult{}, fmt.Errorf("retrieve %s: %w", q.ID, err)
+	}
+	return judgeOnOff(ctx, gw, q.ID, q.Category, q.Text, q.Expected.Answer, qr.Items)
 }

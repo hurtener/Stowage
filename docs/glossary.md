@@ -321,7 +321,12 @@ New terms land here in the same PR that introduces them (CLAUDE.md §14).
   `answer_context_hit`. Never runs in CI (Phase 20).
 - **longmemeval_s** — the distractor-laden LongMemEval haystack (~40–50
   sessions/question) competitors report on; the like-for-like comparison variant
-  (vs the `oracle` slice). Reachable via `STOWAGE_EVAL_LONGMEMEVAL_URL` (Phase 20).
+  (vs the `oracle` slice). A first-class registered dataset selected with
+  `STOWAGE_EVAL_DATASET=longmemeval_s` (D-096; Phase 20).
+- **Dataset registry** — the `eval/datasets` factory mapping a benchmark name →
+  `Spec{DataFile, Fetch, Normalize}`; each dataset self-registers in `init()`, so the
+  one public-benchmark runner (`harness.RunDataset`) selects any dataset by name —
+  longmemeval, longmemeval_s, locomo — rather than forking a runner per dataset (D-096).
 - **Gain harness** — the skeleton for measuring whether memory improves task
   completion over a baseline (no-memory) run. Seed scenarios live in
   `eval/gain/scenarios/`. The full Harbor-fleet measurement + online-adaptation
