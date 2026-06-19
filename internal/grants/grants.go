@@ -33,6 +33,11 @@ var ErrCrossTenantGrant = errors.New("grants: cross-tenant grants are not allowe
 // ErrInvalidZoneCeiling is returned when zone_ceiling is not public or work.
 var ErrInvalidZoneCeiling = errors.New("grants: zone_ceiling must be 'public' or 'work'")
 
+// ErrFilterOnContribute is returned when a contribute grant sets topic_filter or
+// kind_filter — filters apply to extracted memories (read sharing), not raw record
+// contribution, so they cannot be enforced on a contribute grant (D-089).
+var ErrFilterOnContribute = errors.New("grants: topic_filter/kind_filter are not valid on a contribute grant (they slice shared read memories, not record contribution)")
+
 // ErrInvalidAccess is returned when access is not read or contribute.
 var ErrInvalidAccess = errors.New("grants: access must be 'read' or 'contribute'")
 
@@ -168,6 +173,13 @@ func (s *Service) CreateGrant(ctx context.Context, callerScope identity.Scope, i
 	// Access validation.
 	if in.Access != "read" && in.Access != "contribute" {
 		return nil, ErrInvalidAccess
+	}
+	// topic_filter / kind_filter slice the SHARED (read) memories by their extraction
+	// topic / kind (D-089). A CONTRIBUTE grant authorizes writing raw records, which
+	// have no kind/topic until extraction — so a filter there can't be enforced and
+	// would silently authorize anything. Reject it (fail-loud) rather than over-share.
+	if in.Access == "contribute" && (in.TopicFilter != "" || in.KindFilter != "") {
+		return nil, ErrFilterOnContribute
 	}
 
 	now := time.Now().UnixMilli()

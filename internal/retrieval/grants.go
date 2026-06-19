@@ -17,6 +17,7 @@ import (
 	"log/slog"
 
 	"github.com/hurtener/stowage/internal/grants"
+	"github.com/hurtener/stowage/internal/identity"
 	"github.com/hurtener/stowage/internal/store"
 )
 
@@ -48,4 +49,44 @@ func (r *Retriever) resolveEffectiveScopes(ctx context.Context, scope store.Scop
 // cross a grant even if mis-stored.
 func applyZoneCeiling(mems []store.Memory, ceiling string) []store.Memory {
 	return grants.ApplyCeiling(mems, ceiling)
+}
+
+// filterByKind keeps only memories of the grant's kind (D-089 grant kind_filter).
+func filterByKind(mems []store.Memory, kind string) []store.Memory {
+	out := make([]store.Memory, 0, len(mems))
+	for _, m := range mems {
+		if m.Kind == kind {
+			out = append(out, m)
+		}
+	}
+	return out
+}
+
+// filterByTopic keeps only memories linked to the grant's topic (D-089 grant
+// topic_filter), via the memory→topic association. FAILS CLOSED: if topic membership
+// cannot be read, the granted scope's memories are dropped rather than over-shared.
+func (r *Retriever) filterByTopic(ctx context.Context, scope identity.Scope, mems []store.Memory, topicKey string) []store.Memory {
+	if len(mems) == 0 {
+		return mems
+	}
+	ids := make([]string, len(mems))
+	for i, m := range mems {
+		ids[i] = m.ID
+	}
+	topicsByID, err := r.mem.MemoriesTopics(ctx, scope, ids)
+	if err != nil {
+		r.log.WarnContext(ctx, "retrieval: MemoriesTopics failed — dropping granted scope (fail closed)",
+			"scope", scope.String(), "err", err)
+		return nil
+	}
+	out := make([]store.Memory, 0, len(mems))
+	for _, m := range mems {
+		for _, tk := range topicsByID[m.ID] {
+			if tk == topicKey {
+				out = append(out, m)
+				break
+			}
+		}
+	}
+	return out
 }

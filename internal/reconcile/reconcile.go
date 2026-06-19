@@ -294,6 +294,7 @@ func (r *ReconcileStage) commit(
 			Entities: c.Entities,
 			Keywords: c.Keywords,
 			Queries:  c.AnticipatedQueries,
+			Topics:   c.Topics,
 			Links:    decisionLinksToStore(mem.ID, d.Links),
 			Events: []store.Event{
 				buildEvent("memory.added", mem.ID, d.Reason, now),
@@ -318,6 +319,7 @@ func (r *ReconcileStage) commit(
 			Entities: c.Entities,
 			Keywords: c.Keywords,
 			Queries:  c.AnticipatedQueries,
+			Topics:   c.Topics,
 			Events: []store.Event{
 				buildEvent("memory.parked", mem.ID, d.Reason, now),
 			},
@@ -350,6 +352,7 @@ func (r *ReconcileStage) commit(
 				Entities: c.Entities,
 				Keywords: c.Keywords,
 				Queries:  c.AnticipatedQueries,
+				Topics:   c.Topics,
 				Targets:  []store.Memory{target},
 				Events: []store.Event{
 					buildEventWithPayload("memory.parked", mem.ID,
@@ -397,6 +400,7 @@ func (r *ReconcileStage) commit(
 			Entities: c.Entities,
 			Keywords: c.Keywords,
 			Queries:  c.AnticipatedQueries,
+			Topics:   c.Topics,
 			Targets:  []store.Memory{target},
 			Links:    decisionLinksToStore(mem.ID, d.Links),
 			Events:   events,
@@ -425,6 +429,7 @@ func (r *ReconcileStage) commit(
 				Entities: c.Entities,
 				Keywords: c.Keywords,
 				Queries:  c.AnticipatedQueries,
+				Topics:   c.Topics,
 				Targets:  []store.Memory{target},
 				Events: []store.Event{
 					buildEventWithPayload("memory.parked", mem.ID,
@@ -477,6 +482,7 @@ func (r *ReconcileStage) commit(
 			Entities: c.Entities,
 			Keywords: c.Keywords,
 			Queries:  c.AnticipatedQueries,
+			Topics:   c.Topics,
 			Targets:  []store.Memory{target},
 			Links:    links,
 			Events:   events,
@@ -522,6 +528,7 @@ func (r *ReconcileStage) commit(
 				Entities: c.Entities,
 				Keywords: c.Keywords,
 				Queries:  c.AnticipatedQueries,
+				Topics:   c.Topics,
 				Events: []store.Event{
 					buildEvent("memory.parked", mem.ID,
 						"trust gate: merge target trust ≥ park threshold; pending human review", now),
@@ -558,6 +565,7 @@ func (r *ReconcileStage) commit(
 			Entities: c.Entities,
 			Keywords: c.Keywords,
 			Queries:  c.AnticipatedQueries,
+			Topics:   c.Topics,
 			Targets:  targets,
 			Links:    decisionLinksToStore(mem.ID, d.Links),
 			Events:   events,
@@ -632,6 +640,7 @@ func (r *ReconcileStage) commitFastAdd(ctx context.Context, scope identity.Scope
 		Entities: c.Entities,
 		Keywords: c.Keywords,
 		Queries:  c.AnticipatedQueries,
+		Topics:   c.Topics,
 		Events: []store.Event{
 			buildEvent("memory.added", mem.ID, "fast-add: no neighbors found", nowMs()),
 		},

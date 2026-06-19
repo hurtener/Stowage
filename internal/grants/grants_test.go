@@ -133,6 +133,29 @@ func TestCreateGrant_CrossTenantRejected(t *testing.T) {
 	}
 }
 
+func TestCreateGrant_FilterOnContributeRejected(t *testing.T) {
+	st := newMockGrantStore()
+	svc := grants.New(st, nil, noopLog())
+	ctx := context.Background()
+	caller := identity.Scope{Tenant: "t1"}
+
+	for _, in := range []grants.CreateGrantInput{
+		{OwnerScope: identity.Scope{Tenant: "t1"}, GroupID: "g", Access: "contribute", ZoneCeiling: "work", TopicFilter: "auth"},
+		{OwnerScope: identity.Scope{Tenant: "t1"}, GroupID: "g", Access: "contribute", ZoneCeiling: "work", KindFilter: "fact"},
+	} {
+		if _, err := svc.CreateGrant(ctx, caller, in); !errors.Is(err, grants.ErrFilterOnContribute) {
+			t.Errorf("contribute grant with filter: want ErrFilterOnContribute, got %v", err)
+		}
+	}
+	// A contribute grant with NO filter is fine; a read grant with a filter is fine.
+	if _, err := svc.CreateGrant(ctx, caller, grants.CreateGrantInput{OwnerScope: identity.Scope{Tenant: "t1"}, GroupID: "g", Access: "contribute", ZoneCeiling: "work"}); err != nil {
+		t.Errorf("contribute grant without filter should succeed: %v", err)
+	}
+	if _, err := svc.CreateGrant(ctx, caller, grants.CreateGrantInput{OwnerScope: identity.Scope{Tenant: "t1"}, GroupID: "g", Access: "read", ZoneCeiling: "work", TopicFilter: "auth"}); err != nil {
+		t.Errorf("read grant with topic_filter should succeed: %v", err)
+	}
+}
+
 func TestCreateGrant_InvalidZoneCeiling(t *testing.T) {
 	st := newMockGrantStore()
 	svc := grants.New(st, nil, noopLog())

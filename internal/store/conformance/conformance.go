@@ -1604,6 +1604,8 @@ func testEmptyScopeRejected(t *testing.T, factory Factory) {
 		s.Memories().IncrementCounter(ctx, zero, "any-id", "match"))
 	_, err = s.Memories().GetJunctions(ctx, zero, "any-id")
 	assertScopeRequired(t, "Memories.GetJunctions", err)
+	_, err = s.Memories().MemoriesTopics(ctx, zero, []string{"any-id"})
+	assertScopeRequired(t, "Memories.MemoriesTopics", err)
 
 	// TopicStore
 	assertScopeRequired(t, "Topics.Upsert",
@@ -3277,6 +3279,7 @@ func testMemoryGetJunctions(t *testing.T, factory Factory) {
 		Entities: []string{"entity-X", "entity-Y"},
 		Keywords: []string{"kw-alpha"},
 		Queries:  []string{"what is entity-X?"},
+		Topics:   []string{"topic-auth", "topic-deploy"},
 		Provenance: []store.Provenance{
 			{ID: provID, MemoryID: memID, RecordID: recID},
 		},
@@ -3299,8 +3302,32 @@ func testMemoryGetJunctions(t *testing.T, factory Factory) {
 	if len(j.Queries) != 1 || j.Queries[0] != "what is entity-X?" {
 		t.Errorf("Queries: got %v want [what is entity-X?]", j.Queries)
 	}
+	if len(j.Topics) != 2 || j.Topics[0] != "topic-auth" || j.Topics[1] != "topic-deploy" {
+		t.Errorf("Topics: got %v want [topic-auth topic-deploy]", j.Topics)
+	}
 	if len(j.Provenance) != 1 || j.Provenance[0].RecordID != recID {
 		t.Errorf("Provenance: got %v want 1 row with RecordID=%q", j.Provenance, recID)
+	}
+
+	// MemoriesTopics batch reader (D-089): returns the memory's topics keyed by id.
+	tm, err := s.Memories().MemoriesTopics(ctx, scope, []string{memID, "nonexistent"})
+	if err != nil {
+		t.Fatalf("MemoriesTopics: %v", err)
+	}
+	if got := tm[memID]; len(got) != 2 || got[0] != "topic-auth" {
+		t.Errorf("MemoriesTopics[%s] = %v, want [topic-auth topic-deploy]", memID, got)
+	}
+	if _, ok := tm["nonexistent"]; ok {
+		t.Errorf("MemoriesTopics returned an entry for a memory with no topics")
+	}
+	// Empty ids ⇒ empty map (no query).
+	if em, err := s.Memories().MemoriesTopics(ctx, scope, nil); err != nil || len(em) != 0 {
+		t.Errorf("MemoriesTopics(nil) = %v, %v; want empty", em, err)
+	}
+	// Cross-tenant isolation (P3): another tenant cannot read this memory's topics.
+	other := tenantScope("t-other-" + newID())
+	if om, err := s.Memories().MemoriesTopics(ctx, other, []string{memID}); err != nil || len(om) != 0 {
+		t.Errorf("cross-tenant MemoriesTopics leak: %v, %v", om, err)
 	}
 }
 
