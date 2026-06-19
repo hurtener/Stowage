@@ -82,6 +82,14 @@ episodic-eval win (D-081's discipline).
    `episode.threaded` audit event carrying the overlap score. Reversible: derived edges
    over immutable episodes/narratives — re-clustering never destroys.
 
+> **Deviation (bar-remediation A7, D-093):** the candidate signal was extended from
+> word-set Jaccard alone to `(wordJaccard ≥ ThreadMinOverlap) OR (narrative-embedding
+> cosine ≥ 0.82)`. The semantic signal reads the already-stored narrative vectors
+> (`VectorStore.Scan`, kind="narrative"), so the sweep stays gateway-free (D-081); it is
+> degraded-safe (no vectors ⇒ lexical-only). The `episode.threaded` payload gains a
+> `signal` field (`lexical|semantic|both`) so consumers can interpret the emitted
+> `overlap` value.
+
 Bounded: `ThreadBatchSize` episodes ⇒ O(n²) pairwise within the batch, n small
 (default 50); the window + same-owner filters prune most pairs.
 

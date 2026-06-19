@@ -228,3 +228,101 @@ func TestThreadingSweep_OutOfWindow(t *testing.T) {
 		t.Errorf("out-of-window episodes must not thread, got %+v", l)
 	}
 }
+
+// upsertNarrativeVector stores a vector for a narrative memory so the threading sweep's
+// semantic signal can read it (A7, D-093).
+func upsertNarrativeVector(t *testing.T, st store.Store, scope identity.Scope, narrID string, vec []float32) {
+	t.Helper()
+	if err := st.Vectors().Upsert(context.Background(), scope, store.StoredVector{
+		MemoryID: narrID, Model: "test", Dims: len(vec), Vec: vec,
+	}); err != nil {
+		t.Fatalf("upsert vector %s: %v", narrID, err)
+	}
+}
+
+// TestThreadingSweep_VectorSimilarityThreads: two narratives with DISJOINT words
+// (word-Jaccard = 0, below threshold) but near-identical stored embeddings must thread
+// on the semantic signal alone (A7, D-093) — the case lexical overlap misses.
+func TestThreadingSweep_VectorSimilarityThreads(t *testing.T) {
+	st, cleanup := newTestStore(t)
+	defer cleanup()
+	ctx := context.Background()
+	scope := identity.Scope{Tenant: "th-vec", Project: "p", User: "u"}
+	base := time.Now().Add(-48 * time.Hour).UnixMilli()
+
+	// No shared content words → wordJaccard = 0 < 0.3.
+	seedNarratedEpisode(t, st, scope, "ep-A", "narr-A", "alpha bravo charlie delta echo", base, base+1000)
+	seedNarratedEpisode(t, st, scope, "ep-B", "narr-B", "foxtrot golf hotel india juliet", base+2000, base+3000)
+	// Control: disjoint words AND an orthogonal vector → must not thread.
+	seedNarratedEpisode(t, st, scope, "ep-C", "narr-C", "kilo lima mike november oscar", base+4000, base+5000)
+
+	// A and B embed almost identically (cosine ≈ 1.0 ≥ 0.82); C is orthogonal.
+	upsertNarrativeVector(t, st, scope, "narr-A", []float32{1, 0, 0, 0})
+	upsertNarrativeVector(t, st, scope, "narr-B", []float32{0.99, 0.01, 0, 0})
+	upsertNarrativeVector(t, st, scope, "narr-C", []float32{0, 1, 0, 0})
+
+	threadManager(t, st, 0.3).RunForce(ctx)
+
+	tenant := identity.Scope{Tenant: "th-vec"}
+	ab := relatesLinks(t, st, tenant, "narr-A")
+	if len(ab) != 1 {
+		t.Fatalf("vector-similar narratives should thread on the semantic signal, got %d edges: %+v", len(ab), ab)
+	}
+	other := ab[0].FromMemory
+	if other == "narr-A" {
+		other = ab[0].ToMemory
+	}
+	if other != "narr-B" {
+		t.Errorf("narr-A should thread to narr-B via vectors, got %q", other)
+	}
+	// The recorded confidence is the cosine (≥ 0.82), not the word-Jaccard (0).
+	if ab[0].Confidence < 0.82 {
+		t.Errorf("threaded edge confidence should be the cosine (>=0.82), got %.3f", ab[0].Confidence)
+	}
+	// The orthogonal control must not thread.
+	if c := relatesLinks(t, st, tenant, "narr-C"); len(c) != 0 {
+		t.Errorf("orthogonal-vector narrative should not thread, got %+v", c)
+	}
+}
+
+// TestThreadingSweep_DimsMismatchNoSemanticThread: when two narratives' stored vectors
+// have DIFFERENT dims (e.g. a mid-flight model swap), the semantic signal is unavailable
+// (narrativeCosine → 0) and a word-disjoint pair must NOT thread (degraded-safe, D-093).
+func TestThreadingSweep_DimsMismatchNoSemanticThread(t *testing.T) {
+	st, cleanup := newTestStore(t)
+	defer cleanup()
+	ctx := context.Background()
+	scope := identity.Scope{Tenant: "th-dims", Project: "p", User: "u"}
+	base := time.Now().Add(-48 * time.Hour).UnixMilli()
+	// Disjoint words → wordJaccard = 0; only a vector match could thread them.
+	seedNarratedEpisode(t, st, scope, "ep-A", "narr-A", "alpha bravo charlie delta echo", base, base+1000)
+	seedNarratedEpisode(t, st, scope, "ep-B", "narr-B", "foxtrot golf hotel india juliet", base+2000, base+3000)
+	// Mismatched dims (4 vs 3) → narrativeCosine guards to 0 → no semantic signal.
+	upsertNarrativeVector(t, st, scope, "narr-A", []float32{1, 0, 0, 0})
+	upsertNarrativeVector(t, st, scope, "narr-B", []float32{1, 0, 0})
+
+	threadManager(t, st, 0.3).RunForce(ctx)
+
+	if l := relatesLinks(t, st, identity.Scope{Tenant: "th-dims"}, "narr-A"); len(l) != 0 {
+		t.Errorf("dims-mismatched vectors must not thread word-disjoint narratives, got %+v", l)
+	}
+}
+
+// TestThreadingSweep_NoVectorsLexicalFallback: with NO stored vectors the sweep must
+// still thread on word overlap alone (degraded-safe, D-036).
+func TestThreadingSweep_NoVectorsLexicalFallback(t *testing.T) {
+	st, cleanup := newTestStore(t)
+	defer cleanup()
+	ctx := context.Background()
+	scope := identity.Scope{Tenant: "th-novec", Project: "p", User: "u"}
+	base := time.Now().Add(-48 * time.Hour).UnixMilli()
+	// Strong word overlap, no vectors upserted at all.
+	seedNarratedEpisode(t, st, scope, "ep-A", "narr-A", "migrating the billing service to the new gateway under a lock", base, base+1000)
+	seedNarratedEpisode(t, st, scope, "ep-B", "narr-B", "migrating the billing service to the new gateway with a lock", base+2000, base+3000)
+
+	threadManager(t, st, 0.3).RunForce(ctx)
+
+	if l := relatesLinks(t, st, identity.Scope{Tenant: "th-novec"}, "narr-A"); len(l) != 1 {
+		t.Errorf("lexical fallback (no vectors) should still thread word-overlapping narratives, got %d: %+v", len(l), l)
+	}
+}

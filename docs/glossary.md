@@ -134,9 +134,11 @@ New terms land here in the same PR that introduces them (CLAUDE.md §14).
   ("the billing migration"), formed by `relates_to` edges between their narrative
   memories; read via `memory_episodes` `arc_of` (Phase 24b, D-081).
 - **Episode threading** — the gateway-free, off-by-default lifecycle sweep that
-  clusters recent narrated episodes into arcs by narrative content word-set overlap ∧
-  temporal proximity ∧ `(project,user)` continuity (Phase 24b, D-081); enablement is
-  eval-gated.
+  clusters recent narrated episodes into arcs by (narrative content word-set overlap OR
+  narrative-embedding cosine similarity) ∧ temporal proximity ∧ `(project,user)`
+  continuity (Phase 24b, D-081; vector signal added in D-093). The semantic signal reads
+  the already-stored narrative vectors (so the sweep stays gateway-free) and widens
+  recall to same-arc episodes that share few literal words. Enablement is eval-gated.
 - **Claim verification** — the schema-constrained gateway entailment check that a
   claim is supported by its cited memories; the `memory_verify` capability
   (`POST /v1/verify`), degraded-safe to "unclear" (Phase 25, §6c, D-084).
