@@ -2399,3 +2399,22 @@ heavily-filtered grant can consume ranking budget with non-matching memories and
 recall of the caller's own results; pushing kind_filter into the per-scope lane queries
 (LexicalSearch/FindNeighbors/vindex already accept Kinds) is a recall optimization for a
 follow-up. Neither affects the security property (filtering only ever drops, never adds).
+
+## D-090 — Reconcile augments structural neighbors with semantic (vector) neighbors
+
+2026-06-19. Bar-remediation (simplifications A4/A5). Reconciliation found dedup/update/
+supersede candidates ONLY by exact entity/keyword token overlap (structural) — so a
+candidate that is the SAME fact phrased differently, sharing no token, was never
+surfaced as a neighbor (missed dedup + missed contradiction/supersede). The vector lane
+was fully built and stored but not consulted by reconcile.
+
+Reconcile now embeds each candidate's enriched text (content+entities+keywords+queries,
+reusing the D-047 builder) and runs a vindex search, MERGING the semantic neighbors into
+the structural set (dedup by id). The near-dup pre-filter (A5) gains a SEMANTIC arm: a
+neighbor with cosine ≥ 0.95 (conservative; only true paraphrases) is treated as the same
+fact alongside the lexical bigram-Jaccard ≥ 0.85 gate. Reflection candidates restrict the
+vector search to reflection kinds, mirroring the structural filter (D-077 #5).
+
+Degraded-safe (D-036): when the vindex/gateway is unwired or the embed/search fails,
+reconcile falls back to structural-only neighbors (the prior behaviour) — no write-path
+hard dependency on the gateway. Wired via `ReconcileStage.SetVIndex` in boot.
