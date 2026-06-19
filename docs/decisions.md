@@ -2391,3 +2391,11 @@ extraction), so a filter there is unenforceable — `CreateGrant` rejects it
 **No LLM-quality risk to extraction.** The `topics` field is optional; the mock-gateway
 eval (no topics in its scripted candidates) and existing extraction behaviour are
 unchanged. The schema/prompt version bumps regenerate the goldens.
+
+**Filter semantics + a recall note (D-089 follow-ups).** A grant with BOTH topic_filter
+and kind_filter applies them as AND (sequential narrowing — the safe/more-restrictive
+direction). Enforcement is post-fetch (defense-in-depth, like the zone ceiling), so a
+heavily-filtered grant can consume ranking budget with non-matching memories and lower
+recall of the caller's own results; pushing kind_filter into the per-scope lane queries
+(LexicalSearch/FindNeighbors/vindex already accept Kinds) is a recall optimization for a
+follow-up. Neither affects the security property (filtering only ever drops, never adds).

@@ -3324,6 +3324,11 @@ func testMemoryGetJunctions(t *testing.T, factory Factory) {
 	if em, err := s.Memories().MemoriesTopics(ctx, scope, nil); err != nil || len(em) != 0 {
 		t.Errorf("MemoriesTopics(nil) = %v, %v; want empty", em, err)
 	}
+	// Cross-tenant isolation (P3): another tenant cannot read this memory's topics.
+	other := tenantScope("t-other-" + newID())
+	if om, err := s.Memories().MemoriesTopics(ctx, other, []string{memID}); err != nil || len(om) != 0 {
+		t.Errorf("cross-tenant MemoriesTopics leak: %v, %v", om, err)
+	}
 }
 
 // testMemoryGetJunctionsEmpty verifies that GetJunctions returns empty (not
