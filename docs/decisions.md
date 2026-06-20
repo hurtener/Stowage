@@ -2615,3 +2615,27 @@ ACK could race the buffer-append and no-op (the old longmemeval path only avoide
 ingesting many conversations before flushing). `RunDataset` now waits via
 `TestServer.WaitForBuffered` (BufferStore.ListDue) before each flush — deterministic for
 single- and multi-conversation datasets alike.
+
+## D-097 — OQ-5 resolved: Stowage ships under Apache-2.0
+
+2026-06-20. Phase 21 (terminal hardening & launch gate). RFC OQ-5 left the open-source
+license + timing open, gated on the SOTA benchmark report being in sight (§12) — now it
+is (the judged-QA number + the dataset runners, D-076/D-096). The owner picks **Apache-2.0**.
+
+**Why Apache-2.0.** Permissive with an explicit patent grant — the ecosystem-standard
+choice for Go infrastructure, and the right fit for a four-part interoperating ecosystem
+(Portico/Harbor/Dockyard/Stowage) where downstream adoption + contribution should be
+frictionless. The benchmark-led launch (brief 06 — "benchmarks ARE the marketing") is
+built to win open-source adoption; a permissive license maximizes that.
+
+**BSL-style (cloud-protective) alternative — considered and rejected for v0.1.** RFC OQ-5
+floated a source-available license to protect against managed-cloud free-riding. Rejected:
+(a) it would dampen the open adoption the launch is designed to win; (b) the managed-cloud
+control plane is explicitly a SEPARATE codebase (§14), so the commercialization-protection
+concern belongs there, not in this repo, which keeps the seams clean for it (identity,
+metering events, per-scope ceilings) without needing a restrictive license here. If a
+managed offering later warrants it, that is a future decision in the control-plane repo,
+not a re-license of this one.
+
+The LICENSE file + the launch artifacts land in Phase 21; until merged there is no LICENSE
+file (superseding the "no LICENSE file until then" stance of the earlier D-entries).

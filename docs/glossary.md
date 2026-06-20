@@ -380,3 +380,19 @@ New terms land here in the same PR that introduces them (CLAUDE.md §14).
   `…/api/v1/rerank` (D-075). Wired iff `gateway.rerank_model` is set and the
   primary `gateway.provider` is not in the native-rerank set
   `{cohere, vllm, bedrock, vertex}`; embed/complete keep routing to the primary.
+- **Five-minute rule** — the binding adoption criterion (RFC §9.4): a fresh
+  environment with one secret env var (`STOWAGE_GATEWAY_API_KEY`) reaches first-
+  memory-stored-and-retrieved in under five minutes, scripted and smoke-gated
+  (`scripts/smoke/phase-21-fiveminute.sh`, Phase 21).
+- **Forbidden-names history sweep** — the launch-blocking check that the predecessor
+  systems' project names appear nowhere in the *entire git history* (not just the
+  working tree), enforcing the clean-room predecessor-hygiene rule
+  (`scripts/forbidden-history-sweep.sh`, Phase 21).
+- **Release matrix** — the CGo-free cross-compile artifact set (darwin/linux ×
+  amd64/arm64) with published `SHA256SUMS`, produced by `make release` / the release
+  workflow (Phase 21).
+- **Full-cycle live acceptance** — the operator-run script
+  (`scripts/acceptance/full-cycle-live.sh`) that drives the running server through a
+  realistic usage cycle over every consumer route (HTTP + MCP-over-HTTP + CLI) with
+  the real LLM/embedding/rerank models active, asserting end-to-end correctness — the
+  launch acceptance gate run before tagging v0.1 (Phase 21).
