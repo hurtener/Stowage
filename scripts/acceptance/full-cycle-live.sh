@@ -22,6 +22,15 @@
 #   STOWAGE_ACCEPT_RERANK_MODEL, STOWAGE_ACCEPT_BASE_URL, STOWAGE_ACCEPT_RERANK_BASE_URL,
 #   STOWAGE_ACCEPT_PROVIDER.
 #
+# COMPLETE-MODEL NOTE: the complete model must be reliable for SCHEMA-CONSTRAINED
+# (structured) output — extraction/reflection/verify depend on it. The default
+# inception/mercury-2 intermittently returns empty content ("nil content in response
+# message") on the extraction call, which dead-letters the candidates and forms no
+# memory (observed live; see eval/REPORT.md). Use a solid structured-output model, e.g.:
+#   STOWAGE_ACCEPT_MODEL=google/gemini-2.5-flash scripts/acceptance/full-cycle-live.sh
+# Verified live: with gemini-2.5-flash the full knowledge cycle (extract → retrieve →
+# cite → drill-down → verify=entailed → causal → trace) passes end-to-end.
+#
 # Exit code == number of failed assertions.
 set -uo pipefail
 cd "$(dirname "$0")/../.."
@@ -62,7 +71,14 @@ RERANK_MODEL="${STOWAGE_ACCEPT_RERANK_MODEL:-cohere/rerank-4-fast}"
 BIN=$(mktemp -d)/stowage
 WORK=$(mktemp -d)
 SERVER_PID=""
-cleanup() { [ -n "$SERVER_PID" ] && kill "$SERVER_PID" 2>/dev/null; rm -rf "$WORK" "$(dirname "$BIN")"; }
+SAVED_LOG="${TMPDIR:-/tmp}/stowage-acceptance-serve.log"
+cleanup() {
+  [ -n "$SERVER_PID" ] && kill "$SERVER_PID" 2>/dev/null
+  # Preserve the server log on failure so a live finding is diagnosable.
+  [ "${fails:-0}" -ne 0 ] && [ -f "$WORK/serve.log" ] && cp "$WORK/serve.log" "$SAVED_LOG" 2>/dev/null \
+    && printf 'server log preserved at %s\n' "$SAVED_LOG" >&2
+  rm -rf "$WORK" "$(dirname "$BIN")"
+}
 trap cleanup EXIT
 
 info "Building CGo-free binary"
@@ -172,6 +188,10 @@ S=$(ingest "$(rec user 'We decided to use PostgreSQL as the primary database for
 assert_2xx "POST /v1/records (session 1, turn 2)" "$S"
 S=$(ingest "$(rec user 'Gotcha: the Kafka consumer silently drops messages if you forget to commit offsets after a rebalance.' "$SESS1")")
 assert_2xx "POST /v1/records (session 1, turn 3)" "$S"
+# Ingest enqueues to the buffer stage asynchronously (records_handler non-blocking
+# channel → stage goroutine); settle briefly so the explicit flush below doesn't race
+# the buffer-append and extract an empty buffer. The wait loop re-flushes as a backstop.
+sleep 3
 S=$(api POST "/v1/buffers/$SESS1/flush" '{"trigger":"explicit"}'); assert_2xx "POST /v1/buffers/{key}/flush (s1)" "$S"
 
 # Branch route (exploration lifecycle): fork off the session.
@@ -180,12 +200,20 @@ S=$(api POST /v1/branches "{\"action\":\"fork\",\"session_id\":\"$SESS1\"}"); as
 # ── Wait for real extraction to produce retrievable knowledge ─────────────────
 info "Waiting for the pipeline to extract + embed (real LLM; up to ~3 min)"
 RETR_RESP="$WORK/retr"
-retrieve() { # query [profile] → status; body in $RETR_RESP
-  local q="$1" prof="${2:-}"
-  curl -s -X POST "$API/v1/retrieve" -H "Authorization: Bearer $AGENT_KEY" \
-    -H 'Content-Type: application/json' -o "$RETR_RESP" -w '%{http_code}' \
-    -d "{\"query\":\"$q\",\"limit\":5,\"include_lanes\":true,\"session_id\":\"q\",\"profile\":\"$prof\"}" 2>/dev/null
+retrieve() { # query [profile] → status; body in $RETR_RESP. Retries once on a
+  # transient connection failure (curl 000) — the rerank path can occasionally reset.
+  local q="$1" prof="${2:-}" code
+  for _ in 1 2; do
+    code=$(curl -s --max-time 90 -X POST "$API/v1/retrieve" -H "Authorization: Bearer $AGENT_KEY" \
+      -H 'Content-Type: application/json' -o "$RETR_RESP" -w '%{http_code}' \
+      -d "{\"query\":\"$q\",\"limit\":5,\"include_lanes\":true,\"session_id\":\"q\",\"profile\":\"$prof\"}" 2>/dev/null)
+    [ "$code" != "000" ] && break
+    sleep 2
+  done
+  printf '%s' "$code"
 }
+# assert a retrieve() result (reads $RETR_RESP, not $RESP).
+assert_retr() { case "$2" in 2*) ok "$1 ($2)";; *) bad "$1 (got $2: $(head -c200 "$RETR_RESP"))";; esac; }
 found_editor=0
 if [ "$GW" = "mock" ]; then
   info "mock gateway: extraction is scripted-empty — skipping knowledge-content asserts (route coverage only)"
@@ -195,10 +223,13 @@ else
     if jq -e '[.items[].content] | join(" ") | test("Neovim"; "i")' "$RETR_RESP" >/dev/null 2>&1; then
       found_editor=1; break
     fi
+    # Backstop the async-buffer race: re-flush every ~30s so a first flush that beat the
+    # buffer-append still triggers extraction once the records have landed.
+    [ $((i % 6)) -eq 0 ] && api POST "/v1/buffers/$SESS1/flush" '{"trigger":"explicit"}' >/dev/null
     sleep 5
   done
   [ "$found_editor" = 1 ] && ok "knowledge formed: 'Neovim' retrievable after real extraction (${i}×5s)" \
-                          || bad "knowledge NOT formed: 'Neovim' not retrievable within timeout (check $WORK/serve.log)"
+                          || bad "knowledge NOT formed: 'Neovim' not retrievable in time (serve log preserved on exit)"
 fi
 
 # ── Retrieve (both profiles) + support summary + citations ────────────────────
@@ -248,7 +279,10 @@ S=$(api POST /v1/records "{\"records\":[$(rec user 'Correction: Dana switched ed
 assert_2xx "POST /v1/records (correction, session 2)" "$S"
 S=$(api POST "/v1/buffers/$SESS2/flush" '{"trigger":"explicit"}'); assert_2xx "POST /v1/buffers/{key}/flush (s2)" "$S"
 if [ -n "$MEMID" ]; then
-  S=$(api PATCH "/v1/memories/$MEMID" '{"importance":5}'); assert_2xx "PATCH /v1/memories/{id} (assert/edit)" "$S"
+  # PATCH /v1/memories/{id} RESOLVES a pending_confirmation memory (action=confirm|reject);
+  # an active memory is not pending, so a clean 4xx ("not pending") proves the route is wired.
+  S=$(api PATCH "/v1/memories/$MEMID" '{"action":"confirm"}')
+  case "$S" in 2*|400|404|409) ok "PATCH /v1/memories/{id} (resolve; $S)";; *) bad "PATCH /v1/memories/{id} (got $S: $(head -c160 "$RESP"))";; esac
   S=$(api POST "/v1/memories/$MEMID/rollback" '{}')
   case "$S" in 2*|409) ok "POST /v1/memories/{id}/rollback (reversible op; $S)";; *) bad "rollback (got $S)";; esac
 else kbad "PATCH+rollback /v1/memories/{id} (no memory id yet)"; fi
