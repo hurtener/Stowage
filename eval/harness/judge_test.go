@@ -43,8 +43,11 @@ func (f *fakeGateway) Rerank(context.Context, gateway.RerankRequest) (gateway.Re
 func TestReaderPrompt_Golden(t *testing.T) {
 	sys, user := BuildReaderPrompt("How many mugs did the user buy?",
 		[]string{"User spent $60 on coffee mugs.", "  The mugs cost $12 each.  "})
-	if !strings.Contains(sys, "ONLY the provided memory context") {
+	if !strings.Contains(sys, "ONLY the retrieved context") {
 		t.Errorf("reader system prompt missing context-only instruction: %q", sys)
+	}
+	if !strings.Contains(sys, "ABSTAIN") {
+		t.Errorf("reader system prompt missing abstention instruction: %q", sys)
 	}
 	wantUser := "Context:\n[1] User spent $60 on coffee mugs.\n[2] The mugs cost $12 each.\n\nQuestion: How many mugs did the user buy?"
 	if user != wantUser {

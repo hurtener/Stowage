@@ -8,11 +8,12 @@ import "encoding/json"
 
 // chatRequest is the wire body for POST {base}/chat/completions.
 type chatRequest struct {
-	Model          string          `json:"model"`
-	Messages       []wireMessage   `json:"messages"`
-	MaxTokens      int             `json:"max_tokens,omitempty"`
-	Temperature    float32         `json:"temperature,omitempty"`
-	ResponseFormat *responseFormat `json:"response_format,omitempty"`
+	Model           string          `json:"model"`
+	Messages        []wireMessage   `json:"messages"`
+	MaxTokens       int             `json:"max_tokens,omitempty"`
+	Temperature     float32         `json:"temperature,omitempty"`
+	ResponseFormat  *responseFormat `json:"response_format,omitempty"`
+	ReasoningEffort string          `json:"reasoning_effort,omitempty"` // OpenAI-style reasoning effort (D-100); omitted when empty
 }
 
 type wireMessage struct {

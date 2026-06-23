@@ -2780,3 +2780,51 @@ transparent (`GET /v1/topics` shows `source: pack:<name>`). The cost ceiling is 
 so it lands as an RFC §5.4 amendment + this superseding entry; the resolution-logic,
 sentinel, cap, and new packs are implemented in a named follow-up phase (the phase-07
 plan carries a forward pointer here), not in this docs PR.
+
+## D-100 — Gateway seam: optional per-request model override + reasoning effort
+
+2026-06-23. Eval-enablement for the LongMemEval benchmark run. The `gateway.CompleteRequest`
+gains two OPTIONAL fields, both zero-valued by default so every existing caller is
+byte-for-byte unchanged:
+
+- **`Model string`** — overrides the gateway's configured completion model for a single
+  call (empty = the configured model). It lets one gateway answer eval questions with a
+  strong **reader** model (e.g. `anthropic/claude-sonnet-4.6`) while extraction/reconcile
+  keep using the cheap configured model — without standing up a second gateway (the
+  D-076 "second gateway" deviation is resolved by this instead).
+- **`ReasoningEffort string`** — requests provider reasoning / extended thinking at
+  `"none"|"minimal"|"low"|"medium"|"high"` (empty = no reasoning param). The bifrost
+  driver maps it to bifrost's native `ChatParameters.Reasoning.Effort`; the openaicompat
+  driver maps it to the OpenAI-style `reasoning_effort` field. Providers that don't
+  support it ignore it.
+
+**Why on the seam (P5), not a per-caller hack.** Both are genuine, reusable provider
+capabilities, and routing them through `CompleteRequest` keeps `internal/gateway` the
+single place that knows wire formats. Both drivers (`bifrost`, `openaicompat`) honor
+them; the `mock` driver ignores them (scripted responses). Golden/unit tests assert (a)
+the default path is unchanged (no `reasoning`/`reasoning_effort` emitted, configured
+model used) and (b) the override path sets the model + reasoning. The eval harness wires
+the reader/judge through `JudgeQuestionWith(ReaderOpts{Model, ReasoningEffort})`.
+
+**Scope notes.** Metering still attributes a completion to the gateway's *configured*
+model (the override is an eval-harness convenience; per-model cost attribution is not a
+goal here). No new config knob (D-034 untouched) — the override is request-scoped, set by
+the eval harness from `STOWAGE_EVAL_READER_MODEL` / `STOWAGE_EVAL_READER_EFFORT`. No schema
+change.
+
+## D-101 — LongMemEval extraction needs a seeded topic set, not the default preferences pack
+
+2026-06-23. Eval-enablement. Extraction is topic-gated (D-007/D-043/D-099): a candidate
+that matches no active topic is never created. A full-mode LongMemEval run previously
+relied on the assistant profile's virtual `pack:preferences` (4 personalization topics),
+so the breadth of facts LongMemEval probes — events, dates, possessions, relationships,
+numbers, knowledge-updates, temporal facts — had **no home** and was silently dropped,
+starving retrieval on most questions.
+
+**Decision.** The full-mode runner seeds a broad, compiled-in **LongMemEval extraction-
+magnet set** (`eval/harness/topics_seed.go`, 12 tight non-overlapping topics tuned to the
+LongMemEval question taxonomy) at the eval scope via the live `PUT /v1/topics` surface,
+before ingestion (`RunDatasetOpts.SeedTopics`). Explicit topics suppress the default pack
+(D-099), which is intended — the run wants exactly this set. CI/mock runs do not seed
+(their extraction is scripted). This is an eval-harness fixture decision, not a product
+default: production scopes still choose topics/packs per D-099.

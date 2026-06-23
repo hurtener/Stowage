@@ -216,8 +216,13 @@ func (d *Driver) doComplete(ctx context.Context, req gateway.CompleteRequest) (g
 		msgs = append(msgs, wireMessage{Role: m.Role, Content: m.Content})
 	}
 
+	// Per-request model override (D-100): empty Model uses the configured model.
+	model := d.cfg.Model
+	if req.Model != "" {
+		model = req.Model
+	}
 	body := chatRequest{
-		Model:       d.cfg.Model,
+		Model:       model,
 		Messages:    msgs,
 		MaxTokens:   req.MaxTokens,
 		Temperature: req.Temperature,
@@ -229,6 +234,7 @@ func (d *Driver) doComplete(ctx context.Context, req gateway.CompleteRequest) (g
 				Strict: true,
 			},
 		},
+		ReasoningEffort: req.ReasoningEffort, // omitted when empty (D-100)
 	}
 
 	b, err := json.Marshal(body)

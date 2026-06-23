@@ -221,6 +221,62 @@ func TestBifrostSDK_CompleteTranslateRequest(t *testing.T) {
 	}
 }
 
+// TestBifrostSDK_CompleteModelOverrideAndReasoning covers D-100: a per-request
+// Model overrides the configured model, and ReasoningEffort sets params.Reasoning.
+// The default path (empty fields) must leave both untouched.
+func TestBifrostSDK_CompleteModelOverrideAndReasoning(t *testing.T) {
+	t.Parallel()
+	schema := json.RawMessage(`{"type":"object","properties":{"name":{"type":"string"}},"required":["name"]}`)
+
+	t.Run("override+reasoning", func(t *testing.T) {
+		t.Parallel()
+		var got *bfschemas.BifrostChatRequest
+		fake := &fakeClient{chatFn: func(_ *bfschemas.BifrostContext, req *bfschemas.BifrostChatRequest) (*bfschemas.BifrostChatResponse, *bfschemas.BifrostError) {
+			got = req
+			return okChatResponse(`{"name":"Alice"}`), nil
+		}}
+		gw := newTestDriver(t, fake, 4)
+		if _, err := gw.Complete(context.Background(), gateway.CompleteRequest{
+			Messages:        []gateway.Message{{Role: "user", Content: "x"}},
+			Schema:          schema,
+			MaxTokens:       50,
+			Model:           "anthropic/claude-sonnet-4.6",
+			ReasoningEffort: "medium",
+		}); err != nil {
+			t.Fatalf("Complete: %v", err)
+		}
+		if got.Model != "anthropic/claude-sonnet-4.6" {
+			t.Errorf("per-request model override not applied: got %q", got.Model)
+		}
+		if got.Params == nil || got.Params.Reasoning == nil || got.Params.Reasoning.Effort == nil || *got.Params.Reasoning.Effort != "medium" {
+			t.Errorf("reasoning effort not set to medium: %+v", got.Params)
+		}
+	})
+
+	t.Run("default-no-reasoning", func(t *testing.T) {
+		t.Parallel()
+		var got *bfschemas.BifrostChatRequest
+		fake := &fakeClient{chatFn: func(_ *bfschemas.BifrostContext, req *bfschemas.BifrostChatRequest) (*bfschemas.BifrostChatResponse, *bfschemas.BifrostError) {
+			got = req
+			return okChatResponse(`{"name":"Alice"}`), nil
+		}}
+		gw := newTestDriver(t, fake, 4)
+		if _, err := gw.Complete(context.Background(), gateway.CompleteRequest{
+			Messages:  []gateway.Message{{Role: "user", Content: "x"}},
+			Schema:    schema,
+			MaxTokens: 50,
+		}); err != nil {
+			t.Fatalf("Complete: %v", err)
+		}
+		if got.Model != "gpt-4o" {
+			t.Errorf("default model should be the configured one, got %q", got.Model)
+		}
+		if got.Params != nil && got.Params.Reasoning != nil {
+			t.Errorf("no reasoning param should be set on the default path, got %+v", got.Params.Reasoning)
+		}
+	})
+}
+
 func TestBifrostSDK_CompleteTranslateResponse(t *testing.T) {
 	t.Parallel()
 

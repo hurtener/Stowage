@@ -84,10 +84,13 @@ type JudgedResult struct {
 // deterministic — golden-tested. The context blocks are the retrieved memory
 // contents (already scored), joined with stable numbering.
 func BuildReaderPrompt(question string, contexts []string) (system, user string) {
-	system = "You are answering a question using ONLY the provided memory context. " +
-		"Answer concisely and directly. Do arithmetic or counting over the context when the " +
-		"question requires it. If the context does not contain enough information to answer, " +
-		"say so explicitly rather than guessing."
+	system = "You are answering a question using ONLY the memory context retrieved below. " +
+		"Rules: (1) Use ONLY the retrieved context — never rely on outside knowledge, prior " +
+		"training, or assumptions; do not answer anything that is not supported by the context. " +
+		"(2) You MAY do arithmetic, counting, or temporal reasoning OVER the context when the " +
+		"question requires it. (3) If the retrieved context does not contain enough information " +
+		"to answer, ABSTAIN: state explicitly that the provided context is insufficient — do not " +
+		"guess. Answer concisely and directly."
 
 	var b strings.Builder
 	b.WriteString("Context:\n")
@@ -121,18 +124,52 @@ func BuildJudgePrompt(question, gold, answer string) (system, user string) {
 	return system, b.String()
 }
 
-// JudgeQuestion runs the reader then the judge against the gateway and returns
-// the graded result. Reader and judge share one gateway (its completion model is
-// pinned at construction — STOWAGE_EVAL_MODEL). A distinct judge model would need
-// a second gateway; that override is documented but deferred (D-076 deviation).
+// ReaderOpts overrides the reader/judge model and reasoning effort for one run
+// (D-100). The zero value reproduces the legacy behavior: reader and judge use the
+// gateway's configured completion model with no reasoning parameter. The eval
+// harness sets Model to a stronger reader model (e.g. anthropic/claude-sonnet-4.6,
+// distinct from the cheap extraction model) and ReasoningEffort (e.g. "medium").
+type ReaderOpts struct {
+	// Model overrides the completion model for both the reader and the judge
+	// calls. Empty = the gateway's configured model.
+	Model string
+	// ReasoningEffort requests provider extended thinking for the READER call
+	// ("none"|"minimal"|"low"|"medium"|"high"). Empty = none. The judge runs
+	// without reasoning (a short classification).
+	ReasoningEffort string
+}
+
+// readerBudget returns the reader's output-token budget. With reasoning enabled the
+// model spends tokens thinking before the answer, so the budget is widened to avoid
+// truncating the JSON (the 2026-06-12 lesson, generalized to extended thinking).
+func readerBudget(opts ReaderOpts) int {
+	if opts.ReasoningEffort != "" {
+		return 16000
+	}
+	return readerMaxTokens
+}
+
+// JudgeQuestion runs the reader then the judge using the gateway's configured model
+// with no reasoning (the CI/mock and gain/adapt callers). It is the zero-opts
+// wrapper over JudgeQuestionWith.
 func JudgeQuestion(ctx context.Context, gw gateway.Gateway, question, gold string, contexts []string) (JudgedResult, error) {
+	return JudgeQuestionWith(ctx, gw, ReaderOpts{}, question, gold, contexts)
+}
+
+// JudgeQuestionWith runs the reader then the judge with per-call model / reasoning
+// overrides (D-100, D-076). The reader answers ONLY from the retrieved context and
+// may abstain; the judge grades that answer against the gold answer semantically.
+// Both calls go through the gateway seam (P5) and are JSON-schema-constrained.
+func JudgeQuestionWith(ctx context.Context, gw gateway.Gateway, opts ReaderOpts, question, gold string, contexts []string) (JudgedResult, error) {
 	rSys, rUser := BuildReaderPrompt(question, contexts)
 	rResp, err := gw.Complete(ctx, gateway.CompleteRequest{
-		System:      rSys,
-		Messages:    []gateway.Message{{Role: "user", Content: rUser}},
-		Schema:      readerSchema,
-		MaxTokens:   readerMaxTokens,
-		Temperature: 0.0,
+		System:          rSys,
+		Messages:        []gateway.Message{{Role: "user", Content: rUser}},
+		Schema:          readerSchema,
+		MaxTokens:       readerBudget(opts),
+		Temperature:     0.0,
+		Model:           opts.Model,
+		ReasoningEffort: opts.ReasoningEffort,
 	})
 	if err != nil {
 		return JudgedResult{}, fmt.Errorf("reader complete: %w", err)
@@ -149,6 +186,7 @@ func JudgeQuestion(ctx context.Context, gw gateway.Gateway, question, gold strin
 		Schema:      judgeSchema,
 		MaxTokens:   judgeMaxTokens,
 		Temperature: 0.0,
+		Model:       opts.Model, // judge uses the same (strong) model; no reasoning
 	})
 	if err != nil {
 		return JudgedResult{}, fmt.Errorf("judge complete: %w", err)
