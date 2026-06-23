@@ -45,6 +45,15 @@ when a scope has **no active topics**, the profile's default pack applies at
 prompt-build time (virtual, not persisted — D-043); any explicit topic
 disables the virtual pack.
 
+> **Amended by D-099 (RFC §5.4).** Packs now *compose*: a scope's effective topics
+> are the deduped union of its enabled packs (`pack:on:<name>` sentinel) and its
+> explicit topics, capped at `maxActiveTopics`; the profile selects an ordered list
+> of default packs that apply only when the scope expressed no intent. The
+> all-or-nothing "any explicit topic disables the pack" rule above is superseded by
+> this union model. Implementation (composition logic, the `pack:on:` sentinel, the
+> cap, and the new `pack:project`/`pack:incidents` packs) lands in a named follow-up
+> phase; this phase's single-pack behavior remains the shipped baseline until then.
+
 API (auth'd, tenant from key; project/user/session as query/body params):
 - `GET /v1/topics` — list active (explicit or the applicable virtual pack,
   flagged `source: pack|explicit`).

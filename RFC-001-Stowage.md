@@ -397,6 +397,23 @@ boundary (deleting a topic can expire its memories). Default topic packs ship fo
 the common cases (assistant personalization — the preference-fragments pack —
 and coding-agent learnings).
 
+**Packs compose (D-099, amending D-043).** Packs are compiled-in sets of topic
+entries, and a scope's effective topics are the **union** of: the packs it has
+enabled, plus its explicit topics, deduped by key (explicit wins). The `profile`
+selects an *ordered list* of **default** packs that apply only when a scope has
+expressed no intent (no explicit topics and no enabled packs) — the zero-config
+path. A scope enables an additional compiled-in pack with the `pack:on:<name>`
+sentinel topic (mirroring the existing `pack:off` opt-out), so e.g. a project
+scope can run the personalization pack *and* a project pack *and* a few bespoke
+topics at once. `pack:off` still dominates (opt out entirely; extraction
+short-circuits with no gateway call). The composed set is capped at a bounded
+number of active topics (a package constant, not a knob) to keep the extraction
+prompt and per-flush cost bounded; the cap drops pack entries before explicit
+topics and never silently — the overflow is logged and evented. Beyond the two
+shipping packs, additional curated packs (`pack:project`, `pack:incidents`, and a
+documented backlog of product/people/compliance/research packs) extend coverage
+without new config.
+
 ### 5.5 Branches (exploration without contamination)
 
 A session can fork **branches** ("try a bar chart instead") so exploration
