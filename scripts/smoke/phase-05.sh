@@ -211,10 +211,11 @@ else
   skip "revoke agent key (no id extracted)"
 fi
 
-# ── DSAR stub → 501 ──────────────────────────────────────────────────────────
+# ── DSAR cascading delete → 200 (implemented in Phase 21, D-098) ──────────────
+# Purging a user with no data is a no-op that still returns 200 with zero counts.
 
 STATUS=$(api_call DELETE /v1/admin/users/user-xyz '' '' "$ADMIN_KEY")
-[ "$STATUS" = "501" ] && ok "DELETE /v1/admin/users/{user} → 501 stub" || failc "DELETE /v1/admin/users/{user} → 501 (got $STATUS)"
+[ "$STATUS" = "200" ] && ok "DELETE /v1/admin/users/{user} → 200 (DSAR cascade)" || failc "DELETE /v1/admin/users/{user} → 200 (got $STATUS)"
 
 # ── Graceful shutdown via SIGTERM ─────────────────────────────────────────────
 

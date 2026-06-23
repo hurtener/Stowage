@@ -180,8 +180,9 @@ func New(cfg *config.Config, st store.Store, log *slog.Logger, reg *prometheus.R
 	mux.HandleFunc("GET /v1/admin/proactive", srv.authMiddleware(srv.handleGetProactiveConfig, true))
 	mux.HandleFunc("PUT /v1/admin/proactive", srv.authMiddleware(srv.handlePutProactiveConfig, true))
 
-	// DSAR stub — returns 501 (Phase 21 retention work implements the cascade).
-	mux.HandleFunc("DELETE /v1/admin/users/{user}", srv.authMiddleware(srv.handleDSARStub, true))
+	// DSAR cascading delete (RFC §13, D-098) — admin-only purge of all data for
+	// one (tenant, user); the only API path that deletes verbatim records (P1).
+	mux.HandleFunc("DELETE /v1/admin/users/{user}", srv.authMiddleware(srv.handleDSAR, true))
 
 	// Grants: group management (admin role) — Phase 15 (RFC §5.3).
 	mux.HandleFunc("POST /v1/admin/groups", srv.authMiddleware(srv.handleCreateGroup, true))

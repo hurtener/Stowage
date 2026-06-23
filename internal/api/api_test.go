@@ -921,11 +921,38 @@ func TestAdminKeys_RotateWithoutRestart(t *testing.T) {
 	}
 }
 
-// TestDSARStub proves DELETE /v1/admin/users/{user} returns 501.
-func TestDSARStub(t *testing.T) {
+// TestDSAR proves DELETE /v1/admin/users/{user} cascades a DSAR erasure: it
+// purges all data for the (admin-key tenant, path user), returns 200 + per-table
+// counts, and the data is gone from the store afterward (RFC §13, D-098).
+func TestDSAR(t *testing.T) {
 	t.Parallel()
 	_, ts, st := newTestServer(t)
 	_, adminPT := mustCreateAdminKey(t, st, "tenant-dsar")
+
+	ctx := context.Background()
+	scope := identity.Scope{Tenant: "tenant-dsar", User: "user-123"}
+
+	// Seed the user with a verbatim record and a memory directly (deterministic;
+	// avoids the async extraction pipeline).
+	recID := "rec-dsar-1"
+	if err := st.Records().Append(ctx, scope, []store.Record{
+		{ID: recID, Role: "user", Content: "purge me", OccurredAt: time.Now().UnixMilli(), CreatedAt: time.Now().UnixMilli()},
+	}); err != nil {
+		t.Fatalf("seed record: %v", err)
+	}
+	memID := "mem-dsar-1"
+	if err := st.Memories().Commit(ctx, scope, store.CommitSet{
+		Action: store.ActionAdd,
+		Memory: store.Memory{
+			ID: memID, Kind: "fact", Content: "user-123 secret", Context: "ctx",
+			Status: "active", Confidence: 0.8, TrustSource: "llm_extracted",
+			Stability: 1.0, ContentHash: "hash-dsar-1",
+			CreatedAt: time.Now().UnixMilli(), UpdatedAt: time.Now().UnixMilli(),
+		},
+		Events: []store.Event{{ID: "ev-dsar-1", Type: "memory.added", SubjectID: memID, Payload: `{}`}},
+	}); err != nil {
+		t.Fatalf("seed memory: %v", err)
+	}
 
 	req, _ := http.NewRequest("DELETE", ts.URL+"/v1/admin/users/user-123", nil)
 	req.Header.Set("Authorization", bearerHeader(adminPT))
@@ -934,8 +961,33 @@ func TestDSARStub(t *testing.T) {
 		t.Fatalf("DELETE /v1/admin/users/user-123: %v", err)
 	}
 	defer drainClose(resp.Body)
-	if resp.StatusCode != http.StatusNotImplemented {
-		t.Errorf("DSAR stub: got %d want 501", resp.StatusCode)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("DSAR: got %d want 200", resp.StatusCode)
+	}
+
+	var body struct {
+		User   string `json:"user"`
+		Counts struct {
+			Records  int64 `json:"records"`
+			Memories int64 `json:"memories"`
+		} `json:"counts"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if body.User != "user-123" {
+		t.Errorf("response user: got %q want user-123", body.User)
+	}
+	if body.Counts.Records < 1 || body.Counts.Memories < 1 {
+		t.Errorf("counts: records=%d memories=%d, want >= 1 each", body.Counts.Records, body.Counts.Memories)
+	}
+
+	// The data is gone.
+	if _, err := st.Records().Get(ctx, scope, recID); err == nil {
+		t.Errorf("record survived the purge")
+	}
+	if _, err := st.Memories().Get(ctx, scope, memID); err == nil {
+		t.Errorf("memory survived the purge")
 	}
 }
 

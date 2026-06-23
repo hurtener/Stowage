@@ -3,12 +3,13 @@ package api
 import (
 	"encoding/json"
 	"errors"
-	"fmt"
 	"net/http"
 	"strings"
 	"time"
 
 	"github.com/hurtener/stowage/internal/auth"
+	"github.com/hurtener/stowage/internal/identity"
+	"github.com/hurtener/stowage/internal/store"
 )
 
 // keyInfo is the wire representation of an API key (no hash, no plaintext).
@@ -209,12 +210,41 @@ func (s *Server) handleRevokeTenantKeys(w http.ResponseWriter, r *http.Request) 
 	}{Count: count})
 }
 
-// handleDSARStub is the DSAR (Data Subject Access Request) cascade stub.
-// Returns 501 until the retention/DSAR work lands in Phase 21.
-// The route is reserved from day one so the API surface is stable (RFC §9.1).
-func (s *Server) handleDSARStub(w http.ResponseWriter, r *http.Request) {
-	// Phase 21 (security pass) implements the full retention cascade.
-	// This stub ensures the surface is reserved and contracts are stable.
-	respondJSON(w, http.StatusNotImplemented,
-		errBody(fmt.Sprintf("DSAR cascade for user %q not yet implemented (Phase 21)", r.PathValue("user"))))
+// handleDSAR implements DELETE /v1/admin/users/{user} — the DSAR (Data Subject
+// Access Request) cascading delete of ALL data for one (tenant, user) (RFC §13,
+// D-098). Admin-only (authMiddleware admin=true). The tenant is taken from the
+// caller's admin key — an admin can only purge users within their own tenant
+// (P3); the {user} path segment names the data subject. This is the only API
+// path that deletes verbatim records (the P1 retention/DSAR cascade exception).
+func (s *Server) handleDSAR(w http.ResponseWriter, r *http.Request) {
+	user := r.PathValue("user")
+	if user == "" {
+		respondJSON(w, http.StatusBadRequest, errBody("user is required"))
+		return
+	}
+	authKey := keyFromContext(r.Context())
+	scope := identity.Scope{Tenant: authKey.TenantID, User: user}
+
+	counts, err := s.st.Ops().DeleteUserData(r.Context(), scope)
+	if err != nil {
+		if errors.Is(err, store.ErrScopeRequired) {
+			respondJSON(w, http.StatusBadRequest, errBody("tenant and user are required"))
+			return
+		}
+		s.log.ErrorContext(r.Context(), "api: dsar purge failed",
+			"tenant", authKey.TenantID, "user", user, "err", err)
+		respondJSON(w, http.StatusInternalServerError, errBody("store error"))
+		return
+	}
+
+	// Audit at INFO (no secrets): the store also emits a tenant-scoped
+	// user.purged event with the same counts.
+	s.log.InfoContext(r.Context(), "api: dsar purge complete",
+		"tenant", authKey.TenantID, "user", user,
+		"memories", counts.Memories, "records", counts.Records)
+
+	respondJSON(w, http.StatusOK, struct {
+		User   string           `json:"user"`
+		Counts store.DSARCounts `json:"counts"`
+	}{User: user, Counts: counts})
 }

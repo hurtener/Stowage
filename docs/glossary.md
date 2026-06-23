@@ -396,3 +396,11 @@ New terms land here in the same PR that introduces them (CLAUDE.md §14).
   realistic usage cycle over every consumer route (HTTP + MCP-over-HTTP + CLI) with
   the real LLM/embedding/rerank models active, asserting end-to-end correctness — the
   launch acceptance gate run before tagging v0.1 (Phase 21).
+- **DSAR cascade** — the Data Subject Access Request cascading delete
+  (`OpsStore.DeleteUserData`, `DELETE /v1/admin/users/{user}`): a single-transaction
+  erasure of ALL data for one `(tenant, user)` — every user_id-bearing table plus the
+  children of the user's memories — in FK-safe order. It is the **only** code path
+  allowed to delete verbatim records (the P1 retention/DSAR exception, RFC §13, D-098).
+- **`user.purged`** — the tenant-scoped audit event the DSAR cascade emits after a
+  purge, carrying the per-table `DSARCounts`; emitted at tenant scope (not the deleted
+  user) so it survives the user's own events being purged in the same transaction.
