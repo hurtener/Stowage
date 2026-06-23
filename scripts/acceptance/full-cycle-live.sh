@@ -175,6 +175,15 @@ info "Topics"
 S=$(api PUT /v1/topics '[{"key":"preferences","description":"the user'\''s stated preferences, tools, and working style","status":"active"},{"key":"decisions","description":"technical decisions the user or team has made and why","status":"active"},{"key":"gotchas","description":"pitfalls, bugs, and lessons learned to avoid repeating","status":"active"}]')
 assert_2xx "PUT /v1/topics" "$S"
 S=$(api GET /v1/topics); assert_2xx "GET /v1/topics" "$S"
+# Pack composition (D-099): enable a curated pack and confirm it composes with the
+# explicit topics above (union; entries tagged source=pack:project).
+S=$(api PUT /v1/topics '[{"key":"pack:on:project","status":"active"}]'); assert_2xx "PUT /v1/topics (pack:on:project)" "$S"
+S=$(api GET /v1/topics)
+if grep -q '"source":"pack:project"' "$RESP" && grep -q '"key":"preferences"' "$RESP"; then
+  ok "topic-pack composition (pack:on:project ∪ explicit topics)"
+else
+  bad "pack:on:project did not compose with explicit topics: $(head -c200 "$RESP")"
+fi
 
 # ── Ingest a realistic multi-session conversation ─────────────────────────────
 info "Ingest (records → buffer → real extraction)"

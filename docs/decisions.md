@@ -2737,12 +2737,22 @@ zero-config default-pack behavior and the `pack:off` opt-out are preserved).
   `[pack:preferences, pack:agent-learnings]`) without another algorithm change.
   `profile` keeps its other roles unchanged (extraction token budget, scoring).
 - **Default packs apply only when the scope expressed no intent.** Resolution order:
-  1. `pack:off` present → return nil (opt out; extraction short-circuits, no gateway
-     call). `pack:off` dominates, preserving D-043.
+  1. `pack:off` present → suppress the **pack layer** (the profile default AND any
+     `pack:on`); explicit topics are kept. The result short-circuits extraction (no
+     gateway call) only when no explicit topics remain. `pack:off` dominates the pack
+     layer, not explicit topics — preserving D-043, under which `pack:off` was ignored
+     when explicit topics were present and opted out when it stood alone.
   2. else `union(enabled-pack entries, explicit topics)` is non-empty → return it (the
      profile's default packs are NOT auto-added — the operator is in control, the spirit
      of D-043's all-or-nothing, now at the granularity of "expressed any intent").
   3. else → the profile's default-pack list (the zero-config path, unchanged from D-043).
+
+  > **Clarified during Phase 28 implementation (in-PR, no substance change):** step 1's
+  > earlier wording ("return nil") was self-contradictory with "preserving D-043" — a bare
+  > `return nil` would also drop explicit topics, which D-043 never did. The
+  > D-043-preserving reading is authoritative and is what ships: `pack:off` suppresses
+  > only packs; explicit topics survive; the short-circuit fires only on an empty result.
+  > RFC §5.4 carries the matching wording.
 - **Bounded composition (no silent caps).** The composed set is capped at a package
   constant `maxActiveTopics` (a recall/cost guardrail internal to the algorithm, like
   the reconcile cosine floor of D-090 — *not* a knob, so it skips D-034 ceremony). When

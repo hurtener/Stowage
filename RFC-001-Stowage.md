@@ -405,11 +405,15 @@ expressed no intent (no explicit topics and no enabled packs) — the zero-confi
 path. A scope enables an additional compiled-in pack with the `pack:on:<name>`
 sentinel topic (mirroring the existing `pack:off` opt-out), so e.g. a project
 scope can run the personalization pack *and* a project pack *and* a few bespoke
-topics at once. `pack:off` still dominates (opt out entirely; extraction
-short-circuits with no gateway call). The composed set is capped at a bounded
-number of active topics (a package constant, not a knob) to keep the extraction
-prompt and per-flush cost bounded; the cap drops pack entries before explicit
-topics and never silently — the overflow is logged and evented. Beyond the two
+topics at once. `pack:off` dominates the **pack layer**: it suppresses every pack
+(the profile default *and* any `pack:on`) but leaves the scope's explicit topics
+intact, short-circuiting extraction with no gateway call only when no explicit
+topics remain (preserving D-043, under which `pack:off` was ignored when explicit
+topics were present and opted out when it stood alone). The composed set is capped
+at a bounded number of active topics (a package constant, not a knob) to keep the
+extraction prompt and per-flush cost bounded; the cap drops pack entries before
+explicit topics (explicit topics are never dropped) and never silently — the
+overflow is logged and evented. Beyond the two
 shipping packs, additional curated packs (`pack:project`, `pack:incidents`, and a
 documented backlog of product/people/compliance/research packs) extend coverage
 without new config.

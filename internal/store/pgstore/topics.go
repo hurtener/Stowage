@@ -89,10 +89,12 @@ func (t *topicStore) List(ctx context.Context, scope identity.Scope) ([]store.To
 		return nil, err
 	}
 	rows, err := t.s.pool.Query(ctx,
+		// (created_at, key) tiebreak — deterministic List order even when a batch
+		// upsert shares created_at; the D-099 composition cap depends on it.
 		`SELECT id, tenant_id, COALESCE(project_id,''), COALESCE(user_id,''), COALESCE(session_id,''),
 		        key, description, status, pack, created_at, updated_at
 		 FROM topics WHERE `+whereClause+` AND status != 'deleted'
-		 ORDER BY created_at ASC`,
+		 ORDER BY created_at ASC, key ASC`,
 		args...,
 	)
 	if err != nil {

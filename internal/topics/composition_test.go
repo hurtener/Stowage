@@ -2,6 +2,7 @@ package topics_test
 
 import (
 	"context"
+	"strconv"
 	"testing"
 
 	"github.com/hurtener/stowage/internal/identity"
@@ -15,6 +16,30 @@ func keysOf(views []topics.TopicView) []string {
 		ks[i] = v.Key
 	}
 	return ks
+}
+
+// TestUpsert_ReservedPackNamespace: the pack: namespace is reserved — pack:off and
+// pack:on:<name> are accepted, but a bare pack name as an explicit topic is rejected
+// (D-099 footgun guard).
+func TestUpsert_ReservedPackNamespace(t *testing.T) {
+	t.Parallel()
+	st := newTestStore(t)
+	svc := topics.New(st.Topics(), noopLog(), "assistant")
+	scope := identity.Scope{Tenant: "t-reserved"}
+
+	// Accepted sentinels.
+	for _, key := range []string{topics.PackOff, "pack:on:project", "pack:on:bogus"} {
+		if _, err := svc.Upsert(context.Background(), scope, []topics.TopicUpsert{{Key: key, Status: "active"}}); err != nil {
+			t.Errorf("Upsert(%q) should be accepted, got %v", key, err)
+		}
+	}
+	// Rejected: a bare pack name used as an explicit topic.
+	for _, key := range []string{"pack:project", "pack:preferences", "pack:whatever"} {
+		_, err := svc.Upsert(context.Background(), scope, []topics.TopicUpsert{{Key: key, Description: "d", Status: "active"}})
+		if err == nil {
+			t.Errorf("Upsert(%q) should be rejected (reserved namespace)", key)
+		}
+	}
 }
 
 // TestResolve_Union_ExplicitFirst_ExplicitWins composes an enabled pack with two
@@ -213,9 +238,102 @@ func TestResolve_Cap(t *testing.T) {
 	if r.Topics[0].Key != "keep-me" || r.Topics[0].Source != "explicit" {
 		t.Errorf("explicit topic must be kept and first; got %q/%q", r.Topics[0].Key, r.Topics[0].Source)
 	}
+	// Completeness + no-loss + no-dup: kept ∪ dropped is a partition of the composed
+	// set; "keep-me" is kept and never dropped; every dropped key is a distinct
+	// non-explicit key. With the deterministic (created_at, key) List order this drop
+	// set is reproducible across drivers/runs.
+	seen := map[string]bool{}
+	for _, v := range r.Topics {
+		if seen[v.Key] {
+			t.Errorf("duplicate key in kept set: %q", v.Key)
+		}
+		seen[v.Key] = true
+	}
 	for _, k := range r.DroppedKeys {
 		if k == "keep-me" {
 			t.Errorf("explicit topic must never be dropped by the cap")
 		}
+		if seen[k] {
+			t.Errorf("dropped key %q also present in kept set", k)
+		}
+		seen[k] = true
+	}
+	if !seen["keep-me"] {
+		t.Errorf("explicit topic missing from the composed set")
+	}
+}
+
+// TestResolve_ExplicitExceedsCap: when explicit topics alone exceed MaxActiveTopics,
+// ALL explicit topics are kept (the result exceeds the cap) and every pack entry is
+// dropped — "explicit topics are never dropped" (D-099).
+func TestResolve_ExplicitExceedsCap(t *testing.T) {
+	t.Parallel()
+	st := newTestStore(t)
+	svc := topics.New(st.Topics(), noopLog(), "assistant")
+	scope := identity.Scope{Tenant: "t-explicit-over"}
+
+	n := topics.MaxActiveTopics + 5
+	for i := 0; i < n; i++ {
+		upsertTopic(t, st.Topics(), scope, "x-topic-"+strconv.Itoa(i), "explicit", "active")
+	}
+	upsertTopic(t, st.Topics(), scope, "pack:on:project", "", "active")
+
+	r, err := svc.Resolve(context.Background(), scope)
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if len(r.Topics) != n {
+		t.Errorf("all %d explicit topics must be kept (result may exceed the cap), got %d", n, len(r.Topics))
+	}
+	for _, v := range r.Topics {
+		if v.Source != "explicit" {
+			t.Errorf("no pack entry should survive when explicit alone exceed the cap; got %q (%q)", v.Key, v.Source)
+		}
+	}
+	if len(r.DroppedKeys) == 0 {
+		t.Errorf("the project pack's entries should all be in DroppedKeys")
+	}
+}
+
+// TestResolve_EachCuratedPackResolves enables each curated pack on its own and
+// asserts it resolves to a non-empty set all tagged with that pack's source — proving
+// every shipped pack is registered and renders (AC-6).
+func TestResolve_EachCuratedPackResolves(t *testing.T) {
+	t.Parallel()
+	packs := map[string]string{
+		"pack:on:preferences":     topics.PackPreferences,
+		"pack:on:agent-learnings": topics.PackAgentLearnings,
+		"pack:on:project":         topics.PackProject,
+		"pack:on:incidents":       topics.PackIncidents,
+		"pack:on:product":         topics.PackProduct,
+		"pack:on:people":          topics.PackPeople,
+		"pack:on:compliance":      topics.PackCompliance,
+		"pack:on:research":        topics.PackResearch,
+	}
+	for sentinel, packName := range packs {
+		sentinel, packName := sentinel, packName
+		t.Run(packName, func(t *testing.T) {
+			t.Parallel()
+			st := newTestStore(t)
+			svc := topics.New(st.Topics(), noopLog(), "assistant")
+			scope := identity.Scope{Tenant: "t-" + packName}
+			upsertTopic(t, st.Topics(), scope, sentinel, "", "active")
+
+			views, err := svc.ActiveTopics(context.Background(), scope)
+			if err != nil {
+				t.Fatalf("ActiveTopics: %v", err)
+			}
+			if len(views) == 0 {
+				t.Fatalf("pack %q resolved to no topics", packName)
+			}
+			for _, v := range views {
+				if v.Source != packName || v.Pack != packName {
+					t.Errorf("entry %q: source=%q pack=%q, want %q", v.Key, v.Source, v.Pack, packName)
+				}
+				if v.Key == "" || v.Description == "" {
+					t.Errorf("pack %q has an entry with empty key/description: %+v", packName, v)
+				}
+			}
+		})
 	}
 }

@@ -97,7 +97,10 @@ func (t *topicStore) List(ctx context.Context, scope identity.Scope) ([]store.To
 	if err != nil {
 		return nil, err
 	}
-	qt := `SELECT id, tenant_id, COALESCE(project_id,''), COALESCE(user_id,''), COALESCE(session_id,''), key, description, status, pack, created_at, updated_at FROM topics WHERE ` + whereClause + ` AND status != 'deleted' ORDER BY created_at ASC` //nolint:gosec // whereClause is built from controlled helper, not user input
+	// (created_at, key) — the key tiebreak makes List order deterministic even when
+	// a batch upsert stamps several topics with the same created_at, which the topic
+	// composition cap (D-099) relies on for a reproducible drop set.
+	qt := `SELECT id, tenant_id, COALESCE(project_id,''), COALESCE(user_id,''), COALESCE(session_id,''), key, description, status, pack, created_at, updated_at FROM topics WHERE ` + whereClause + ` AND status != 'deleted' ORDER BY created_at ASC, key ASC` //nolint:gosec // whereClause is built from controlled helper, not user input
 	rows, err := t.s.rdb.QueryContext(ctx, qt, args...)
 	if err != nil {
 		return nil, fmt.Errorf("sqlitestore: list topics: %w", err)

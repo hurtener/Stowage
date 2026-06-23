@@ -23,16 +23,20 @@ type topicView struct {
 	Description string `json:"description"`
 	Status      string `json:"status"`
 	Pack        string `json:"pack,omitempty"`
-	// Source is "explicit" for user-created topics, "pack" for virtual defaults (D-043).
+	// Source is "explicit" for user-created topics, or the pack name (e.g.
+	// "pack:project") for entries contributed by an enabled pack (D-043 introduced
+	// "pack"; D-099 widened it to the specific pack name).
 	Source string `json:"source"`
 }
 
 // handleListTopics implements GET /v1/topics.
 //
-// Returns the effective topic set for the authenticated scope:
-//   - Explicit active topics when any exist.
-//   - The profile's virtual default pack when the scope has none (D-043).
-//   - Empty list when pack:off is the only active topic.
+// Returns the effective COMPOSED topic set for the authenticated scope (D-099):
+// the deduped union of the scope's explicit topics and the entries of every enabled
+// pack (explicit wins key collisions), capped at the composition limit. The
+// profile's default pack list applies only when the scope has expressed no intent;
+// `pack:off` suppresses packs (leaving explicit topics); an empty result is returned
+// as an empty list.
 func (s *Server) handleListTopics(w http.ResponseWriter, r *http.Request) {
 	authKey := keyFromContext(r.Context())
 	scope := identity.Scope{Tenant: authKey.TenantID}

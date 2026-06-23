@@ -57,8 +57,8 @@ type Service struct {
 	profile string // "assistant" | "coding-agent" | "fleet"
 }
 
-// New creates a Service backed by ts. profile selects which virtual default
-// pack applies when a scope has no explicit topics (D-043).
+// New creates a Service backed by ts. profile selects the ordered list of default
+// packs applied when a scope has expressed no intent (D-043, D-099).
 func New(ts store.TopicStore, log *slog.Logger, profile string) *Service {
 	return &Service{ts: ts, log: log, profile: profile}
 }
@@ -82,6 +82,13 @@ func (s *Service) Upsert(ctx context.Context, scope identity.Scope, items []Topi
 	for i, item := range items {
 		if item.Key == "" {
 			return 0, fmt.Errorf("topics: upsert: item[%d]: key must not be empty: %w", i, ErrInvalidTopic)
+		}
+		// The "pack:" namespace is reserved for sentinels (D-099). Allow the two
+		// control sentinels — pack:off and pack:on:<name> — but reject a bare pack
+		// name (e.g. "pack:project") used as an explicit topic, which would silently
+		// behave as an ordinary topic instead of enabling the pack (the footgun).
+		if strings.HasPrefix(item.Key, "pack:") && item.Key != PackOff && !strings.HasPrefix(item.Key, packOnPrefix) {
+			return 0, fmt.Errorf("topics: upsert: item[%d]: key %q uses the reserved pack: namespace (use pack:on:<name> to enable a pack): %w", i, item.Key, ErrInvalidTopic)
 		}
 		status := item.Status
 		if status == "" {
@@ -129,8 +136,9 @@ func (s *Service) Delete(ctx context.Context, scope identity.Scope, key string) 
 //   - `pack:off` dominates the pack layer: it suppresses every pack (default and
 //     pack:on), leaving only explicit topics; when none remain the result is empty and
 //     the caller short-circuits extraction without a gateway call (AC-2);
-//   - the set is capped at MaxActiveTopics — explicit topics are always kept; pack
-//     entries drop by enable order and land in DroppedKeys (never silently).
+//   - the set is capped at MaxActiveTopics by dropping PACK entries (by enable order,
+//     into DroppedKeys, never silently); explicit topics are never dropped, so the
+//     result may exceed the cap in the rare case where explicit topics alone do.
 //
 // Deleted and paused topics are excluded.
 func (s *Service) Resolve(ctx context.Context, scope identity.Scope) (Resolution, error) {

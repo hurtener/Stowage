@@ -40,6 +40,17 @@ the existing two: `pack:project`, `pack:incidents`, `pack:product`, `pack:people
   pack-sourced entries (`explicit` otherwise), and the pre-existing `pack` field is
   **retained** (equal to `source` for pack entries) so GET/SDK/MCP consumers are not
   wire-broken. No behavior change beyond the `source` string.
+- **Two additions surfaced by the dual adversarial review (in-PR, documented):**
+  (a) topic `List` gains a `(created_at, key)` tiebreak in both store drivers so the
+  cap's drop set is deterministic even when a batch `PUT /v1/topics` stamps several
+  topics with one `created_at` (AC-4 determinism). (b) `Service.Upsert` reserves the
+  `pack:` namespace: `pack:off` and `pack:on:<name>` are accepted, but a bare pack name
+  (e.g. `pack:project`) as an explicit topic is rejected — closing the footgun where it
+  would silently behave as an ordinary topic instead of enabling the pack. The D-099
+  `pack:off` wording ("opt out entirely" / "return nil") was also clarified in-PR (RFC
+  §5.4 + the D-099 entry) to the shipped, D-043-preserving semantics: `pack:off`
+  suppresses the **pack layer** and keeps explicit topics, short-circuiting only when
+  none remain.
 
 ## Design
 
@@ -113,16 +124,22 @@ memories; packs are virtual and never persisted).
 
 ```text
 internal/topics/packs.go                  # 6 new packs + registry + defaultPacksForProfile(list) + pack:on + MaxActiveTopics
-internal/topics/topics.go                 # Resolution + Resolve(); ActiveTopics → wrapper; source=pack:<name>
-internal/topics/topics_test.go            # composition unit tests (union/dedup/pack:on/multi-default/pack:off/cap)
-internal/topics/packs_test.go             # registry + defaultPacksForProfile + packNameFromOnSentinel tests
+internal/topics/topics.go                 # Resolution + Resolve(); ActiveTopics → wrapper; source=pack:<name>; reserved pack: namespace in Upsert
+internal/topics/topics_test.go            # source=pack:preferences assertion updates
+internal/topics/composition_test.go       # composition unit tests (union/dedup/pack:on/multi-default/pack:off/cap/explicit-over-cap/each-pack/reserved-namespace)
+internal/topics/packs_internal_test.go    # registry completeness + packNameFromOnSentinel + defaultPacksForProfile (package topics — unexported)
+internal/store/sqlitestore/topics.go      # List (created_at, key) tiebreak — deterministic cap drop set
+internal/store/pgstore/topics.go          # List (created_at, key) tiebreak (matches sqlite)
 internal/pipeline/extract.go              # Resolve(); emit extraction.topics_capped
-internal/pipeline/extract_test.go         # composed-prompt golden + topics_capped event test
+internal/pipeline/extract_test.go         # composed-prompt golden + topics_capped event test (payload asserted)
 internal/pipeline/testdata/extract_prompt_compose.golden  # explicit + pack union prompt
-internal/api/topics_handler_test.go       # source=pack:<name> assertion update (if asserted)
+internal/api/topics_handler.go            # godoc + source comment updated for composition (D-099)
+internal/api/topics_handler_test.go       # source=pack:preferences assertion updates
+scripts/smoke/phase-07.sh                 # source=pack:preferences assertion updates (D-099)
 scripts/smoke/phase-28.sh                 # pack:on composition smoke
+scripts/acceptance/full-cycle-live.sh     # pack:on composition assertion (operator-run)
 docs/plans/phase-28-pack-composition.md   # this plan
-docs/glossary.md                          # already has the D-099 terms (no change expected)
+RFC-001-Stowage.md / docs/decisions.md    # pack:off wording clarified to the shipped semantics
 ```
 
 ## Config keys added
@@ -194,8 +211,11 @@ a package constant, not a knob.)
 ## Glossary additions
 
 - None new — the D-099 PR already added **Pack**, **Pack composition**, **`pack:on:<name>`**,
-  **`pack:off`**. (This phase adds the `extraction.topics_capped` event type, noted in the
-  event contract, not the glossary.)
+  **`pack:off`**. This phase introduces one new event type, `extraction.topics_capped`
+  (emitted by the extract stage when the cap drops pack entries). The repo has no central
+  event catalog yet (extraction.* types are described in their phase plans); this type is
+  documented here and alongside `extraction.skipped`/`extraction.completed` in the phase-07
+  plan — a future `events/v1` catalog (§8) should enumerate it.
 
 ## Decisions filed
 

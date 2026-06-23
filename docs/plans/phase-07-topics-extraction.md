@@ -87,6 +87,9 @@ Consumes the Phase 06 `FlushedBuffer` channel:
 6. Emit `CandidateBatch{Scope, BufferKey, Branch, Candidates}` on the typed
    downstream channel (no-op consumer until Phase 08) + an
    `extraction.completed` event (counts: produced, dropped, truncated).
+   (Phase 28 / D-099 adds one more extraction event: `extraction.topics_capped`
+   — emitted when topic-pack composition drops pack entries past the cap; payload
+   `{buffer_key, cap, dropped_count, dropped_keys}`.)
 7. Terminal gateway failure (after the seam's retries): dead-letter
    (stage `extract`, the flush descriptor as payload) + event — never data
    loss; records and buffer-flush markers are durable.

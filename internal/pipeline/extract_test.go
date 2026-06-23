@@ -7,7 +7,6 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 
@@ -392,8 +391,20 @@ func TestTopicGating_Cap_EmitsTopicsCapped(t *testing.T) {
 	if len(capped) == 0 {
 		t.Fatal("want extraction.topics_capped event, got none")
 	}
-	if !strings.Contains(capped[0].Payload, "\"dropped_count\"") {
-		t.Errorf("topics_capped payload missing dropped_count: %s", capped[0].Payload)
+	var payload struct {
+		BufferKey    string   `json:"buffer_key"`
+		Cap          int      `json:"cap"`
+		DroppedCount int      `json:"dropped_count"`
+		DroppedKeys  []string `json:"dropped_keys"`
+	}
+	if err := json.Unmarshal([]byte(capped[0].Payload), &payload); err != nil {
+		t.Fatalf("unmarshal topics_capped payload %q: %v", capped[0].Payload, err)
+	}
+	if payload.Cap != topics.MaxActiveTopics {
+		t.Errorf("payload cap = %d, want %d", payload.Cap, topics.MaxActiveTopics)
+	}
+	if payload.DroppedCount <= 0 || payload.DroppedCount != len(payload.DroppedKeys) {
+		t.Errorf("payload dropped_count=%d keys=%d: want positive and equal", payload.DroppedCount, len(payload.DroppedKeys))
 	}
 }
 
