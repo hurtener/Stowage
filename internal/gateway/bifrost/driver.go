@@ -252,7 +252,12 @@ func (d *Driver) doComplete(ctx context.Context, req gateway.CompleteRequest) (g
 		return gateway.CompleteResponse{}, gateway.Usage{}, err
 	}
 
-	bfReq := translateChatRequest(d.provider, d.cfg.Model, req)
+	// Per-request model override (D-100): empty Model uses the configured model.
+	model := d.cfg.Model
+	if req.Model != "" {
+		model = req.Model
+	}
+	bfReq := translateChatRequest(d.provider, model, req)
 	bctx := bfschemas.NewBifrostContext(ctx, bfschemas.NoDeadline)
 	resp, berr := d.client.ChatCompletionRequest(bctx, bfReq)
 	if berr != nil {
@@ -478,6 +483,13 @@ func translateChatRequest(provider bfschemas.ModelProvider, model string, req ga
 		MaxCompletionTokens: maxTokens,
 		Temperature:         temp,
 		ResponseFormat:      responseFormat,
+	}
+
+	// Reasoning / extended-thinking effort (D-100): only set when requested, so the
+	// request shape is byte-identical to before for the no-reasoning default path.
+	if req.ReasoningEffort != "" {
+		eff := req.ReasoningEffort
+		params.Reasoning = &bfschemas.ChatReasoning{Effort: &eff}
 	}
 
 	return &bfschemas.BifrostChatRequest{

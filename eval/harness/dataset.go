@@ -43,6 +43,14 @@ type RunDatasetOpts struct {
 	// gateway extracts and the Count/MaxAge auto-flush triggers drain the buffer, so
 	// a fixed-count buffer barrier would deadlock on a >trigger-count conversation.
 	BeforeFlush func(convID string, recordIDs []string) error
+	// SeedTopics, when true, installs the broad LongMemEval extraction-magnet set
+	// (SeedEvalTopics) at the eval scope before ingestion so extraction has a home
+	// for each class of implied learning (topic-gated extraction). Full mode sets
+	// it; the mock wiring test leaves it false (its extraction is scripted).
+	SeedTopics bool
+	// Reader overrides the reader/judge model + reasoning effort for judged mode
+	// (D-100). Zero value = the gateway's configured model, no reasoning.
+	Reader ReaderOpts
 }
 
 // DatasetResult is the outcome of a RunDataset call.
@@ -83,6 +91,14 @@ func RunDataset(ctx context.Context, srv *TestServer, runner *Runner, convs []da
 	convByID := map[string]datasets.Conversation{}
 	for _, c := range convs {
 		convByID[c.ID] = c
+	}
+
+	// Seed the broad extraction-magnet set so topic-gated extraction captures the
+	// breadth of facts the benchmark probes (not just the default preferences pack).
+	if opts.SeedTopics {
+		if err := SeedEvalTopics(ctx, srv); err != nil {
+			return nil, fmt.Errorf("seed topics: %w", err)
+		}
 	}
 
 	for id := range need {
@@ -145,7 +161,7 @@ func RunDataset(ctx context.Context, srv *TestServer, runner *Runner, convs []da
 			return nil, fmt.Errorf("score %s: %w", q.ID, err)
 		}
 		if opts.Judge {
-			jr, jerr := JudgeQuestion(ctx, srv.Gateway(), q.Text, q.Expected.Answer, qr.Items)
+			jr, jerr := JudgeQuestionWith(ctx, srv.Gateway(), opts.Reader, q.Text, q.Expected.Answer, qr.Items)
 			if jerr != nil {
 				judgeErrors++
 				consecJudgeErr++

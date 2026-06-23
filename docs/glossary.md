@@ -414,3 +414,17 @@ New terms land here in the same PR that introduces them (CLAUDE.md §14).
 - **`user.purged`** — the tenant-scoped audit event the DSAR cascade emits after a
   purge, carrying the per-table `DSARCounts`; emitted at tenant scope (not the deleted
   user) so it survives the user's own events being purged in the same transaction.
+- **Reader / judge (eval)** — the two LLM roles in judged-QA eval (Phase 20, D-076): the
+  **reader** answers a benchmark question using ONLY Stowage's retrieved context
+  (abstaining when it is insufficient); the **judge** grades that answer against the gold
+  answer for semantic equivalence. Both route through the gateway seam (P5).
+- **Reasoning effort** — an optional per-`CompleteRequest` knob (`"none"|"minimal"|"low"|
+  "medium"|"high"`) requesting provider extended thinking (D-100); empty sends no reasoning
+  parameter. Used by the eval reader (medium) for harder multi-hop questions.
+- **Per-request model override** — an optional `CompleteRequest.Model` (D-100) that swaps
+  the completion model for one call without a second gateway — e.g. a strong eval reader
+  (Sonnet 4.6) over the cheap extraction model.
+- **LongMemEval magnet set** — the 12 compiled-in extraction topics
+  (`eval/harness/topics_seed.go`, D-101) seeded for a full-mode LongMemEval run so
+  topic-gated extraction captures the breadth of probed facts (events, dates, possessions,
+  relationships, numbers, updates) rather than only the default preferences pack.

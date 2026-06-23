@@ -93,6 +93,19 @@ func TestFullMode(t *testing.T) {
 		}
 	}
 
+	// Reader/judge model + reasoning effort (D-100): answer with a strong reader
+	// (e.g. anthropic/claude-sonnet-4.6) distinct from the cheap extraction model
+	// (STOWAGE_EVAL_MODEL), abstaining when the answer is not in retrieved context.
+	reader := ReaderOpts{Model: os.Getenv("STOWAGE_EVAL_READER_MODEL")}
+	if reader.Model != "" {
+		reader.ReasoningEffort = "medium"
+		if e := os.Getenv("STOWAGE_EVAL_READER_EFFORT"); e != "" {
+			reader.ReasoningEffort = e
+		}
+		t.Logf("reader model=%s reasoning_effort=%s (extraction model=%s)",
+			reader.Model, reader.ReasoningEffort, os.Getenv("STOWAGE_EVAL_MODEL"))
+	}
+
 	start := time.Now()
 	res, err := RunDataset(ctx, srv, runner, convs, questions, RunDatasetOpts{
 		Limit:         limit,
@@ -100,6 +113,8 @@ func TestFullMode(t *testing.T) {
 		Settle:        settle,
 		PerConvSettle: 5 * time.Minute,
 		EmbedSettle:   10 * time.Second, // async embed backfill before scoring
+		SeedTopics:    true,             // broad LongMemEval magnets (topic-gated extraction)
+		Reader:        reader,
 	})
 	if err != nil {
 		t.Fatalf("run dataset %s: %v", datasetName, err)

@@ -138,6 +138,43 @@ func TestOpenAICompat_GoldenCompleteRequest(t *testing.T) {
 	}
 }
 
+// TestOpenAICompat_ModelOverrideAndReasoning covers D-100: a per-request Model
+// overrides the configured model and ReasoningEffort sets reasoning_effort.
+func TestOpenAICompat_ModelOverrideAndReasoning(t *testing.T) {
+	t.Parallel()
+	var gotBody []byte
+	svr := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/chat/completions" {
+			gotBody, _ = io.ReadAll(r.Body)
+			w.Header().Set("Content-Type", "application/json")
+			w.Write([]byte(`{"id":"x","object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant","content":"{\"msg\":\"hi\"}"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`)) //nolint:errcheck
+		}
+	}))
+	defer svr.Close()
+
+	gw := newDriver(t, svr, 4)
+	schema := json.RawMessage(`{"type":"object","properties":{"msg":{"type":"string"}},"required":["msg"]}`)
+	if _, err := gw.Complete(context.Background(), gateway.CompleteRequest{
+		Messages:        []gateway.Message{{Role: "user", Content: "hi"}},
+		Schema:          schema,
+		MaxTokens:       100,
+		Model:           "anthropic/claude-sonnet-4.6",
+		ReasoningEffort: "medium",
+	}); err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	var body map[string]any
+	if err := json.Unmarshal(gotBody, &body); err != nil {
+		t.Fatalf("parse body: %v", err)
+	}
+	if body["model"] != "anthropic/claude-sonnet-4.6" {
+		t.Errorf("model override not applied: %v", body["model"])
+	}
+	if body["reasoning_effort"] != "medium" {
+		t.Errorf("reasoning_effort not set: %v", body["reasoning_effort"])
+	}
+}
+
 func TestOpenAICompat_GoldenEmbedResponseDecodes(t *testing.T) {
 	t.Parallel()
 

@@ -22,6 +22,19 @@ type CompleteRequest struct {
 	Schema      json.RawMessage // REQUIRED: JSON schema for the response object
 	MaxTokens   int
 	Temperature float32
+
+	// Model optionally overrides the gateway's configured completion model for
+	// this single call. Empty (the default) uses the configured model, so every
+	// existing caller is unaffected. Used by the eval harness to answer with a
+	// stronger reader model than the cheap extraction model (D-100).
+	Model string
+
+	// ReasoningEffort optionally requests provider reasoning / extended thinking
+	// at the given effort: "none" | "minimal" | "low" | "medium" | "high". Empty
+	// (the default) sends no reasoning parameter, so provider behavior is
+	// unchanged for existing callers. Honored by providers that support it; others
+	// ignore it (D-100).
+	ReasoningEffort string
 }
 
 // CompleteResponse carries the validated JSON output and provider usage.
