@@ -14,7 +14,7 @@ import (
 // implied learning a target, tuned to the LongMemEval question taxonomy
 // (single-session-user/assistant/preference, multi-session, knowledge-update,
 // temporal-reasoning). Tight, natural-language, non-overlapping descriptions keep
-// the gate precise. 12 topics is well under the composition cap (topics.MaxActiveTopics).
+// the gate precise. 13 topics is well under the composition cap (topics.MaxActiveTopics).
 //
 // Explicit topics suppress the virtual default pack (D-099), which is intended:
 // the eval run wants exactly this broad set, not the 4-topic preferences pack.
@@ -31,6 +31,7 @@ var LongMemEvalTopics = []struct{ Key, Description string }{
 	{"numbers-and-quantities", "Specific numeric details the user shared — counts, amounts, measurements, prices, and durations"},
 	{"updates-and-corrections", "Changes, updates, or corrections to previously stated facts — what changed and when"},
 	{"opinions-and-experiences", "The user's opinions, reactions, and experiences with things they tried or encountered"},
+	{"assistant-provided-info", "Recommendations, answers, instructions, or facts the assistant gave the user (for recall of what was said in-conversation, not about the user)"},
 }
 
 // SeedEvalTopics installs LongMemEvalTopics at the eval tenant scope via the live

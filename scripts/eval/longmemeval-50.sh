@@ -51,6 +51,22 @@ echo "  embed      : ${STOWAGE_EVAL_EMBED_MODEL}@${STOWAGE_EVAL_EMBED_DIMS}   re
 echo "  settle     : ${STOWAGE_EVAL_SETTLE_TIMEOUT}   go timeout: ${GO_TIMEOUT}"
 echo "──────────────────────────────────────────────────────────────────────────"
 
+# ── Fail fast on a bad reader slug ────────────────────────────────────────────
+# The in-process harness probe only validates the EXTRACTION/embed model; a wrong
+# reader slug would otherwise burn ~5 questions before the run aborts. One ~1-token
+# completion against the reader model catches it in seconds.
+echo "probing reader model ${STOWAGE_EVAL_READER_MODEL} …"
+probe=$(curl -s -o /dev/null -w '%{http_code}' --max-time 30 \
+  -X POST "${STOWAGE_EVAL_RERANK_BASE_URL%/}/chat/completions" \
+  -H "Authorization: Bearer ${OPENROUTER_API_KEY}" -H "Content-Type: application/json" \
+  -d "{\"model\":\"${STOWAGE_EVAL_READER_MODEL}\",\"messages\":[{\"role\":\"user\",\"content\":\"ok\"}],\"max_tokens\":1}" 2>/dev/null)
+if [ "$probe" != "200" ]; then
+  echo "FATAL: reader model '${STOWAGE_EVAL_READER_MODEL}' probe returned HTTP ${probe:-000} —"
+  echo "       confirm the OpenRouter slug (set STOWAGE_EVAL_READER_MODEL to the correct id)."
+  exit 1
+fi
+echo "reader model OK (HTTP 200)"
+
 # ── Fetch the dataset if absent ───────────────────────────────────────────────
 DATA="eval/data/longmemeval/longmemeval.json"
 if [ ! -f "$DATA" ]; then
