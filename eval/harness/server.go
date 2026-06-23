@@ -99,6 +99,14 @@ func NewTestServer(t testing.TB, tenantID string) *TestServer {
 
 	dir := t.TempDir()
 	dbPath := filepath.Join(dir, "eval.db")
+	// STOWAGE_EVAL_DB_PATH persists the store outside the test's temp dir so an
+	// operator can (a) inspect extraction health live during a long run — events,
+	// dead_letters, committed memories — and (b) reuse a learned store across runs.
+	// Migrate is idempotent, so re-opening an existing DB is safe.
+	if p := os.Getenv("STOWAGE_EVAL_DB_PATH"); p != "" {
+		dbPath = p
+		_ = os.MkdirAll(filepath.Dir(p), 0o750)
+	}
 	mockScript := filepath.Join(dir, "mock-script.json")
 
 	// Start with an empty script file.
