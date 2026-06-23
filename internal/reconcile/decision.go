@@ -15,7 +15,7 @@ var DecisionSchema = json.RawMessage(`{
   "title": "ReconcileDecision",
   "description": "Stowage reconciliation decision (Phase 08)",
   "type": "object",
-  "required": ["action"],
+  "required": ["action", "content", "target_ids", "links", "reason"],
   "additionalProperties": false,
   "properties": {
     "action": {
@@ -24,7 +24,7 @@ var DecisionSchema = json.RawMessage(`{
     },
     "content": {
       "type": "string",
-      "description": "Synthesized content for update and merge actions (required for those actions)"
+      "description": "Synthesized content for update and merge actions; \"\" for other actions (the server enforces the per-action requirement)"
     },
     "target_ids": {
       "type": "array",

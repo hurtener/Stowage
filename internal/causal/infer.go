@@ -59,9 +59,9 @@ var causalSchema = json.RawMessage(`{
         "required": ["from_idx", "to_idx", "confidence", "reason"],
         "additionalProperties": false,
         "properties": {
-          "from_idx":   { "type": "integer", "minimum": 0, "description": "Index of the CAUSE decision." },
-          "to_idx":     { "type": "integer", "minimum": 0, "description": "Index of the EFFECT decision the cause led to." },
-          "confidence": { "type": "number", "minimum": 0, "maximum": 1, "description": "How strongly the narrative supports this causal link." },
+          "from_idx":   { "type": "integer", "description": "Index of the CAUSE decision (0-based, into the provided decision list)." },
+          "to_idx":     { "type": "integer", "description": "Index of the EFFECT decision the cause led to (0-based)." },
+          "confidence": { "type": "number", "description": "0.0 to 1.0 — how strongly the narrative supports this causal link." },
           "reason":     { "type": "string", "description": "A short rationale grounded in the narrative." }
         }
       }

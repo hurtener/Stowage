@@ -8,7 +8,7 @@ import (
 
 // CandidateSchemaVersion is the version tag for the candidate JSON schema.
 // Increment when the schema changes (Phase 08+ may add fields).
-const CandidateSchemaVersion = "2"
+const CandidateSchemaVersion = "3"
 
 // CandidateSchema is the JSON schema for the gateway-constrained extraction
 // response (CLAUDE.md §10, D-040). It is sent as Schema in every
@@ -36,6 +36,7 @@ var CandidateSchema = json.RawMessage(`{
           "entities",
           "keywords",
           "anticipated_queries",
+          "topics",
           "importance",
           "confidence",
           "provenance"
@@ -46,7 +47,7 @@ var CandidateSchema = json.RawMessage(`{
             "type": "string",
             "enum": ["fact", "preference", "decision", "gotcha", "pattern", "task", "narrative"]
           },
-          "content":  { "type": "string", "minLength": 1 },
+          "content":  { "type": "string" },
           "context":  { "type": "string" },
           "entities": { "type": "array", "items": { "type": "string" } },
           "keywords": { "type": "array", "items": { "type": "string" } },
@@ -59,19 +60,18 @@ var CandidateSchema = json.RawMessage(`{
             "items": { "type": "string" },
             "description": "keys of the provided topics this candidate pertains to (subset of the topic keys in the prompt); [] if none"
           },
-          "importance": { "type": "integer", "minimum": 1, "maximum": 5 },
-          "confidence": { "type": "number",  "minimum": 0, "maximum": 1 },
+          "importance": { "type": "integer", "description": "1 (trivial) to 5 (critical)" },
+          "confidence": { "type": "number",  "description": "0.0 to 1.0" },
           "provenance": {
             "type": "array",
-            "minItems": 1,
             "items": {
               "type": "object",
               "required": ["record_id", "span_start", "span_end"],
               "additionalProperties": false,
               "properties": {
                 "record_id":  { "type": "string" },
-                "span_start": { "type": "integer", "minimum": 0 },
-                "span_end":   { "type": "integer", "minimum": 0 }
+                "span_start": { "type": "integer" },
+                "span_end":   { "type": "integer" }
               }
             }
           }

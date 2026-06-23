@@ -54,7 +54,7 @@ var verifySchema = json.RawMessage(`{
   "additionalProperties": false,
   "properties": {
     "verdict":     { "type": "string", "enum": ["entailed", "not_entailed", "unclear"], "description": "Whether the cited memories support the claim." },
-    "confidence":  { "type": "number", "minimum": 0, "maximum": 1, "description": "Confidence in the verdict." },
+    "confidence":  { "type": "number", "description": "Confidence in the verdict, 0.0 to 1.0." },
     "explanation": { "type": "string", "description": "A short rationale grounded in the cited memories." }
   }
 }`)
