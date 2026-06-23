@@ -99,8 +99,8 @@ func TestTopics_List_VirtualPack(t *testing.T) {
 		t.Error("want virtual pack topics, got empty list")
 	}
 	for _, tp := range body.Topics {
-		if tp.Source != "pack" {
-			t.Errorf("topic %q: want source=pack, got %q", tp.Key, tp.Source)
+		if tp.Source != "pack:preferences" {
+			t.Errorf("topic %q: want source=pack:preferences, got %q", tp.Key, tp.Source)
 		}
 	}
 }
@@ -330,8 +330,8 @@ func TestTopics_Delete_ThenListReturnsVirtualPack(t *testing.T) {
 		t.Error("want virtual pack topics after delete, got none")
 	}
 	for _, tp := range body.Topics {
-		if tp.Source != "pack" {
-			t.Errorf("want source=pack after delete, got %q", tp.Source)
+		if tp.Source != "pack:preferences" {
+			t.Errorf("want source=pack:preferences after delete, got %q", tp.Source)
 		}
 	}
 }
