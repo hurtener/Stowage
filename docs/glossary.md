@@ -209,14 +209,24 @@ New terms land here in the same PR that introduces them (CLAUDE.md §14).
   update targets a high-trust memory (score ≥ 3.0), or when the LLM explicitly
   decides `park`. The `supersedes_id` field records which active memory the
   parked candidate intends to replace.
-- **Pack** (default topic pack) — a compiled-in set of topic entries applied
-  at extraction prompt-build time when a scope has no explicit active topics
-  (D-043). Two packs ship: `pack:preferences` (assistant profile —
-  personalisation, communication style, durable personal facts) and
-  `pack:agent-learnings` (coding-agent/fleet — gotchas, patterns, decisions).
-  Packs are virtual: they are never written to the topics table and appear in
-  `GET /v1/topics` with `source: pack`. Any explicit active topic disables the
-  pack; the `pack:off` sentinel opts out of packs entirely.
+- **Pack** (topic pack) — a compiled-in set of topic entries that can be enabled
+  for a scope (D-043, composition added in D-099). Shipping packs: `pack:preferences`
+  (personalisation, communication style, durable personal facts), `pack:agent-learnings`
+  (gotchas, patterns, decisions), plus the curated `pack:project`, `pack:incidents`, …
+  (D-099 backlog). Packs are virtual: never written to the topics table; they appear in
+  `GET /v1/topics` with `source: pack:<name>`.
+- **Pack composition** (D-099, amending D-043) — a scope's effective topics are the
+  deduped **union** of its enabled packs and its explicit topics (explicit wins on key
+  collision), capped at `maxActiveTopics`. The `profile` selects an ordered list of
+  *default* packs that apply only when the scope has expressed no intent (no explicit
+  topics, no enabled packs) — the zero-config path. Resolution lives in
+  `topics.Service.ActiveTopics` so SDK/HTTP/MCP share it (D-067).
+- **`pack:on:<name>`** (D-099) — a sentinel topic key that enables the compiled-in pack
+  `<name>` at a scope, mirroring `pack:off`; the runtime, scope-aware composition lever
+  (no YAML knob).
+- **`pack:off`** — the sentinel topic key that opts a scope out of packs entirely and
+  short-circuits extraction with no gateway call; dominates over enabled packs and
+  explicit topics (D-043, unchanged by D-099).
 - **Enriched text** — the string fed to the embedding gateway for a memory,
   formed by joining `content + entities + keywords + anticipated_queries` with
   spaces (D-047). Enriching beyond the raw content improves semantic recall

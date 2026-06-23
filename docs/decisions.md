@@ -2706,3 +2706,67 @@ attributable for erasure; revisit if a feedback writer that records authorship l
 
 **Schema note.** No new tables/columns — the cascade operates over the existing RFC §8.1
 inventory, so the D-024 schema-budget guardrail is untouched.
+
+## D-099 — Topic packs compose; `pack:on:<name>` enables a pack at a scope (amends D-043)
+
+2026-06-23. RFC §5.4. D-043 established compiled-in virtual default packs with an
+**all-or-nothing** rule: a single profile-selected pack, and *any* explicit topic
+suppressed it entirely. In practice that is two limitations: (1) only one pack can
+ever be active, and (2) you cannot layer your own topics on top of a pack — adding
+one explicit topic nukes the pack. Real deployments want composition: an assistant
+working in a project wants the personalization pack *and* a project pack *and* a few
+bespoke topics at once. This decision **amends D-043** (it does not repeal it — the
+zero-config default-pack behavior and the `pack:off` opt-out are preserved).
+
+**Decision — packs are additively composable; `profile` decouples from pack selection.**
+
+- **Effective topics = a deduped union.** For a scope, `topics.Service.ActiveTopics`
+  returns `union( entries of every ENABLED pack , explicit topics )`, deduped by topic
+  key with **explicit > pack** (and, among packs, first-enabled wins). The `source`
+  field becomes `explicit` or `pack:<name>` (was the bare `pack`) so `GET /v1/topics`
+  shows each entry's origin.
+- **Enabling a pack is a sentinel topic, mirroring `pack:off`.** An active topic row
+  whose key is `pack:on:<name>` enables the compiled-in pack `<name>` at that scope.
+  This keeps composition **scope-aware and runtime-configurable through the existing
+  topics API/SDK/MCP** — no new YAML knob (D-034 untouched; the `pack:off` precedent,
+  D-043, is the pattern).
+- **`profile` selects an ORDERED LIST of default packs** (currently one element each:
+  `assistant → [pack:preferences]`, `coding-agent`/`fleet → [pack:agent-learnings]`).
+  Treating it as a list — rather than the single pack of D-043 — future-proofs
+  multi-default profiles (e.g. a `coding-assistant` profile that defaults to
+  `[pack:preferences, pack:agent-learnings]`) without another algorithm change.
+  `profile` keeps its other roles unchanged (extraction token budget, scoring).
+- **Default packs apply only when the scope expressed no intent.** Resolution order:
+  1. `pack:off` present → return nil (opt out; extraction short-circuits, no gateway
+     call). `pack:off` dominates, preserving D-043.
+  2. else `union(enabled-pack entries, explicit topics)` is non-empty → return it (the
+     profile's default packs are NOT auto-added — the operator is in control, the spirit
+     of D-043's all-or-nothing, now at the granularity of "expressed any intent").
+  3. else → the profile's default-pack list (the zero-config path, unchanged from D-043).
+- **Bounded composition (no silent caps).** The composed set is capped at a package
+  constant `maxActiveTopics` (a recall/cost guardrail internal to the algorithm, like
+  the reconcile cosine floor of D-090 — *not* a knob, so it skips D-034 ceremony). When
+  the union exceeds the cap, **explicit topics are kept first**, then pack entries by
+  enable order; the dropped entries are logged and emitted as an event (the "no silent
+  truncation" principle), never quietly discarded.
+- **One logic core (D-067).** All of the above lives in `topics.Service.ActiveTopics`,
+  so SDK, HTTP, and MCP inherit composition identically; no surface re-implements it.
+
+**New packs shipped with the mechanism.** Composition is only as valuable as the packs
+it can combine. The implementing phase ships, alongside the existing `pack:preferences`
+and `pack:agent-learnings`, at least `pack:project` (domain glossary, ownership,
+environments, runbooks, conventions — distinct from the broader agent-learnings) and
+`pack:incidents` (outages, root causes, postmortem lessons → a `gotcha`/`failure_mode`
+generator). A documented backlog — `pack:product`, `pack:people`, `pack:compliance`,
+`pack:research`, and a narrow `pack:coding-style` split out of agent-learnings — extends
+coverage later; packs are compiled-in constants, so adding one is a code change with a
+golden-test update, never a schema migration.
+
+**Consequences.** Backward compatible: a scope with no topics still gets its profile's
+default pack; a scope with explicit topics still uses them (now composable, not
+suppressive); `pack:off` is unchanged. Packs stay virtual (never persisted) and
+transparent (`GET /v1/topics` shows `source: pack:<name>`). The cost ceiling is explicit
+(`maxActiveTopics`) rather than emergent. **Process:** this is a settled-decision change,
+so it lands as an RFC §5.4 amendment + this superseding entry; the resolution-logic,
+sentinel, cap, and new packs are implemented in a named follow-up phase (the phase-07
+plan carries a forward pointer here), not in this docs PR.
