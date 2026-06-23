@@ -95,10 +95,12 @@ STATUS=$(api_call GET /v1/topics '' '' "$AGENT_KEY")
   && ok "GET /v1/topics before explicit topic → 200" \
   || failc "GET /v1/topics before explicit topic → 200 (got $STATUS)"
 
+# Source now carries the specific pack name (D-099); the assistant default is
+# pack:preferences.
 VIRTUAL_SOURCE=$(grep -o '"source":"[^"]*"' "${TMPDIR_SMOKE}/resp" | head -1 | sed 's/.*":"\(.*\)"/\1/')
-[ "$VIRTUAL_SOURCE" = "pack" ] \
-  && ok "GET /v1/topics: default source = pack" \
-  || failc "GET /v1/topics: want source=pack, got '$VIRTUAL_SOURCE'"
+[ "$VIRTUAL_SOURCE" = "pack:preferences" ] \
+  && ok "GET /v1/topics: default source = pack:preferences" \
+  || failc "GET /v1/topics: want source=pack:preferences, got '$VIRTUAL_SOURCE'"
 
 # ── PUT /v1/topics — install an explicit topic ────────────────────────────────
 
@@ -180,9 +182,9 @@ STATUS=$(api_call GET /v1/topics '' '' "$AGENT_KEY")
   || failc "GET /v1/topics after delete → 200 (got $STATUS)"
 
 REVERTED_SOURCE=$(grep -o '"source":"[^"]*"' "${TMPDIR_SMOKE}/resp" | head -1 | sed 's/.*":"\(.*\)"/\1/')
-[ "$REVERTED_SOURCE" = "pack" ] \
-  && ok "GET /v1/topics after delete: source reverted to pack" \
-  || failc "GET /v1/topics after delete: want source=pack, got '$REVERTED_SOURCE'"
+[ "$REVERTED_SOURCE" = "pack:preferences" ] \
+  && ok "GET /v1/topics after delete: source reverted to pack:preferences" \
+  || failc "GET /v1/topics after delete: want source=pack:preferences, got '$REVERTED_SOURCE'"
 
 # ── Missing auth → 401 ───────────────────────────────────────────────────────
 

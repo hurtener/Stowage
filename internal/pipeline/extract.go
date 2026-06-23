@@ -139,19 +139,31 @@ func (e *ExtractStage) processFlush(ctx context.Context, fb FlushedBuffer) {
 		return
 	}
 
-	// Step 3: Get active topics; short-circuit on empty set (AC-2).
-	activeTopics, err := e.svc.ActiveTopics(ctx, fb.Scope)
+	// Step 3: Resolve the composed topic set; short-circuit on empty set (AC-2).
+	resolution, err := e.svc.Resolve(ctx, fb.Scope)
 	if err != nil {
 		e.log.WarnContext(ctx, "extract: get topics failed; dead-lettering",
 			"buffer_key", fb.Key, "err", err)
 		e.deadLetter(ctx, fb, fmt.Sprintf("get topics: %v", err))
 		return
 	}
+	activeTopics := resolution.Topics
 	if len(activeTopics) == 0 {
 		e.emitEvent(ctx, fb.Scope, "extraction.skipped", fb.Key, "no_topics",
 			map[string]interface{}{"reason": "no_topics", "buffer_key": fb.Key})
 		e.markProcessed(ctx, fb)
 		return
+	}
+	// The composition cap dropped pack entries (D-099) — surface it on the audit
+	// stream, never silently. Explicit topics are never dropped.
+	if len(resolution.DroppedKeys) > 0 {
+		e.emitEvent(ctx, fb.Scope, "extraction.topics_capped", fb.Key, "max_active_topics",
+			map[string]interface{}{
+				"buffer_key":    fb.Key,
+				"cap":           topics.MaxActiveTopics,
+				"dropped_count": len(resolution.DroppedKeys),
+				"dropped_keys":  resolution.DroppedKeys,
+			})
 	}
 
 	// Step 4: Build prompt.

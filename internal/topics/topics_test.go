@@ -81,8 +81,8 @@ func TestActiveTopics_VirtualPack_Assistant(t *testing.T) {
 		t.Fatal("expected virtual pack topics, got none")
 	}
 	for _, v := range views {
-		if v.Source != "pack" {
-			t.Errorf("topic %q: want Source=pack, got %q", v.Key, v.Source)
+		if v.Source != topics.PackPreferences {
+			t.Errorf("topic %q: want Source=%q, got %q", v.Key, topics.PackPreferences, v.Source)
 		}
 		if v.Pack != topics.PackPreferences {
 			t.Errorf("topic %q: want Pack=%q, got %q", v.Key, topics.PackPreferences, v.Pack)

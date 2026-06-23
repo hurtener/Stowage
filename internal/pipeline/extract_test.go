@@ -247,6 +247,52 @@ func TestPromptGoldenExplicit(t *testing.T) {
 	}
 }
 
+// TestPromptGoldenCompose asserts that a COMPOSED topic set (explicit topics +
+// pack entries, as topics.Resolve would produce under D-099) renders to a
+// byte-exact prompt — the composition is upstream in topics.Resolve, but this locks
+// that a mixed line set renders identically to any other.
+func TestPromptGoldenCompose(t *testing.T) {
+	t.Parallel()
+
+	topicLines := []string{
+		// explicit topics first (they lead the composed set)…
+		"billing-flow: How the billing service charges and refunds customers",
+		// …then pack:project entries.
+		"project-glossary: Domain terms, acronyms, and entity names specific to this project and what they mean",
+		"ownership-and-contacts: Who owns which component, service, or area, and how to reach them",
+	}
+	records := []store.Record{
+		{
+			ID:      "rec-CCCCCCCCCCCCCCCCCCCCCCCCCCC1",
+			Role:    "user",
+			Content: "Refunds for the billing service are owned by the payments team; ask Priya.",
+		},
+	}
+
+	result := pipeline.BuildPrompt(topicLines, records, 8000)
+	got, err := json.MarshalIndent(result, "", "  ")
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+
+	goldenPath := filepath.Join("testdata", "extract_prompt_compose.golden")
+	if os.Getenv("UPDATE_GOLDEN") == "1" {
+		if err := os.WriteFile(goldenPath, got, 0o600); err != nil {
+			t.Fatalf("write golden: %v", err)
+		}
+		t.Logf("updated %s", goldenPath)
+		return
+	}
+
+	want, err := os.ReadFile(goldenPath)
+	if err != nil {
+		t.Fatalf("read golden %s: %v (run with UPDATE_GOLDEN=1 to create)", goldenPath, err)
+	}
+	if !bytes.Equal(bytes.TrimSpace(got), bytes.TrimSpace(want)) {
+		t.Errorf("PromptResult JSON mismatch (compose):\ngot:\n%s\nwant:\n%s", got, want)
+	}
+}
+
 // ── AC-2: Topic gating ────────────────────────────────────────────────────────
 
 // TestTopicGating_PackOff_ShortCircuit asserts that a scope with a pack:off
@@ -300,6 +346,65 @@ func TestTopicGating_PackOff_ShortCircuit(t *testing.T) {
 	}
 	if len(dls) != 0 {
 		t.Errorf("unexpected dead letters: %v", dls)
+	}
+}
+
+// TestTopicGating_Cap_EmitsTopicsCapped enables every pack so the composed topic
+// set exceeds topics.MaxActiveTopics, and asserts the extract stage emits
+// extraction.topics_capped with a positive dropped_count (D-099, never silent).
+func TestTopicGating_Cap_EmitsTopicsCapped(t *testing.T) {
+	t.Parallel()
+	st := newTestStore(t)
+	gw, mock := newMockGateway(t)
+	scope := identity.Scope{Tenant: "t-cap-event"}
+
+	now := time.Now().UnixMilli()
+	for _, key := range []string{
+		"pack:on:preferences", "pack:on:agent-learnings", "pack:on:project",
+		"pack:on:incidents", "pack:on:product", "pack:on:people",
+		"pack:on:compliance", "pack:on:research",
+	} {
+		if err := st.Topics().Upsert(context.Background(), scope, store.Topic{
+			ID: ulid.Make().String(), TenantID: scope.Tenant, Key: key,
+			Status: "active", CreatedAt: now, UpdatedAt: now,
+		}); err != nil {
+			t.Fatalf("upsert %s: %v", key, err)
+		}
+	}
+
+	svc := topics.New(st.Topics(), noopLog(), "assistant")
+	// Gateway returns an empty candidate set so extraction completes cleanly; the
+	// cap event is emitted before the gateway call regardless.
+	mock.PushScript(mockdrv.Script{JSON: json.RawMessage(`{"candidates":[]}`)})
+
+	stage, in := newExtractStageAndChan(st, gw, svc, "assistant")
+	stage.Start(context.Background())
+
+	recID := makeRecord(t, st, scope.Tenant, "some content to extract from")
+	in <- makeFlushedBuffer(scope.Tenant, []string{recID}, false)
+	close(in)
+	drainCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	stage.Drain(drainCtx)
+
+	capped := waitEvents(t, st, scope, "extraction.topics_capped", 2*time.Second)
+	if len(capped) == 0 {
+		t.Fatal("want extraction.topics_capped event, got none")
+	}
+	var payload struct {
+		BufferKey    string   `json:"buffer_key"`
+		Cap          int      `json:"cap"`
+		DroppedCount int      `json:"dropped_count"`
+		DroppedKeys  []string `json:"dropped_keys"`
+	}
+	if err := json.Unmarshal([]byte(capped[0].Payload), &payload); err != nil {
+		t.Fatalf("unmarshal topics_capped payload %q: %v", capped[0].Payload, err)
+	}
+	if payload.Cap != topics.MaxActiveTopics {
+		t.Errorf("payload cap = %d, want %d", payload.Cap, topics.MaxActiveTopics)
+	}
+	if payload.DroppedCount <= 0 || payload.DroppedCount != len(payload.DroppedKeys) {
+		t.Errorf("payload dropped_count=%d keys=%d: want positive and equal", payload.DroppedCount, len(payload.DroppedKeys))
 	}
 }
 
