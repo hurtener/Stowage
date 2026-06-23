@@ -38,4 +38,14 @@ if [ -f scripts/acceptance/full-cycle-live.sh ]; then ok "full-cycle live accept
 # 6. Cross-build matrix target (21.3)
 if grep -q "^release:" Makefile 2>/dev/null; then ok "make release target present"; else skip "make release not added yet (21.3)"; fi
 
+# 7. DSAR cascading delete is wired, not stubbed (§13, D-098)
+if grep -q "handleDSARStub" internal/api/*.go 2>/dev/null; then
+  failc "DSAR handler is still the 501 stub (handleDSARStub present)"
+elif grep -q "func (s \*Server) handleDSAR(" internal/api/keys_handler.go 2>/dev/null \
+  && grep -q "DeleteUserData" internal/store/store.go 2>/dev/null; then
+  ok "DSAR cascading delete wired (handleDSAR + Store.DeleteUserData)"
+else
+  skip "DSAR cascade not wired yet (21.1)"
+fi
+
 exit "$fails"

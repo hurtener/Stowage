@@ -2639,3 +2639,70 @@ not a re-license of this one.
 
 The LICENSE file + the launch artifacts land in Phase 21; until merged there is no LICENSE
 file (superseding the "no LICENSE file until then" stance of the earlier D-entries).
+
+## D-098 — DSAR cascading delete: the sanctioned P1 verbatim-delete exception
+
+2026-06-23. Phase 21 (launch hardening). Acceptance criterion §21.1.5 requires a
+DSAR (Data Subject Access Request) export + **cascading delete per (tenant, user)**;
+the live-acceptance gate's last red (#57) was `DELETE /v1/admin/users/{user}` still
+returning 501 (`handleDSARStub`). The DSAR cascade is implemented as a single Store-seam
+method, `OpsStore.DeleteUserData(ctx, scope) (DSARCounts, error)`, wired to the admin-only
+HTTP route.
+
+**It is the one and only verbatim-delete exception.** CLAUDE.md §6 / P1 forbids deleting
+or mutating verbatim `records` outside "the explicit retention/DSAR cascade". This method
+**is** that cascade: it is the sole code path that deletes `records` rows. Every other path
+treats verbatim records as immutable.
+
+**Cascade semantics (binding).**
+- **Scope (P3).** `scope` MUST carry both `Tenant` and `User`; either empty ⇒
+  `ErrScopeRequired`. There is no tenant-wide or unscoped purge. The HTTP handler takes the
+  tenant from the caller's **admin** key (an admin can only purge within their own tenant)
+  and the user from the `{user}` path segment.
+- **One transaction, FK-safe order (children → parents).** SQLite runs it as one `exec`
+  closure (one `sql.Tx`); Postgres as one `pool.Begin`→`tx.Commit`. Order: the children of
+  the user's memories (`provenance`, `memory_entities`, `memory_keywords`, `memory_queries`,
+  `memory_topics`, `memory_vectors`, `links`, `feedback`, `injections`) → the user_id-scoped
+  tables (`topics`, `suggestions`, `buffer_items`, `scope_settings`, `group_members`,
+  `grants`, `branches`, `episodes`) → `memories` → `records` (the P1 delete) → the user's
+  own `events`. The `topics` (extraction-magnet) table and the `memory_topics` junction are
+  distinct and both swept; `DSARCounts` reports them under separate keys
+  (`topics` vs `memory_topics`).
+- **Cross-user references are swept too.** Tables with a non-`ON DELETE CASCADE` FK to
+  `memories`/`records` (`injections`, `links`, `provenance`, `feedback`) are deleted by
+  membership in the user's memory/record set **in addition to** by `user_id`, so a row
+  another user owns that *cites* the purged user's memory (a team-shared retrieval injection,
+  an inferred cross-memory link) is removed — otherwise the FK-restricted `memories`/`records`
+  deletes would fail and a dangling reference to the erased user would survive. `grants` are
+  deleted by **owner** `user_id` (the grant's owner column), the user being erased.
+- **Audit survives the purge.** A `user.purged` event is emitted **at tenant scope**
+  (`user_id` NULL, subject = the purged user) *after* the user's own events are deleted, so it
+  is not itself purged. Its payload carries the per-table `DSARCounts` + the purged user id —
+  the durable record that the erasure happened and what it covered (CLAUDE.md §8: every
+  mutation emits an event with its reason).
+- **Counts returned.** `DSARCounts` reports a row count per table; the handler returns it as
+  `200 {user, counts}`. A user with no data is a no-op that still emits the event (zero count).
+
+**Both drivers + conformance.** Implemented on `sqlitestore` and `pgstore`; the shared
+conformance suite proves completeness (every populated table reaches zero, counts > 0),
+cross-user isolation (a second user's own rows survive; their rows referencing the purged
+user are removed), cross-tenant isolation (the same user id in another tenant is untouched),
+and the empty-scope guard. The `feedback` table currently has no writer in the codebase, but
+the cascade covers it defensively so a future writer needs no DSAR change (schema-complete).
+
+**Scope of the sweep — what is and isn't reached.** The cascade removes (a) every row in a
+`user_id`-bearing table owned by the user, and (b) every row in any table that holds an
+FK-enforced reference to the user's memories/records (including rows another user owns that
+*cite* them). It deliberately does NOT chase **soft (non-FK) TEXT references** — e.g.
+`memories.supersedes_id`/`superseded_by_id`, `suggestions.memory_id`/`episode_id`,
+`episodes.narrative_memory_id`. In practice these only point within a single scope
+(reconciliation, suggestion offers, and narration are per-(tenant,user)), so a *cross-user*
+soft reference to a purged memory is not produced by any current code path; the in-scope ones
+are deleted with the user's own rows. If a future feature creates cross-user soft references,
+sweeping them becomes a follow-up — called out here rather than silently assumed.
+Likewise `feedback` has no `user_id` column (and no writer yet): it is erased by
+`memory_id`-membership, so feedback the user left on *another* user's memory would not be
+attributable for erasure; revisit if a feedback writer that records authorship lands.
+
+**Schema note.** No new tables/columns — the cascade operates over the existing RFC §8.1
+inventory, so the D-024 schema-budget guardrail is untouched.

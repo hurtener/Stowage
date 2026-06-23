@@ -184,6 +184,10 @@ func Run(t *testing.T, factory Factory) {
 	RunGrants(t, factory)
 	// Phase 18 — rollback & pending-confirmation resolution
 	RunPhase18(t, factory)
+	// Phase 21 — DSAR cascading delete (OpsStore.DeleteUserData, D-098)
+	t.Run("DSARDeleteUserDataCascade", func(t *testing.T) { testDSARDeleteUserDataCascade(t, factory) })
+	t.Run("DSARDeleteUserDataCrossTenantIsolation", func(t *testing.T) { testDSARDeleteUserDataCrossTenantIsolation(t, factory) })
+	t.Run("DSARDeleteUserDataScopeRequired", func(t *testing.T) { testDSARDeleteUserDataScopeRequired(t, factory) })
 }
 
 // --- helpers ----------------------------------------------------------------

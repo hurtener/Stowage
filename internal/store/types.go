@@ -194,6 +194,33 @@ type SessionInfo struct {
 	RecordCount   int64
 }
 
+// DSARCounts reports the per-table row counts deleted by a DSAR cascade
+// (OpsStore.DeleteUserData). Every table the cascade touches has a field so the
+// operator (and the user.purged audit event) sees exactly what was erased. The
+// zero value is a no-op purge (the user had no data).
+type DSARCounts struct {
+	Records       int64 `json:"records"`    // verbatim records (the P1-sanctioned delete)
+	Memories      int64 `json:"memories"`   // abstraction-layer memories
+	Provenance    int64 `json:"provenance"` // memory→record provenance spans
+	Entities      int64 `json:"memory_entities"`
+	Keywords      int64 `json:"memory_keywords"`
+	Queries       int64 `json:"memory_queries"`
+	MemoryTopics  int64 `json:"memory_topics"` // memory→topic junction rows
+	Topics        int64 `json:"topics"`        // the user's extraction-magnet topics
+	Vectors       int64 `json:"memory_vectors"`
+	Links         int64 `json:"links"`      // edges touching a purged memory (either endpoint)
+	Feedback      int64 `json:"feedback"`   // feedback rows on purged memories
+	Injections    int64 `json:"injections"` // the user's injections + any injection citing a purged memory
+	Suggestions   int64 `json:"suggestions"`
+	BufferItems   int64 `json:"buffer_items"`
+	ScopeSettings int64 `json:"scope_settings"`
+	GroupMembers  int64 `json:"group_members"`
+	Grants        int64 `json:"grants"`
+	Branches      int64 `json:"branches"`
+	Episodes      int64 `json:"episodes"`
+	Events        int64 `json:"events"` // the user's events (the tenant-scoped user.purged event survives)
+}
+
 // DeadLetter is a failed pipeline item that requires operator attention.
 type DeadLetter struct {
 	ID         string

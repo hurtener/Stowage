@@ -555,4 +555,24 @@ type OpsStore interface {
 	// The returned func releases the lock. No-op on sqlite (returns a no-op
 	// release func and nil error).
 	AdvisoryLock(ctx context.Context, key int64) (func() error, error)
+
+	// DeleteUserData cascades a DSAR (Data Subject Access Request) erasure of ALL
+	// data for a single (tenant, user) and returns the per-table deletion counts
+	// (RFC §13; CLAUDE.md §6 — this is the ONLY code path that deletes verbatim
+	// records, the P1 retention/DSAR cascade exception, D-098).
+	//
+	// scope MUST carry both Tenant and User; either empty returns ErrScopeRequired
+	// (P3 — there is no tenant-wide or unscoped purge here). The whole cascade runs
+	// in ONE transaction in FK-safe order (children before parents): the user's
+	// memories' junction/provenance/vector/link/feedback/injection rows, then the
+	// user_id-scoped tables (injections, suggestions, buffer_items, scope_settings,
+	// group_members, grants, branches, episodes, events), then memories, then the
+	// verbatim records. Cross-user rows that REFERENCE a purged memory (injections
+	// citing it, links touching it, provenance/feedback on it) are also removed so
+	// the FK-restricted memories/records deletes never fail and no dangling
+	// reference to the erased user survives. Finally it emits a `user.purged` audit
+	// event at TENANT scope (NOT the deleted user — so it survives the events
+	// delete), carrying the DSARCounts as its payload. A user with no data is a
+	// no-op that still emits the event with a zero count.
+	DeleteUserData(ctx context.Context, scope identity.Scope) (DSARCounts, error)
 }

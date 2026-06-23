@@ -90,6 +90,14 @@ file:line evidence per item:
    retention/DSAR cascade path: confirm it exists and is the ONLY path that
    deletes/mutates verbatim records (P1), is scope-enforced, and emits events. If a
    gap is found, it is a real finding fixed in this phase (with an integration test).
+   **Finding (fixed in this phase):** the cascade was stubbed — `DELETE
+   /v1/admin/users/{user}` returned 501 (`handleDSARStub`), the live-acceptance gate's
+   last red. Implemented as `OpsStore.DeleteUserData(ctx, scope) (DSARCounts, error)`
+   on both drivers (one FK-safe transaction; children → user_id-scoped tables →
+   memories → the P1-sanctioned `records` delete → the user's events; emits a
+   tenant-scoped `user.purged` audit event with the counts), proven by the shared
+   conformance suite (completeness + cross-user + cross-tenant isolation + empty-scope
+   guard) and a handler test asserting 200 + the data gone (D-098).
 6. **Gateway payloads are the only data leaving the box.** Confirm no package
    outside `internal/gateway` makes outbound network calls (the P5 lint + a grep
    audit); redaction-profile hooks are documented as the v1.x extension point.
@@ -211,8 +219,12 @@ scripts/smoke/phase-21-fiveminute.sh      # the five-minute-rule smoke (mock, in
 scripts/acceptance/full-cycle-live.sh     # 21.6 full-cycle LIVE acceptance (real models, all routes, operator-run)
 scripts/forbidden-history-sweep.sh        # full-history predecessor-name sweep
 scripts/drift-audit.sh                    # + secret-pattern grep; reference the history sweep
+internal/store/{store,types}.go           # DSAR finding (21.1.5): OpsStore.DeleteUserData + DSARCounts (D-098)
+internal/store/{sqlitestore,pgstore}/ops.go # the cascade on both drivers (D-098)
+internal/store/conformance/phase21.go     # DSAR cascade conformance (completeness + isolation)
+internal/api/keys_handler.go              # handleDSARStub → handleDSAR (real cascade, admin-only)
 internal/...                              # ONLY if 21.1 surfaces a real security finding (+ regression test)
-docs/decisions.md                         # D-097 (OQ-5 → Apache-2.0)
+docs/decisions.md                         # D-097 (OQ-5 → Apache-2.0), D-098 (DSAR cascade / P1 verbatim-delete exception)
 ```
 
 ## Config keys added
@@ -311,6 +323,13 @@ None. The knob guardrail (D-034) forbids it, and this phase is audit + artifact.
 
 ## Decisions filed
 
+- **D-098: DSAR cascading delete — the sanctioned P1 verbatim-delete exception.** The
+  21.1.5 audit finding: the DSAR cascade was a 501 stub. Implemented as one Store-seam
+  method (`OpsStore.DeleteUserData`) on both drivers — a single FK-safe transaction
+  erasing all `(tenant, user)` data (the only path that deletes verbatim records),
+  sweeping cross-user rows that reference the purged user's memories, and emitting a
+  tenant-scoped `user.purged` audit event with per-table counts; scope-enforced (P3),
+  conformance- and handler-tested.
 - **D-097: OQ-5 resolved — Stowage ships under Apache-2.0.** Permissive + explicit
   patent grant; the ecosystem-friendly fit for Go memory infrastructure and the
   Portico/Harbor/Dockyard interop. The BSL-style cloud-protective alternative
