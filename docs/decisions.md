@@ -2828,3 +2828,49 @@ before ingestion (`RunDatasetOpts.SeedTopics`). Explicit topics suppress the def
 (D-099), which is intended — the run wants exactly this set. CI/mock runs do not seed
 (their extraction is scripted). This is an eval-harness fixture decision, not a product
 default: production scopes still choose topics/packs per D-099.
+
+## D-102 — Structured-output schemas are OpenAI-strict-compliant; value constraints live in server validation
+
+2026-06-23. A learner-model investigation surfaced a real product gap: Stowage's
+gateway schemas could not be used with **OpenAI** (or Azure OpenAI) structured
+outputs — `gateway.Complete` returned **HTTP 400** for every OpenAI model. The cause
+was Stowage's own schemas, not the models: OpenAI's *strict* structured-output mode
+(the strictest, best-specified of any provider) forbids the JSON-Schema **validation**
+keywords `minLength` / `minimum` / `maximum` / `minItems` / `maxItems` / `pattern` /
+`format` / `multipleOf`, and requires **every** property to appear in `required` with
+`additionalProperties: false` on every object. Our `CandidateSchema` (and four others)
+used `minimum`/`maximum`/`minItems`/`minLength` and left some properties optional. A
+provider-agnostic memory product (P5) that can't accept the most common provider is a
+defect — "we don't support OpenAI" is not shippable.
+
+**Key realization (why this is safe):** those value/length keywords buy *nothing* at
+generation time. Constrained decoding enforces **shape** — types, `enum`, `required`,
+`additionalProperties` — not value ranges; OpenAI rejects the keywords outright and
+lenient providers (Gemini, etc.) silently ignore them. What actually keeps values in
+range is (a) the **prompt** ("rate importance 1–5; confidence 0.0–1.0") and (b)
+**server-side validation** that already re-checks every field (`isValidCandidate`:
+empty content, importance ∈ [1,5], confidence ∈ [0,1], provenance ≥ 1; spans clamped).
+So the keywords were redundant *and* the thing breaking compatibility.
+
+**Decision.** All gateway structured-output schemas (D-040 / §10) are made
+OpenAI-strict-compliant:
+- **Drop** all value/length validation keywords. Value ranges are documented in each
+  field's `description` (a prompt-level hint) and enforced server-side, where they
+  always actually were.
+- **Every property is in `required`** with `additionalProperties: false` on every
+  object. Conditionally-relevant fields (e.g. reconcile `content`/`target_ids`/`links`)
+  become required with empty-value semantics (`""`/`[]`); the server interprets them
+  per-action (`validateDecision`), exactly as before.
+
+**Schemas updated:** `CandidateSchema` (extract, v2→v3), `reflectionSchema` (reflect,
+v1→v2), `DecisionSchema` (reconcile), `narrativeSchema` (episodes), `causalSchema`
+(causal), `verifySchema` (trust). The eval reader/judge schemas were already compliant.
+
+**Consequences.** Stowage's gateway now works with OpenAI/Azure structured outputs and
+is *more* compatible everywhere (a strict-compliant schema is a subset all providers
+accept). Verified by direct probes (the same `CandidateSchema` went 400→200 on
+`gpt-5.4-nano` and `gpt-4o-mini`) and a live extraction run (gpt-5.4-nano: hundreds of
+memories, zero schema failures). The change also *rescued* models that were previously
+flaky for extraction (`inception/mercury-2`). No safety lost: server validation is
+unchanged. A regression guard asserts the exported schemas carry none of the forbidden
+keywords.

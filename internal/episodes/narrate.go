@@ -26,8 +26,8 @@ var narrativeSchema = json.RawMessage(`{
   "required": ["title", "narrative"],
   "additionalProperties": false,
   "properties": {
-    "title":     { "type": "string", "minLength": 1, "description": "A short title for the episode." },
-    "narrative": { "type": "string", "minLength": 1, "description": "The concrete path of what happened and the decisions taken, grounded in the records." }
+    "title":     { "type": "string", "description": "A short title for the episode." },
+    "narrative": { "type": "string", "description": "The concrete path of what happened and the decisions taken, grounded in the records." }
   }
 }`)
 

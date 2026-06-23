@@ -3,7 +3,7 @@ package reflect
 import "encoding/json"
 
 // ReflectionSchemaVersion tags the reflection response JSON schema.
-const ReflectionSchemaVersion = "1"
+const ReflectionSchemaVersion = "2"
 
 // reflectionSchema is the JSON schema the gateway constrains the reflection
 // response to (CLAUDE.md §10 / D-040 — schema-constrained, no free-text JSON
@@ -39,7 +39,7 @@ var reflectionSchema = json.RawMessage(`{
             "type": "string",
             "enum": ["strategy", "failure_mode"]
           },
-          "content":  { "type": "string", "minLength": 1 },
+          "content":  { "type": "string" },
           "context":  { "type": "string" },
           "entities": { "type": "array", "items": { "type": "string" } },
           "keywords": { "type": "array", "items": { "type": "string" } },
@@ -47,19 +47,18 @@ var reflectionSchema = json.RawMessage(`{
             "type": "array",
             "items": { "type": "string" }
           },
-          "importance": { "type": "integer", "minimum": 1, "maximum": 5 },
-          "confidence": { "type": "number",  "minimum": 0, "maximum": 1 },
+          "importance": { "type": "integer", "description": "1 (trivial) to 5 (critical)" },
+          "confidence": { "type": "number",  "description": "0.0 to 1.0" },
           "provenance": {
             "type": "array",
-            "minItems": 1,
             "items": {
               "type": "object",
               "required": ["record_id", "span_start", "span_end"],
               "additionalProperties": false,
               "properties": {
                 "record_id":  { "type": "string" },
-                "span_start": { "type": "integer", "minimum": 0 },
-                "span_end":   { "type": "integer", "minimum": 0 }
+                "span_start": { "type": "integer" },
+                "span_end":   { "type": "integer" }
               }
             }
           }
