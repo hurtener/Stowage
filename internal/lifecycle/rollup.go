@@ -250,6 +250,7 @@ func (m *Manager) rollupSession(ctx context.Context, scope identity.Scope, sessI
 			"session", sessID, "err", err)
 		return
 	}
+	m.invalidateScope(scope) // D-118: sources superseded + digest added — drop cached results
 	m.log.InfoContext(ctx, "lifecycle/rollup: session rolled up",
 		"tenant", scope.Tenant, "session", sessID,
 		"sources", len(promotable), "digest", digest.ID)

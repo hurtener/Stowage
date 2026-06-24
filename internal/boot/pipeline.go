@@ -179,6 +179,7 @@ func StartPipeline(ctx context.Context, stk *Stack, cfg config.Config) (*Pipelin
 	lcProfile.ThreadWindow = episodeCfg.ThreadWindow
 	lcProfile.ThreadBatchSize = episodeCfg.ThreadBatchSize
 	lc := lifecycle.New(stk.Store, stk.Log, lcProfile, ch)
+	lc.SetScopeInvalidator(stk.Retriever.Cache()) // D-118: lifecycle sweeps invalidate the retrieval cache
 	if reflectCfg.Enabled {
 		// Wire the reflection sweep: it calls the gateway and emits into the
 		// reconcile fan-in (Phase 19, D-077). Set before RunForce/Start.

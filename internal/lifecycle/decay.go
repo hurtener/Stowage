@@ -186,6 +186,7 @@ func (m *Manager) expireMemory(ctx context.Context, scope identity.Scope, mem st
 		m.log.WarnContext(ctx, "lifecycle/decay: SetStatus expired failed",
 			"id", mem.ID, "err", err)
 	}
+	m.invalidateScope(scope) // D-118: drop cached results so the expired memory isn't served
 
 	m.log.InfoContext(ctx, "lifecycle/decay: memory expired",
 		"tenant", scope.Tenant,

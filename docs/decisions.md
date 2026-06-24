@@ -3112,3 +3112,12 @@ Phase 29d (audit #10). `trust.Resolve` flips a `pending_review` memory to `activ
 (D-084). Both are plain in-place status flips whose prior state is captured the same way as
 `memory.updated`, so they invert via the same `commitSimpleRollback` path. Added both to
 `isRestorable` and the rollback switch. Regression test: reject → Rollback restores `pending_review`.
+
+## D-118 — Lifecycle sweeps invalidate the retrieval cache
+
+Phase 29d (audit #15). The reconcile stage invalidates the retrieval result-cache after a
+content-changing commit (D-053), but the lifecycle Manager held no invalidator — so after a
+decay-expire, dedupe-merge, or rollup, the cache kept serving the now-expired/merged memory for
+up to its 60s TTL (P4 staleness). Added `Manager.SetScopeInvalidator` (the same
+`reconcile.ScopeInvalidator` seam) and a nil-safe `invalidateScope` call after each
+status-mutating sweep; boot wires the retriever cache into the Manager.

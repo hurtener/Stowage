@@ -217,6 +217,7 @@ func (m *Manager) mergeNearDup(ctx context.Context, scope identity.Scope, src, t
 			"src", src.ID, "tgt", target.ID, "err", err)
 		return
 	}
+	m.invalidateScope(scope) // D-118: a merge retires both originals — drop cached results
 	m.log.InfoContext(ctx, "lifecycle/dedupe: near-dup merged",
 		"tenant", scope.Tenant, "src", src.ID, "tgt", target.ID, "sim", sim)
 }

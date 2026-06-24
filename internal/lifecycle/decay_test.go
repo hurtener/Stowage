@@ -332,3 +332,32 @@ func TestDecaySweepActivityAxisDrivesDecay(t *testing.T) {
 		t.Errorf("fresh memory (0 activity turns) should stay healthy; got valid_until=%d", m.ValidUntil)
 	}
 }
+
+// countingInvalidator records InvalidateScope calls (D-118 test double).
+type countingInvalidator struct{ scopes []identity.Scope }
+
+func (c *countingInvalidator) InvalidateScope(s identity.Scope) { c.scopes = append(c.scopes, s) }
+
+// TestDecayExpireInvalidatesCache proves D-118/audit #15: a status-mutating sweep (expire)
+// invalidates the retrieval cache, so it can't serve the expired memory for the TTL.
+func TestDecayExpireInvalidatesCache(t *testing.T) {
+	st, cleanup := newTestStore(t)
+	defer cleanup()
+	scope := identity.Scope{Tenant: "decay-inv"}
+	past := time.Now().Add(-1 * time.Hour).UnixMilli()
+	id := insertMemory(t, st, scope, store.Memory{Stability: 1.0,
+		LastAccessedAt: time.Now().Add(-30 * 24 * time.Hour).UnixMilli(), ValidUntil: past})
+
+	inv := &countingInvalidator{}
+	profile := lifecycle.Profile{DecayInterval: 10 * time.Minute, DecayBatchSize: 100, DecayGraceSweeps: 2}
+	mgr := lifecycle.New(st, testLogger(), profile, make(chan pipeline.Item, 8))
+	mgr.SetScopeInvalidator(inv)
+	mgr.SweepDecayOnce(context.Background())
+
+	if mem := getMemory(t, st, scope, id); mem.Status != "expired" {
+		t.Fatalf("memory status = %q, want expired", mem.Status)
+	}
+	if len(inv.scopes) == 0 {
+		t.Error("expire did not invalidate the retrieval cache (D-118)")
+	}
+}

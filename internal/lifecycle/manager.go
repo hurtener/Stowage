@@ -12,7 +12,9 @@ import (
 	"time"
 
 	"github.com/hurtener/stowage/internal/gateway"
+	"github.com/hurtener/stowage/internal/identity"
 	"github.com/hurtener/stowage/internal/pipeline"
+	"github.com/hurtener/stowage/internal/reconcile"
 	"github.com/hurtener/stowage/internal/store"
 )
 
@@ -153,8 +155,27 @@ type Manager struct {
 	// reflection — either setter may supply it.
 	episodesEnabled bool
 
+	// invalidator bumps the retrieval result-cache generation for a scope after a
+	// status-mutating sweep (decay-expire, dedupe-merge, rollup, confirm), so the cache
+	// can't keep serving an expired/merged memory for up to its 60s TTL (D-118, audit #15).
+	// nil ⇒ no invalidation (cache entries still expire via TTL).
+	invalidator reconcile.ScopeInvalidator
+
 	wg     sync.WaitGroup
 	stopCh chan struct{}
+}
+
+// SetScopeInvalidator wires the retrieval cache so status-mutating sweeps invalidate it
+// (D-118). Must be called before Start.
+func (m *Manager) SetScopeInvalidator(inv reconcile.ScopeInvalidator) {
+	m.invalidator = inv
+}
+
+// invalidateScope is a nil-safe cache-invalidation hook for status-mutating sweeps.
+func (m *Manager) invalidateScope(scope identity.Scope) {
+	if m.invalidator != nil {
+		m.invalidator.InvalidateScope(scope)
+	}
 }
 
 // SetEpisodes enables the episode detect + narrate sweeps, wiring the gateway the
