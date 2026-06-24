@@ -276,9 +276,12 @@ func rollback(ctx context.Context, st store.Store, scope identity.Scope, id stri
 	now := time.Now().UnixMilli()
 
 	switch invertibleEvent.Type {
-	case "memory.updated":
-		// Restore {id} in place from snapshot. No tombstone.
-		return commitSimpleRollback(ctx, st, scope, id, mem, prior, now, "reconcile: rollback updated op")
+	case "memory.updated", "memory.review_approved", "memory.review_rejected":
+		// Restore {id} in place from snapshot. No tombstone. The review resolutions
+		// (approve→active / reject→quarantined) are plain status flips whose prior state
+		// (pending_review) is captured the same way, so they invert via the same path —
+		// this is the un-quarantine / undo-approval path (D-117, audit #10).
+		return commitSimpleRollback(ctx, st, scope, id, mem, prior, now, "reconcile: rollback in-place op")
 
 	case "memory.superseded":
 		return rollbackSuperseded(ctx, st, scope, id, mem, prior, now)
@@ -291,9 +294,14 @@ func rollback(ctx context.Context, st store.Store, scope identity.Scope, id stri
 	return nil, ErrNoPriorState
 }
 
-// isRestorable reports whether evType is an invertible reconciliation event (D-064).
+// isRestorable reports whether evType is an invertible reconciliation event (D-064, D-117).
 func isRestorable(evType string) bool {
-	return evType == "memory.updated" || evType == "memory.merged" || evType == "memory.superseded"
+	switch evType {
+	case "memory.updated", "memory.merged", "memory.superseded",
+		"memory.review_approved", "memory.review_rejected":
+		return true
+	}
+	return false
 }
 
 // commitSimpleRollback handles the in-place restore (updated event, or a

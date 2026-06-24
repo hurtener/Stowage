@@ -3102,3 +3102,13 @@ lost (e.g. the newest correction in a long session). The digest must represent e
 supersedes. Decision: `buildDigestContent` includes all promotable memories' content (the count
 cap removed). A session digest is bounded in practice — rollup only fires on idle, aged sessions
 of working memory. Regression test asserts all 12 contents appear and no "[+N more]" elision.
+
+## D-117 — Review approve/reject are reversible (un-quarantine path)
+
+Phase 29d (audit #10). `trust.Resolve` flips a `pending_review` memory to `active` (approve) or
+`quarantined` (reject) and captures the prior state in `memory.review_approved` /
+`memory.review_rejected` events — but those types were NOT in `reconcile.isRestorable`, so
+`Rollback` refused them: the advertised reversibility (and the only un-quarantine path) was dead
+(D-084). Both are plain in-place status flips whose prior state is captured the same way as
+`memory.updated`, so they invert via the same `commitSimpleRollback` path. Added both to
+`isRestorable` and the rollback switch. Regression test: reject → Rollback restores `pending_review`.

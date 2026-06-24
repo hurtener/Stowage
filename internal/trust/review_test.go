@@ -261,3 +261,30 @@ func TestVerifyClaim_CapturesVerdictPerResponse(t *testing.T) {
 		}
 	}
 }
+
+// TestReview_RejectRollback proves D-117/audit #10: a review rejection (→ quarantined) is
+// reversible — Rollback restores the memory to pending_review (the un-quarantine path that was
+// silently dead because the event types weren't in isRestorable).
+func TestReview_RejectRollback(t *testing.T) {
+	st := openStore(t)
+	scope := identity.Scope{Tenant: "rv-rb"}
+	ctx := context.Background()
+	id := assertReview(t, st, scope, "a claim to reject then undo")
+
+	if _, err := Resolve(ctx, st, scope, id, ReviewReject); err != nil {
+		t.Fatalf("Resolve reject: %v", err)
+	}
+	if mem, _ := st.Memories().Get(ctx, scope, id); mem.Status != "quarantined" {
+		t.Fatalf("pre-rollback status = %q, want quarantined", mem.Status)
+	}
+	if _, err := reconcile.Rollback(ctx, st, scope, id); err != nil {
+		t.Fatalf("Rollback review_rejected: %v", err)
+	}
+	mem, err := st.Memories().Get(ctx, scope, id)
+	if err != nil {
+		t.Fatalf("get after rollback: %v", err)
+	}
+	if mem.Status != "pending_review" {
+		t.Errorf("after rollback status = %q, want pending_review (un-quarantined)", mem.Status)
+	}
+}
