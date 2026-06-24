@@ -1714,3 +1714,39 @@ func TestSetScopeInvalidator(t *testing.T) {
 		t.Error("ScopeInvalidator.InvalidateScope: not called after fast-add; want >= 1 call")
 	}
 }
+
+// TestSelectSurvivor covers the D-111 deterministic survivor rule used by reconcile + the
+// lifecycle consolidation sweep: later ValidFrom wins; then trust tier; then importance; then
+// CreatedAt; then ULID.
+func TestSelectSurvivor(t *testing.T) {
+	mk := func(id string, validFrom int64, trust string, imp int, created int64) store.Memory {
+		return store.Memory{ID: id, ValidFrom: validFrom, TrustSource: trust, Importance: imp, CreatedAt: created}
+	}
+	cases := []struct {
+		name   string
+		a, b   store.Memory
+		winner string
+	}{
+		{"later date wins", mk("A", 200, "llm_extracted", 3, 10), mk("B", 100, "user_stated", 5, 99), "A"},
+		{"trust breaks date tie", mk("A", 100, "llm_extracted", 5, 10), mk("B", 100, "user_stated", 1, 10), "B"},
+		{"importance breaks trust tie", mk("A", 100, "llm_extracted", 5, 10), mk("B", 100, "llm_extracted", 2, 10), "A"},
+		{"created breaks importance tie", mk("A", 100, "llm_extracted", 3, 50), mk("B", 100, "llm_extracted", 3, 10), "A"},
+		{"ulid final tiebreak", mk("B", 100, "llm_extracted", 3, 10), mk("A", 100, "llm_extracted", 3, 10), "B"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			w, l := reconcile.SelectSurvivor(tc.a, tc.b)
+			if w.ID != tc.winner {
+				t.Errorf("winner = %s, want %s", w.ID, tc.winner)
+			}
+			if l.ID == w.ID {
+				t.Errorf("loser must differ from winner")
+			}
+			// Symmetric: order of args must not change the winner.
+			w2, _ := reconcile.SelectSurvivor(tc.b, tc.a)
+			if w2.ID != w.ID {
+				t.Errorf("SelectSurvivor not symmetric: %s vs %s", w.ID, w2.ID)
+			}
+		})
+	}
+}

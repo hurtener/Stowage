@@ -119,6 +119,43 @@ func numerals(s string) []string {
 	return found
 }
 
+// SelectSurvivor picks, between two same-fact memories, the one to KEEP (winner) and the one
+// to retire (loser), deterministically (D-111). Order: later assertion date (ValidFrom) wins;
+// then higher trust tier (sourceMultiplierMap); then higher importance; then later CreatedAt;
+// then the larger ULID id as a stable final tiebreak. Shared by reconcile and the lifecycle
+// consolidation sweep so the survivor rule cannot drift between sites (D-067). The previous
+// sweep kept an arbitrary "target" — this makes the current/most-trusted value win.
+func SelectSurvivor(a, b store.Memory) (winner, loser store.Memory) {
+	if survivorWins(a, b) {
+		return a, b
+	}
+	return b, a
+}
+
+func trustRank(src string) float64 {
+	if m, ok := sourceMultiplierMap[src]; ok {
+		return m
+	}
+	return defaultSourceMultiplier
+}
+
+// survivorWins reports whether a should be kept over b.
+func survivorWins(a, b store.Memory) bool {
+	if a.ValidFrom != b.ValidFrom {
+		return a.ValidFrom > b.ValidFrom // later assertion date is current
+	}
+	if ra, rb := trustRank(a.TrustSource), trustRank(b.TrustSource); ra != rb {
+		return ra > rb
+	}
+	if a.Importance != b.Importance {
+		return a.Importance > b.Importance
+	}
+	if a.CreatedAt != b.CreatedAt {
+		return a.CreatedAt > b.CreatedAt
+	}
+	return a.ID > b.ID
+}
+
 // priorStateJSON is the canonical serialization format for D-017 prior-state
 // event payloads. Phase 15 rollback will consume this verbatim.
 type priorStateJSON struct {

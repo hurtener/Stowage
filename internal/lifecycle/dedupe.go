@@ -105,46 +105,42 @@ func (m *Manager) mergeNearDup(ctx context.Context, scope identity.Scope, src, t
 	srcJT, _ := m.st.Memories().GetJunctions(ctx, scope, src.ID)
 	tgtJT, _ := m.st.Memories().GetJunctions(ctx, scope, target.ID)
 
-	// Union provenance.
-	provUnion := append(srcJT.Provenance, tgtJT.Provenance...) //nolint:gocritic
+	// Pick the SURVIVOR deterministically (D-111) — later ValidFrom → trust → importance →
+	// CreatedAt → ULID — instead of arbitrarily keeping `target`. correction=true when the two
+	// carry divergent numerals (a value CORRECTION, not a pure duplicate): then we keep ONLY
+	// the survivor's surface (entities/keywords/queries) so the stale value's wording does not
+	// pollute the survivor and resurface it; for a true duplicate we union the surface.
+	survivor, loser := reconcile.SelectSurvivor(src, target)
+	survivorJT, loserJT := srcJT, tgtJT
+	if survivor.ID == target.ID {
+		survivorJT, loserJT = tgtJT, srcJT
+	}
+	correction := reconcile.NumeralsDiverge(src.Content, target.Content)
 
-	// Union entities and keywords.
-	entitySet := map[string]bool{}
-	for _, e := range srcJT.Entities {
-		entitySet[e] = true
-	}
-	for _, e := range tgtJT.Entities {
-		entitySet[e] = true
-	}
-	entities := make([]string, 0, len(entitySet))
-	for e := range entitySet {
-		entities = append(entities, e)
-	}
-	kwSet := map[string]bool{}
-	for _, k := range srcJT.Keywords {
-		kwSet[k] = true
-	}
-	for _, k := range tgtJT.Keywords {
-		kwSet[k] = true
-	}
-	keywords := make([]string, 0, len(kwSet))
-	for k := range kwSet {
-		keywords = append(keywords, k)
+	// Provenance is always unioned (full history, reversible).
+	provUnion := append(append([]store.Provenance{}, survivorJT.Provenance...), loserJT.Provenance...)
+
+	entities := survivorJT.Entities
+	keywords := survivorJT.Keywords
+	queries := survivorJT.Queries
+	if !correction {
+		entities = unionStrings(survivorJT.Entities, loserJT.Entities)
+		keywords = unionStrings(survivorJT.Keywords, loserJT.Keywords)
+		queries = unionStrings(survivorJT.Queries, loserJT.Queries)
 	}
 
-	// Merged counters (target absorbs source).
-	merged := target
-	// The merged row is a NEW memory: fresh ID (reusing target.ID collided
-	// with the unique PK — every sweep merge silently failed before this),
-	// fresh supersedes link; counters/provenance/junctions are unions.
+	// The merged row is a NEW memory carrying the SURVIVOR's content/date, a fresh ID (reusing
+	// an existing PK collided — every sweep merge silently failed before this), superseding the
+	// loser; counters are unioned so usage stats are preserved.
+	merged := survivor
 	merged.ID = ulid.Make().String()
-	merged.SupersedesID = target.ID
-	merged.MatchCount += src.MatchCount
-	merged.UseCount += src.UseCount
-	merged.SaveCount += src.SaveCount
-	merged.FailCount += src.FailCount
-	merged.NoiseCount += src.NoiseCount
-	merged.InjectCount += src.InjectCount
+	merged.SupersedesID = loser.ID
+	merged.MatchCount += loser.MatchCount
+	merged.UseCount += loser.UseCount
+	merged.SaveCount += loser.SaveCount
+	merged.FailCount += loser.FailCount
+	merged.NoiseCount += loser.NoiseCount
+	merged.InjectCount += loser.InjectCount
 
 	now := time.Now().UnixMilli()
 
@@ -201,7 +197,7 @@ func (m *Manager) mergeNearDup(ctx context.Context, scope identity.Scope, src, t
 		Memory:     merged,
 		Entities:   entities,
 		Keywords:   keywords,
-		Queries:    tgtJT.Queries,
+		Queries:    queries,
 		Provenance: storeProvenance,
 		Targets:    []store.Memory{src, target},
 		Events:     events,
@@ -214,4 +210,18 @@ func (m *Manager) mergeNearDup(ctx context.Context, scope identity.Scope, src, t
 	}
 	m.log.InfoContext(ctx, "lifecycle/dedupe: near-dup merged",
 		"tenant", scope.Tenant, "src", src.ID, "tgt", target.ID, "sim", sim)
+}
+
+// unionStrings returns the de-duplicated union of two string slices, preserving a's order
+// then appending new elements from b (used to union junction surfaces for true duplicates).
+func unionStrings(a, b []string) []string {
+	seen := make(map[string]bool, len(a)+len(b))
+	out := make([]string, 0, len(a)+len(b))
+	for _, s := range append(append([]string{}, a...), b...) {
+		if !seen[s] {
+			seen[s] = true
+			out = append(out, s)
+		}
+	}
+	return out
 }

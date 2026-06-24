@@ -3059,3 +3059,25 @@ test only asserted `valid_until != 0`, which the inflated value satisfies, so it
 grace to ≈ DecayGraceSweeps×DecayInterval in ms (well under an hour for the test profile), so
 a nanosecond/ms unit error fails the test. No data migration needed (existing inflated
 `valid_until` rows simply expire on schedule once recomputed on the next below-floor sweep).
+
+## D-111 — Lifecycle consolidation: deterministic survivor, numeral-aware merge, full scope
+
+Phase 29d (audit findings #1, #2). The lifecycle dedupe sweep was miswired three ways:
+(a) it kept `target` (the arbitrary neighbor) as the survivor — no date/trust logic, so a numeric
+CORRECTION could be merged away keeping the stale value; (b) it had no numeral guard (the D-104
+fix lived only in reconcile); (c) it ran at `{tenant}` scope, so `FindNeighbors` matched across
+DIFFERENT USERS and the merged survivor was written with NULL project/user/session — a P3 leak +
+P1 orphaning.
+
+**Decision.**
+1. **Shared survivor rule (D-067):** `reconcile.SelectSurvivor(a,b) (winner,loser)` — later
+   `ValidFrom` (assertion date) → higher trust tier → higher importance → later `CreatedAt` →
+   larger ULID. Used by the sweep (and available to reconcile) so the rule can't drift.
+2. **Numeral-aware merge:** the sweep keeps the SURVIVOR's content/date; when the pair is
+   numeral-divergent (a correction, `reconcile.NumeralsDiverge`) it keeps ONLY the survivor's
+   surface (entities/keywords/queries) so the stale value's wording can't pollute/resurface;
+   for a true duplicate it unions the surface. Counters unioned; both originals tombstoned with
+   prior-state (reversible, D-070).
+3. **Full-scope sweep:** dedup runs per `(tenant,project,user)` via a new scoped
+   `Memories().DistinctScopes` enumerator (both drivers + conformance), mirroring how
+   episodes/threading iterate — never cross-user, survivor inherits correct scope columns (P3).
