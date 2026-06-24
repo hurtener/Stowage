@@ -57,3 +57,22 @@ func TestNormalize_Mini(t *testing.T) {
 		}
 	}
 }
+
+// TestParseHaystackDate covers the real LongMemEval timestamp format (D-109): minute
+// granularity must survive so temporal-reasoning intervals and same-day ordering work.
+func TestParseHaystackDate(t *testing.T) {
+	cases := map[string]string{
+		"2023/04/10 (Mon) 17:50": "2023-04-10 17:50",
+		"2023/04/10 (Mon) 14:47": "2023-04-10 14:47",
+		"2023-05-28":             "2023-05-28 00:00",
+	}
+	for in, want := range cases {
+		got := longmemeval.ExportParseHaystackDate(in)
+		if got.IsZero() || got.Format("2006-01-02 15:04") != want {
+			t.Errorf("longmemeval.ExportParseHaystackDate(%q) = %v, want %s", in, got, want)
+		}
+	}
+	if !longmemeval.ExportParseHaystackDate("not a date").IsZero() {
+		t.Errorf("unparseable input should return zero time")
+	}
+}

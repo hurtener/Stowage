@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"io"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/hurtener/stowage/eval/datasets"
@@ -72,12 +73,13 @@ func normalize(items []rawItem) ([]datasets.Conversation, []datasets.Question, e
 				ID:    fmt.Sprintf("%s-s%d", convID, si),
 				Turns: make([]datasets.Turn, 0, len(sess)),
 			}
-			// Parse date for this session if available.
+			// Parse the real session timestamp if available (the dataset uses
+			// "2023/04/10 (Mon) 17:50" — minute granularity, which preserves true
+			// intervals for temporal-reasoning questions and within-day ordering for
+			// same-day corrections, D-109). Fall back to an ordered synthetic date.
 			var base time.Time
 			if si < len(item.HaystackDates) {
-				if t, err := time.Parse("2006-01-02", item.HaystackDates[si]); err == nil {
-					base = t
-				}
+				base = parseHaystackDate(item.HaystackDates[si])
 			}
 			if base.IsZero() {
 				base = time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC).AddDate(0, 0, si)
@@ -124,4 +126,27 @@ func stringifyAnswer(v any) string {
 	default:
 		return fmt.Sprintf("%v", x)
 	}
+}
+
+// haystackDateFormats are the layouts tried, in order, against a LongMemEval
+// haystack_dates entry. The dataset uses "2023/04/10 (Mon) 17:50" (minute
+// granularity); the others are defensive fallbacks (D-109).
+var haystackDateFormats = []string{
+	"2006/01/02 (Mon) 15:04",
+	"2006/01/02 (Mon) 15:04:05",
+	"2006-01-02 15:04",
+	"2006/01/02",
+	"2006-01-02",
+}
+
+// parseHaystackDate parses a LongMemEval session timestamp, returning the zero
+// time if no known layout matches (caller falls back to a synthetic ordered date).
+func parseHaystackDate(s string) time.Time {
+	s = strings.TrimSpace(s)
+	for _, f := range haystackDateFormats {
+		if t, err := time.Parse(f, s); err == nil {
+			return t.UTC()
+		}
+	}
+	return time.Time{}
 }
