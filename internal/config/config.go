@@ -64,6 +64,12 @@ type RetrievalConfig struct {
 	Precise  ProfileTuning `yaml:"precise"`
 	Balanced ProfileTuning `yaml:"balanced"`
 	Broad    ProfileTuning `yaml:"broad"`
+	// IncludeSuperseded surfaces the superseded predecessors of returned memories,
+	// flagged stale with a link to the current value, so the reader can reason about
+	// the history while preferring the current value (dual-visibility, §6c, D-105).
+	// Default true. Bounded per response; superseded items are demoted, never ranked
+	// above their current successor.
+	IncludeSuperseded bool `yaml:"include_superseded"`
 }
 
 // ProfileTuning overrides one retrieval profile's candidate windows. A zero field
@@ -179,6 +185,7 @@ var allKeys = []string{
 	"retrieval.broad.lane_k",
 	"retrieval.broad.scoring_k",
 	"retrieval.broad.default_limit",
+	"retrieval.include_superseded",
 }
 
 // secretKeyPaths is the set of keys that hold env.VAR_NAME references.
@@ -256,6 +263,9 @@ func Defaults() *Config {
 		},
 		MCP: MCPConfig{
 			StdioTenant: "default",
+		},
+		Retrieval: RetrievalConfig{
+			IncludeSuperseded: true, // dual-visibility default (§6c, D-105)
 		},
 		prov: make(Provenance),
 	}
@@ -668,6 +678,8 @@ func (c *Config) getByPath(path string) string {
 		return strconv.Itoa(c.Retrieval.Broad.ScoringK)
 	case "retrieval.broad.default_limit":
 		return strconv.Itoa(c.Retrieval.Broad.DefaultLimit)
+	case "retrieval.include_superseded":
+		return strconv.FormatBool(c.Retrieval.IncludeSuperseded)
 	default:
 		return ""
 	}
@@ -771,6 +783,12 @@ func (c *Config) setByPath(path, value string) error {
 		case "retrieval.broad.default_limit":
 			c.Retrieval.Broad.DefaultLimit = n
 		}
+	case "retrieval.include_superseded":
+		b, err := strconv.ParseBool(value)
+		if err != nil {
+			return fmt.Errorf("config.%s: %w", path, err)
+		}
+		c.Retrieval.IncludeSuperseded = b
 	default:
 		return fmt.Errorf("config: unknown key path %q", path)
 	}

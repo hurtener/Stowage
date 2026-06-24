@@ -64,6 +64,10 @@ type retrieveMemoryItem struct {
 	Citation  string             `json:"citation"` // injection ULID = citation handle (D-051)
 	Lanes     []string           `json:"lanes,omitempty"`
 	Breakdown *retrieveBreakdown `json:"breakdown,omitempty"` // present when debug:true
+	// Stale marks a superseded value surfaced for dual-visibility (D-105, §6c); prefer
+	// the current value, SupersededBy links to its successor.
+	Stale        bool   `json:"stale,omitempty"`
+	SupersededBy string `json:"superseded_by,omitempty"`
 }
 
 // retrieveResponse is the wire format for POST /v1/retrieve (envelope v1).
@@ -147,6 +151,10 @@ func (s *Server) handleRetrieve(w http.ResponseWriter, r *http.Request) {
 			Context:  item.Memory.Context,
 			Score:    item.Score,
 			Citation: item.Citation,
+		}
+		if item.Stale {
+			ri.Stale = true
+			ri.SupersededBy = item.Memory.SupersededByID
 		}
 		if req.IncludeLanes {
 			ri.Lanes = item.Lanes

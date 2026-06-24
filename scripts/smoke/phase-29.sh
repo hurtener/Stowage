@@ -31,10 +31,15 @@ else
 fi
 
 # --- H1: extraction prompt retains qualifiers; template version bumped ----------
-if grep -q 'PromptTemplateVersion = "3"' internal/pipeline/prompt.go; then
-  ok "H1 extraction PromptTemplateVersion bumped to 3"
+if grep -q 'PromptTemplateVersion = "4"' internal/pipeline/prompt.go; then
+  ok "H1 extraction PromptTemplateVersion bumped to 4"
 else
   failc "H1 extraction PromptTemplateVersion not bumped"
+fi
+if grep -q "Do NOT narrate the change" internal/pipeline/prompt.go; then
+  ok "H1 extraction prompt: forbid change-narratives (Fitbit fix)"
+else
+  failc "H1 extraction prompt missing change-narrative prohibition"
 fi
 if grep -q "PRESERVE every quantitative qualifier" internal/pipeline/prompt.go; then
   ok "H1 extraction prompt: qualifier/unit retention instruction present"
@@ -48,6 +53,24 @@ if go test ./internal/config/ -run TestBufferTriggers -count=1 >/dev/null 2>&1 \
   ok "H1 buffer-window defaults (assistant 18/2500/180s) pass"
 else
   failc "H1 buffer-window default test"
+fi
+
+# --- H5: dual-visibility (retain-and-flag superseded) + config knob (D-105) ----
+BIN=/tmp/stowage-smoke-29
+if CGO_ENABLED=0 go build -o "$BIN" ./cmd/stowage >/dev/null 2>&1; then
+  if "$BIN" config explain 2>/dev/null | grep -q "retrieval.include_superseded"; then
+    ok "H5 config explain: retrieval.include_superseded present"
+  else
+    failc "H5 config explain: retrieval.include_superseded missing"
+  fi
+  rm -f "$BIN"
+else
+  failc "build for H5 config check"
+fi
+if go test ./internal/retrieval/ -run TestIncludeSupersededDualVisibility -count=1 >/dev/null 2>&1; then
+  ok "H5 dual-visibility: superseded predecessor surfaced flagged"
+else
+  failc "H5 dual-visibility test"
 fi
 
 # --- Prompt goldens still consistent (no drift) -------------------------------

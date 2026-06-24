@@ -428,6 +428,26 @@ func TestRetrievalTuningValid(t *testing.T) {
 	}
 }
 
+// TestIncludeSupersededDefaultAndOverride verifies the dual-visibility knob (D-105)
+// defaults true and accepts a YAML override.
+func TestIncludeSupersededDefaultAndOverride(t *testing.T) {
+	clearStowageEnv(t)
+	if !config.Defaults().Retrieval.IncludeSuperseded {
+		t.Errorf("retrieval.include_superseded default = false, want true (dual-visibility)")
+	}
+	tmp := writeTmpFile(t, []byte("retrieval:\n  include_superseded: false\n"))
+	cfg, err := config.Load(context.Background(), tmp)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Retrieval.IncludeSuperseded {
+		t.Errorf("retrieval.include_superseded override to false did not take")
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Errorf("Validate() with include_superseded override: %v", err)
+	}
+}
+
 // TestRetrievalTuningInvalid rejects negative windows, scoring_k > lane_k, and a
 // default_limit past the hard result cap (D-103).
 func TestRetrievalTuningInvalid(t *testing.T) {

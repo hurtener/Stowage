@@ -1204,6 +1204,68 @@ func TestWithProfilesOverridesDefaultLimit(t *testing.T) {
 	}
 }
 
+// TestIncludeSupersededDualVisibility proves H5/D-105: with include_superseded on, a
+// retrieved memory's superseded predecessor is surfaced flagged Stale (dual-visibility,
+// §6c); with it off, only the active value is returned.
+func TestIncludeSupersededDualVisibility(t *testing.T) {
+	t.Parallel()
+	st := openStore(t)
+	gw := openMockGateway(t, 4)
+	vi := vindex.New(st.Vectors(), 4, "test")
+	log := slog.New(slog.NewTextHandler(os.Stderr, nil))
+
+	scope := identity.Scope{Tenant: "tenant-supersede-" + newID()}
+	// Active current value (the successor).
+	curID := insertMemory(t, st, scope, "User commute is 45 minutes each way", "fact",
+		[]string{"commute"}, []string{"commute"}, []string{"commute time"}, 2000)
+	// Superseded predecessor pointing at the current one.
+	ctx := context.Background()
+	staleID := newID()
+	if err := st.Memories().Insert(ctx, scope, store.Memory{
+		ID: staleID, Kind: "fact", Content: "User commute is about 30 minutes", Context: "ctx",
+		Status: "superseded", SupersededByID: curID, Confidence: 0.8, TrustSource: "llm_extracted",
+		Stability: 1.0, ContentHash: newID(), CreatedAt: 1000, UpdatedAt: 1000,
+	}); err != nil {
+		t.Fatalf("insert superseded: %v", err)
+	}
+
+	req := retrieval.Request{Query: "commute time", Limit: 5, Profile: "balanced"}
+
+	// OFF: active-only.
+	rOff := retrieval.New(st.Memories(), st.Records(), vi, gw, log)
+	respOff, err := rOff.Retrieve(ctx, scope, req)
+	if err != nil {
+		t.Fatalf("retrieve (off): %v", err)
+	}
+	for _, it := range respOff.Items {
+		if it.Stale {
+			t.Fatalf("include_superseded OFF returned a stale item %q", it.Memory.Content)
+		}
+	}
+
+	// ON: the superseded predecessor rides along, flagged.
+	rOn := retrieval.New(st.Memories(), st.Records(), vi, gw, log).WithIncludeSuperseded(true)
+	respOn, err := rOn.Retrieve(ctx, scope, req)
+	if err != nil {
+		t.Fatalf("retrieve (on): %v", err)
+	}
+	var sawStale bool
+	for _, it := range respOn.Items {
+		if it.Stale {
+			sawStale = true
+			if it.Memory.ID != staleID {
+				t.Errorf("stale item id = %s, want %s", it.Memory.ID, staleID)
+			}
+			if it.Memory.SupersededByID != curID {
+				t.Errorf("stale item superseded_by = %s, want %s", it.Memory.SupersededByID, curID)
+			}
+		}
+	}
+	if !sawStale {
+		t.Fatalf("include_superseded ON did not surface the superseded predecessor")
+	}
+}
+
 // --- Fuzz target for request decoder ----------------------------------------
 
 func FuzzRetrieveRequest(f *testing.F) {

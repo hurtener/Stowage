@@ -273,6 +273,10 @@ func (c *embeddedClient) Retrieve(ctx context.Context, req RetrieveRequest) (Ret
 			Score:    item.Score,
 			Citation: item.Citation,
 		}
+		if item.Stale {
+			mi.Stale = true
+			mi.SupersededBy = item.Memory.SupersededByID
+		}
 		if req.IncludeLanes {
 			mi.Lanes = item.Lanes
 		}

@@ -2950,3 +2950,26 @@ conversation per call and emits fewer, richer, better-contextualized memories. P
 Phase-29 extraction-prompt change (PromptTemplateVersion 3) requiring qualifier/unit/scope
 retention and a populated `context`. Guardrail: an over-broad-merged-memory eval metric watches
 the merge-two-distinct-facts hazard a wider window introduces.
+
+## D-105 — Superseded memories are retained-and-flagged in retrieval (dual-visibility, §6c)
+
+Phase 29 (H5). Once supersede fires (D-104/D-107 made it fire), the retired value is
+hidden from retrieval (the read path filters `status='active'`). That is the "keep one"
+behaviour; the human directed instead that BOTH values stay retrievable but the stale one
+be **flagged**, so the agent can reason "you said X, then Y" (RFC §6c calibrated
+uncertainty) rather than silently losing the history.
+
+**Decision.** Retrieval optionally surfaces the superseded predecessors of the returned
+memories, flagged `Stale` with a `superseded_by` link to the current value, demoted (score
+×0.5, ranked below their successor) and bounded (`maxStaleCompanions`=8 per response) so
+dual-visibility can never blow up the context. Driven off the existing scoped
+`ListSupersededBy` (P3 — no unscoped variant); best-effort (a lookup error drops that
+item's history, never fails the retrieve). Surfaced on **all read surfaces** (HTTP, MCP,
+SDK item payloads: `stale` + `superseded_by`) per D-067. The eval reader prompt and any
+consumer is told to prefer the current value and not hedge against an `[OUTDATED]`-tagged item.
+
+Config knob `retrieval.include_superseded` (default **true** — dual-visibility is the
+intended behaviour; D-034 tuned default in every profile). Operators who want active-only
+retrieval set it false. This is a read-time property and composes with the write-time
+supersede fixes: write-time decides which value is current; read-time decides whether the
+agent also sees the retired one (flagged).

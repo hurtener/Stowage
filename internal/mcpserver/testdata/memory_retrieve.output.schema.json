@@ -38,6 +38,12 @@
             "items": {
               "type": "string"
             }
+          },
+          "stale": {
+            "type": "boolean"
+          },
+          "superseded_by": {
+            "type": "string"
           }
         },
         "required": [

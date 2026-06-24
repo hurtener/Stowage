@@ -230,6 +230,11 @@ func NewTestServer(t testing.TB, tenantID string) *TestServer {
 	if os.Getenv("STOWAGE_EVAL_GATEWAY") != "" && cfg.Gateway.RerankModel != "" {
 		retriever = retriever.WithRerankModel(cfg.Gateway.RerankModel)
 	}
+	// Dual-visibility toggle for the H5 experiment (D-105): STOWAGE_EVAL_INCLUDE_SUPERSEDED
+	// = "1" surfaces superseded predecessors flagged stale; "0" keeps active-only (the
+	// #1-isolation control). Default ON to match the config default.
+	includeSup := os.Getenv("STOWAGE_EVAL_INCLUDE_SUPERSEDED") != "0"
+	retriever = retriever.WithIncludeSuperseded(includeSup)
 	srv.SetRetriever(retriever)
 
 	reconcileStage := reconcile.New(

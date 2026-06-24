@@ -73,6 +73,7 @@ type retrieveItem struct {
 	Content string   `json:"content"`
 	Score   float64  `json:"score"`
 	Lanes   []string `json:"lanes"`
+	Stale   bool     `json:"stale"` // D-105: superseded value surfaced for dual-visibility
 }
 
 // RunCI runs the full CI eval: ingest conversations, retrieve + score questions.
@@ -293,11 +294,21 @@ func (r *Runner) scoreQuestion(ctx context.Context, q QuestionFixture) (Question
 	}
 
 	contents := make([]string, 0, len(items))
+	currentOnly := make([]string, 0, len(items))
 	for _, item := range items {
+		if item.Stale {
+			// Dual-visibility (D-105): mark the retired value so the reader prefers the
+			// current one but can still reason about the history.
+			contents = append(contents, "[OUTDATED — the user later changed this; prefer the current value, use only as history] "+item.Content)
+			continue
+		}
 		contents = append(contents, item.Content)
+		currentOnly = append(currentOnly, item.Content)
 	}
 
-	hit := AnswerContextHit(contents, q.Expected.Answer)
+	// answer_context_hit measures whether the gold (the CURRENT value) is retrievable —
+	// computed over current items only so a stale companion can't create a phantom hit.
+	hit := AnswerContextHit(currentOnly, q.Expected.Answer)
 
 	return QuestionResult{
 		QuestionID: q.ID,

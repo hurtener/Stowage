@@ -75,13 +75,15 @@ type RetrieveInput struct {
 
 // RetrieveItem is one result in the memory_retrieve output.
 type RetrieveItem struct {
-	ID       string   `json:"id"`
-	Kind     string   `json:"kind"`
-	Content  string   `json:"content"`
-	Context  string   `json:"context,omitempty"`
-	Score    float64  `json:"score"`
-	Citation string   `json:"citation"`
-	Lanes    []string `json:"lanes,omitempty"`
+	ID           string   `json:"id"`
+	Kind         string   `json:"kind"`
+	Content      string   `json:"content"`
+	Context      string   `json:"context,omitempty"`
+	Score        float64  `json:"score"`
+	Citation     string   `json:"citation"`
+	Lanes        []string `json:"lanes,omitempty"`
+	Stale        bool     `json:"stale,omitempty"`         // D-105: superseded value (dual-visibility, §6c)
+	SupersededBy string   `json:"superseded_by,omitempty"` // successor memory ID
 }
 
 // ConflictPair is a pair of memory IDs connected by a contradicts link.

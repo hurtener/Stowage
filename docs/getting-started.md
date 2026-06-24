@@ -200,6 +200,11 @@ documented surface — there is no 50-knob maze.
     `limit: 25` always scores at least 25 (never silently clamped below the request).
   - **`default_limit`** — result count when a `/v1/retrieve` call omits `limit` (hard cap: 50).
 
+  `retrieval.include_superseded` (default `true`) controls **dual-visibility**: when a fact is
+  corrected, the retired value is kept retrievable but flagged `stale` with a `superseded_by` link to
+  the current value, so an agent can reason about the change ("you said X, then Y") instead of silently
+  losing the history. Set it `false` for active-only retrieval.
+
 Every config key ships with a tuned default and is documented; a new knob without all three never
 ships (the "knob guardrail").
 

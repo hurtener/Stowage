@@ -83,6 +83,11 @@ type MemoryItem struct {
 	Lanes     []string           // populated when Request.IncludeLanes is true
 	Breakdown *scoring.Breakdown // populated when Request.Debug is true
 	Citation  string             // injection ULID = citation handle (Phase 11, D-051)
+	// Stale marks a superseded memory surfaced for dual-visibility (D-105, §6c): the
+	// reader sees the retired value alongside its current successor, flagged, so it can
+	// reason about the history while preferring the current value. Memory.SupersededByID
+	// links to the successor. Only set when retrieval.include_superseded is on.
+	Stale bool
 }
 
 // Response is the retrieve response payload.
@@ -112,6 +117,7 @@ type Retriever struct {
 	rerankModel string             // cross-encoder model; empty = use gateway default
 	grantsSt    store.GrantStore   // nil when grants are not wired (Phase 15, D-060)
 	profiles    map[string]Profile // config-overridden presets; nil ⇒ built-in defaults (D-103)
+	includeSuperseded bool         // D-105: surface superseded predecessors flagged stale (dual-visibility, §6c)
 }
 
 // New creates a Retriever wired to the given dependencies.
@@ -146,6 +152,51 @@ func (r *Retriever) WithProfiles(p map[string]Profile) *Retriever {
 	}
 	r.profiles = p
 	return r
+}
+
+// WithIncludeSuperseded enables dual-visibility (D-105, §6c): retrieval surfaces the
+// superseded predecessors of returned memories, flagged Stale, so the reader sees the
+// retired value alongside its current successor. Default off (active-only). Call after
+// New, before serving; not safe to call concurrently with Retrieve.
+func (r *Retriever) WithIncludeSuperseded(on bool) *Retriever {
+	r.includeSuperseded = on
+	return r
+}
+
+// maxStaleCompanions bounds how many superseded predecessors are attached per response
+// (across all returned items) so dual-visibility can never blow up the context size.
+const maxStaleCompanions = 8
+
+// attachStaleCompanions appends the superseded predecessors of the returned items,
+// flagged Stale, for dual-visibility (D-105). Bounded by maxStaleCompanions; scoped
+// (P3) via ListSupersededBy. Best-effort: a lookup error drops that item's history
+// rather than failing the retrieve.
+func (r *Retriever) attachStaleCompanions(ctx context.Context, scope identity.Scope, items []MemoryItem) []MemoryItem {
+	if !r.includeSuperseded || len(items) == 0 {
+		return items
+	}
+	out := make([]MemoryItem, 0, len(items)+maxStaleCompanions)
+	added := 0
+	for _, it := range items {
+		out = append(out, it)
+		if added >= maxStaleCompanions {
+			continue
+		}
+		preds, err := r.mem.ListSupersededBy(ctx, scope, it.Memory.ID)
+		if err != nil {
+			r.log.WarnContext(ctx, "retrieval: ListSupersededBy failed — dropping history",
+				"id", it.Memory.ID, "err", err)
+			continue
+		}
+		for _, p := range preds {
+			if added >= maxStaleCompanions {
+				break
+			}
+			out = append(out, MemoryItem{Memory: p, Score: it.Score * 0.5, Stale: true, Citation: ulid.Make().String()})
+			added++
+		}
+	}
+	return out
 }
 
 // resolveProfile resolves a profile name against the config overrides first, then the
@@ -638,6 +689,11 @@ func (r *Retriever) Retrieve(ctx context.Context, scope identity.Scope, req Requ
 	if prof.EnableRerank && r.gw != nil && len(items) > 0 {
 		degradedRerank, items = rerankPass(ctx, r.gw, r.rerankModel, req.Query, items, r.log)
 	}
+
+	// Dual-visibility (D-105, §6c): attach the superseded predecessors of the returned
+	// items, flagged Stale, AFTER ranking/rerank so the current values keep their order
+	// and the history rides along demoted. No-op unless include_superseded is on.
+	items = r.attachStaleCompanions(ctx, scope, items)
 
 	// Build support summary.
 	sup, supErr := buildSupport(ctx, r.mem, scope, items)

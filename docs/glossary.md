@@ -49,6 +49,9 @@ New terms land here in the same PR that introduces them (CLAUDE.md §14).
   encoding the `{laneK, scoringK, defaultLimit, enableRerank}` tuple; selected per
   `/v1/retrieve` call and config-tunable via the `retrieval:` section (D-103). Distinct
   from the deployment **Profile** below.
+- **Dual-visibility** — retrieval surfacing a superseded value alongside its current successor,
+  flagged `stale` with a `superseded_by` link, so an agent reasons about a correction's history
+  rather than losing it (RFC §6c calibrated uncertainty; `retrieval.include_superseded`, D-105).
 - **ScoringK** — the number of fused candidates a retrieval profile scores/reranks; the
   cap on memories that can reach the reader. The per-request `limit` is floored up into
   this window, so a request is never silently clamped below what it asked for (D-103).

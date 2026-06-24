@@ -90,7 +90,10 @@ func BuildReaderPrompt(question string, contexts []string) (system, user string)
 		"(2) You MAY do arithmetic, counting, or temporal reasoning OVER the context when the " +
 		"question requires it. (3) If the retrieved context does not contain enough information " +
 		"to answer, ABSTAIN: state explicitly that the provided context is insufficient — do not " +
-		"guess. Answer concisely and directly."
+		"guess. (4) If two context items give different values for the same fact, prefer the more " +
+		"recent/specific one; a context item tagged [OUTDATED] is a value the user later changed — " +
+		"use the current value, never the OUTDATED one, and do NOT hedge between them. Answer " +
+		"concisely and directly with a single value."
 
 	var b strings.Builder
 	b.WriteString("Context:\n")

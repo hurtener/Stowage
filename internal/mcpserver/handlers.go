@@ -206,6 +206,10 @@ func makeRetrieveHandler(svc *Services) tool.Handler[RetrieveInput, RetrieveOutp
 				Score:    it.Score,
 				Citation: it.Citation,
 			}
+			if it.Stale {
+				ri.Stale = true
+				ri.SupersededBy = it.Memory.SupersededByID
+			}
 			if in.IncludeLanes {
 				ri.Lanes = it.Lanes
 			}

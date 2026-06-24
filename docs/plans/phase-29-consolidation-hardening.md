@@ -1,6 +1,6 @@
 # Phase 29 — Consolidation hardening (stale-value forgetting + extraction context)
 
-- **Status:** in-progress — write-time core shipped (H1 prompt+window, H2, H3); H5 + H0 pending; re-learn/re-test pending the go-word
+- **Status:** in-progress — write-time core (H1, H2, H3) + read-time H5 (dual-visibility) shipped; H0/H4 deferred; 2nd re-learn + re-test (K=10/15/30/40) in flight
 - **Owning subsystem(s):** `internal/pipeline` (extract), `internal/reconcile` (prompt + prefilter), `internal/retrieval` + `internal/scoring` (read-time staleness surfacing), `internal/config`
 - **RFC sections:** §6 (Reconciliation — the forget machinery), §6c (Trust / calibrated uncertainty), §4.2 (retrieval), §5.2 (scoring)
 - **Depends on phases:** 08 (reconcile), 09–12 (retrieval/scoring/rerank), 25 (verification), 26 (reasoning traces — reused for H0 instrumentation)
@@ -172,5 +172,5 @@ H0 contradiction-pair report; re-learn once; re-test K=5/10/20/50 + the three ne
 
 - D-104: Numeric corrections bypass the lexical near-dup auto-discard (route to supersede). **Filed.**
 - D-107: Assistant extraction buffer window coarsened for context retention. **Filed.**
-- D-105: Superseded memories are retained-and-flagged in retrieval (dual-visibility, §6c), not hidden. **Pending — H5 increment.**
-- D-106: Reconcile/scoring recency uses `occurred_at` (assertion time), not `created_at`. **Pending — H5 occurred_at join.** (H2's prompt uses the cheaper "candidate is the newest assertion" framing in the interim.)
+- D-105: Superseded memories are retained-and-flagged in retrieval (dual-visibility, §6c), not hidden. **Filed.**
+- D-106: Reconcile/scoring recency uses `occurred_at` (assertion time), not `created_at`. **Deferred** — H2's prompt uses the cheaper "candidate is the newest assertion" framing; the full provenance→records `occurred_at` join was not needed to fix the cited misses and is left for a scoring-side follow-up.

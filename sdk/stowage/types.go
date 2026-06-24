@@ -92,6 +92,10 @@ type MemoryItem struct {
 	Citation  string             `json:"citation"` // injection ULID = citation handle (D-051)
 	Lanes     []string           `json:"lanes,omitempty"`
 	Breakdown *RetrieveBreakdown `json:"breakdown,omitempty"`
+	// Stale marks a superseded value surfaced for dual-visibility (D-105, §6c); prefer
+	// the current value, SupersededBy links to its successor.
+	Stale        bool   `json:"stale,omitempty"`
+	SupersededBy string `json:"superseded_by,omitempty"`
 }
 
 // RetrieveResponse is the response from Retrieve.
