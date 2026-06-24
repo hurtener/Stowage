@@ -88,6 +88,12 @@ type MemoryItem struct {
 	// reason about the history while preferring the current value. Memory.SupersededByID
 	// links to the successor. Only set when retrieval.include_superseded is on.
 	Stale bool
+	// SupersededByContent and SupersededByDate carry the CURRENT successor's value and
+	// assertion date inline on a stale item (D-114, Idea 1) — so a client that can't inject
+	// a reader-prompt section (e.g. over MCP) is still self-contained: "this was superseded
+	// by «SupersededByContent» on «date»". Only set on Stale items.
+	SupersededByContent string
+	SupersededByDate    int64
 }
 
 // Response is the retrieve response payload.
@@ -192,7 +198,16 @@ func (r *Retriever) attachStaleCompanions(ctx context.Context, scope identity.Sc
 			if added >= maxStaleCompanions {
 				break
 			}
-			out = append(out, MemoryItem{Memory: p, Score: it.Score * 0.5, Stale: true, Citation: ulid.Make().String()})
+			// `it` is the current successor of predecessor `p`; carry its value + date inline
+			// so the stale item is self-contained for non-prompt clients (Idea 1, D-114).
+			out = append(out, MemoryItem{
+				Memory:              p,
+				Score:               it.Score * 0.5,
+				Stale:               true,
+				Citation:            ulid.Make().String(),
+				SupersededByContent: it.Memory.Content,
+				SupersededByDate:    it.Memory.ValidFrom,
+			})
 			added++
 		}
 	}

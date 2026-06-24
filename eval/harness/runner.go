@@ -72,9 +72,11 @@ type retrieveItem struct {
 	ID      string   `json:"id"`
 	Content string   `json:"content"`
 	Score   float64  `json:"score"`
-	Lanes      []string `json:"lanes"`
-	Stale      bool     `json:"stale"`       // D-105: superseded value surfaced for dual-visibility
-	OccurredAt int64    `json:"occurred_at"` // D-109: assertion (conversation) date, unix millis
+	Lanes               []string `json:"lanes"`
+	Stale               bool     `json:"stale"`                 // D-105: superseded value surfaced for dual-visibility
+	OccurredAt          int64    `json:"occurred_at"`           // D-109: assertion (conversation) date, unix millis
+	SupersededByContent string   `json:"superseded_by_content"` // D-114: successor's current value inline
+	SupersededByDate    int64    `json:"superseded_by_date"`    // D-114: successor's assertion date
 }
 
 // RunCI runs the full CI eval: ingest conversations, retrieve + score questions.
@@ -311,9 +313,15 @@ func (r *Runner) scoreQuestion(ctx context.Context, q QuestionFixture) (Question
 	for _, item := range items {
 		c := withDate(item.Content, item.OccurredAt)
 		if item.Stale {
-			// Dual-visibility (D-105): mark the retired value so the reader prefers the
-			// current one but can still reason about the history.
-			contents = append(contents, "[OUTDATED — the user later changed this; prefer the current value, use only as history] "+c)
+			// Dual-visibility (D-105) + self-contained successor (D-114, Idea 1): mark the
+			// retired value AND name what replaced it and when, so even a client without a
+			// prompt section knows the current value.
+			tag := "[OUTDATED — the user later changed this; prefer the current value, use only as history"
+			if item.SupersededByContent != "" {
+				tag += "; superseded by: " + withDate(item.SupersededByContent, item.SupersededByDate)
+			}
+			tag += "] "
+			contents = append(contents, tag+c)
 			continue
 		}
 		contents = append(contents, c)

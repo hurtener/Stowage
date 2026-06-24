@@ -82,9 +82,11 @@ type RetrieveItem struct {
 	Score        float64  `json:"score"`
 	Citation     string   `json:"citation"`
 	Lanes        []string `json:"lanes,omitempty"`
-	Stale        bool     `json:"stale,omitempty"`         // D-105: superseded value (dual-visibility, §6c)
-	SupersededBy string   `json:"superseded_by,omitempty"` // successor memory ID
-	OccurredAt   int64    `json:"occurred_at,omitempty"`   // D-109: assertion (conversation) date, unix millis
+	Stale               bool   `json:"stale,omitempty"`                  // D-105: superseded value (dual-visibility, §6c)
+	SupersededBy        string `json:"superseded_by,omitempty"`          // successor memory ID
+	SupersededByContent string `json:"superseded_by_content,omitempty"`  // D-114: successor's current value inline
+	SupersededByDate    int64  `json:"superseded_by_date,omitempty"`     // D-114: successor's assertion date, unix millis
+	OccurredAt          int64  `json:"occurred_at,omitempty"`            // D-109: assertion (conversation) date, unix millis
 }
 
 // ConflictPair is a pair of memory IDs connected by a contradicts link.

@@ -3121,3 +3121,14 @@ decay-expire, dedupe-merge, or rollup, the cache kept serving the now-expired/me
 up to its 60s TTL (P4 staleness). Added `Manager.SetScopeInvalidator` (the same
 `reconcile.ScopeInvalidator` seam) and a nil-safe `invalidateScope` call after each
 status-mutating sweep; boot wires the retriever cache into the Manager.
+
+## D-114 — Superseded items are self-contained for non-prompt (MCP) clients
+
+Phase 29d (Idea 1). Dual-visibility (D-105) flagged a superseded memory and linked its successor
+by ID, and the eval reader got a prompt section — but a real MCP client controls its own prompt
+and only sees the retrieve item, where `superseded_by` was a bare ID requiring a second lookup.
+Decision: a stale item now carries the successor's VALUE + assertion DATE inline
+(`superseded_by_content`, `superseded_by_date`) across all read surfaces (HTTP/MCP/SDK), so any
+client is self-contained: "this was superseded by «current value» on «date»". Populated in
+`attachStaleCompanions` from the retrieved successor; the eval reader renders it in the [OUTDATED]
+tag. (Configurable history depth beyond the immediate successor is a noted follow-up.)

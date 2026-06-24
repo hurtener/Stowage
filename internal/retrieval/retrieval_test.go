@@ -1259,6 +1259,11 @@ func TestIncludeSupersededDualVisibility(t *testing.T) {
 			if it.Memory.SupersededByID != curID {
 				t.Errorf("stale item superseded_by = %s, want %s", it.Memory.SupersededByID, curID)
 			}
+			// Idea 1 (D-114): the stale item is self-contained — it carries the current
+			// successor's VALUE inline, not just an ID, so non-prompt (MCP) clients know it.
+			if it.SupersededByContent != "User commute is 45 minutes each way" {
+				t.Errorf("stale item SupersededByContent = %q, want the successor's value", it.SupersededByContent)
+			}
 		}
 	}
 	if !sawStale {
