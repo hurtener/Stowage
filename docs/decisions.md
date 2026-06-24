@@ -3043,3 +3043,19 @@ session timestamps at ingest** and stamped `occurred_at = now`, so every record/
 Production already supported caller-supplied `occurred_at` on ingest; this closes the
 memory-side capture + retrieval surfacing gap. Reversibility/scoping unchanged. Needs a re-learn
 to populate real dates on the existing eval store.
+
+## D-110 — Decay grace is computed in milliseconds (unit-bug fix)
+
+Phase 29d (audit finding #5). `lifecycle/decay.go` computed the below-floor grace as
+`int64(DecayGraceSweeps) * int64(DecayInterval)`. `DecayInterval` is a `time.Duration`
+(nanoseconds), so `int64(DecayInterval)` is a nanosecond count used as **milliseconds**
+against `nowMs` (UnixMilli) — a ~10^6x inflation (a 10-minute interval × 2 sweeps yields a
+~38-YEAR grace). Net effect: `valid_until` is set so far in the future that **decay never
+expires anything** — P4's primary forgetting mechanism was dead in production. The existing
+test only asserted `valid_until != 0`, which the inflated value satisfies, so it shipped.
+
+**Decision.** Compute grace as `int64(DecayGraceSweeps) * DecayInterval.Milliseconds()`
+(matching the pattern in `reflect.go`/`threading.go`). The regression test now bounds the
+grace to ≈ DecayGraceSweeps×DecayInterval in ms (well under an hour for the test profile), so
+a nanosecond/ms unit error fails the test. No data migration needed (existing inflated
+`valid_until` rows simply expire on schedule once recomputed on the next below-floor sweep).

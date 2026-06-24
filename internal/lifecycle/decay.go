@@ -130,7 +130,10 @@ func (m *Manager) processDecayMemory(ctx context.Context, scope identity.Scope, 
 	}
 
 	// At floor (df == floor): raw decay was at or below floor.
-	graceMs := int64(m.profile.DecayGraceSweeps) * int64(m.profile.DecayInterval)
+	// DecayInterval is a time.Duration (nanoseconds); the grace must be in MILLISECONDS to
+	// match nowMs (UnixMilli). int64(Duration) would be nanoseconds → ~10^6x inflation
+	// (~38-year grace = decay never expires anything, P4 dead). Use .Milliseconds() (D-110).
+	graceMs := int64(m.profile.DecayGraceSweeps) * m.profile.DecayInterval.Milliseconds()
 
 	if mem.ValidUntil == 0 {
 		// First below-floor observation: set valid_until = now + grace (D-058).

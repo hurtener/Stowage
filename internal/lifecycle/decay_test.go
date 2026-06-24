@@ -138,6 +138,15 @@ func TestDecaySweepBelowFloorSetsValidUntil(t *testing.T) {
 	if mem.ValidUntil == 0 {
 		t.Error("expected valid_until set after first below-floor sweep")
 	}
+	// D-110 regression: grace must be DecayGraceSweeps * DecayInterval in MILLISECONDS
+	// (2 * 10min = 20min), not nanoseconds-as-ms (~38 years). The old `!= 0` assertion
+	// let a 10^6x inflation through. Bound it tightly: well under an hour from now.
+	wantGraceMs := int64(profile.DecayGraceSweeps) * profile.DecayInterval.Milliseconds() // 1_200_000
+	nowMs := time.Now().UnixMilli()
+	got := mem.ValidUntil - nowMs
+	if got < wantGraceMs-60_000 || got > wantGraceMs+60_000 {
+		t.Errorf("valid_until grace = %d ms from now; want ≈ %d ms (≈20min). A nanosecond/ms unit bug yields ~1.2e12 ms (~38 years).", got, wantGraceMs)
+	}
 }
 
 func TestDecaySweepExpiresAfterGrace(t *testing.T) {
