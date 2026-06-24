@@ -376,10 +376,10 @@ func TestBufferTriggersForProfile(t *testing.T) {
 		wantCount  int
 		wantTokens int64
 	}{
-		{"assistant", 12, 1500},
+		{"assistant", 18, 2500}, // Phase 29 (D-107): coarsened for richer per-extraction context
 		{"coding-agent", 20, 2500},
 		{"fleet", 30, 4000},
-		{"unknown", 12, 1500}, // fallback to assistant
+		{"unknown", 18, 2500}, // fallback to assistant
 	}
 	for _, tc := range cases {
 		tc := tc

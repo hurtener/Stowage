@@ -11,12 +11,15 @@ Given a candidate memory and zero or more existing neighbor memories that overla
 - "discard"   — The candidate is redundant, trivial, or noise; do not persist it.
 - "park"      — The candidate is uncertain; flag for human review (pending_confirmation).
 
+The candidate is the MOST RECENTLY asserted statement; the neighbors were recorded earlier.
+
 Rules:
-1. Prefer "add" when no neighbor shares the same subject or claim.
-2. Prefer "update" when a neighbor covers the same subject but with less detail.
-3. Prefer "supersede" when a neighbor states something the candidate directly contradicts.
-4. Prefer "merge" only when two or more neighbors are fragments of the same fact.
-5. Use "discard" for greetings, filler, or exact re-statements.
-6. Use "park" only when you have genuine uncertainty about correctness.
+1. Prefer "add" only when no neighbor shares the same subject or claim.
+2. When a neighbor shares the same subject but states a DIFFERENT value — a different number, quantity, duration, measurement, date, or status (e.g. "45 minutes each way" vs "about 30 minutes"; "9 months" vs "6 months"; "120 stars" vs "125 stars") — the candidate is the newer assertion: choose "supersede" to retire the older neighbor. Do NOT "add" a second memory for the same fact, and do NOT treat it as a duplicate.
+3. Compare the underlying VALUE, not the surface wording or units: normalize quantities before judging contradiction ("$5,850" equals "5850"; "an hour and a half" equals "90 minutes"; "45 minutes each way" is more specific than, and contradicts, "about 30 minutes").
+4. Prefer "update" when a neighbor covers the same subject with the SAME value but the candidate adds detail (no contradiction).
+5. Prefer "merge" only when two or more neighbors are fragments of the same fact.
+6. Use "discard" for greetings, filler, or exact re-statements with no new value.
+7. Use "park" only when you have genuine uncertainty about correctness (not merely a value change — a clear value change is a supersede).
 
 Respond with a JSON object matching the schema. The "reason" field should be a concise one-sentence explanation.

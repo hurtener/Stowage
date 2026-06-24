@@ -285,6 +285,17 @@ func (r *ReconcileStage) processCandidate(ctx context.Context, scope identity.Sc
 	// swallow corrections — semantic similarity drives RECALL (above), never auto-discard.
 	for _, n := range neighbors {
 		if BigramJaccard(normalized, n.Content) >= nearDupThreshold {
+			// D-104 numeric-correction guard: a lexically near-identical candidate that
+			// carries a DIFFERENT numeral for the same fact ("...120 stars" vs "...125
+			// stars"; "...9 months" vs "...6 months") is a correction, NOT a duplicate.
+			// Auto-discarding it would swallow the correction AND bump the stale memory's
+			// match_count (raising its rank) — the exact stale-value miss. Fall through to
+			// the LLM decision (supersede path) instead.
+			if NumeralsDiverge(normalized, n.Content) {
+				r.log.DebugContext(ctx, "reconcile: near-dup numeral divergence — routing to LLM (D-104)",
+					"tenant", scope.Tenant, "neighbor_id", n.ID)
+				continue
+			}
 			if incErr := r.mem.IncrementCounter(ctx, scope, n.ID, "match"); incErr != nil {
 				r.log.WarnContext(ctx, "reconcile: IncrementCounter failed",
 					"id", n.ID, "err", incErr)

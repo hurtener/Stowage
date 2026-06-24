@@ -531,10 +531,10 @@ func TestTriggersFromConfig(t *testing.T) {
 		wantTokens int64
 		wantMaxAge time.Duration
 	}{
-		{"assistant", 12, 1500, 90 * time.Second},
+		{"assistant", 18, 2500, 180 * time.Second}, // Phase 29 (D-107): coarsened window
 		{"coding-agent", 20, 2500, 180 * time.Second},
 		{"fleet", 30, 4000, 120 * time.Second},
-		{"unknown", 12, 1500, 90 * time.Second}, // fallback to assistant
+		{"unknown", 18, 2500, 180 * time.Second}, // fallback to assistant
 	}
 	for _, tc := range cases {
 		tc := tc

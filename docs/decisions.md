@@ -2917,3 +2917,36 @@ who want a deeper rerank window (or a different recall/latency posture per profi
 existing deployments (empty section = presets). Whether the recall lift translates to higher
 *judged* answer quality is measured separately (the judged K-sweep); `answer_context_hit` is
 the substring proxy and undercounts.
+
+## D-104 — Numeric corrections bypass the lexical near-dup auto-discard (route to supersede)
+
+Phase 29. The reconcile near-dup pre-filter auto-discarded any candidate whose
+`BigramJaccard` ≥ 0.85 against a neighbor, on the documented assumption that a real
+contradiction is never *lexically* near-identical (a polarity flip embeds at high cosine
+but reads differently). That assumption has a hole: a **numeric correction** — "120 stars"
+→ "125 stars", "6 months" → "9 months", "30 minutes" → "45 minutes" — IS lexically
+near-identical (one token differs) yet is a contradiction. The old path silently discarded
+the correction AND bumped the stale neighbor's `match_count`, *raising the stale value's
+retrieval rank* — the exact LongMemEval stale-value miss (see [[longmemeval-miss-analysis]]).
+
+**Decision.** Before the near-dup auto-discard, `NumeralsDiverge(candidate, neighbor)` checks
+whether the two carry a different multiset of numerals (commas stripped so "5,850"=="5850").
+If they diverge, the candidate is NOT discarded and the neighbor's match_count is NOT bumped —
+it falls through to the LLM decision, which supersedes the older value. Deterministic, no
+embedding/cosine cost. Paraphrase dups with identical numerals still take the fast discard.
+Pairs with D-105's prompt change (supersede-on-different-value) and the false-supersede metric.
+
+## D-107 — Assistant extraction buffer window coarsened for context retention
+
+Phase 29. The assistant profile flushed the extraction buffer at Count=12 / Tokens=1500 /
+MaxAge=90s. The low token cap meant extraction often saw only a few turns at a time, so a
+memory could be written shorn of the disambiguating context stated turns earlier — e.g.
+"about 30 minutes" losing the "each way" qualifier that the fuller assertion kept. That both
+starves the reader and *manufactures* false contradictions reconcile then cannot match.
+
+**Decision.** Coarsen the assistant (and fallback) buffer triggers to Count=18 / Tokens=2500 /
+MaxAge=180s (D-042 family; tuned default in every profile, D-034) so extraction sees more
+conversation per call and emits fewer, richer, better-contextualized memories. Paired with the
+Phase-29 extraction-prompt change (PromptTemplateVersion 3) requiring qualifier/unit/scope
+retention and a populated `context`. Guardrail: an over-broad-merged-memory eval metric watches
+the merge-two-distinct-facts hazard a wider window introduces.

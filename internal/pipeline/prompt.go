@@ -11,7 +11,7 @@ import (
 // PromptTemplateVersion is the version of the extraction prompt template.
 // Increment when the template text changes; golden files must be regenerated
 // with UPDATE_GOLDEN=1.
-const PromptTemplateVersion = "2"
+const PromptTemplateVersion = "3"
 
 // systemPromptTemplate is the versioned system-prompt skeleton.
 // The literal "{topics}" placeholder is replaced by BuildPrompt.
@@ -28,10 +28,12 @@ Your task: read the conversation transcript that follows and extract memorable i
 For each piece of memorable information you identify:
 1. Choose the most fitting kind: fact | preference | decision | gotcha | pattern | task | narrative
 2. Write the content as a complete, self-contained statement (avoid pronouns without clear antecedents)
-3. Provide 3–5 anticipated search queries a user might use to find this memory later
-4. Cite the source record(s) with approximate character spans (span_start inclusive, span_end exclusive)
-5. Rate importance 1–5 (1 = trivial background noise, 5 = business-critical or safety-relevant) and confidence 0.0–1.0
-6. Set "topics" to the key(s) of the active topics above that this candidate pertains to — use the EXACT topic keys (the text before the colon); [] if none clearly apply
+3. PRESERVE every quantitative qualifier, unit, scope, and condition exactly as stated — dropping one changes the fact. Write "45 minutes each way" (not "about 45 minutes"), "$5,850 gross" (not "$5,850"), "12,000 steps per day" (not "12,000 steps"), "120 stars within 12 months". When a value is a correction or update of something said earlier, state the NEW value plainly.
+4. Populate "context" with the disambiguating conversational frame — what was being discussed, and any comparison, condition, or timeframe that makes the value interpretable on its own later (e.g. "commute time discussed while choosing audiobooks vs podcasts").
+5. Provide 3–5 anticipated search queries a user might use to find this memory later
+6. Cite the source record(s) with approximate character spans (span_start inclusive, span_end exclusive)
+7. Rate importance 1–5 (1 = trivial background noise, 5 = business-critical or safety-relevant) and confidence 0.0–1.0
+8. Set "topics" to the key(s) of the active topics above that this candidate pertains to — use the EXACT topic keys (the text before the colon); [] if none clearly apply
 
 ## Constraints
 

@@ -48,7 +48,11 @@ func BufferTriggersForProfile(profile string) BufferTriggers {
 	case "fleet":
 		return BufferTriggers{Count: 30, Tokens: 4000, MaxAge: 120 * time.Second}
 	default: // "assistant" and fallback
-		return BufferTriggers{Count: 12, Tokens: 1500, MaxAge: 90 * time.Second}
+		// Coarsened in Phase 29 (D-107): the old 12/1500/90s window flushed every few
+		// turns, so extraction often saw too little conversation to retain disambiguating
+		// context (the dropped "each way" qualifier). A wider window yields fewer, richer,
+		// better-contextualized memories without changing the fire-and-forget contract (P2).
+		return BufferTriggers{Count: 18, Tokens: 2500, MaxAge: 180 * time.Second}
 	}
 }
 

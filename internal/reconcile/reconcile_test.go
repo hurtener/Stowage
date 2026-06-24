@@ -224,6 +224,40 @@ func TestBigramJaccard(t *testing.T) {
 	}
 }
 
+// TestNumeralsDiverge covers the D-104 numeric-correction guard: a numeric correction
+// that is lexically a near-dup must be flagged as divergent so it routes to the LLM
+// (supersede) instead of being auto-discarded.
+func TestNumeralsDiverge(t *testing.T) {
+	cases := []struct {
+		name, a, b string
+		want       bool
+	}{
+		{"same numerals", "120 stars to reach gold", "120 stars to reach gold", false},
+		{"no numerals", "the user likes tea", "the user likes coffee", false},
+		{"stars correction", "You need 120 stars for gold level", "You need 125 stars for gold level", true},
+		{"months correction", "Fitbit Charge 3 used for 9 months", "Fitbit Charge 3 used for 6 months", true},
+		{"thousands separator equal", "raised $5,850 total", "raised $5850 total", false},
+		{"reorder same set", "2 cats and 3 dogs", "3 dogs and 2 cats", false},
+		{"extra numeral", "I have 2 cats", "I have 2 cats and 1 dog", true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := reconcile.NumeralsDiverge(tc.a, tc.b); got != tc.want {
+				t.Errorf("NumeralsDiverge(%q,%q) = %v, want %v", tc.a, tc.b, got, tc.want)
+			}
+		})
+	}
+	// Invariant: a numeric correction is BOTH a lexical near-dup AND numeral-divergent,
+	// so the guard fires exactly where the auto-discard would otherwise swallow it.
+	a, b := "You need 120 stars for gold level", "You need 125 stars for gold level"
+	if reconcile.BigramJaccard(a, b) < reconcile.ExportNearDupThreshold {
+		t.Fatalf("precondition: star correction is not a near-dup (Jaccard %.3f)", reconcile.BigramJaccard(a, b))
+	}
+	if !reconcile.NumeralsDiverge(a, b) {
+		t.Fatalf("star correction must be numeral-divergent so the guard routes it to the LLM")
+	}
+}
+
 // --- AC-4: Trust gate formula ------------------------------------------------
 
 // TestTrustGateFormula verifies the three trust levels against known memory

@@ -18,6 +18,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"regexp"
+	"sort"
 	"strings"
 
 	"github.com/hurtener/stowage/internal/store"
@@ -80,6 +81,42 @@ func BigramJaccard(a, b string) float64 {
 		return 0.0
 	}
 	return float64(inter) / float64(union)
+}
+
+// numeralRe matches integer or decimal numerals (digit groups, optionally with a
+// decimal point), including thousands separators stripped by NumeralsDiverge first.
+var numeralRe = regexp.MustCompile(`\d+(?:\.\d+)?`)
+
+// NumeralsDiverge reports whether a and b contain a DIFFERENT multiset of numerals
+// (D-104). It is the guard that keeps a numeric *correction* — lexically near-identical
+// to its predecessor but semantically a contradiction ("...120 stars" vs "...125 stars";
+// "...for 9 months" vs "...for 6 months") — out of the lexical near-dup auto-discard:
+// such a candidate must reach the LLM decision (supersede), not be swallowed as a dup.
+//
+// Comparison is on the SORTED multiset of numerals, so pure reordering or identical
+// numbers (a true paraphrase dup) returns false and the fast discard path is preserved.
+// Thousands separators (commas) are stripped so "5,850" and "5850" compare equal.
+func NumeralsDiverge(a, b string) bool {
+	na := numerals(a)
+	nb := numerals(b)
+	if len(na) != len(nb) {
+		return true
+	}
+	for i := range na {
+		if na[i] != nb[i] {
+			return true
+		}
+	}
+	return false
+}
+
+// numerals returns the sorted multiset of numerals in s, with thousands-separator
+// commas removed so "5,850" parses as one numeral "5850".
+func numerals(s string) []string {
+	s = strings.ReplaceAll(s, ",", "")
+	found := numeralRe.FindAllString(s, -1)
+	sort.Strings(found)
+	return found
 }
 
 // priorStateJSON is the canonical serialization format for D-017 prior-state
