@@ -88,12 +88,16 @@ func BuildReaderPrompt(question string, contexts []string) (system, user string)
 		"Rules: (1) Use ONLY the retrieved context — never rely on outside knowledge, prior " +
 		"training, or assumptions; do not answer anything that is not supported by the context. " +
 		"(2) You MAY do arithmetic, counting, or temporal reasoning OVER the context when the " +
-		"question requires it. (3) If the CURRENT memories do not contain enough information " +
+		"question requires it; each memory may carry a '| When: YYYY-MM-DD' assertion date — use " +
+		"these dates for temporal questions (how long ago, how many days/months since). " +
+		"(3) If the CURRENT memories do not contain enough information " +
 		"to answer, ABSTAIN: state explicitly that the provided context is insufficient — do not " +
 		"guess. (4) Your answer MUST come from the CURRENT memories. The SUPERSEDED section lists " +
 		"earlier values the user has since CHANGED — they are there only so you can understand the " +
-		"history; NEVER answer with a superseded value, and do not hedge between a current and a " +
-		"superseded value. Answer concisely and directly with a single value."
+		"history; NEVER answer with a superseded value. (5) When two CURRENT memories give DIFFERENT " +
+		"values for the SAME fact, the one with the LATER '| When:' date is the current value — use " +
+		"it and treat the earlier one as outdated; never average or hedge between them. Answer " +
+		"concisely and directly with a single value."
 
 	// Partition into current vs superseded (the runner prefixes superseded items with
 	// "[OUTDATED …]"). A clearly-separated section is far harder for the reader to miss
