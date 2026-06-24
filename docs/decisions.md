@@ -2874,3 +2874,46 @@ memories, zero schema failures). The change also *rescued* models that were prev
 flaky for extraction (`inception/mercury-2`). No safety lost: server validation is
 unchanged. A regression guard asserts the exported schemas carry none of the forbidden
 keywords.
+
+## D-103 — Retrieval profile windows are config-tunable; the per-request limit is honored under rerank
+
+**Context.** The three retrieval profiles (`precise`, `balanced`, `broad`) encoded their
+`{laneK, scoringK, defaultLimit}` windows as hardcoded package presets. `precise`
+(the rerank profile) capped `scoringK` at **10**: only the top-10 fused candidates were
+scored/reranked, and the final result was trimmed to `limit` *after* that. So a caller
+asking `/v1/retrieve` for `limit: 25` with rerank on silently received **≤10** memories —
+the `limit` knob was a no-op past the preset, and there was no way to widen it.
+
+A LongMemEval K-sweep (re-scoring a frozen learn store at increasing K, brute vindex)
+exposed this: `answer_context_hit` rose 0.24→0.32 from K=5→10 and then **flat-lined** at
+every K≥10 with exactly 10 items returned per question — the `scoringK=10` wall, not a
+recall ceiling. Memories are compressed (~30–40 tokens each; the K=5 context was ~166
+tokens vs a ~6,200-token raw haystack — a ~37× dividend), so feeding *more* of them is
+nearly free. The cap was leaving recall on the table for no token saving.
+
+**Decision.**
+1. **Honor `limit` under every profile, including rerank.** `Retrieve` floors the scoring
+   window up to the requested limit (`scoringK = max(prof.ScoringK, limit)`) and the lane
+   window up to that (`laneK = max(prof.LaneK, scoringK)`). The reranker now sees the full
+   requested window; `limit` is the honest K knob on all surfaces. A request can never be
+   silently clamped below what it asked for (still bounded by the hard `maxLimit=50`).
+2. **Make the profile windows config-tunable** via a new optional `retrieval:` section
+   (`precise`/`balanced`/`broad`, each `{lane_k, scoring_k, default_limit}`). A zero/omitted
+   field inherits the built-in preset, so the all-empty default reproduces the shipped
+   presets exactly — the tuned default that applies in every deployment profile (D-034).
+   Reranking is **not** configured here — it remains a property of the `precise` profile,
+   wired via `gateway.rerank_model`. Validation: non-negative, `scoring_k ≤ lane_k`,
+   `default_limit ≤ 50`. Wired in `boot` via `Retriever.WithProfiles(retrieval.BuildProfiles(...))`.
+
+**Evidence.** With the floor fix, a rerank-on K-sweep over the same frozen learn store
+climbed monotonically: `answer_context_hit` 0.28 (K=5) → 0.32 (10) → 0.36 (20) → 0.38 (30)
+→ 0.40 (40) → **0.44 (50)** — ~+57% relative, still rising at the `maxLimit=50` cap, while
+per-question context stayed cheap (~1,025 tokens at K=30, still ~6× compression). The
+plateau was the bug, not the data.
+
+**Consequences.** The retrieval `limit` finally behaves as advertised with rerank. Operators
+who want a deeper rerank window (or a different recall/latency posture per profile) set
+`retrieval.precise.scoring_k` etc. instead of editing the binary. No behavior change for
+existing deployments (empty section = presets). Whether the recall lift translates to higher
+*judged* answer quality is measured separately (the judged K-sweep); `answer_context_hit` is
+the substring proxy and undercounts.

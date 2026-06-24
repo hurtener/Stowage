@@ -1133,6 +1133,77 @@ func TestProfileByName(t *testing.T) {
 	}
 }
 
+// TestRetrieveLimitHonoredPastScoringK proves the D-103 floor: a request whose limit
+// exceeds the profile's preset ScoringK still returns up to limit items (the limit is
+// floored up into the scoring window) — not silently clamped to ScoringK. Before the
+// fix, the precise preset (ScoringK=10) capped every result at 10 regardless of limit.
+func TestRetrieveLimitHonoredPastScoringK(t *testing.T) {
+	t.Parallel()
+	st := openStore(t)
+	gw := openMockGateway(t, 4)
+	vi := vindex.New(st.Vectors(), 4, "test")
+	log := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	r := retrieval.New(st.Memories(), st.Records(), vi, gw, log)
+
+	scope := identity.Scope{Tenant: "tenant-floor-" + newID()}
+	// Seed 25 memories all sharing the query keyword so the lexical lane alone yields
+	// well over the precise preset's ScoringK=10.
+	for i := 0; i < 25; i++ {
+		_ = insertMemory(t, st, scope, "widget configuration note "+itoa(i), "fact",
+			[]string{"widget"}, []string{"widget"}, []string{"widget config"}, int64(1_000+i))
+	}
+
+	resp, err := r.Retrieve(context.Background(), scope, retrieval.Request{
+		Query:   "widget config",
+		Limit:   20, // > precise preset ScoringK (10)
+		Profile: "precise",
+	})
+	if err != nil {
+		t.Fatalf("Retrieve: %v", err)
+	}
+	if len(resp.Items) <= 10 {
+		t.Fatalf("limit=20 with precise profile returned %d items — clamped at the ScoringK=10 wall (D-103 floor not applied)", len(resp.Items))
+	}
+	if len(resp.Items) != 20 {
+		t.Errorf("limit=20 returned %d items, want 20", len(resp.Items))
+	}
+}
+
+// TestWithProfilesOverridesDefaultLimit proves config-driven profile tuning (D-103):
+// WithProfiles raises precise.DefaultLimit, so a no-limit request returns the configured
+// count rather than the built-in preset's DefaultLimit (5).
+func TestWithProfilesOverridesDefaultLimit(t *testing.T) {
+	t.Parallel()
+	st := openStore(t)
+	gw := openMockGateway(t, 4)
+	vi := vindex.New(st.Vectors(), 4, "test")
+	log := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	r := retrieval.New(st.Memories(), st.Records(), vi, gw, log).
+		WithProfiles(retrieval.BuildProfiles(
+			retrieval.ProfileOverride{DefaultLimit: 15}, // precise: 5 → 15
+			retrieval.ProfileOverride{},                 // balanced inherits
+			retrieval.ProfileOverride{},                 // broad inherits
+		))
+
+	scope := identity.Scope{Tenant: "tenant-override-" + newID()}
+	for i := 0; i < 25; i++ {
+		_ = insertMemory(t, st, scope, "gadget note "+itoa(i), "fact",
+			[]string{"gadget"}, []string{"gadget"}, []string{"gadget note"}, int64(1_000+i))
+	}
+
+	resp, err := r.Retrieve(context.Background(), scope, retrieval.Request{
+		Query:   "gadget note",
+		Limit:   0, // omitted → use the (overridden) DefaultLimit
+		Profile: "precise",
+	})
+	if err != nil {
+		t.Fatalf("Retrieve: %v", err)
+	}
+	if len(resp.Items) != 15 {
+		t.Fatalf("no-limit precise retrieve returned %d items, want 15 (overridden DefaultLimit)", len(resp.Items))
+	}
+}
+
 // --- Fuzz target for request decoder ----------------------------------------
 
 func FuzzRetrieveRequest(f *testing.F) {

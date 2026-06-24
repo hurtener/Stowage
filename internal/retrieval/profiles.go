@@ -30,6 +30,41 @@ var (
 	ProfileBroad = Profile{LaneK: 200, ScoringK: 50, DefaultLimit: 20}
 )
 
+// ProfileOverride carries optional per-field overrides for a named profile (D-103).
+// A zero field inherits the built-in preset value, so a partial override (e.g. only
+// precise.ScoringK) is valid. EnableRerank is intentionally not overridable: reranking
+// is a property of the precise profile's identity, wired via the gateway rerank model.
+type ProfileOverride struct {
+	LaneK        int
+	ScoringK     int
+	DefaultLimit int
+}
+
+// ApplyOverride returns base with each non-zero override field applied.
+func ApplyOverride(base Profile, o ProfileOverride) Profile {
+	if o.LaneK > 0 {
+		base.LaneK = o.LaneK
+	}
+	if o.ScoringK > 0 {
+		base.ScoringK = o.ScoringK
+	}
+	if o.DefaultLimit > 0 {
+		base.DefaultLimit = o.DefaultLimit
+	}
+	return base
+}
+
+// BuildProfiles applies the three deployment overrides onto the built-in presets and
+// returns the resolved set for Retriever.WithProfiles. An all-zero override set yields
+// a map equal to the built-in presets (the tuned defaults), so wiring it is always safe.
+func BuildProfiles(precise, balanced, broad ProfileOverride) map[string]Profile {
+	return map[string]Profile{
+		"precise":  ApplyOverride(ProfilePrecise, precise),
+		"balanced": ApplyOverride(ProfileBalanced, balanced),
+		"broad":    ApplyOverride(ProfileBroad, broad),
+	}
+}
+
 // profileByName resolves the named preset. Returns (profile, ok) — ok is false
 // for unknown names. The empty string maps to ProfileBalanced (default).
 func profileByName(name string) (Profile, bool) {

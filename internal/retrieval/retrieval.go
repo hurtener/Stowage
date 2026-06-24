@@ -109,8 +109,9 @@ type Retriever struct {
 	injWr       *InjectionWriter // nil when no injection store is wired
 	cache       *ResultCache
 	hotSet      *HotSet
-	rerankModel string           // cross-encoder model; empty = use gateway default
-	grantsSt    store.GrantStore // nil when grants are not wired (Phase 15, D-060)
+	rerankModel string             // cross-encoder model; empty = use gateway default
+	grantsSt    store.GrantStore   // nil when grants are not wired (Phase 15, D-060)
+	profiles    map[string]Profile // config-overridden presets; nil ⇒ built-in defaults (D-103)
 }
 
 // New creates a Retriever wired to the given dependencies.
@@ -133,6 +134,43 @@ func New(mem store.MemoryStore, recs store.RecordStore, vi vindex.Index, gw gate
 func (r *Retriever) WithRerankModel(model string) *Retriever {
 	r.rerankModel = model
 	return r
+}
+
+// WithProfiles overrides the named retrieval presets from config (D-103). A nil or
+// empty map keeps the built-in defaults; a partial map overrides only the named
+// profiles and leaves the rest at their defaults. Call after New, before serving;
+// not safe to call concurrently with Retrieve.
+func (r *Retriever) WithProfiles(p map[string]Profile) *Retriever {
+	if len(p) == 0 {
+		return r
+	}
+	r.profiles = p
+	return r
+}
+
+// resolveProfile resolves a profile name against the config overrides first, then the
+// built-in presets. Mirrors profileByName's empty-string ⇒ balanced default.
+func (r *Retriever) resolveProfile(name string) (Profile, bool) {
+	if r.profiles != nil {
+		key := name
+		if key == "" {
+			key = "balanced"
+		}
+		if p, ok := r.profiles[key]; ok {
+			return p, true
+		}
+	}
+	return profileByName(name)
+}
+
+// defaultProfile is the fallback when a profile name fails to resolve (balanced).
+func (r *Retriever) defaultProfile() Profile {
+	if r.profiles != nil {
+		if p, ok := r.profiles["balanced"]; ok {
+			return p
+		}
+	}
+	return ProfileBalanced
 }
 
 // WithEventCapture wires the event store used for Phase-26 trace capture (the async
@@ -206,13 +244,12 @@ func (r *Retriever) Close() {
 // lanes run across all effective scopes and the result cache is bypassed.
 // Zone-ceiling filtering is applied in Go as the defense-in-depth predicate (AC-1).
 func (r *Retriever) Retrieve(ctx context.Context, scope identity.Scope, req Request) (*Response, error) {
-	// Resolve profile presets for laneK and scoringK.
-	prof, ok := profileByName(req.Profile)
+	// Resolve profile presets for laneK and scoringK (config-overridable, D-103).
+	prof, ok := r.resolveProfile(req.Profile)
 	if !ok {
 		// Caller validation should have caught this; degrade to balanced.
-		prof = ProfileBalanced
+		prof = r.defaultProfile()
 	}
-	laneK := prof.LaneK
 
 	limit := req.Limit
 	if limit <= 0 {
@@ -220,6 +257,21 @@ func (r *Retriever) Retrieve(ctx context.Context, scope identity.Scope, req Requ
 	}
 	if limit > maxLimit {
 		limit = maxLimit
+	}
+
+	// Honor the requested limit under every profile — including rerank. The fused
+	// candidate set is scored/reranked down to scoringK, then trimmed to limit; if
+	// scoringK < limit the precise preset (scoringK=10) silently caps the result
+	// below what the caller asked for, making the limit knob a no-op past the preset.
+	// Floor scoringK to the limit (and laneK to scoringK) so a larger K actually
+	// reaches the reader with rerank enabled (D-103).
+	scoringK := prof.ScoringK
+	if limit > scoringK {
+		scoringK = limit
+	}
+	laneK := prof.LaneK
+	if scoringK > laneK {
+		laneK = scoringK
 	}
 
 	// Resolve or generate the response ID (D-051).
@@ -382,8 +434,8 @@ func (r *Retriever) Retrieve(ctx context.Context, scope identity.Scope, req Requ
 	// Fuse — use a wider window before scoring to give scoring room to rerank.
 	fused := rrf(lanes)
 
-	// Trim to profile.ScoringK before scoring to bound the GetMany call.
-	scoringK := prof.ScoringK
+	// Trim to scoringK (≥ requested limit, see above) before scoring to bound the
+	// GetMany call while still feeding the reranker the full requested window.
 	if len(fused) > scoringK {
 		fused = fused[:scoringK]
 	}

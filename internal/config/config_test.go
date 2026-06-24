@@ -398,6 +398,59 @@ func TestBufferTriggersForProfile(t *testing.T) {
 	}
 }
 
+// TestRetrievalTuningDefaultEmpty verifies the retrieval section defaults to all-zero
+// (inherit the built-in presets) and passes validation (D-103).
+func TestRetrievalTuningDefaultEmpty(t *testing.T) {
+	clearStowageEnv(t)
+	cfg := config.Defaults()
+	if cfg.Retrieval.Precise != (config.ProfileTuning{}) {
+		t.Errorf("Retrieval.Precise default = %+v, want zero (inherit preset)", cfg.Retrieval.Precise)
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Errorf("Defaults().Validate() with empty retrieval: %v", err)
+	}
+}
+
+// TestRetrievalTuningValid verifies a sane override loads and validates (D-103).
+func TestRetrievalTuningValid(t *testing.T) {
+	clearStowageEnv(t)
+	yaml := []byte("retrieval:\n  precise:\n    lane_k: 60\n    scoring_k: 30\n    default_limit: 10\n")
+	tmp := writeTmpFile(t, yaml)
+	cfg, err := config.Load(context.Background(), tmp)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Retrieval.Precise.ScoringK != 30 || cfg.Retrieval.Precise.LaneK != 60 {
+		t.Errorf("Retrieval.Precise = %+v, want lane_k=60 scoring_k=30", cfg.Retrieval.Precise)
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Errorf("Validate() with valid retrieval tuning: %v", err)
+	}
+}
+
+// TestRetrievalTuningInvalid rejects negative windows, scoring_k > lane_k, and a
+// default_limit past the hard result cap (D-103).
+func TestRetrievalTuningInvalid(t *testing.T) {
+	clearStowageEnv(t)
+	cases := []struct {
+		name string
+		t    config.ProfileTuning
+	}{
+		{"negative", config.ProfileTuning{ScoringK: -1}},
+		{"scoring_k exceeds lane_k", config.ProfileTuning{LaneK: 10, ScoringK: 20}},
+		{"default_limit over cap", config.ProfileTuning{DefaultLimit: 51}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := config.Defaults()
+			cfg.Retrieval.Precise = tc.t
+			if err := cfg.Validate(); err == nil {
+				t.Errorf("Validate() = nil, want error for %s (%+v)", tc.name, tc.t)
+			}
+		})
+	}
+}
+
 // TestVIndexDriverDefault verifies vindex.driver defaults to "hnsw" (D-048).
 func TestVIndexDriverDefault(t *testing.T) {
 	clearStowageEnv(t)

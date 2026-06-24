@@ -47,6 +47,38 @@ else
   failc "config explain: rerank_model default not cohere/rerank-4-fast"
 fi
 
+# ── Retrieval profile tuning knobs (AC-7, D-103) ─────────────────────────────
+
+if echo "$EXPLAIN_OUT" | grep -q "retrieval.precise.scoring_k"; then
+  ok "config explain: retrieval.precise.scoring_k present"
+else
+  failc "config explain: retrieval.precise.scoring_k missing"
+fi
+
+TUNE_CFG="${TMPDIR_SMOKE}/tune.yaml"
+cat > "$TUNE_CFG" <<'YAML'
+retrieval:
+  precise: { lane_k: 60, scoring_k: 30, default_limit: 10 }
+YAML
+TUNE_OUT=$("$BIN" config explain --config "$TUNE_CFG" 2>/dev/null || true)
+if echo "$TUNE_OUT" | grep -E "retrieval\.precise\.scoring_k" | grep -q "30"; then
+  ok "config explain --config: retrieval.precise.scoring_k override = 30"
+else
+  failc "config explain --config: retrieval.precise.scoring_k override not applied"
+fi
+
+# An invalid override (scoring_k > lane_k) must be rejected at validation.
+BAD_CFG="${TMPDIR_SMOKE}/bad.yaml"
+cat > "$BAD_CFG" <<'YAML'
+retrieval:
+  precise: { lane_k: 10, scoring_k: 99 }
+YAML
+if "$BIN" config explain --config "$BAD_CFG" >/dev/null 2>&1; then
+  failc "invalid retrieval tuning (scoring_k>lane_k) was accepted"
+else
+  ok "invalid retrieval tuning (scoring_k>lane_k) rejected"
+fi
+
 # ── Temp environment ──────────────────────────────────────────────────────────
 
 DB_PATH="${TMPDIR_SMOKE}/smoke.db"

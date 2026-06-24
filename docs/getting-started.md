@@ -181,6 +181,25 @@ documented surface — there is no 50-knob maze.
   profile: assistant
   ```
 
+- **Retrieval profile tuning** (`retrieval:`) is optional and rarely needed — the three named
+  retrieval profiles (`precise`, `balanced`, `broad`) ship tuned windows. When you *do* want more
+  retrieved memories per query, raise a profile's windows. Memories are compressed (~30–40 tokens
+  each), so a larger result set is cheap context — on LongMemEval, lifting the rerank (`precise`)
+  profile from 10 to 30–50 scored candidates roughly doubled retrieval recall at a few hundred extra
+  tokens. Each field is optional and inherits the built-in preset when omitted:
+
+  ```yaml
+  retrieval:
+    precise:  { lane_k: 60, scoring_k: 30, default_limit: 10 }   # rerank a deeper window
+    # balanced / broad inherit their presets unless set
+  ```
+
+  - **`lane_k`** — candidates fetched per lane before fusion.
+  - **`scoring_k`** — fused candidates scored/reranked. This is the cap on how many memories can
+    reach the reader; the per-request `limit` is floored up into this window, so asking for
+    `limit: 25` always scores at least 25 (never silently clamped below the request).
+  - **`default_limit`** — result count when a `/v1/retrieve` call omits `limit` (hard cap: 50).
+
 Every config key ships with a tuned default and is documented; a new knob without all three never
 ships (the "knob guardrail").
 

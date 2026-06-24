@@ -45,6 +45,13 @@ New terms land here in the same PR that introduces them (CLAUDE.md §14).
 - **Anticipated queries** — 3–5 search phrases generated at extraction time and
   indexed in their own lexical lane.
 - **RRF** — reciprocal-rank fusion of lane results.
+- **Retrieval profile** — a named retrieval preset (`precise` | `balanced` | `broad`)
+  encoding the `{laneK, scoringK, defaultLimit, enableRerank}` tuple; selected per
+  `/v1/retrieve` call and config-tunable via the `retrieval:` section (D-103). Distinct
+  from the deployment **Profile** below.
+- **ScoringK** — the number of fused candidates a retrieval profile scores/reranks; the
+  cap on memories that can reach the reader. The per-request `limit` is floored up into
+  this window, so a request is never silently clamped below what it asked for (D-103).
 - **Gateway** — the single intelligence seam (`internal/gateway`) through which
   every embedding and LLM call flows; drivers: `bifrost`, `mock`.
 - **Gain** — the performance delta an agent shows with memory on vs. off (the
