@@ -59,6 +59,7 @@ func Run(t *testing.T, factory Factory) {
 	t.Run("MemoryProvenance", func(t *testing.T) { testMemoryProvenance(t, factory) })
 	t.Run("MemoryListByRecords", func(t *testing.T) { testMemoryListByRecords(t, factory) })
 	t.Run("MemoryScopeIsolation", func(t *testing.T) { testMemoryScopeIsolation(t, factory) })
+	t.Run("MemoryDistinctScopes", func(t *testing.T) { testMemoryDistinctScopes(t, factory) })
 	t.Run("TopicUpsertGetListDelete", func(t *testing.T) { testTopicUpsertGetListDelete(t, factory) })
 	t.Run("TopicScopeIsolation", func(t *testing.T) { testTopicScopeIsolation(t, factory) })
 	t.Run("BufferAppendListDue", func(t *testing.T) { testBufferAppendListDue(t, factory) })
@@ -4305,5 +4306,52 @@ func testScopeSettingsKV(t *testing.T, factory Factory) {
 	}
 	if err := s.ScopeSettings().Delete(ctx, noTenant, "proactive"); !errors.Is(err, store.ErrScopeRequired) {
 		t.Errorf("Delete no-tenant = %v, want ErrScopeRequired", err)
+	}
+}
+
+// testMemoryDistinctScopes verifies DistinctScopes returns each (project,user) with active
+// memories under a tenant, never crossing users, and is itself scope-isolated (D-111).
+func testMemoryDistinctScopes(t *testing.T, factory Factory) {
+	t.Helper()
+	s, cleanup := factory()
+	defer cleanup()
+	ctx := context.Background()
+	tenant := "tenant-ds-" + newID()
+	alice := identity.Scope{Tenant: tenant, User: "alice"}
+	bob := identity.Scope{Tenant: tenant, User: "bob"}
+	mk := func(sc identity.Scope, content string) {
+		m := store.Memory{ID: newID(), Kind: "fact", Content: content, Status: "active",
+			Confidence: 0.5, TrustSource: "llm_extracted", Stability: 1.0, CreatedAt: nowMs(), UpdatedAt: nowMs()}
+		if err := s.Memories().Insert(ctx, sc, m); err != nil {
+			t.Fatalf("insert: %v", err)
+		}
+	}
+	mk(alice, "alice fact 1")
+	mk(alice, "alice fact 2")
+	mk(bob, "bob fact")
+
+	scopes, err := s.Memories().DistinctScopes(ctx, tenantScope(tenant))
+	if err != nil {
+		t.Fatalf("DistinctScopes: %v", err)
+	}
+	users := map[string]bool{}
+	for _, sc := range scopes {
+		if sc.Tenant != tenant {
+			t.Errorf("scope tenant = %q, want %q", sc.Tenant, tenant)
+		}
+		users[sc.User] = true
+	}
+	if len(scopes) != 2 || !users["alice"] || !users["bob"] {
+		t.Errorf("DistinctScopes = %+v, want exactly alice + bob", scopes)
+	}
+	// Scope isolation: querying alice's scope returns only alice.
+	aScopes, err := s.Memories().DistinctScopes(ctx, alice)
+	if err != nil {
+		t.Fatalf("DistinctScopes(alice): %v", err)
+	}
+	for _, sc := range aScopes {
+		if sc.User != "alice" {
+			t.Errorf("alice-scoped DistinctScopes leaked user %q", sc.User)
+		}
 	}
 }

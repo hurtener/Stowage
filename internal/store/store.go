@@ -316,6 +316,13 @@ type MemoryStore interface {
 	// tenant-scope (Phase 14, D-058).
 	ListActiveForDecay(ctx context.Context, scope identity.Scope, limit int, cursor string) ([]Memory, string, error)
 
+	// DistinctScopes returns the distinct (project_id, user_id) identity scopes that have at
+	// least one active memory under the given (tenant) scope. The consolidation/dedupe sweep
+	// uses it to run per (tenant,project,user) instead of tenant-wide, so it can never compare
+	// or merge memories across different users (P3) — mirrors how the episode/threading sweeps
+	// iterate distinct scopes (D-111). The returned scopes carry the input Tenant.
+	DistinctScopes(ctx context.Context, scope identity.Scope) ([]identity.Scope, error)
+
 	// SetValidUntil sets the valid_until field of a memory (unix millis).
 	// Used by the decay sweep to record the first-below-floor observation.
 	// A value of 0 clears the field (D-058).

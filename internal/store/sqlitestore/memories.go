@@ -1164,3 +1164,28 @@ func scanMemory(row rowScanner) (*store.Memory, error) {
 	}
 	return &mem, nil
 }
+
+// DistinctScopes returns the distinct (project_id, user_id) scopes with at least one active
+// memory under scope (D-111). Tenant-scoped via buildScopeWhere; the consolidation sweep runs
+// per returned scope so it never compares memories across users (P3).
+func (m *memoryStore) DistinctScopes(ctx context.Context, scope identity.Scope) ([]identity.Scope, error) {
+	whereClause, args, err := buildScopeWhere(scope)
+	if err != nil {
+		return nil, err
+	}
+	q := `SELECT DISTINCT COALESCE(project_id,''), COALESCE(user_id,'') FROM memories WHERE ` + whereClause + ` AND status = 'active'` //nolint:gosec // whereClause from controlled helper; values bound
+	rows, err := m.s.rdb.QueryContext(ctx, q, args...)
+	if err != nil {
+		return nil, fmt.Errorf("sqlitestore: distinct scopes: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	var out []identity.Scope
+	for rows.Next() {
+		var project, user string
+		if err := rows.Scan(&project, &user); err != nil {
+			return nil, fmt.Errorf("sqlitestore: scan distinct scope: %w", err)
+		}
+		out = append(out, identity.Scope{Tenant: scope.Tenant, Project: project, User: user})
+	}
+	return out, rows.Err()
+}

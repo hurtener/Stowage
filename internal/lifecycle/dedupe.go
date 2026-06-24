@@ -37,12 +37,21 @@ func (m *Manager) runDedupe(ctx context.Context) {
 	}
 
 	for _, tenant := range tenants {
-		m.dedupeTenant(ctx, tenant)
+		// Run per (tenant,project,user) — NEVER tenant-wide — so FindNeighbors and the merge
+		// commit can't compare/merge memories across different users or NULL-scope the survivor
+		// (P3 + P1, D-111). Mirrors how the episode/threading sweeps iterate distinct scopes.
+		scopes, err := m.st.Memories().DistinctScopes(ctx, identity.Scope{Tenant: tenant})
+		if err != nil {
+			m.log.WarnContext(ctx, "lifecycle/dedupe: distinct scopes failed", "tenant", tenant, "err", err)
+			continue
+		}
+		for _, sc := range scopes {
+			m.dedupeScope(ctx, sc)
+		}
 	}
 }
 
-func (m *Manager) dedupeTenant(ctx context.Context, tenant string) {
-	scope := identity.Scope{Tenant: tenant}
+func (m *Manager) dedupeScope(ctx context.Context, scope identity.Scope) {
 	comparisons := 0
 	cursor := ""
 	mergedThisPass := map[string]bool{}
@@ -54,7 +63,7 @@ func (m *Manager) dedupeTenant(ctx context.Context, tenant string) {
 		}
 		batch, next, err := m.st.Memories().ListActiveForDecay(ctx, scope, pageSize, cursor)
 		if err != nil {
-			m.log.WarnContext(ctx, "lifecycle/dedupe: list failed", "tenant", tenant, "err", err)
+			m.log.WarnContext(ctx, "lifecycle/dedupe: list failed", "scope", scope.String(), "err", err)
 			return
 		}
 		for _, mem := range batch {
