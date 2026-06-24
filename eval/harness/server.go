@@ -105,7 +105,9 @@ func NewTestServer(t testing.TB, tenantID string) *TestServer {
 	// Migrate is idempotent, so re-opening an existing DB is safe.
 	if p := os.Getenv("STOWAGE_EVAL_DB_PATH"); p != "" {
 		dbPath = p
-		_ = os.MkdirAll(filepath.Dir(p), 0o750)
+		// gosec G703: p is an operator-supplied eval DB path (env var), not untrusted
+		// input, and this is test/eval-harness tooling — never the shipped binary.
+		_ = os.MkdirAll(filepath.Dir(p), 0o750) //nolint:gosec
 	}
 	mockScript := filepath.Join(dir, "mock-script.json")
 
