@@ -2,6 +2,7 @@ package lifecycle_test
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -188,8 +189,9 @@ func TestRollupSweepPersonalPlusZone(t *testing.T) {
 	}
 }
 
-// TestRollupSweepManyMemories exercises the buildDigestContent > 10 memories
-// branch which emits "[+N more]" when a session has more than 10 promotable memories.
+// TestRollupSweepManyMemories asserts that when a session has >10 promotable memories, the
+// digest includes EVERY one's content (D-116) — rollup supersedes them all, so none may be
+// silently dropped from the digest as the old 10-item cap did.
 func TestRollupSweepManyMemories(t *testing.T) {
 	st, cleanup := newTestStore(t)
 	defer cleanup()
@@ -232,15 +234,27 @@ func TestRollupSweepManyMemories(t *testing.T) {
 	if err != nil {
 		t.Fatalf("list active: %v", err)
 	}
-	var found bool
-	for _, m := range active {
-		if m.Kind == "narrative" && m.SessionID == "" {
-			found = true
+	var digest *store.Memory
+	for i := range active {
+		if active[i].Kind == "narrative" && active[i].SessionID == "" {
+			digest = &active[i]
 			break
 		}
 	}
-	if !found {
-		t.Error("expected narrative digest for 12-memory session rollup")
+	if digest == nil {
+		t.Fatal("expected narrative digest for 12-memory session rollup")
+	}
+	// D-116 regression: ALL 12 superseded memories' content must be in the digest — the old
+	// 10-item cap silently dropped #11/#12 ("memory content K"/"memory content L") while still
+	// retiring them. No "[+N more]" elision.
+	for i := 0; i < 12; i++ {
+		want := "memory content " + string(rune('A'+i))
+		if !strings.Contains(digest.Content, want) {
+			t.Errorf("digest missing superseded content %q (silent loss): %q", want, digest.Content)
+		}
+	}
+	if strings.Contains(digest.Content, "more]") {
+		t.Errorf("digest elided content with [+N more]: %q", digest.Content)
 	}
 }
 

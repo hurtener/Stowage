@@ -124,7 +124,7 @@ func (m *Manager) rollupSession(ctx context.Context, scope identity.Scope, sessI
 		return
 	}
 
-	// Build narrative digest from promotable memories.
+	// Build narrative digest from ALL promotable memories.
 	digestContent := buildDigestContent(sessID, promotable)
 	digestHash := reconcile.ContentHash(reconcile.NormalizeContent(digestContent))
 
@@ -255,14 +255,14 @@ func (m *Manager) rollupSession(ctx context.Context, scope identity.Scope, sessI
 		"sources", len(promotable), "digest", digest.ID)
 }
 
-// buildDigestContent builds a concise narrative digest content string.
+// buildDigestContent builds the narrative digest content string from ALL the session's
+// promotable memories. It must include every memory whose content is being superseded by this
+// digest — the previous 10-item cap silently dropped the content of memories 11+ even though
+// they were all retired via Targets (D-116, audit #6). A session digest is bounded in practice
+// (rollup only fires on idle, aged sessions of working memory).
 func buildDigestContent(sessID string, mems []store.Memory) string {
 	s := fmt.Sprintf("Session digest [%s]:", sessID)
-	for i, mem := range mems {
-		if i >= 10 { // cap at 10 to avoid huge content
-			s += fmt.Sprintf(" [+%d more]", len(mems)-10)
-			break
-		}
+	for _, mem := range mems {
 		s += fmt.Sprintf(" %s.", mem.Content)
 	}
 	return s

@@ -3092,3 +3092,13 @@ candidate into the result set. (b) The result-cache key omitted `Kinds` and `Inc
 of which change the result set / item payload, so a kind-filtered or lanes-on request could
 collide with a plain one within the 60s TTL and return the wrong items. Both are now in the key
 (Kinds sorted for order-independence).
+
+## D-116 — Rollup digests every memory it supersedes (no silent content loss)
+
+Phase 29d (audit #6). The session rollup set `Targets: promotable` (supersedes ALL of a session's
+promotable memories) but `buildDigestContent` capped the digest at the first 10, emitting
+"[+N more]" — so memories 11+ were RETIRED with their content omitted from the digest, silently
+lost (e.g. the newest correction in a long session). The digest must represent everything it
+supersedes. Decision: `buildDigestContent` includes all promotable memories' content (the count
+cap removed). A session digest is bounded in practice — rollup only fires on idle, aged sessions
+of working memory. Regression test asserts all 12 contents appear and no "[+N more]" elision.
