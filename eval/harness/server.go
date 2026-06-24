@@ -140,6 +140,13 @@ func NewTestServer(t testing.TB, tenantID string) *TestServer {
 	}
 	cfg.Server.Listen = ":0"
 	cfg.Profile = "assistant"
+	// STOWAGE_EVAL_VINDEX overrides the vector-index driver. The reuse-the-store
+	// (skip-ingest) re-score path uses "brute": it Scans the persisted vectors at
+	// query time, so a reopened store's vector lane is faithful without re-indexing
+	// (the default in-memory hnsw would start empty on reopen).
+	if v := os.Getenv("STOWAGE_EVAL_VINDEX"); v != "" {
+		cfg.VIndex.Driver = v
+	}
 
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	reg := prometheus.NewRegistry()

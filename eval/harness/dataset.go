@@ -51,6 +51,12 @@ type RunDatasetOpts struct {
 	// Reader overrides the reader/judge model + reasoning effort for judged mode
 	// (D-100). Zero value = the gateway's configured model, no reasoning.
 	Reader ReaderOpts
+	// SkipIngest reuses an already-learned persistent store (STOWAGE_EVAL_DB_PATH):
+	// the ingest → extract → settle loop is skipped and the questions are scored
+	// directly against the existing memories. Used to re-score the SAME learning at
+	// different retrieve limits (the K knob) without re-paying for extraction. Pair
+	// with the brute vindex so the vector lane is faithful on reopen.
+	SkipIngest bool
 }
 
 // DatasetResult is the outcome of a RunDataset call.
@@ -92,6 +98,11 @@ func RunDataset(ctx context.Context, srv *TestServer, runner *Runner, convs []da
 	for _, c := range convs {
 		convByID[c.ID] = c
 	}
+
+	// SkipIngest reuses an already-learned store: bypass the whole ingest → extract →
+	// settle path and score directly against the existing memories (the K-knob
+	// re-score; cost/quality sweeps reuse the same learning).
+	if !opts.SkipIngest {
 
 	// Seed the broad extraction-magnet set so topic-gated extraction captures the
 	// breadth of facts the benchmark probes (not just the default preferences pack).
@@ -150,6 +161,8 @@ func RunDataset(ctx context.Context, srv *TestServer, runner *Runner, convs []da
 		case <-time.After(opts.EmbedSettle):
 		}
 	}
+
+	} // end !opts.SkipIngest
 
 	results := make([]QuestionResult, 0, len(questions))
 	var verdicts []string

@@ -116,8 +116,14 @@ type sweepQ struct {
 	Items    []string
 }
 
+func filepathIsAbs(p string) bool { return strings.HasPrefix(p, "/") }
+
 func loadSweepQuestions(path string) ([]sweepQ, error) {
 	f, err := os.Open(path) //nolint:gosec
+	if err != nil && !filepathIsAbs(path) {
+		// The test cwd is the package dir; a repo-relative path lives two levels up.
+		f, err = os.Open("../../" + path) //nolint:gosec
+	}
 	if err != nil {
 		return nil, err
 	}
