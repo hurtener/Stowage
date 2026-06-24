@@ -3081,3 +3081,14 @@ P1 orphaning.
 3. **Full-scope sweep:** dedup runs per `(tenant,project,user)` via a new scoped
    `Memories().DistinctScopes` enumerator (both drivers + conformance), mirroring how
    episodes/threading iterate — never cross-user, survivor inherits correct scope columns (P3).
+
+## D-115 — Retrieval rerank precedes the limit trim; cache key includes Kinds + IncludeLanes
+
+Phase 29d (audit #9, #8). (a) The cross-encoder rerank ran AFTER trimming the scored pool to the
+requested `limit`, so it could only reorder the already-cut top-`limit` — never PROMOTE a more
+relevant memory that fell just below the cutoff. Rerank now runs over the full scored pool
+(≤ ScoringK) and the trim-to-`limit` happens after, so the cross-encoder can pull a better
+candidate into the result set. (b) The result-cache key omitted `Kinds` and `IncludeLanes`, both
+of which change the result set / item payload, so a kind-filtered or lanes-on request could
+collide with a plain one within the 60s TTL and return the wrong items. Both are now in the key
+(Kinds sorted for order-independence).

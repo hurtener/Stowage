@@ -1432,10 +1432,10 @@ func TestResultCache_TTLExpiry(t *testing.T) {
 	c.SetTestNow(func() time.Time { return now })
 
 	// Put an entry.
-	c.Put(scope, "sig", "balanced", "", 0, 0, nil, retrieval.Support{Strength: "weak"})
+	c.Put(scope, "sig", "balanced", "", 0, 0, nil, false, nil, retrieval.Support{Strength: "weak"})
 
 	// Should hit before TTL.
-	_, _, ok := c.Get(scope, "sig", "balanced", "", 0, 0)
+	_, _, ok := c.Get(scope, "sig", "balanced", "", 0, 0, nil, false)
 	if !ok {
 		t.Fatal("expected cache hit before TTL")
 	}
@@ -1444,7 +1444,7 @@ func TestResultCache_TTLExpiry(t *testing.T) {
 	now = now.Add(61 * time.Second)
 	c.SetTestNow(func() time.Time { return now })
 
-	_, _, ok = c.Get(scope, "sig", "balanced", "", 0, 0)
+	_, _, ok = c.Get(scope, "sig", "balanced", "", 0, 0, nil, false)
 	if ok {
 		t.Error("expected cache miss after TTL expiry")
 	}
@@ -1457,9 +1457,9 @@ func TestResultCache_Stats(t *testing.T) {
 	c := retrieval.ExportNewResultCache(16)
 	scope := identity.Scope{Tenant: "stats-test"}
 
-	c.Get(scope, "sig", "balanced", "", 0, 0) // miss
-	c.Put(scope, "sig", "balanced", "", 0, 0, nil, retrieval.Support{})
-	c.Get(scope, "sig", "balanced", "", 0, 0) // hit
+	c.Get(scope, "sig", "balanced", "", 0, 0, nil, false) // miss
+	c.Put(scope, "sig", "balanced", "", 0, 0, nil, false, nil, retrieval.Support{})
+	c.Get(scope, "sig", "balanced", "", 0, 0, nil, false) // hit
 
 	hits, misses := c.Stats()
 	if hits != 1 {
@@ -1480,15 +1480,15 @@ func TestResultCache_LRUEviction(t *testing.T) {
 	// Fill to cap.
 	for i := range cap {
 		scope := identity.Scope{Tenant: "evict-test"}
-		c.Put(scope, itoa(i), "balanced", "", 0, 0, nil, retrieval.Support{})
+		c.Put(scope, itoa(i), "balanced", "", 0, 0, nil, false, nil, retrieval.Support{})
 	}
 
 	// Add one more — should evict LRU (entry 0).
 	scope := identity.Scope{Tenant: "evict-test"}
-	c.Put(scope, "overflow", "balanced", "", 0, 0, nil, retrieval.Support{})
+	c.Put(scope, "overflow", "balanced", "", 0, 0, nil, false, nil, retrieval.Support{})
 
 	// The oldest entry (sig "0") should be evicted.
-	_, _, ok := c.Get(scope, "0", "balanced", "", 0, 0)
+	_, _, ok := c.Get(scope, "0", "balanced", "", 0, 0, nil, false)
 	if ok {
 		t.Error("expected LRU entry to be evicted")
 	}
@@ -1893,5 +1893,29 @@ func TestRetrieveQueryCaptured(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("expected a retrieve.query event keyed by response_id %q, got %+v", resp.ResponseID, evs)
+	}
+}
+
+// TestResultCache_KeyIncludesKindsAndLanes covers D-115/audit #8: Kinds and IncludeLanes are
+// part of the cache key, so a kind-filtered or lanes-on request can't collide with a plain one.
+func TestResultCache_KeyIncludesKindsAndLanes(t *testing.T) {
+	t.Parallel()
+	c := retrieval.NewResultCache(0)
+	scope := identity.Scope{Tenant: "t-cachekey"}
+	c.Put(scope, "sig", "balanced", "", 0, 0, []string{"fact"}, false, nil, retrieval.Support{Strength: "weak"})
+
+	if _, _, ok := c.Get(scope, "sig", "balanced", "", 0, 0, []string{"preference"}, false); ok {
+		t.Error("different Kinds must MISS the cache")
+	}
+	if _, _, ok := c.Get(scope, "sig", "balanced", "", 0, 0, []string{"fact"}, true); ok {
+		t.Error("different IncludeLanes must MISS the cache")
+	}
+	if _, _, ok := c.Get(scope, "sig", "balanced", "", 0, 0, []string{"fact"}, false); !ok {
+		t.Error("same Kinds+IncludeLanes must HIT the cache")
+	}
+	// Kinds order-independent.
+	c.Put(scope, "sig2", "balanced", "", 0, 0, []string{"fact", "task"}, false, nil, retrieval.Support{})
+	if _, _, ok := c.Get(scope, "sig2", "balanced", "", 0, 0, []string{"task", "fact"}, false); !ok {
+		t.Error("Kinds key must be order-independent")
 	}
 }

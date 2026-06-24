@@ -347,7 +347,7 @@ func (r *Retriever) Retrieve(ctx context.Context, scope identity.Scope, req Requ
 	// affects the utility score (write-echo cooldown).
 	// Multi-scope requests are NOT cached: revocation must be effective immediately (D-060).
 	if !req.Debug && !multiScope {
-		if cachedItems, cachedSup, ok := r.cache.Get(scope, querySig, req.Profile, req.SessionID, req.Window.From, req.Window.Until); ok {
+		if cachedItems, cachedSup, ok := r.cache.Get(scope, querySig, req.Profile, req.SessionID, req.Window.From, req.Window.Until, req.Kinds, req.IncludeLanes); ok {
 			return &Response{
 				ResponseID: responseID,
 				Items:      cachedItems,
@@ -673,21 +673,24 @@ func (r *Retriever) Retrieve(ctx context.Context, scope identity.Scope, req Requ
 		return scored[i].item.Memory.ID < scored[j].item.Memory.ID
 	})
 
-	// Trim to requested limit.
-	if len(scored) > limit {
-		scored = scored[:limit]
-	}
-
+	// Build the candidate pool from ALL scored items (up to scoringK) — NOT yet trimmed to
+	// limit — so the cross-encoder rerank can PROMOTE a relevant memory from below the limit
+	// cutoff, not merely reorder the already-cut top-`limit` (D-115, audit #9).
 	items := make([]MemoryItem, len(scored))
 	for i, s := range scored {
 		items[i] = s.item
 	}
 
-	// Cross-encoder rerank pass (Phase 12) — only for precise profile.
+	// Cross-encoder rerank pass (Phase 12) — only for precise profile, over the wider pool.
 	// On failure, degradedRerank=true and items retain Phase-10 order (D-052).
 	var degradedRerank bool
 	if prof.EnableRerank && r.gw != nil && len(items) > 0 {
 		degradedRerank, items = rerankPass(ctx, r.gw, r.rerankModel, req.Query, items, r.log)
+	}
+
+	// Trim to the requested limit AFTER ranking + rerank.
+	if len(items) > limit {
+		items = items[:limit]
 	}
 
 	// Dual-visibility (D-105, §6c): attach the superseded predecessors of the returned
@@ -710,7 +713,7 @@ func (r *Retriever) Retrieve(ctx context.Context, scope identity.Scope, req Requ
 	// Debug requests are not cached (breakdowns are diagnostic and one-time).
 	// Multi-scope requests are not cached (revocation must be live, D-060).
 	if !req.Debug && !multiScope {
-		r.cache.Put(scope, querySig, req.Profile, req.SessionID, req.Window.From, req.Window.Until, items, sup)
+		r.cache.Put(scope, querySig, req.Profile, req.SessionID, req.Window.From, req.Window.Until, req.Kinds, req.IncludeLanes, items, sup)
 	}
 
 	// Feed the hot set with the IDs of injected memories (Phase 12).
