@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -255,6 +256,33 @@ func TestNumeralsDiverge(t *testing.T) {
 	}
 	if !reconcile.NumeralsDiverge(a, b) {
 		t.Fatalf("star correction must be numeral-divergent so the guard routes it to the LLM")
+	}
+}
+
+// TestCandidateAssertionOrdering proves the D-106 winner-determinism fix: within a flush,
+// candidates are processed oldest-asserted first (by latest source-record ULID = turn
+// order), so the newer value supersedes the older — never the reverse. Records are ULIDs;
+// here we use lexically-ordered stand-ins.
+func TestCandidateAssertionOrdering(t *testing.T) {
+	older := pipeline.Candidate{Content: "6 months", Provenance: []pipeline.ProvSpan{{RecordID: "01A"}, {RecordID: "01B"}}}
+	newer := pipeline.Candidate{Content: "9 months", Provenance: []pipeline.ProvSpan{{RecordID: "01C"}}}
+
+	// Key = latest (max) record among provenance.
+	if k := reconcile.ExportCandidateAssertionKey(older); k != "01B" {
+		t.Errorf("older key = %q, want 01B (latest of its records)", k)
+	}
+	if k := reconcile.ExportCandidateAssertionKey(newer); k != "01C" {
+		t.Errorf("newer key = %q, want 01C", k)
+	}
+
+	// Even when the LLM emits newest-first, the stable sort puts the older assertion first
+	// so it commits before the newer one supersedes it.
+	cands := []pipeline.Candidate{newer, older}
+	sort.SliceStable(cands, func(i, j int) bool {
+		return reconcile.ExportCandidateAssertionKey(cands[i]) < reconcile.ExportCandidateAssertionKey(cands[j])
+	})
+	if cands[0].Content != "6 months" || cands[1].Content != "9 months" {
+		t.Fatalf("ordering = [%q,%q], want [6 months, 9 months]", cands[0].Content, cands[1].Content)
 	}
 }
 

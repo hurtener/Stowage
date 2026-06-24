@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sort"
 	"sync"
 	"time"
 
@@ -188,9 +189,32 @@ func (r *ReconcileStage) Drain(_ context.Context) {
 	r.wg.Wait()
 }
 
+// candidateAssertionKey returns a candidate's assertion-order key: the LATEST source
+// record ID among its provenance. Record IDs are ULIDs — monotonic in ingestion order,
+// which IS conversation/turn order — so this orders candidates by when they were said,
+// finer than session-granular occurred_at (D-106).
+func candidateAssertionKey(c pipeline.Candidate) string {
+	key := ""
+	for _, p := range c.Provenance {
+		if p.RecordID > key {
+			key = p.RecordID
+		}
+	}
+	return key
+}
+
 // worker processes CandidateBatch events until the input channel is closed.
 func (r *ReconcileStage) worker(ctx context.Context) {
 	for batch := range r.in {
+		// Process a flush's candidates OLDEST-asserted first (by source-record/turn order),
+		// so that when two candidates in the same flush state contradictory values for one
+		// fact ("6 months" then "9 months"), the older commits first and the newer supersedes
+		// it — the current value wins deterministically. Without this, the LLM's arbitrary
+		// candidate output order decided the winner, so supersede kept the stale value ~half
+		// the time (D-106). Stable sort preserves emission order within the same record.
+		sort.SliceStable(batch.Candidates, func(i, j int) bool {
+			return candidateAssertionKey(batch.Candidates[i]) < candidateAssertionKey(batch.Candidates[j])
+		})
 		for _, c := range batch.Candidates {
 			if err := r.processCandidate(ctx, batch.Scope, c); err != nil {
 				r.log.WarnContext(ctx, "reconcile: candidate failed",

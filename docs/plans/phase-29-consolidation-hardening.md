@@ -173,4 +173,4 @@ H0 contradiction-pair report; re-learn once; re-test K=5/10/20/50 + the three ne
 - D-104: Numeric corrections bypass the lexical near-dup auto-discard (route to supersede). **Filed.**
 - D-107: Assistant extraction buffer window coarsened for context retention. **Filed.**
 - D-105: Superseded memories are retained-and-flagged in retrieval (dual-visibility, §6c), not hidden. **Filed.**
-- D-106: Reconcile/scoring recency uses `occurred_at` (assertion time), not `created_at`. **Deferred** — H2's prompt uses the cheaper "candidate is the newest assertion" framing; the full provenance→records `occurred_at` join was not needed to fix the cited misses and is left for a scoring-side follow-up.
+- D-106: Reconcile winner-selection is deterministic by assertion order. **Filed** — within-flush candidates are sorted by latest source-record ULID (turn order) so the newer value supersedes the older. `occurred_at` proved session-granular (ties); record-ULID is finer.

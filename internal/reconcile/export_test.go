@@ -4,8 +4,14 @@ package reconcile
 import (
 	"encoding/json"
 
+	"github.com/hurtener/stowage/internal/pipeline"
 	"github.com/hurtener/stowage/internal/store"
 )
+
+// ExportCandidateAssertionKey exposes candidateAssertionKey for the D-106 ordering test.
+func ExportCandidateAssertionKey(c pipeline.Candidate) string {
+	return candidateAssertionKey(c)
+}
 
 // ExportTargetTrustLevel exposes targetTrustLevel for external tests.
 func ExportTargetTrustLevel(m store.Memory) TrustLevel {

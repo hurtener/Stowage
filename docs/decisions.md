@@ -2973,3 +2973,25 @@ intended behaviour; D-034 tuned default in every profile). Operators who want ac
 retrieval set it false. This is a read-time property and composes with the write-time
 supersede fixes: write-time decides which value is current; read-time decides whether the
 agent also sees the retired one (flagged).
+
+## D-106 — Reconcile winner-selection is deterministic by assertion order (record-ULID turn order)
+
+Phase 29. Supersede fires (D-104/D-105) but was picking the WRONG winner ~half the time:
+after a re-learn, Fitbit's correct "9 months" was superseded by the stale "6 months", and
+painting kept "4" over the gold "5". Cause: the reconcile decision prompt frames the
+candidate as "the newest assertion", but when two contradictory values land in the SAME
+flush (more likely after the D-107 window coarsening), they are extracted together and the
+LLM's arbitrary candidate output order — not conversation order — decided which superseded
+which. So the winner was a coin-flip.
+
+`occurred_at` cannot break the tie here: in the LongMemEval oracle it is session-granular
+(~60 distinct values over 1036 records), so both values in one session share it. Record IDs,
+however, are ULIDs — monotonic in ingestion order, which IS conversation/turn order.
+
+**Decision.** Before processing a flush's candidates, the reconcile worker stable-sorts them
+ascending by `candidateAssertionKey` = the LATEST source-record ULID among a candidate's
+provenance (turn order). The older assertion commits first; the newer one then supersedes it,
+so the CURRENT value wins deterministically regardless of LLM emission order. Cross-flush
+contradictions were already handled (a later flush is genuinely newer); this fixes only the
+within-flush ambiguity. Supersede reversibility (D-070) is unchanged. This realizes the
+D-024 "occurred_at recency" intent at a finer (turn) granularity than session occurred_at.
