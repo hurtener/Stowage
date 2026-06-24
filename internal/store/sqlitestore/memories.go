@@ -485,7 +485,12 @@ func (m *memoryStore) FindNeighbors(ctx context.Context, scope identity.Scope, q
 	if len(q.Entities) == 0 && len(q.Keywords) == 0 {
 		return nil, nil
 	}
+	// ExactScope (dedupe sweep): an empty leaf matches IS NULL, so a NULL-leaf
+	// partition cannot pull neighbors from other users (D-111 / 29d B1).
 	scopeWhere, scopeArgs, err := buildScopeWhere(scope)
+	if q.ExactScope {
+		scopeWhere, scopeArgs, err = buildExactScopeWhere(scope)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -1018,6 +1023,52 @@ func (m *memoryStore) ListActiveForDecay(ctx context.Context, scope identity.Sco
 	rows, err := m.s.rdb.QueryContext(ctx, q, args...)
 	if err != nil {
 		return nil, "", fmt.Errorf("sqlitestore: list active for decay: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var out []store.Memory
+	for rows.Next() {
+		mem, err := scanMemory(rows)
+		if err != nil {
+			return nil, "", err
+		}
+		out = append(out, *mem)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, "", err
+	}
+	var nextCursor string
+	if len(out) > limit {
+		nextCursor = encodeCursor(out[limit-1].CreatedAt, out[limit-1].ID)
+		out = out[:limit]
+	}
+	return out, nextCursor, nil
+}
+
+// ListActiveInScope is ListActiveForDecay with EXACT-leaf scope semantics
+// (empty project/user/session → IS NULL). Used by the dedupe sweep so a
+// per-(tenant,project,user) pass only ever sees its own partition (D-111 / 29d B1).
+func (m *memoryStore) ListActiveInScope(ctx context.Context, scope identity.Scope, limit int, cursor string) ([]store.Memory, string, error) {
+	scopeWhere, args, err := buildExactScopeWhere(scope)
+	if err != nil {
+		return nil, "", err
+	}
+	whereClause := scopeWhere + " AND status = 'active'"
+
+	if cursor != "" {
+		ts, cid, perr := parseCursor(cursor)
+		if perr != nil {
+			return nil, "", perr
+		}
+		whereClause += " AND (created_at > ? OR (created_at = ? AND id > ?))"
+		args = append(args, ts, ts, cid)
+	}
+	args = append(args, limit+1)
+
+	q := `SELECT ` + memorySelectCols + ` FROM memories WHERE ` + whereClause + ` ORDER BY created_at ASC, id ASC LIMIT ?` //nolint:gosec
+	rows, err := m.s.rdb.QueryContext(ctx, q, args...)
+	if err != nil {
+		return nil, "", fmt.Errorf("sqlitestore: list active in scope: %w", err)
 	}
 	defer func() { _ = rows.Close() }()
 

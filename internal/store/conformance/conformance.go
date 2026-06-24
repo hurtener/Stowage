@@ -60,6 +60,7 @@ func Run(t *testing.T, factory Factory) {
 	t.Run("MemoryListByRecords", func(t *testing.T) { testMemoryListByRecords(t, factory) })
 	t.Run("MemoryScopeIsolation", func(t *testing.T) { testMemoryScopeIsolation(t, factory) })
 	t.Run("MemoryDistinctScopes", func(t *testing.T) { testMemoryDistinctScopes(t, factory) })
+	t.Run("MemoryListActiveInScope", func(t *testing.T) { testMemoryListActiveInScope(t, factory) })
 	t.Run("TopicUpsertGetListDelete", func(t *testing.T) { testTopicUpsertGetListDelete(t, factory) })
 	t.Run("TopicScopeIsolation", func(t *testing.T) { testTopicScopeIsolation(t, factory) })
 	t.Run("BufferAppendListDue", func(t *testing.T) { testBufferAppendListDue(t, factory) })
@@ -4353,5 +4354,84 @@ func testMemoryDistinctScopes(t *testing.T, factory Factory) {
 		if sc.User != "alice" {
 			t.Errorf("alice-scoped DistinctScopes leaked user %q", sc.User)
 		}
+	}
+}
+
+// testMemoryListActiveInScope pins the EXACT-leaf semantics the dedupe sweep relies on
+// (D-111 / 29d B1): an empty project/user leaf matches IS NULL, never wildcards across
+// sub-scopes. Without this, a per-user pass would seed candidates from every user and a
+// merge could cross users (P3 + P1). Also asserts the DistinctScopes → ListActiveInScope
+// round-trip: a returned bucket fed back returns ONLY that bucket's rows.
+func testMemoryListActiveInScope(t *testing.T, factory Factory) {
+	t.Helper()
+	s, cleanup := factory()
+	defer cleanup()
+	ctx := context.Background()
+	tenant := "tenant-lais-" + newID()
+	alice := identity.Scope{Tenant: tenant, User: "alice"}
+	bob := identity.Scope{Tenant: tenant, User: "bob"}
+	tenantLevel := identity.Scope{Tenant: tenant}                 // project NULL, user NULL
+	projectLevel := identity.Scope{Tenant: tenant, Project: "px"} // user NULL
+
+	mk := func(sc identity.Scope, content string) {
+		m := store.Memory{ID: newID(), Kind: "fact", Content: content, Status: "active",
+			Confidence: 0.5, TrustSource: "llm_extracted", Stability: 1.0, CreatedAt: nowMs(), UpdatedAt: nowMs()}
+		if err := s.Memories().Insert(ctx, sc, m); err != nil {
+			t.Fatalf("insert: %v", err)
+		}
+	}
+	mk(alice, "alice fact")
+	mk(bob, "bob fact")
+	mk(tenantLevel, "tenant fact")
+	mk(projectLevel, "project fact")
+
+	contentsIn := func(sc identity.Scope) map[string]bool {
+		got, _, err := s.Memories().ListActiveInScope(ctx, sc, 100, "")
+		if err != nil {
+			t.Fatalf("ListActiveInScope(%s): %v", sc.String(), err)
+		}
+		out := map[string]bool{}
+		for _, m := range got {
+			out[m.Content] = true
+		}
+		return out
+	}
+
+	// Exact-leaf isolation: each partition sees ONLY its own row.
+	if c := contentsIn(alice); !c["alice fact"] || c["bob fact"] || c["tenant fact"] || c["project fact"] || len(c) != 1 {
+		t.Errorf("alice partition = %v, want only {alice fact}", c)
+	}
+	// Tenant-only scope = the NULL-leaf partition: only the tenant-level row, NOT alice/bob/project.
+	if c := contentsIn(tenantLevel); !c["tenant fact"] || c["alice fact"] || c["bob fact"] || c["project fact"] || len(c) != 1 {
+		t.Errorf("tenant-level (NULL-leaf) partition = %v, want only {tenant fact}", c)
+	}
+	// Project-level scope (user NULL): only the project-level row, NOT alice/bob.
+	if c := contentsIn(projectLevel); !c["project fact"] || c["alice fact"] || c["bob fact"] || len(c) != 1 {
+		t.Errorf("project-level partition = %v, want only {project fact}", c)
+	}
+
+	// DistinctScopes → ListActiveInScope round-trip: every returned bucket is exact.
+	scopes, err := s.Memories().DistinctScopes(ctx, tenantScope(tenant))
+	if err != nil {
+		t.Fatalf("DistinctScopes: %v", err)
+	}
+	total := 0
+	for _, sc := range scopes {
+		got, _, err := s.Memories().ListActiveInScope(ctx, sc, 100, "")
+		if err != nil {
+			t.Fatalf("ListActiveInScope(%s): %v", sc.String(), err)
+		}
+		if len(got) == 0 {
+			t.Errorf("bucket %s returned no rows via ListActiveInScope", sc.String())
+		}
+		for _, m := range got {
+			if m.UserID != sc.User || m.ProjectID != sc.Project {
+				t.Errorf("bucket %s leaked a row scoped (project=%q,user=%q)", sc.String(), m.ProjectID, m.UserID)
+			}
+		}
+		total += len(got)
+	}
+	if total != 4 {
+		t.Errorf("round-trip covered %d rows, want all 4", total)
 	}
 }

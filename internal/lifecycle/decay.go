@@ -2,12 +2,12 @@ package lifecycle
 
 import (
 	"context"
-	"encoding/json"
 	"time"
 
 	"github.com/oklog/ulid/v2"
 
 	"github.com/hurtener/stowage/internal/identity"
+	"github.com/hurtener/stowage/internal/reconcile"
 	"github.com/hurtener/stowage/internal/scoring"
 	"github.com/hurtener/stowage/internal/store"
 )
@@ -158,7 +158,14 @@ func (m *Manager) expireMemory(ctx context.Context, scope identity.Scope, mem st
 	// Fetch junctions for prior-state snapshot (D-017).
 	jt, _ := m.st.Memories().GetJunctions(ctx, scope, mem.ID)
 
-	priorJSON := marshalDecayPriorState(mem, jt, decayFactor)
+	// Snapshot the restore TARGET (active, grace timer cleared) in the flat
+	// MarshalPriorState shape so memory.expired round-trips via Rollback (P4 / D-070,
+	// 29d S1). Clearing ValidUntil means an un-expire restores a fresh active memory
+	// rather than one that immediately re-expires on the next sweep.
+	restore := mem
+	restore.Status = "active"
+	restore.ValidUntil = 0
+	priorJSON := reconcile.MarshalPriorState(restore, jt)
 	now := time.Now().UnixMilli()
 
 	cs := store.CommitSet{
@@ -193,21 +200,6 @@ func (m *Manager) expireMemory(ctx context.Context, scope identity.Scope, mem st
 		"id", mem.ID,
 		"decay_factor", decayFactor,
 	)
-}
-
-// decayPriorState is the JSON payload for memory.expired events.
-type decayPriorState struct {
-	Memory      store.Memory          `json:"memory"`
-	Junctions   store.MemoryJunctions `json:"junctions"`
-	DecayFactor float64               `json:"decay_factor"`
-}
-
-func marshalDecayPriorState(mem store.Memory, jt store.MemoryJunctions, df float64) string {
-	b, err := json.Marshal(decayPriorState{Memory: mem, Junctions: jt, DecayFactor: df})
-	if err != nil {
-		return "{}"
-	}
-	return string(b)
 }
 
 // SweepDecayOnce is the test-hook entry point for the decay sweep.

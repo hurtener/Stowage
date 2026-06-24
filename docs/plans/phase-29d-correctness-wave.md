@@ -4,8 +4,12 @@
 - **Owning subsystem(s):** `internal/lifecycle`, `internal/reconcile`, `internal/retrieval`, `internal/api`, `internal/mcpserver`, `internal/trust`, `internal/store`
 - **RFC sections:** §4.2 (retrieval), §5.x (scoring/lifecycle), §6 (reconciliation/forgetting), §6c (trust/review)
 - **Depends on phases:** 29/29b/29c (D-103–D-109, on this branch)
+- **Informing briefs:** [02](../research/02-predecessor-ccmem.md) (scoring & lifecycle model — decay,
+  sweeps, supersede) and [03](../research/03-engram.md) (reconciliation), per `docs/research/INDEX.md`;
+  retrieval items track briefs [01](../research/01-predecessor-python.md)/[04](../research/04-cl-bench.md).
 - **Informing audit:** the read-only multi-agent miswiring audit (22 findings vs `main`; 4 already
-  fixed on this branch — see below).
+  fixed on this branch — see below), plus two independent §17 adversarial reviews of the wave diff
+  (B1/S1–S6/N1–N4 resolution — D-119/120/121).
 
 ## Goal
 
@@ -100,3 +104,34 @@ real consolidation pass), then re-baseline on **100 questions, broken out by cat
 - D-112: ingest is scope-authoritative end-to-end (per-record scope honored). *(W3)*
 - D-113: retrieval ranking/windowing uses `COALESCE(valid_from, created_at)`. *(W11)*
 - D-114: superseded items are rendered self-contained for non-prompt clients (Idea 1). *(W16)*
+
+## §17 adversarial review — punch list resolution (D-119/120/121)
+
+Two independent multi-agent reviews of the wave diff (`0f5eeab..HEAD`) ran in parallel; both flagged
+the same BLOCKING finding. Resolution (all landed in this wave, each with a regression guard; the
+three highest-risk guards are mutation-verified to fail on the buggy code):
+
+- **B1 (BLOCKING) — dedupe still merged across users.** `ListActiveForDecay` is tenant-only, so the
+  per-user candidate seed was the whole tenant; and `buildScopeWhere` wildcards an empty leaf.
+  Fixed with exact-leaf scope (`ListActiveInScope` + `buildExactScopeWhere` + `NeighborQuery.ExactScope`).
+  **D-119.** Guards: conformance `MemoryListActiveInScope` (incl. NULL bucket + round-trip);
+  `TestDedupeSweepNeverMergesAcrossUsers` (mutation-verified).
+- **S1 — expire/rollup reversibility (P4).** decay `memory.expired` made restorable with a flat
+  snapshot (active, valid_until cleared); rollup emits `memory.merged` so all siblings restore.
+  **D-120.** Guards: `TestDecayExpireIsReversible`, `TestRollupSweepIsReversible` (mutation-verified).
+- **S3/S5/N3 — cache.** Cache is tenant-keyed: dedupe now invalidates at tenant scope; rollup
+  personal-zone + confirm/promoteParked paths gained the missing invalidation; the cache key now
+  includes the effective `limit`. **D-121.** Guards: `TestResultCache_LimitInKey`,
+  `TestDedupeSweep/RollupSweepInvalidatesCacheAtTenant`.
+- **S4/S8 — survivor & numeral-correction.** `TestDedupeSweepKeepsSurvivorContent`,
+  `TestDedupeSweepNumeralCorrectionDropsLoserSurface`.
+- **S6 — rerank before trim.** `TestRerankPromotesBelowLimitCandidate` (mutation-verified).
+- **N1/N2 — dedupe audit events** name the real survivor/loser; subject is the merged row; payload
+  carries survivor_id/loser_id/merged_id.
+- **N4 — approve-rollback** symmetry: `TestReview_ApproveRollback`.
+- Deferred (noted, not blocking): rollup digest size cap (nit; bounded in practice); per-scope
+  dedupe budget multiplies sweep work (N1 — mitigated since exact-leaf removes the tenant-wide rescan).
+
+- D-119: dedupe sweep isolates partitions with exact-leaf scope. *(B1)*
+- D-120: decay expire reversible; rollup is a reversible many-to-one merge. *(S1)*
+- D-121: cache invalidation matches the tenant-keyed cache; cache key includes effective limit. *(S3/S5/N3)*

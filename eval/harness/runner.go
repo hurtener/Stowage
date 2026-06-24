@@ -69,9 +69,9 @@ func NewRunner(srv *TestServer, cfg RunConfig) *Runner {
 
 // retrieveItem is the wire-format shape of one item in a retrieve response.
 type retrieveItem struct {
-	ID      string   `json:"id"`
-	Content string   `json:"content"`
-	Score   float64  `json:"score"`
+	ID                  string   `json:"id"`
+	Content             string   `json:"content"`
+	Score               float64  `json:"score"`
 	Lanes               []string `json:"lanes"`
 	Stale               bool     `json:"stale"`                 // D-105: superseded value surfaced for dual-visibility
 	OccurredAt          int64    `json:"occurred_at"`           // D-109: assertion (conversation) date, unix millis

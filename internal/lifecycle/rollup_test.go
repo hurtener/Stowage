@@ -9,6 +9,7 @@ import (
 	"github.com/hurtener/stowage/internal/identity"
 	"github.com/hurtener/stowage/internal/lifecycle"
 	"github.com/hurtener/stowage/internal/pipeline"
+	"github.com/hurtener/stowage/internal/reconcile"
 	"github.com/hurtener/stowage/internal/store"
 )
 
@@ -192,6 +193,96 @@ func TestRollupSweepPersonalPlusZone(t *testing.T) {
 // TestRollupSweepManyMemories asserts that when a session has >10 promotable memories, the
 // digest includes EVERY one's content (D-116) — rollup supersedes them all, so none may be
 // silently dropped from the digest as the old 10-item cap did.
+// TestRollupSweepIsReversible is the regression guard for 29d S1 (P4 / D-070): rollup is a
+// many-to-one merge, so it must emit memory.merged (not memory.superseded). Rolling back ANY
+// one source then restores ALL siblings via ListSupersededBy and removes the shared digest.
+// Pre-fix (memory.superseded) restored only the one subject and stranded the N-1 siblings.
+func TestRollupSweepIsReversible(t *testing.T) {
+	st, cleanup := newTestStore(t)
+	defer cleanup()
+	ctx := context.Background()
+	scope := identity.Scope{Tenant: "rollup-rb"}
+	sessID := "sess-rb"
+
+	old := time.Now().Add(-10 * 24 * time.Hour).UnixMilli()
+	var ids []string
+	for i := 0; i < 3; i++ {
+		ids = append(ids, insertMemory(t, st, scope, store.Memory{
+			SessionID: sessID,
+			Content:   "rollup source " + string(rune('A'+i)),
+			CreatedAt: old + int64(i),
+			UpdatedAt: old + int64(i),
+		}))
+	}
+
+	profile := lifecycle.Profile{RollupAge: 7 * 24 * time.Hour, RollupBatchSize: 100}
+	mgr := lifecycle.New(st, testLogger(), profile, make(chan pipeline.Item, 8))
+	mgr.RunForce(ctx)
+
+	// Find the digest and confirm all sources superseded.
+	active, _, err := st.Memories().ListByStatus(ctx, scope, "active", 20, "")
+	if err != nil {
+		t.Fatalf("list active: %v", err)
+	}
+	var digestID string
+	for i := range active {
+		if active[i].Kind == "narrative" {
+			digestID = active[i].ID
+		}
+	}
+	if digestID == "" {
+		t.Fatal("no digest produced")
+	}
+	for _, id := range ids {
+		if m := getMemory(t, st, scope, id); m.Status == "active" {
+			t.Fatalf("source %q still active before rollback", id)
+		}
+	}
+
+	// Roll back ONE source — rollbackMerged must restore ALL of them.
+	if _, err := reconcile.Rollback(ctx, st, scope, ids[0]); err != nil {
+		t.Fatalf("Rollback rollup source: %v", err)
+	}
+	for _, id := range ids {
+		if m := getMemory(t, st, scope, id); m.Status != "active" {
+			t.Errorf("source %q status = %q after rollback, want active (all siblings restored)", id, m.Status)
+		}
+	}
+	// The shared digest is retired (no longer active).
+	if d := getMemory(t, st, scope, digestID); d.Status == "active" {
+		t.Errorf("digest still active after rollback, want retired")
+	}
+}
+
+// TestRollupSweepInvalidatesCacheAtTenant is the regression guard for 29d N3: a rollup
+// invalidates the retrieval cache at tenant granularity.
+func TestRollupSweepInvalidatesCacheAtTenant(t *testing.T) {
+	st, cleanup := newTestStore(t)
+	defer cleanup()
+	scope := identity.Scope{Tenant: "rollup-inv"}
+	old := time.Now().Add(-10 * 24 * time.Hour).UnixMilli()
+	for i := 0; i < 2; i++ {
+		insertMemory(t, st, scope, store.Memory{
+			SessionID: "sess-inv", Content: "roll " + string(rune('A'+i)),
+			CreatedAt: old + int64(i), UpdatedAt: old + int64(i),
+		})
+	}
+	inv := &countingInvalidator{}
+	profile := lifecycle.Profile{RollupAge: 7 * 24 * time.Hour, RollupBatchSize: 100}
+	mgr := lifecycle.New(st, testLogger(), profile, make(chan pipeline.Item, 8))
+	mgr.SetScopeInvalidator(inv)
+	mgr.RunForce(context.Background())
+
+	if len(inv.scopes) == 0 {
+		t.Fatal("rollup did not invalidate the retrieval cache (D-118)")
+	}
+	for _, s := range inv.scopes {
+		if s.User != "" || s.Project != "" {
+			t.Errorf("invalidation scope = %s, want tenant-only (tenant-keyed cache)", s.String())
+		}
+	}
+}
+
 func TestRollupSweepManyMemories(t *testing.T) {
 	st, cleanup := newTestStore(t)
 	defer cleanup()

@@ -56,14 +56,17 @@ type cacheEntry struct {
 
 // cacheKey returns the canonical string key for a retrieve call.
 // sessionID is included because it affects the utility score (write-echo cooldown).
-func cacheKey(scope identity.Scope, querySig, profile, sessionID string, windowFrom, windowTo int64, kinds []string, includeLanes bool) string {
+func cacheKey(scope identity.Scope, querySig, profile, sessionID string, windowFrom, windowTo int64, kinds []string, includeLanes bool, limit int) string {
 	// Kinds and IncludeLanes change the RESULT SET / item payload, so they MUST be in the key —
 	// otherwise a kind-filtered (or lanes-on) request collides with a plain one within the TTL
 	// and returns the wrong items (D-115, audit #8). Kinds is sorted for order-independence.
+	// limit is the EFFECTIVE (post-default/post-cap) limit: the cached value is the post-trim
+	// items[:limit] slice returned verbatim, so two requests differing only by limit must NOT
+	// collide (29d S3). Passing the effective value collapses req.Limit=0 and req.Limit=DefaultLimit.
 	ks := append([]string(nil), kinds...)
 	sort.Strings(ks)
-	return fmt.Sprintf("%s\x00%s\x00%s\x00%s\x00%d\x00%d\x00%s\x00%t",
-		scope.String(), querySig, profile, sessionID, windowFrom, windowTo, strings.Join(ks, ","), includeLanes)
+	return fmt.Sprintf("%s\x00%s\x00%s\x00%s\x00%d\x00%d\x00%s\x00%t\x00%d",
+		scope.String(), querySig, profile, sessionID, windowFrom, windowTo, strings.Join(ks, ","), includeLanes, limit)
 }
 
 // NewResultCache creates a ResultCache with the given capacity.
@@ -94,11 +97,11 @@ func (c *ResultCache) nowFunc() time.Time {
 
 // Get returns the cached items and support for the given key, if the entry
 // exists, has not expired, and belongs to the current scope generation.
-func (c *ResultCache) Get(scope identity.Scope, querySig, profile, sessionID string, windowFrom, windowTo int64, kinds []string, includeLanes bool) ([]MemoryItem, Support, bool) {
+func (c *ResultCache) Get(scope identity.Scope, querySig, profile, sessionID string, windowFrom, windowTo int64, kinds []string, includeLanes bool, limit int) ([]MemoryItem, Support, bool) {
 	if cacheOff() {
 		return nil, Support{}, false
 	}
-	key := cacheKey(scope, querySig, profile, sessionID, windowFrom, windowTo, kinds, includeLanes)
+	key := cacheKey(scope, querySig, profile, sessionID, windowFrom, windowTo, kinds, includeLanes, limit)
 	scopeStr := scope.String()
 	now := c.nowFunc()
 
@@ -136,11 +139,11 @@ func (c *ResultCache) Get(scope identity.Scope, querySig, profile, sessionID str
 
 // Put stores a result under the given key. Evicts the LRU tail when at
 // capacity. Updating an existing key refreshes the TTL and moves it to front.
-func (c *ResultCache) Put(scope identity.Scope, querySig, profile, sessionID string, windowFrom, windowTo int64, kinds []string, includeLanes bool, items []MemoryItem, support Support) {
+func (c *ResultCache) Put(scope identity.Scope, querySig, profile, sessionID string, windowFrom, windowTo int64, kinds []string, includeLanes bool, limit int, items []MemoryItem, support Support) {
 	if cacheOff() {
 		return
 	}
-	key := cacheKey(scope, querySig, profile, sessionID, windowFrom, windowTo, kinds, includeLanes)
+	key := cacheKey(scope, querySig, profile, sessionID, windowFrom, windowTo, kinds, includeLanes, limit)
 	scopeStr := scope.String()
 	now := c.nowFunc()
 

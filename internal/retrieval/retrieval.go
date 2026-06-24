@@ -111,19 +111,19 @@ type Response struct {
 // It is safe for concurrent use after New returns.
 // Call Close to drain the injection writer goroutine on shutdown.
 type Retriever struct {
-	mem         store.MemoryStore
-	recs        store.RecordStore
-	vi          vindex.Index
-	gw          gateway.Gateway
-	injSt       store.InjectionStore // read handle for the durable hub signal (D-092); nil ⇒ no dampening
-	log         *slog.Logger
-	injWr       *InjectionWriter // nil when no injection store is wired
-	cache       *ResultCache
-	hotSet      *HotSet
-	rerankModel string             // cross-encoder model; empty = use gateway default
-	grantsSt    store.GrantStore   // nil when grants are not wired (Phase 15, D-060)
-	profiles    map[string]Profile // config-overridden presets; nil ⇒ built-in defaults (D-103)
-	includeSuperseded bool         // D-105: surface superseded predecessors flagged stale (dual-visibility, §6c)
+	mem               store.MemoryStore
+	recs              store.RecordStore
+	vi                vindex.Index
+	gw                gateway.Gateway
+	injSt             store.InjectionStore // read handle for the durable hub signal (D-092); nil ⇒ no dampening
+	log               *slog.Logger
+	injWr             *InjectionWriter // nil when no injection store is wired
+	cache             *ResultCache
+	hotSet            *HotSet
+	rerankModel       string             // cross-encoder model; empty = use gateway default
+	grantsSt          store.GrantStore   // nil when grants are not wired (Phase 15, D-060)
+	profiles          map[string]Profile // config-overridden presets; nil ⇒ built-in defaults (D-103)
+	includeSuperseded bool               // D-105: surface superseded predecessors flagged stale (dual-visibility, §6c)
 }
 
 // New creates a Retriever wired to the given dependencies.
@@ -362,7 +362,7 @@ func (r *Retriever) Retrieve(ctx context.Context, scope identity.Scope, req Requ
 	// affects the utility score (write-echo cooldown).
 	// Multi-scope requests are NOT cached: revocation must be effective immediately (D-060).
 	if !req.Debug && !multiScope {
-		if cachedItems, cachedSup, ok := r.cache.Get(scope, querySig, req.Profile, req.SessionID, req.Window.From, req.Window.Until, req.Kinds, req.IncludeLanes); ok {
+		if cachedItems, cachedSup, ok := r.cache.Get(scope, querySig, req.Profile, req.SessionID, req.Window.From, req.Window.Until, req.Kinds, req.IncludeLanes, limit); ok {
 			return &Response{
 				ResponseID: responseID,
 				Items:      cachedItems,
@@ -728,7 +728,7 @@ func (r *Retriever) Retrieve(ctx context.Context, scope identity.Scope, req Requ
 	// Debug requests are not cached (breakdowns are diagnostic and one-time).
 	// Multi-scope requests are not cached (revocation must be live, D-060).
 	if !req.Debug && !multiScope {
-		r.cache.Put(scope, querySig, req.Profile, req.SessionID, req.Window.From, req.Window.Until, req.Kinds, req.IncludeLanes, items, sup)
+		r.cache.Put(scope, querySig, req.Profile, req.SessionID, req.Window.From, req.Window.Until, req.Kinds, req.IncludeLanes, limit, items, sup)
 	}
 
 	// Feed the hot set with the IDs of injected memories (Phase 12).

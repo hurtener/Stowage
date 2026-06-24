@@ -288,3 +288,30 @@ func TestReview_RejectRollback(t *testing.T) {
 		t.Errorf("after rollback status = %q, want pending_review (un-quarantined)", mem.Status)
 	}
 }
+
+// TestReview_ApproveRollback is the regression guard for 29d N4: the approve→active
+// inversion must round-trip too. Dropping memory.review_approved from isRestorable (or the
+// rollback switch) leaves only the reject path tested; this pins the approve direction.
+func TestReview_ApproveRollback(t *testing.T) {
+	st := openStore(t)
+	scope := identity.Scope{Tenant: "rv-rb-approve"}
+	ctx := context.Background()
+	id := assertReview(t, st, scope, "a claim to approve then undo")
+
+	if _, err := Resolve(ctx, st, scope, id, ReviewApprove); err != nil {
+		t.Fatalf("Resolve approve: %v", err)
+	}
+	if mem, _ := st.Memories().Get(ctx, scope, id); mem.Status != "active" {
+		t.Fatalf("pre-rollback status = %q, want active", mem.Status)
+	}
+	if _, err := reconcile.Rollback(ctx, st, scope, id); err != nil {
+		t.Fatalf("Rollback review_approved: %v", err)
+	}
+	mem, err := st.Memories().Get(ctx, scope, id)
+	if err != nil {
+		t.Fatalf("get after rollback: %v", err)
+	}
+	if mem.Status != "pending_review" {
+		t.Errorf("after rollback status = %q, want pending_review (undo-approval)", mem.Status)
+	}
+}

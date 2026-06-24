@@ -104,63 +104,63 @@ func RunDataset(ctx context.Context, srv *TestServer, runner *Runner, convs []da
 	// re-score; cost/quality sweeps reuse the same learning).
 	if !opts.SkipIngest {
 
-	// Seed the broad extraction-magnet set so topic-gated extraction captures the
-	// breadth of facts the benchmark probes (not just the default preferences pack).
-	if opts.SeedTopics {
-		if err := SeedEvalTopics(ctx, srv); err != nil {
-			return nil, fmt.Errorf("seed topics: %w", err)
+		// Seed the broad extraction-magnet set so topic-gated extraction captures the
+		// breadth of facts the benchmark probes (not just the default preferences pack).
+		if opts.SeedTopics {
+			if err := SeedEvalTopics(ctx, srv); err != nil {
+				return nil, fmt.Errorf("seed topics: %w", err)
+			}
 		}
-	}
 
-	for id := range need {
-		c, ok := convByID[id]
-		if !ok {
-			return nil, fmt.Errorf("question references unknown conversation %s", id)
-		}
-		fix := toFixture(c)
-		ids, err := runner.ingestConversation(ctx, &fix)
-		if err != nil {
-			return nil, fmt.Errorf("ingest %s: %w", id, err)
-		}
-		if opts.BeforeFlush != nil {
-			// Mock/CI path: auto-flush is suppressed, so the deliberate flush must see
-			// the records — wait out the async ingest→buffer append first (D-096). Only
-			// here: in full mode the auto-flush triggers drain the buffer, so a
-			// fixed-count barrier would never reach len(ids) on a large conversation.
-			if err := srv.WaitForBuffered(ctx, fix.ID, len(ids)); err != nil {
-				return nil, fmt.Errorf("buffer %s: %w", id, err)
+		for id := range need {
+			c, ok := convByID[id]
+			if !ok {
+				return nil, fmt.Errorf("question references unknown conversation %s", id)
 			}
-			if err := opts.BeforeFlush(id, ids); err != nil {
-				return nil, fmt.Errorf("before-flush %s: %w", id, err)
+			fix := toFixture(c)
+			ids, err := runner.ingestConversation(ctx, &fix)
+			if err != nil {
+				return nil, fmt.Errorf("ingest %s: %w", id, err)
+			}
+			if opts.BeforeFlush != nil {
+				// Mock/CI path: auto-flush is suppressed, so the deliberate flush must see
+				// the records — wait out the async ingest→buffer append first (D-096). Only
+				// here: in full mode the auto-flush triggers drain the buffer, so a
+				// fixed-count barrier would never reach len(ids) on a large conversation.
+				if err := srv.WaitForBuffered(ctx, fix.ID, len(ids)); err != nil {
+					return nil, fmt.Errorf("buffer %s: %w", id, err)
+				}
+				if err := opts.BeforeFlush(id, ids); err != nil {
+					return nil, fmt.Errorf("before-flush %s: %w", id, err)
+				}
+			}
+			if err := runner.flushBuffer(ctx, fix.ID); err != nil {
+				return nil, fmt.Errorf("flush %s: %w", id, err)
+			}
+			if opts.PerConvSettle > 0 {
+				if err := srv.WaitForQuiescence(ctx, opts.PerConvSettle); err != nil {
+					// Non-fatal: the re-enqueue sweep recovers; the final barrier still gates.
+					_ = err
+				}
 			}
 		}
-		if err := runner.flushBuffer(ctx, fix.ID); err != nil {
-			return nil, fmt.Errorf("flush %s: %w", id, err)
-		}
-		if opts.PerConvSettle > 0 {
-			if err := srv.WaitForQuiescence(ctx, opts.PerConvSettle); err != nil {
-				// Non-fatal: the re-enqueue sweep recovers; the final barrier still gates.
-				_ = err
-			}
-		}
-	}
 
-	settle := opts.Settle
-	if settle <= 0 {
-		settle = 20 * time.Minute
-	}
-	if err := srv.WaitForQuiescence(ctx, settle); err != nil {
-		return nil, fmt.Errorf("pipeline did not settle — run would be invalid: %w", err)
-	}
-	// Let the async embedder catch up before scoring (quiescence does not gate on
-	// pending embeddings — see EmbedSettle).
-	if opts.EmbedSettle > 0 {
-		select {
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		case <-time.After(opts.EmbedSettle):
+		settle := opts.Settle
+		if settle <= 0 {
+			settle = 20 * time.Minute
 		}
-	}
+		if err := srv.WaitForQuiescence(ctx, settle); err != nil {
+			return nil, fmt.Errorf("pipeline did not settle — run would be invalid: %w", err)
+		}
+		// Let the async embedder catch up before scoring (quiescence does not gate on
+		// pending embeddings — see EmbedSettle).
+		if opts.EmbedSettle > 0 {
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-time.After(opts.EmbedSettle):
+			}
+		}
 
 	} // end !opts.SkipIngest
 

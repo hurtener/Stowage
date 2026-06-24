@@ -10,6 +10,7 @@ import (
 	"github.com/hurtener/stowage/internal/identity"
 	"github.com/hurtener/stowage/internal/lifecycle"
 	"github.com/hurtener/stowage/internal/pipeline"
+	"github.com/hurtener/stowage/internal/reconcile"
 	"github.com/hurtener/stowage/internal/store"
 )
 
@@ -359,5 +360,39 @@ func TestDecayExpireInvalidatesCache(t *testing.T) {
 	}
 	if len(inv.scopes) == 0 {
 		t.Error("expire did not invalidate the retrieval cache (D-118)")
+	}
+}
+
+// TestDecayExpireIsReversible is the regression guard for 29d S1 (P4 / D-070): a decay
+// expire must round-trip via Rollback. memory.expired carries a flat MarshalPriorState
+// snapshot (status=active, valid_until cleared), so un-expiry restores a fresh active
+// memory. Pre-fix the event used an incompatible nested payload and was absent from
+// isRestorable, so Rollback returned ErrNoPriorState.
+func TestDecayExpireIsReversible(t *testing.T) {
+	st, cleanup := newTestStore(t)
+	defer cleanup()
+	ctx := context.Background()
+	scope := identity.Scope{Tenant: "decay-rb"}
+	past := time.Now().Add(-1 * time.Hour).UnixMilli()
+	id := insertMemory(t, st, scope, store.Memory{Stability: 1.0,
+		LastAccessedAt: time.Now().Add(-30 * 24 * time.Hour).UnixMilli(), ValidUntil: past})
+
+	profile := lifecycle.Profile{DecayInterval: 10 * time.Minute, DecayBatchSize: 100, DecayGraceSweeps: 2}
+	mgr := lifecycle.New(st, testLogger(), profile, make(chan pipeline.Item, 8))
+	mgr.SweepDecayOnce(ctx)
+
+	if mem := getMemory(t, st, scope, id); mem.Status != "expired" {
+		t.Fatalf("pre-rollback status = %q, want expired", mem.Status)
+	}
+
+	if _, err := reconcile.Rollback(ctx, st, scope, id); err != nil {
+		t.Fatalf("Rollback memory.expired: %v", err)
+	}
+	mem := getMemory(t, st, scope, id)
+	if mem.Status != "active" {
+		t.Errorf("after rollback status = %q, want active (un-expired)", mem.Status)
+	}
+	if mem.ValidUntil != 0 {
+		t.Errorf("after rollback valid_until = %d, want 0 (grace timer cleared so it does not immediately re-expire)", mem.ValidUntil)
 	}
 }

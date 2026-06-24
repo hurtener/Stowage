@@ -177,6 +177,10 @@ func (m *Manager) promoteParked(ctx context.Context, scope identity.Scope, mem s
 			"tenant", scope.Tenant, "memory_id", mem.ID, "err", err)
 		return
 	}
+	// D-118 / 29d N3: promotion flips pending_confirmation→active and may retire a
+	// superseded target — drop cached results so the change is visible before the 60s
+	// TTL. scope is tenant-only, matching the tenant-keyed result cache.
+	m.invalidateScope(scope)
 	m.log.InfoContext(ctx, "lifecycle/confirm: promoted parked memory",
 		"tenant", scope.Tenant, "memory_id", mem.ID,
 		"supersedes_id", mem.SupersedesID, "reason", reason)

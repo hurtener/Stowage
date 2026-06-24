@@ -121,6 +121,13 @@ func (m *Manager) rollupSession(ctx context.Context, scope identity.Scope, sessI
 	}
 
 	if len(promotable) == 0 {
+		// Personal-zone-only session: rows were expired above but the sole
+		// invalidateScope below is unreachable — drop cached results here so an
+		// expired memory isn't served for the 60s TTL (D-118 / 29d S2). scope is
+		// already tenant-only, which matches the tenant-keyed result cache.
+		if len(personal) > 0 {
+			m.invalidateScope(scope)
+		}
 		return
 	}
 
@@ -189,9 +196,13 @@ func (m *Manager) rollupSession(ctx context.Context, scope identity.Scope, sessI
 	for _, mem := range promotable {
 		jt, _ := m.st.Memories().GetJunctions(ctx, scope, mem.ID)
 		priorJSON := reconcile.MarshalPriorState(mem, jt)
+		// memory.merged (NOT memory.superseded): this is a many-to-one merge into one
+		// digest. memory.merged routes to rollbackMerged, which restores ALL siblings via
+		// ListSupersededBy(digest); memory.superseded would restore only the one subject and
+		// strand the N-1 siblings on a tombstoned digest (P4 / D-070, 29d S1).
 		events = append(events, store.Event{
 			ID:        ulid.Make().String(),
-			Type:      "memory.superseded",
+			Type:      "memory.merged",
 			SubjectID: mem.ID,
 			Reason:    "rollup: session working memory rolled into digest",
 			Payload:   priorJSON,

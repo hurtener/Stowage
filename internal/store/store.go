@@ -313,8 +313,18 @@ type MemoryStore interface {
 	// ListActiveForDecay returns at most limit active memories for the scope,
 	// ordered by created_at, id ascending. cursor is an opaque pagination token.
 	// Used by the lifecycle decay sweep to batch-scan active memories per
-	// tenant-scope (Phase 14, D-058).
+	// tenant-scope (Phase 14, D-058). Scope is matched with PREFIX/wildcard
+	// semantics (an empty project/user spans all sub-scopes) — appropriate for the
+	// tenant-wide decay/rollup sweeps. For partition-isolated scans use
+	// ListActiveInScope.
 	ListActiveForDecay(ctx context.Context, scope identity.Scope, limit int, cursor string) ([]Memory, string, error)
+
+	// ListActiveInScope is ListActiveForDecay with EXACT-leaf scope semantics: an
+	// empty project/user/session dimension matches `IS NULL`, never wildcards across
+	// sub-scopes. The dedupe sweep uses it so a per-(tenant,project,user) pass — and
+	// the NULL-leaf (tenant-/project-level) partition — only ever sees its own rows,
+	// closing the cross-user merge hole DistinctScopes alone did not (P3 + P1, D-111 / 29d B1).
+	ListActiveInScope(ctx context.Context, scope identity.Scope, limit int, cursor string) ([]Memory, string, error)
 
 	// DistinctScopes returns the distinct (project_id, user_id) identity scopes that have at
 	// least one active memory under the given (tenant) scope. The consolidation/dedupe sweep

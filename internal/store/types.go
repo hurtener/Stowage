@@ -278,6 +278,12 @@ type NeighborQuery struct {
 	Keywords []string
 	Kinds    []string // optional kind filter (empty = all kinds)
 	Limit    int      // 0 defaults to 8
+	// ExactScope selects EXACT-leaf scope matching (empty project/user/session →
+	// `IS NULL`) instead of the default prefix/wildcard semantics. The dedupe sweep
+	// sets it so a NULL-leaf partition cannot pull neighbors from other users
+	// (P3 + P1, D-111 / 29d B1). Default false preserves the topic-extraction
+	// (reconcile) caller's wildcard behavior.
+	ExactScope bool
 }
 
 // Window is an optional time-range filter for retrieval lanes (Phase 09).

@@ -3132,3 +3132,51 @@ Decision: a stale item now carries the successor's VALUE + assertion DATE inline
 client is self-contained: "this was superseded by «current value» on «date»". Populated in
 `attachStaleCompanions` from the retrieved successor; the eval reader renders it in the [OUTDATED]
 tag. (Configurable history depth beyond the immediate successor is a noted follow-up.)
+
+## D-119 — Dedupe sweep isolates partitions with exact-leaf scope (29d B1)
+
+Phase 29d adversarial review (two independent passes, both BLOCKING). D-111 iterated
+`DistinctScopes` per (tenant,project,user) but seeded each pass from `ListActiveForDecay`, which
+filters `tenant_id` ONLY — so the candidate batch was the whole tenant and a per-user pass could
+load another user's memory as the seed, find a same-content neighbour, and merge across users
+(P3 + P1). A second mechanism: `buildScopeWhere` treats an empty leaf as "omit the predicate"
+(prefix/wildcard), so a NULL-user/NULL-project bucket re-wildcarded across users. Decision: the
+dedupe sweep uses EXACT-leaf scope semantics — an empty project/user/session matches `IS NULL`,
+never wildcards. New `Memories().ListActiveInScope` (exact candidate list) + `buildExactScopeWhere`
+in both drivers + `NeighborQuery.ExactScope` (FindNeighbors honours exact matching when set, default
+false preserves the topic-extraction caller's wildcard behaviour). `ListActiveForDecay` and the
+decay/rollup sweeps are unchanged (they want tenant-wide). The eval ingests at tenant-only scope, so
+its memories live in the NULL-leaf bucket — exact-leaf is what makes that bucket dedupe in isolation
+rather than be skipped. Guarded by a conformance test (exact isolation incl. NULL bucket + a
+DistinctScopes→ListActiveInScope round-trip) and a sweep-level cross-user test (mutation-verified to
+fail on the tenant-wide seed).
+
+## D-120 — Decay expire is reversible; rollup is a reversible many-to-one merge (29d S1)
+
+Phase 29d adversarial review. D-110 activated the decay-expire path (previously dead via a ~10^6×
+grace inflation) without its reverse half: `memory.expired` was absent from `isRestorable` and its
+payload used a nested `{memory,junctions,decay_factor}` shape incompatible with the flat
+`parsePriorState`, so `Rollback` returned `ErrNoPriorState` (P4 violation). Separately, the rollup
+sweep committed `ActionMerge` (N sources → 1 digest) but emitted per-source `memory.superseded`,
+which routes to `rollbackSuperseded` — restoring only the one subject and stranding the N-1 siblings
+on a tombstoned digest. Decisions: (1) decay emits a flat `MarshalPriorState` snapshot of the restore
+TARGET (status=active, valid_until cleared) and `memory.expired` is restorable via the in-place path,
+so un-expiry restores a fresh active memory; (2) rollup emits `memory.merged` per source so
+`rollbackMerged` restores ALL siblings atomically via `ListSupersededBy`. Both guarded by
+round-trip tests (rollup mutation-verified to fail on the superseded event type).
+
+## D-121 — Cache invalidation matches the tenant-keyed retrieve cache; cache key includes effective limit (29d S3/S5/N3)
+
+Phase 29d adversarial review (two passes contradicted; resolved empirically). The retrieval result
+cache keys its generation counter by the REQUEST scope, and every retrieve surface
+(`api/retrieve_handler.go`, `sdk/stowage/embedded.go`) builds the request scope TENANT-ONLY. So a
+sweep must `InvalidateScope` at tenant granularity: the D-118 dedupe path invalidated at full
+`{tenant,project,user}` scope, bumping `gens["t/p/u"]`, which the tenant-keyed Get never checks →
+stale serve for the 60s TTL. Decisions: (1) dedupe invalidates at `{Tenant: scope.Tenant}`; decay/
+rollup were already tenant-only (correct) — the rollup personal-zone-only early-return path and the
+confirm/`promoteParked` path gained the missing invalidation. (2) D-115's cache key omitted the
+effective `limit`, but the cached value is the post-trim `items[:limit]` slice returned verbatim — so
+two requests differing only by `limit` collided within the TTL; the effective limit is now part of the
+cache key. Invalidation-scope granularity must equal retrieve cache-key granularity. Also tightened:
+dedupe audit events now name the real survivor/loser (the survivor became dynamic in D-111), the
+`lifecycle.dedupe` event subject is the merged row, and the payload carries survivor_id/loser_id/merged_id.

@@ -61,7 +61,10 @@ func (m *Manager) dedupeScope(ctx context.Context, scope identity.Scope) {
 		if remaining < pageSize {
 			pageSize = remaining
 		}
-		batch, next, err := m.st.Memories().ListActiveForDecay(ctx, scope, pageSize, cursor)
+		// EXACT-leaf scope (D-111 / 29d B1): the candidate batch must be confined to
+		// THIS partition — including the NULL-leaf (tenant-/project-level) partition.
+		// ListActiveForDecay is tenant-wide and would seed cross-user candidates.
+		batch, next, err := m.st.Memories().ListActiveInScope(ctx, scope, pageSize, cursor)
 		if err != nil {
 			m.log.WarnContext(ctx, "lifecycle/dedupe: list failed", "scope", scope.String(), "err", err)
 			return
@@ -73,12 +76,14 @@ func (m *Manager) dedupeScope(ctx context.Context, scope identity.Scope) {
 			if mergedThisPass[mem.ID] {
 				continue // superseded by an earlier merge in this pass
 			}
-			// Find structural neighbors.
+			// Find structural neighbors — ExactScope so a NULL-leaf partition cannot
+			// reach another user's rows (P3 + P1, D-111 / 29d B1).
 			jt, _ := m.st.Memories().GetJunctions(ctx, scope, mem.ID)
 			neighbors, err := m.st.Memories().FindNeighbors(ctx, scope, store.NeighborQuery{
-				Entities: jt.Entities,
-				Keywords: jt.Keywords,
-				Limit:    8,
+				Entities:   jt.Entities,
+				Keywords:   jt.Keywords,
+				Limit:      8,
+				ExactScope: true,
 			})
 			comparisons++
 			if err != nil {
@@ -93,10 +98,10 @@ func (m *Manager) dedupeScope(ctx context.Context, scope identity.Scope) {
 				if sim < nearDupThreshold {
 					continue
 				}
-				// Near-duplicate found: merge mem into n (keep the older one).
-				// Mark both consumed: the batch snapshot is stale after a
-				// merge, and re-merging this pass's own output cascades
-				// (observed: second-generation merges losing provenance).
+				// Near-duplicate found: merge the pair (SelectSurvivor picks the
+				// winner inside mergeNearDup, D-111). Mark both consumed: the batch
+				// snapshot is stale after a merge, and re-merging this pass's own
+				// output cascades (observed: second-generation merges losing provenance).
 				m.mergeNearDup(ctx, scope, mem, n, sim)
 				mergedThisPass[mem.ID] = true
 				mergedThisPass[n.ID] = true
@@ -157,18 +162,33 @@ func (m *Manager) mergeNearDup(ctx context.Context, scope identity.Scope, src, t
 	srcPrior := reconcile.MarshalPriorState(src, srcJT)
 	tgtPrior := reconcile.MarshalPriorState(target, tgtJT)
 
+	// Audit text names the ACTUAL winner/loser (D-111 made the survivor dynamic;
+	// the event log is the source of truth, §8). Prior-state payloads stay keyed to
+	// each memory's own ID so rollback round-trips regardless of which won.
 	mergePayload, _ := json.Marshal(map[string]any{
-		"similarity": sim,
-		"src_id":     src.ID,
-		"tgt_id":     target.ID,
+		"similarity":  sim,
+		"src_id":      src.ID,
+		"tgt_id":      target.ID,
+		"survivor_id": survivor.ID,
+		"loser_id":    loser.ID,
+		"merged_id":   merged.ID,
 	})
+
+	srcReason := "dedupe: near-duplicate, survivor"
+	if src.ID == loser.ID {
+		srcReason = "dedupe: near-duplicate, superseded by survivor"
+	}
+	tgtReason := "dedupe: near-duplicate, survivor"
+	if target.ID == loser.ID {
+		tgtReason = "dedupe: near-duplicate, superseded by survivor"
+	}
 
 	events := []store.Event{
 		{
 			ID:        ulid.Make().String(),
 			Type:      "memory.merged",
 			SubjectID: src.ID,
-			Reason:    "dedupe: near-duplicate merged into target",
+			Reason:    srcReason,
 			Payload:   srcPrior,
 			CreatedAt: now,
 		},
@@ -176,14 +196,14 @@ func (m *Manager) mergeNearDup(ctx context.Context, scope identity.Scope, src, t
 			ID:        ulid.Make().String(),
 			Type:      "memory.merged",
 			SubjectID: target.ID,
-			Reason:    "dedupe: near-duplicate target updated",
+			Reason:    tgtReason,
 			Payload:   tgtPrior,
 			CreatedAt: now,
 		},
 		{
 			ID:        ulid.Make().String(),
 			Type:      "lifecycle.dedupe",
-			SubjectID: target.ID,
+			SubjectID: merged.ID,
 			Reason:    "near-dup merge",
 			Payload:   string(mergePayload),
 			CreatedAt: now,
@@ -217,7 +237,10 @@ func (m *Manager) mergeNearDup(ctx context.Context, scope identity.Scope, src, t
 			"src", src.ID, "tgt", target.ID, "err", err)
 		return
 	}
-	m.invalidateScope(scope) // D-118: a merge retires both originals — drop cached results
+	// D-118 / 29d S5: the result cache is keyed by the REQUEST scope, which every
+	// retrieve surface builds tenant-only — so invalidate at TENANT granularity. A
+	// full-scope invalidate bumps gens["t/p/u"], which the tenant-keyed Get never checks.
+	m.invalidateScope(identity.Scope{Tenant: scope.Tenant})
 	m.log.InfoContext(ctx, "lifecycle/dedupe: near-dup merged",
 		"tenant", scope.Tenant, "src", src.ID, "tgt", target.ID, "sim", sim)
 }
