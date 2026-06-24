@@ -438,3 +438,4 @@ New terms land here in the same PR that introduces them (CLAUDE.md §14).
   (`eval/harness/topics_seed.go`, D-101) seeded for a full-mode LongMemEval run so
   topic-gated extraction captures the breadth of probed facts (events, dates, possessions,
   relationships, numbers, updates) rather than only the default preferences pack.
+- **Conversation context (reconcile)** — the raw provenance turns of the candidate and its neighbors, supplied to the supersede/merge decision so the model distinguishes a correction from a distinct fact that merely shares words (Phase 29b, D-108).

@@ -34,12 +34,31 @@ Rules:
 5. Prefer "merge" only when two or more neighbors are fragments of the same fact.
 6. Use "discard" for greetings, filler, or exact re-statements with no new value.
 7. Use "park" only when you have genuine uncertainty about correctness (not merely a value change — a clear value change is a supersede).
+8. When an "Original conversation context" section is provided, use it to decide whether the candidate CORRECTS the neighbor's fact (same subject, updated value ⇒ supersede/update) or states a DIFFERENT fact that merely shares words or numbers (⇒ add). Two values that look contradictory in isolation ("30 minutes" vs "45 minutes each way") may be about DIFFERENT things in context — when the turns do not show them as the same fact, prefer "add" over "supersede".
 
 Respond with a JSON object matching the schema. The "reason" field should be a concise one-sentence explanation.`
 }
 
-// BuildUserPrompt returns the user-turn prompt for one candidate + its neighbors.
-func BuildUserPrompt(c pipeline.Candidate, neighbors []store.Memory) string {
+// ReconcileContext carries the raw conversation turns behind the candidate and its
+// neighbors, so the decision can distinguish a correction from a distinct fact (D-108,
+// Phase 29b). Zero value renders no context section (backward-compatible).
+type ReconcileContext struct {
+	CandidateTurns []store.Record            // raw turns the candidate was extracted from
+	NeighborTurns  map[string][]store.Record // neighbor memory ID → its source turns
+}
+
+// renderTurns writes a compact "[role] content" list, trimming each turn's content.
+func renderTurns(b *strings.Builder, turns []store.Record) {
+	for _, t := range turns {
+		c := strings.TrimSpace(t.Content)
+		fmt.Fprintf(b, "  - [%s] %s\n", t.Role, c)
+	}
+}
+
+// BuildUserPrompt returns the user-turn prompt for one candidate + its neighbors. When rc
+// carries conversation turns, an "Original conversation context" section is appended so the
+// model can judge correction-vs-distinct-fact from the source wording (D-108).
+func BuildUserPrompt(c pipeline.Candidate, neighbors []store.Memory, rc ReconcileContext) string {
 	var b strings.Builder
 
 	fmt.Fprintf(&b, "## Candidate memory\n\n")
@@ -70,6 +89,25 @@ func BuildUserPrompt(c pipeline.Candidate, neighbors []store.Memory) string {
 			fmt.Fprintf(&b, "**Confidence:** %.2f  **Importance:** %d\n", n.Confidence, n.Importance)
 			fmt.Fprintf(&b, "**Trust:** use_count=%d  save_count=%d  trust_source=%s\n\n",
 				n.UseCount, n.SaveCount, n.TrustSource)
+		}
+	}
+
+	// Original conversation context (D-108): the raw turns behind the candidate and each
+	// neighbor, so the model distinguishes a correction of the same fact from a different
+	// fact that merely shares words.
+	if len(rc.CandidateTurns) > 0 || len(rc.NeighborTurns) > 0 {
+		fmt.Fprintf(&b, "\n## Original conversation context\n\n")
+		if len(rc.CandidateTurns) > 0 {
+			fmt.Fprintf(&b, "Turns the CANDIDATE was extracted from:\n")
+			renderTurns(&b, rc.CandidateTurns)
+		}
+		for i, n := range neighbors {
+			turns := rc.NeighborTurns[n.ID]
+			if len(turns) == 0 {
+				continue
+			}
+			fmt.Fprintf(&b, "Turns behind Neighbor %d (id: %s):\n", i+1, n.ID)
+			renderTurns(&b, turns)
 		}
 	}
 

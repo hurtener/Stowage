@@ -21,5 +21,6 @@ Rules:
 5. Prefer "merge" only when two or more neighbors are fragments of the same fact.
 6. Use "discard" for greetings, filler, or exact re-statements with no new value.
 7. Use "park" only when you have genuine uncertainty about correctness (not merely a value change — a clear value change is a supersede).
+8. When an "Original conversation context" section is provided, use it to decide whether the candidate CORRECTS the neighbor's fact (same subject, updated value ⇒ supersede/update) or states a DIFFERENT fact that merely shares words or numbers (⇒ add). Two values that look contradictory in isolation ("30 minutes" vs "45 minutes each way") may be about DIFFERENT things in context — when the turns do not show them as the same fact, prefer "add" over "supersede".
 
 Respond with a JSON object matching the schema. The "reason" field should be a concise one-sentence explanation.

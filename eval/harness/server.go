@@ -247,6 +247,7 @@ func NewTestServer(t testing.TB, tenantID string) *TestServer {
 	)
 	reconcileStage.SetEmbedder(embedder)
 	reconcileStage.SetScopeInvalidator(retriever.Cache())
+	reconcileStage.SetRecordStore(st.Records()) // D-108: conversation context in the supersede decision
 	reconcileStage.Start(ctx)
 
 	// Phase 14 re-enqueue sweep. Ingest is fire-and-forget over a bounded

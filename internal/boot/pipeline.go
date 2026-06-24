@@ -136,6 +136,7 @@ func StartPipeline(ctx context.Context, stk *Stack, cfg config.Config) (*Pipelin
 	rec.SetEmbedder(stk.Embedder)
 	rec.SetVIndex(stk.VIndex)                      // semantic neighbor augmentation (A4)
 	rec.SetScopeInvalidator(stk.Retriever.Cache()) // Phase 12 cache invalidation (D-053)
+	rec.SetRecordStore(stk.Store.Records())        // D-108: conversation context in the supersede decision
 	rec.Start(ctx)
 
 	p := &Pipeline{

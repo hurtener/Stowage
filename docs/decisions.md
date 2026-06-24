@@ -2995,3 +2995,26 @@ so the CURRENT value wins deterministically regardless of LLM emission order. Cr
 contradictions were already handled (a later flush is genuinely newer); this fixes only the
 within-flush ambiguity. Supersede reversibility (D-070) is unchanged. This realizes the
 D-024 "occurred_at recency" intent at a finer (turn) granularity than session occurred_at.
+
+## D-108 — The reconcile supersede/merge decision is context-aware (sees the original turns)
+
+Phase 29b. The reconcile decision (add/update/merge/supersede/park) is an LLM call that saw
+ONLY the derived memories — the candidate plus neighbor memories — with no conversational
+context. So when two memories carried different values, the model could not tell a *correction
+of one fact* from *two distinct facts that share words*, and over-superseded: the commute
+"45 minutes each way" and "about 30 minutes" (arguably audiobook-listening time vs work-commute
+time) were merged, and D-106 then kept the wrong one. Detection (H4) would only make
+over-supersede worse; the right lever is giving the existing decision more CONTEXT.
+
+**Decision.** `ReconcileStage` takes an optional `RecordStore` (`SetRecordStore`; nil ⇒ current
+behaviour, degrade-safe). Before the decision, it assembles a bounded conversation-context block —
+the raw provenance turns behind the candidate (`Candidate.Provenance` → `RecordStore.GetMany`)
+and behind each neighbor (`GetJunctions(neighbor).Provenance` → `GetMany`) — capped at
+`maxContextRecords`=12, deduped, best-effort (a fetch error proceeds with no block). `BuildUserPrompt`
+renders it as "## Original conversation context" and the system prompt instructs: use it to decide
+whether the candidate CORRECTS the neighbor (→ supersede/update) or states a DIFFERENT fact that
+merely shares words/numbers (→ add); when the turns don't show them as the same fact, prefer add.
+
+Safe under P2 (reconcile is async, off the ingest ACK) and reversible (D-070 unchanged). No schema
+change, no new store method (`GetMany`/`GetJunctions` already exist). Targets the over-supersede
+residue directly and sharpens every decision, lower-risk than H4.

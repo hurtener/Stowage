@@ -88,20 +88,43 @@ func BuildReaderPrompt(question string, contexts []string) (system, user string)
 		"Rules: (1) Use ONLY the retrieved context — never rely on outside knowledge, prior " +
 		"training, or assumptions; do not answer anything that is not supported by the context. " +
 		"(2) You MAY do arithmetic, counting, or temporal reasoning OVER the context when the " +
-		"question requires it. (3) If the retrieved context does not contain enough information " +
+		"question requires it. (3) If the CURRENT memories do not contain enough information " +
 		"to answer, ABSTAIN: state explicitly that the provided context is insufficient — do not " +
-		"guess. (4) If two context items give different values for the same fact, prefer the more " +
-		"recent/specific one; a context item tagged [OUTDATED] is a value the user later changed — " +
-		"use the current value, never the OUTDATED one, and do NOT hedge between them. Answer " +
-		"concisely and directly with a single value."
+		"guess. (4) Your answer MUST come from the CURRENT memories. The SUPERSEDED section lists " +
+		"earlier values the user has since CHANGED — they are there only so you can understand the " +
+		"history; NEVER answer with a superseded value, and do not hedge between a current and a " +
+		"superseded value. Answer concisely and directly with a single value."
+
+	// Partition into current vs superseded (the runner prefixes superseded items with
+	// "[OUTDATED …]"). A clearly-separated section is far harder for the reader to miss
+	// than an inline tag buried among 30+ items (D-105 reader-prompt hardening).
+	const staleMark = "[OUTDATED"
+	var current, superseded []string
+	for _, c := range contexts {
+		if strings.HasPrefix(strings.TrimSpace(c), staleMark) {
+			// Strip the inline marker; the section header carries the instruction.
+			if i := strings.Index(c, "] "); i >= 0 {
+				c = c[i+2:]
+			}
+			superseded = append(superseded, c)
+		} else {
+			current = append(current, c)
+		}
+	}
 
 	var b strings.Builder
-	b.WriteString("Context:\n")
-	if len(contexts) == 0 {
-		b.WriteString("(no memories retrieved)\n")
+	b.WriteString("CURRENT memories (answer from these):\n")
+	if len(current) == 0 {
+		b.WriteString("(no current memories retrieved)\n")
 	}
-	for i, c := range contexts {
+	for i, c := range current {
 		fmt.Fprintf(&b, "[%d] %s\n", i+1, strings.TrimSpace(c))
+	}
+	if len(superseded) > 0 {
+		b.WriteString("\nSUPERSEDED memories (earlier values the user CHANGED — history only, NEVER answer with these):\n")
+		for i, c := range superseded {
+			fmt.Fprintf(&b, "[S%d] %s\n", i+1, strings.TrimSpace(c))
+		}
 	}
 	b.WriteString("\nQuestion: ")
 	b.WriteString(strings.TrimSpace(question))

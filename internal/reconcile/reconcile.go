@@ -71,9 +71,10 @@ type ReconcileStage struct {
 	log         *slog.Logger
 	in          <-chan pipeline.CandidateBatch
 	wg          sync.WaitGroup
-	embedder    *Embedder        // optional; nil = no embedding (degraded-embed mode)
-	vi          vindex.Index     // optional; nil = structural neighbors only (A4)
-	invalidator ScopeInvalidator // optional; nil = cache invalidation disabled (Phase 12, D-053)
+	embedder    *Embedder         // optional; nil = no embedding (degraded-embed mode)
+	vi          vindex.Index      // optional; nil = structural neighbors only (A4)
+	invalidator ScopeInvalidator  // optional; nil = cache invalidation disabled (Phase 12, D-053)
+	recs        store.RecordStore // optional; nil = no conversation context in the decision (D-108)
 }
 
 // augmentWithVectorNeighbors merges SEMANTIC neighbors (vector lane, cosine ≥ floor)
@@ -163,6 +164,75 @@ func New(
 // embed mode — retrieval still works lexically).
 func (r *ReconcileStage) SetEmbedder(e *Embedder) {
 	r.embedder = e
+}
+
+// SetRecordStore wires an optional RecordStore so the supersede/merge decision sees the
+// candidate's and neighbors' original conversation turns (D-108, Phase 29b). Must be called
+// before Start. If not set, the decision runs on memories only (current behaviour).
+func (r *ReconcileStage) SetRecordStore(recs store.RecordStore) {
+	r.recs = recs
+}
+
+// maxContextRecords bounds the conversation turns fed to one reconcile decision (P2/cost).
+const maxContextRecords = 12
+
+// buildReconcileContext fetches the raw turns behind the candidate and its neighbors so the
+// decision can distinguish a correction from a distinct fact (D-108). Bounded and degrade-safe:
+// a fetch error logs and yields an empty/partial context — the decision still runs. Returns the
+// zero value when no RecordStore is wired.
+func (r *ReconcileStage) buildReconcileContext(ctx context.Context, scope identity.Scope, c pipeline.Candidate, neighbors []store.Memory) ReconcileContext {
+	if r.recs == nil {
+		return ReconcileContext{}
+	}
+	seen := map[string]bool{}
+	budget := maxContextRecords
+
+	collect := func(ids []string) []store.Record {
+		var want []string
+		for _, id := range ids {
+			if id == "" || seen[id] || budget <= 0 {
+				continue
+			}
+			seen[id] = true
+			want = append(want, id)
+			budget--
+		}
+		if len(want) == 0 {
+			return nil
+		}
+		recs, err := r.recs.GetMany(ctx, scope, want)
+		if err != nil {
+			r.log.WarnContext(ctx, "reconcile: context record fetch failed — proceeding without", "err", err)
+			return nil
+		}
+		return recs
+	}
+
+	rc := ReconcileContext{}
+	candIDs := make([]string, 0, len(c.Provenance))
+	for _, p := range c.Provenance {
+		candIDs = append(candIDs, p.RecordID)
+	}
+	rc.CandidateTurns = collect(candIDs)
+
+	rc.NeighborTurns = map[string][]store.Record{}
+	for _, n := range neighbors {
+		if budget <= 0 {
+			break
+		}
+		j, err := r.mem.GetJunctions(ctx, scope, n.ID)
+		if err != nil {
+			continue // best-effort: skip this neighbor's turns
+		}
+		nIDs := make([]string, 0, len(j.Provenance))
+		for _, p := range j.Provenance {
+			nIDs = append(nIDs, p.RecordID)
+		}
+		if turns := collect(nIDs); len(turns) > 0 {
+			rc.NeighborTurns[n.ID] = turns
+		}
+	}
+	return rc
 }
 
 // SetScopeInvalidator wires an optional ScopeInvalidator for cache invalidation
@@ -338,9 +408,12 @@ func (r *ReconcileStage) processCandidate(ctx context.Context, scope identity.Sc
 		return r.commitFastAdd(ctx, scope, c, normalized, hash)
 	}
 
-	// Step 6: Build LLM prompt and call gateway.
+	// Step 6: Build LLM prompt and call gateway. Enrich with the original conversation
+	// turns behind the candidate + neighbors so the decision distinguishes a correction
+	// from a distinct fact (D-108); degrade-safe (empty context when no RecordStore).
 	systemPrompt := BuildSystemPrompt()
-	userPrompt := BuildUserPrompt(c, neighbors)
+	rc := r.buildReconcileContext(ctx, scope, c, neighbors)
+	userPrompt := BuildUserPrompt(c, neighbors, rc)
 
 	resp, err := r.gw.Complete(ctx, gateway.CompleteRequest{
 		System:      systemPrompt,

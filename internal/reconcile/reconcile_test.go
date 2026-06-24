@@ -1359,7 +1359,7 @@ func TestBuildUserPromptNoNeighbors(t *testing.T) {
 		Importance: 3,
 		Confidence: 0.9,
 	}
-	got := reconcile.BuildUserPrompt(c, nil)
+	got := reconcile.BuildUserPrompt(c, nil, reconcile.ReconcileContext{})
 	if !strings.Contains(got, "None found") {
 		t.Errorf("BuildUserPrompt with no neighbors: expected 'None found', got:\n%s", got)
 	}
@@ -1413,7 +1413,7 @@ func TestGoldenUserPrompt(t *testing.T) {
 		},
 	}
 
-	got := reconcile.BuildUserPrompt(c, neighbors)
+	got := reconcile.BuildUserPrompt(c, neighbors, reconcile.ReconcileContext{})
 	if len(got) == 0 {
 		t.Fatal("BuildUserPrompt returned empty string")
 	}
@@ -1433,6 +1433,37 @@ func TestGoldenUserPrompt(t *testing.T) {
 	}
 	if string(want) != got {
 		t.Errorf("user prompt differs from golden\ngot:\n%s\nwant:\n%s", got, want)
+	}
+}
+
+// TestBuildUserPrompt_ConversationContext proves D-108: when ReconcileContext carries the
+// candidate's and neighbors' source turns, BuildUserPrompt appends an "Original conversation
+// context" section; with the zero value it does not, and the system prompt carries the
+// correction-vs-distinct-fact rule.
+func TestBuildUserPrompt_ConversationContext(t *testing.T) {
+	c := pipeline.Candidate{Kind: "fact", Content: "commute is 45 minutes each way", Importance: 3, Confidence: 0.9}
+	neighbors := []store.Memory{{ID: "mem-30", Kind: "fact", Content: "commute is about 30 minutes", Status: "active", Confidence: 0.8, Importance: 3}}
+
+	// Without context: no section.
+	plain := reconcile.BuildUserPrompt(c, neighbors, reconcile.ReconcileContext{})
+	if strings.Contains(plain, "Original conversation context") {
+		t.Errorf("empty context should render no conversation section")
+	}
+
+	// With context: section present with both the candidate's and neighbor's turns.
+	rc := reconcile.ReconcileContext{
+		CandidateTurns: []store.Record{{Role: "user", Content: "my audiobook commute is 45 minutes each way"}},
+		NeighborTurns:  map[string][]store.Record{"mem-30": {{Role: "user", Content: "my drive to the office is about 30 minutes"}}},
+	}
+	withCtx := reconcile.BuildUserPrompt(c, neighbors, rc)
+	for _, want := range []string{"Original conversation context", "audiobook commute is 45 minutes each way", "drive to the office is about 30 minutes"} {
+		if !strings.Contains(withCtx, want) {
+			t.Errorf("context prompt missing %q", want)
+		}
+	}
+	// System prompt instructs correction-vs-distinct-fact disambiguation.
+	if !strings.Contains(reconcile.BuildSystemPrompt(), "DIFFERENT fact that merely shares words") {
+		t.Errorf("system prompt missing the D-108 disambiguation rule")
 	}
 }
 
