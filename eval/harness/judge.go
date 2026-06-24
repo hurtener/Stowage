@@ -130,13 +130,28 @@ func BuildJudgePrompt(question, gold, answer string) (system, user string) {
 // harness sets Model to a stronger reader model (e.g. anthropic/claude-sonnet-4.6,
 // distinct from the cheap extraction model) and ReasoningEffort (e.g. "medium").
 type ReaderOpts struct {
-	// Model overrides the completion model for both the reader and the judge
-	// calls. Empty = the gateway's configured model.
+	// Model overrides the completion model for the READER call. Empty = the
+	// gateway's configured model.
 	Model string
+	// JudgeModel overrides the completion model for the JUDGE call. Empty = Model
+	// (so the judge follows the reader unless explicitly varied — the cost/quality
+	// sweep varies reader and judge independently).
+	JudgeModel string
 	// ReasoningEffort requests provider extended thinking for the READER call
-	// ("none"|"minimal"|"low"|"medium"|"high"). Empty = none. The judge runs
-	// without reasoning (a short classification).
+	// ("none"|"minimal"|"low"|"medium"|"high"). Empty = none.
 	ReasoningEffort string
+	// JudgeReasoningEffort requests reasoning for the JUDGE call. Empty = none (a
+	// short classification rarely needs it).
+	JudgeReasoningEffort string
+}
+
+// judgeModel returns the model the judge call should use (JudgeModel, falling back
+// to Model when unset).
+func (o ReaderOpts) judgeModel() string {
+	if o.JudgeModel != "" {
+		return o.JudgeModel
+	}
+	return o.Model
 }
 
 // readerBudget returns the reader's output-token budget. With reasoning enabled the
@@ -181,12 +196,13 @@ func JudgeQuestionWith(ctx context.Context, gw gateway.Gateway, opts ReaderOpts,
 
 	jSys, jUser := BuildJudgePrompt(question, gold, ro.Answer)
 	jResp, err := gw.Complete(ctx, gateway.CompleteRequest{
-		System:      jSys,
-		Messages:    []gateway.Message{{Role: "user", Content: jUser}},
-		Schema:      judgeSchema,
-		MaxTokens:   judgeMaxTokens,
-		Temperature: 0.0,
-		Model:       opts.Model, // judge uses the same (strong) model; no reasoning
+		System:          jSys,
+		Messages:        []gateway.Message{{Role: "user", Content: jUser}},
+		Schema:          judgeSchema,
+		MaxTokens:       judgeMaxTokens,
+		Temperature:     0.0,
+		Model:           opts.judgeModel(),
+		ReasoningEffort: opts.JudgeReasoningEffort,
 	})
 	if err != nil {
 		return JudgedResult{}, fmt.Errorf("judge complete: %w", err)
