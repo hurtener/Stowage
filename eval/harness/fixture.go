@@ -35,6 +35,9 @@ type SessionFixture struct {
 type TurnFixture struct {
 	Role    string `json:"role"`
 	Content string `json:"content"`
+	// OccurredAt is the turn's real conversation timestamp (unix millis) from the dataset;
+	// passed through to record.occurred_at so memories carry the true assertion date (D-109).
+	OccurredAt int64 `json:"occurred_at,omitempty"`
 }
 
 // QuestionFixture is one CI eval question.

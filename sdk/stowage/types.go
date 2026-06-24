@@ -96,6 +96,8 @@ type MemoryItem struct {
 	// the current value, SupersededBy links to its successor.
 	Stale        bool   `json:"stale,omitempty"`
 	SupersededBy string `json:"superseded_by,omitempty"`
+	// OccurredAt is the assertion (conversation) date in unix millis (D-109); 0 when unknown.
+	OccurredAt int64 `json:"occurred_at,omitempty"`
 }
 
 // RetrieveResponse is the response from Retrieve.

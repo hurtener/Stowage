@@ -277,6 +277,7 @@ func (c *embeddedClient) Retrieve(ctx context.Context, req RetrieveRequest) (Ret
 			mi.Stale = true
 			mi.SupersededBy = item.Memory.SupersededByID
 		}
+		mi.OccurredAt = item.Memory.ValidFrom
 		if req.IncludeLanes {
 			mi.Lanes = item.Lanes
 		}

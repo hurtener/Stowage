@@ -210,6 +210,7 @@ func makeRetrieveHandler(svc *Services) tool.Handler[RetrieveInput, RetrieveOutp
 				ri.Stale = true
 				ri.SupersededBy = it.Memory.SupersededByID
 			}
+			ri.OccurredAt = it.Memory.ValidFrom
 			if in.IncludeLanes {
 				ri.Lanes = it.Lanes
 			}

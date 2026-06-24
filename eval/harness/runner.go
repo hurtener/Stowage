@@ -72,8 +72,9 @@ type retrieveItem struct {
 	ID      string   `json:"id"`
 	Content string   `json:"content"`
 	Score   float64  `json:"score"`
-	Lanes   []string `json:"lanes"`
-	Stale   bool     `json:"stale"` // D-105: superseded value surfaced for dual-visibility
+	Lanes      []string `json:"lanes"`
+	Stale      bool     `json:"stale"`       // D-105: superseded value surfaced for dual-visibility
+	OccurredAt int64    `json:"occurred_at"` // D-109: assertion (conversation) date, unix millis
 }
 
 // RunCI runs the full CI eval: ingest conversations, retrieve + score questions.
@@ -175,11 +176,12 @@ func (r *Runner) RunCI(ctx context.Context) (*RunResult, error) {
 // with buffer_key = conv.ID. Returns the record IDs in ingest order.
 func (r *Runner) ingestConversation(ctx context.Context, conv *ConvFixture) ([]string, error) {
 	type recordInput struct {
-		Role      string `json:"role"`
-		Content   string `json:"content"`
-		SessionID string `json:"session_id"`
-		BranchID  string `json:"branch_id"`
-		BufferKey string `json:"buffer_key"`
+		Role       string `json:"role"`
+		Content    string `json:"content"`
+		SessionID  string `json:"session_id"`
+		BranchID   string `json:"branch_id"`
+		BufferKey  string `json:"buffer_key"`
+		OccurredAt int64  `json:"occurred_at,omitempty"` // real conversation date (D-109); 0 → server stamps now
 	}
 	type ingestReq struct {
 		Records []recordInput `json:"records"`
@@ -193,11 +195,12 @@ func (r *Runner) ingestConversation(ctx context.Context, conv *ConvFixture) ([]s
 	for _, sess := range conv.Sessions {
 		for _, turn := range sess.Turns {
 			records = append(records, recordInput{
-				Role:      turn.Role,
-				Content:   turn.Content,
-				SessionID: sess.ID,
-				BranchID:  conv.ID,
-				BufferKey: conv.ID,
+				Role:       turn.Role,
+				Content:    turn.Content,
+				SessionID:  sess.ID,
+				BranchID:   conv.ID,
+				BufferKey:  conv.ID,
+				OccurredAt: turn.OccurredAt,
 			})
 		}
 	}
@@ -293,17 +296,28 @@ func (r *Runner) scoreQuestion(ctx context.Context, q QuestionFixture) (Question
 		items = filterByLane(items, r.cfg.DisableLane)
 	}
 
+	// withDate appends the assertion (conversation) date so the reader can do temporal
+	// reasoning and date-resolve stale values itself (D-109, mirroring what frontier
+	// memory-RAG systems inject). Daily granularity matches the dataset.
+	withDate := func(content string, occ int64) string {
+		if occ <= 0 {
+			return content
+		}
+		return content + " | When: " + time.UnixMilli(occ).UTC().Format("2006-01-02")
+	}
+
 	contents := make([]string, 0, len(items))
 	currentOnly := make([]string, 0, len(items))
 	for _, item := range items {
+		c := withDate(item.Content, item.OccurredAt)
 		if item.Stale {
 			// Dual-visibility (D-105): mark the retired value so the reader prefers the
 			// current one but can still reason about the history.
-			contents = append(contents, "[OUTDATED — the user later changed this; prefer the current value, use only as history] "+item.Content)
+			contents = append(contents, "[OUTDATED — the user later changed this; prefer the current value, use only as history] "+c)
 			continue
 		}
-		contents = append(contents, item.Content)
-		currentOnly = append(currentOnly, item.Content)
+		contents = append(contents, c)
+		currentOnly = append(currentOnly, item.Content) // raw content for the substring hit metric (no date suffix)
 	}
 
 	// answer_context_hit measures whether the gold (the CURRENT value) is retrievable —

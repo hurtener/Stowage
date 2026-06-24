@@ -215,11 +215,27 @@ func (e *ExtractStage) processFlush(ctx context.Context, fb FlushedBuffer) {
 		recordSet[id] = true
 	}
 	recordContents := make(map[string]string, len(records))
+	recordOccurred := make(map[string]int64, len(records))
 	for _, rec := range records {
 		recordContents[rec.ID] = rec.Content
+		recordOccurred[rec.ID] = rec.OccurredAt
 	}
 
 	validated, dropped := ValidateCandidates(list.Candidates, recordSet, recordContents)
+
+	// Stamp each candidate's assertion time = earliest occurred_at among its provenance
+	// records (the conversation date). Flows to Memory.ValidFrom so retrieval can surface
+	// "when" the fact was stated — used for temporal reasoning and date-resolving stale
+	// values at read time (D-024 day-one signal, D-109).
+	for i := range validated {
+		var occ int64
+		for _, p := range validated[i].Provenance {
+			if o, ok := recordOccurred[p.RecordID]; ok && o > 0 && (occ == 0 || o < occ) {
+				occ = o
+			}
+		}
+		validated[i].OccurredAt = occ
+	}
 
 	// Validate candidate topic tags against the ACTIVE topic keys (D-089): the model
 	// is asked to tag each candidate with the topic keys it pertains to; drop any key

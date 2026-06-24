@@ -84,6 +84,7 @@ type RetrieveItem struct {
 	Lanes        []string `json:"lanes,omitempty"`
 	Stale        bool     `json:"stale,omitempty"`         // D-105: superseded value (dual-visibility, §6c)
 	SupersededBy string   `json:"superseded_by,omitempty"` // successor memory ID
+	OccurredAt   int64    `json:"occurred_at,omitempty"`   // D-109: assertion (conversation) date, unix millis
 }
 
 // ConflictPair is a pair of memory IDs connected by a contradicts link.

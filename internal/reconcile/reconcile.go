@@ -958,6 +958,7 @@ func candidateToMemory(c pipeline.Candidate, normalized, hash, status string) st
 		TrustSource: trust,
 		Stability:   stability,
 		ContentHash: hash,
+		ValidFrom:   c.OccurredAt, // assertion (conversation) date — surfaced as "when" at retrieval (D-109)
 	}
 }
 

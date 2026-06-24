@@ -44,6 +44,9 @@
           },
           "superseded_by": {
             "type": "string"
+          },
+          "occurred_at": {
+            "type": "integer"
           }
         },
         "required": [

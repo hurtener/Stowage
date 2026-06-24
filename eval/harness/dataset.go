@@ -209,7 +209,11 @@ func toFixture(c datasets.Conversation) ConvFixture {
 	for _, s := range c.Sessions {
 		sf := SessionFixture{ID: s.ID}
 		for _, turn := range s.Turns {
-			sf.Turns = append(sf.Turns, TurnFixture{Role: turn.Role, Content: turn.Content})
+			tf := TurnFixture{Role: turn.Role, Content: turn.Content}
+			if !turn.Timestamp.IsZero() {
+				tf.OccurredAt = turn.Timestamp.UnixMilli() // real conversation date → record.occurred_at (D-109)
+			}
+			sf.Turns = append(sf.Turns, tf)
 		}
 		fix.Sessions = append(fix.Sessions, sf)
 	}

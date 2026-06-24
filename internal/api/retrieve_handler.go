@@ -68,6 +68,9 @@ type retrieveMemoryItem struct {
 	// the current value, SupersededBy links to its successor.
 	Stale        bool   `json:"stale,omitempty"`
 	SupersededBy string `json:"superseded_by,omitempty"`
+	// OccurredAt is the assertion (conversation) date of the memory in unix millis, so a
+	// reader can do temporal reasoning and date-resolve stale values (D-109). 0 when unknown.
+	OccurredAt int64 `json:"occurred_at,omitempty"`
 }
 
 // retrieveResponse is the wire format for POST /v1/retrieve (envelope v1).
@@ -156,6 +159,7 @@ func (s *Server) handleRetrieve(w http.ResponseWriter, r *http.Request) {
 			ri.Stale = true
 			ri.SupersededBy = item.Memory.SupersededByID
 		}
+		ri.OccurredAt = item.Memory.ValidFrom
 		if req.IncludeLanes {
 			ri.Lanes = item.Lanes
 		}

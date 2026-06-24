@@ -3018,3 +3018,28 @@ merely shares words/numbers (→ add); when the turns don't show them as the sam
 Safe under P2 (reconcile is async, off the ingest ACK) and reversible (D-070 unchanged). No schema
 change, no new store method (`GetMany`/`GetJunctions` already exist). Targets the over-supersede
 residue directly and sharpens every decision, lower-risk than H4.
+
+## D-109 — Memories capture the assertion (conversation) date and retrieval surfaces it
+
+Phase 29c. Investigating the SOTA gap (Hindsight reports 0.946 on longmemeval_s), their
+published injection output showed each "memory" carries a **timestamp** ("When: May 28, 2023" +
+`_mentioned:`) and their reader's own reasoning cites dates to answer temporal/knowledge-update
+questions. Two findings on our side: (1) memories never captured the assertion date —
+`candidateToMemory` left `ValidFrom=0`; (2) worse, the eval harness **discarded the dataset's
+session timestamps at ingest** and stamped `occurred_at = now`, so every record/memory shared
+"today" — useless for temporal reasoning or date-resolving stale values.
+
+**Decision.** Capture the assertion date end-to-end as a day-one signal (D-024) and surface it:
+- Extract stamps `Candidate.OccurredAt` = earliest `occurred_at` among the candidate's provenance
+  records (the conversation date, not extraction time).
+- `candidateToMemory` sets `Memory.ValidFrom = Candidate.OccurredAt`.
+- Retrieval surfaces it as `occurred_at` on the item across all read surfaces (HTTP/MCP/SDK), D-067.
+- The eval reader renders `| When: <YYYY-MM-DD>` per memory so it can do temporal reasoning and
+  pick the latest value among conflicting ones at read time — a cheaper complement to write-time
+  supersede for the stale-value/knowledge-update class.
+- The eval harness now passes the dataset's real per-turn timestamps to `record.occurred_at`
+  (the ingest API already accepted `occurred_at`; the harness was sending 0 → now).
+
+Production already supported caller-supplied `occurred_at` on ingest; this closes the
+memory-side capture + retrieval surfacing gap. Reversibility/scoping unchanged. Needs a re-learn
+to populate real dates on the existing eval store.
