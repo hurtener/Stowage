@@ -412,6 +412,16 @@ func (d *driver) filterCandidates(
 	var hits []vindex.Hit
 	for _, node := range candidates {
 		m, hasMeta := meta[node.Key]
+		if !hasMeta {
+			// Fail CLOSED for isolation (P3, Phase 30): a node with no sidecar provenance has
+			// unknown scope, so it cannot be proven to belong to a sub-scoped query — drop it
+			// rather than emit it to whatever user is querying. (Every Upsert/lazyBuild sets
+			// meta alongside graph.Add, so this is defensive, not a reachable path.) When the
+			// query carries no sub-scope (tenant-only), there is nothing to isolate → keep it.
+			if scope.Project != "" || scope.User != "" || scope.Session != "" {
+				continue
+			}
+		}
 		if hasMeta {
 			// Sub-scope filter (project/user/session).
 			if scope.Project != "" && m.project != scope.Project {
