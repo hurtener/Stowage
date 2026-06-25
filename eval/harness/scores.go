@@ -21,6 +21,24 @@ type Scores struct {
 	P95LatencyMs     float64  `json:"p95_latency_ms"`
 	AnswerQuality    *float64 `json:"answer_quality,omitempty"` // judged QA: (correct + ½·partial)/N
 	JudgedCount      int      `json:"judged_count,omitempty"`
+	// ByCategory breaks the metrics out per LongMemEval question category so a
+	// re-baseline can see where accuracy lives (the "open up by categories" view).
+	// omitempty: deterministic CI runs (single synthetic category) leave it nil so
+	// the committed CI baseline JSON shape is unchanged.
+	ByCategory map[string]CategoryScore `json:"by_category,omitempty"`
+}
+
+// CategoryScore is the per-category slice of Scores. AnswerQuality/Judged are set
+// only on the judged path; Correct/Partial feed the quality the same way the
+// aggregate does ((correct + ½·partial)/judged).
+type CategoryScore struct {
+	Total            int      `json:"total"`
+	Hits             int      `json:"hits"`
+	AnswerContextHit float64  `json:"answer_context_hit"`
+	Correct          int      `json:"correct,omitempty"`
+	Partial          int      `json:"partial,omitempty"`
+	Judged           int      `json:"judged,omitempty"`
+	AnswerQuality    *float64 `json:"answer_quality,omitempty"`
 }
 
 // QuestionResult is the per-question result for one retrieve + score.
@@ -29,6 +47,7 @@ type Scores struct {
 // path (omitempty: the CI run never sets them, keeping its JSON unchanged).
 type QuestionResult struct {
 	QuestionID         string        `json:"question_id"`
+	Category           string        `json:"category,omitempty"`
 	Query              string        `json:"query"`
 	Expected           string        `json:"expected"`
 	Hit                bool          `json:"hit"`
@@ -64,7 +83,56 @@ func ComputeScores(results []QuestionResult) Scores {
 		TotalQuestions:   len(results),
 		P50LatencyMs:     p50,
 		P95LatencyMs:     p95,
+		ByCategory:       categoryScores(results),
 	}
+}
+
+// categoryScores breaks per-question results out by category. Returns nil when every
+// result shares one (or no) category — keeps the deterministic CI run's JSON unchanged.
+func categoryScores(results []QuestionResult) map[string]CategoryScore {
+	type agg struct{ total, hits, correct, partial, judged int }
+	by := map[string]*agg{}
+	cats := map[string]bool{}
+	for _, r := range results {
+		cats[r.Category] = true
+		a := by[r.Category]
+		if a == nil {
+			a = &agg{}
+			by[r.Category] = a
+		}
+		a.total++
+		if r.Hit {
+			a.hits++
+		}
+		switch r.JudgeVerdict {
+		case "correct":
+			a.correct++
+			a.judged++
+		case "partial":
+			a.partial++
+			a.judged++
+		case "incorrect":
+			a.judged++
+		}
+	}
+	if len(cats) <= 1 {
+		return nil // single/empty category — nothing to break out
+	}
+	out := make(map[string]CategoryScore, len(by))
+	for cat, a := range by {
+		cs := CategoryScore{
+			Total: a.total, Hits: a.hits, Correct: a.correct, Partial: a.partial, Judged: a.judged,
+		}
+		if a.total > 0 {
+			cs.AnswerContextHit = float64(a.hits) / float64(a.total)
+		}
+		if a.judged > 0 {
+			q := (float64(a.correct) + 0.5*float64(a.partial)) / float64(a.judged)
+			cs.AnswerQuality = &q
+		}
+		out[cat] = cs
+	}
+	return out
 }
 
 // AnswerContextHit returns true if expectedAnswer appears (case-insensitive)
