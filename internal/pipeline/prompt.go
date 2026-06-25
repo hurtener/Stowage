@@ -11,7 +11,7 @@ import (
 // PromptTemplateVersion is the version of the extraction prompt template.
 // Increment when the template text changes; golden files must be regenerated
 // with UPDATE_GOLDEN=1.
-const PromptTemplateVersion = "4"
+const PromptTemplateVersion = "5"
 
 // systemPromptTemplate is the versioned system-prompt skeleton.
 // The literal "{topics}" placeholder is replaced by BuildPrompt.
@@ -31,7 +31,7 @@ For each piece of memorable information you identify:
 3. PRESERVE every quantitative qualifier, unit, scope, and condition exactly as stated — dropping one changes the fact. Write "45 minutes each way" (not "about 45 minutes"), "$5,850 gross" (not "$5,850"), "12,000 steps per day" (not "12,000 steps"), "120 stars within 12 months".
 4. When the user corrects or updates a value, record ONLY the current value as a plain present-tense assertion. Do NOT narrate the change. Write "The user has been using the Fitbit Charge 3 for 9 months" — NEVER "changed from 6 months to 9 months", "first said 6, later 9", or "was X, now Y". A memory must not contain two competing values for the same fact; the superseded value is forgotten elsewhere, not carried inside the new memory.
 5. Populate "context" with the disambiguating conversational frame — what was being discussed, and any comparison, condition, or timeframe that makes the value interpretable on its own later (e.g. "commute time discussed while choosing audiobooks vs podcasts").
-6. Provide 3–5 anticipated search queries a user might use to find this memory later
+6. Provide 3–5 anticipated search queries a user might use to find this memory later. For a memory about a DATED event or action (something that happened on/at a time), include at least one TIME-RELATIVE phrasing the user is likely to ask later — e.g. "how long ago did I <event>", "when did I <event>", "how many days/weeks since <event>" — so a later temporal question can find this event by its anticipated query, not just its topic.
 7. Cite the source record(s) with approximate character spans (span_start inclusive, span_end exclusive)
 8. Rate importance 1–5 (1 = trivial background noise, 5 = business-critical or safety-relevant) and confidence 0.0–1.0
 9. Set "topics" to the key(s) of the active topics above that this candidate pertains to — use the EXACT topic keys (the text before the colon); [] if none clearly apply
