@@ -117,6 +117,54 @@ func TestReflectSweep_EmitsAndIsIdempotent(t *testing.T) {
 	}
 }
 
+// TestReflectSweep_BatchCarriesTrajectoryOwner is the Phase-30 P3 guard for the reflection
+// sweep: a trajectory belongs to ONE user, so the emitted candidate batch (which becomes a
+// distilled strategy/failure_mode MEMORY + vector) must be scoped to that user, not the
+// tenant-only sweep scope. Two users under one tenant each produce a trajectory; each emitted
+// batch must carry its own project/user. Before the fix both batches were tenant-only → the
+// reflected memory persisted user_id=NULL (unfindable by its owner, visible tenant-wide).
+func TestReflectSweep_BatchCarriesTrajectoryOwner(t *testing.T) {
+	st, cleanup := newTestStore(t)
+	defer cleanup()
+	ctx := context.Background()
+	base := time.Now().UnixMilli()
+
+	// Two users under one tenant, distinct sessions — written tenant-only batch scope, per-record
+	// owner (the production ingest path; scopeOrRecord persists project/user).
+	tenantOnly := identity.Scope{Tenant: "rt"}
+	if err := st.Records().Append(ctx, tenantOnly, []store.Record{
+		{ID: "rt-alice", ProjectID: "pa", UserID: "alice", SessionID: "sa", BranchID: "main", Role: "tool", Content: "alice used a retry and it worked", Outcome: "success", OccurredAt: base - 1000, CreatedAt: base - 1000},
+		{ID: "rt-bob", ProjectID: "pb", UserID: "bob", SessionID: "sb", BranchID: "main", Role: "tool", Content: "bob hit a rate limit and failed", Outcome: "failure", OccurredAt: base - 900, CreatedAt: base - 900},
+	}); err != nil {
+		t.Fatalf("append: %v", err)
+	}
+
+	reflectCh := make(chan pipeline.CandidateBatch, 16)
+	gw := &reflectFakeGateway{}
+	profile := lifecycle.Profile{ReflectInterval: 30 * time.Minute, ReflectBatchSize: 200, ReflectEpochEvery: 8}
+	mgr := lifecycle.New(st, testLogger(), profile, make(chan pipeline.Item, 8))
+	mgr.SetReflection(gw, reflectCh)
+
+	mgr.RunForce(ctx)
+	batches := drainBatches(reflectCh)
+	if len(batches) == 0 {
+		t.Fatal("reflection sweep emitted no candidate batch")
+	}
+	byUser := map[string]identity.Scope{}
+	for _, b := range batches {
+		if b.Scope.User == "" {
+			t.Errorf("P3: reflection batch scope is tenant-only (user empty): %+v", b.Scope)
+		}
+		byUser[b.Scope.User] = b.Scope
+	}
+	if a, ok := byUser["alice"]; !ok || a.Project != "pa" {
+		t.Errorf("alice's reflection batch scope = %+v, want {rt, pa, alice}", byUser["alice"])
+	}
+	if b, ok := byUser["bob"]; !ok || b.Project != "pb" {
+		t.Errorf("bob's reflection batch scope = %+v, want {rt, pb, bob}", byUser["bob"])
+	}
+}
+
 // errGateway / emptyGateway exercise the reflectTenant error + zero-candidate
 // branches.
 type errGateway struct{ reflectFakeGateway }

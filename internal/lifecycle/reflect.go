@@ -83,9 +83,17 @@ func (m *Manager) reflectTenant(ctx context.Context, tenant string, since, epoch
 		if !fresh {
 			continue // already reflected this trajectory this epoch
 		}
+		// The trajectory belongs to ONE user (AssembleTrajectories groups records by
+		// project/user/session/branch), so the distilled strategy/failure_mode memory — and
+		// its vector — must be written under that owner's scope, not the tenant-only sweep
+		// scope (P3, Phase 30). A tenant-only batch here would persist project_id/user_id=NULL
+		// (the candidate carries no owner), making the reflected memory unfindable by its own
+		// user and visible tenant-wide — the same stripper class as the pipeline/backfill paths.
+		// The tenant-only `scope` above stays correct for the ListByOutcome tenant-wide scan.
+		trajScope := identity.Scope{Tenant: tenant, Project: traj.ProjectID, User: traj.UserID}
 		// Scope the ctx so the reflection gateway call is attributed in the usage
 		// event stream (§10); the sweep otherwise runs on a scope-less background ctx.
-		cands, err := reflect.Reflect(identity.WithScope(ctx, scope), m.gw, scope, traj)
+		cands, err := reflect.Reflect(identity.WithScope(ctx, trajScope), m.gw, trajScope, traj)
 		if err != nil {
 			m.log.WarnContext(ctx, "lifecycle/reflect: reflect failed", "tenant", tenant, "session", traj.SessionID, "err", err)
 			continue
@@ -94,7 +102,7 @@ func (m *Manager) reflectTenant(ctx context.Context, tenant string, since, epoch
 			continue
 		}
 		batch := pipeline.CandidateBatch{
-			Scope:      scope,
+			Scope:      trajScope,
 			BranchID:   traj.BranchID,
 			BufferKey:  fmt.Sprintf("reflect:%s:%s:%s", traj.UserID, traj.SessionID, traj.BranchID),
 			Candidates: cands,

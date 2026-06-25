@@ -21,6 +21,8 @@ has "scopeOrRecord(scope.User, mem.UserID)" internal/store/sqlitestore/memories.
 has "scopeOrRecord(scope.User, mem.UserID)" internal/store/pgstore/memories.go "pgstore memory commit scope-or-record fallback (B1)"
 # B1 follow-on — the backfill embed sweep (guaranteed-recovery path) carries the memory's project/user.
 has "Project: m.ProjectID, User: m.UserID" internal/reconcile/embedder.go "embedder backfill carries memory project/user (B1 follow-on)"
+# B1 follow-on — the reflection sweep writes the distilled strategy memory under the trajectory owner.
+has "trajScope := identity.Scope{Tenant: tenant, Project: traj.ProjectID, User: traj.UserID}" internal/lifecycle/reflect.go "reflection batch carries trajectory owner scope (B1 follow-on)"
 
 # B2 — non-lossy result-cache scope key + ancestor-aware generation (per-user keys, tenant-wide bust).
 has "func scopeCacheKey" internal/retrieval/cache.go "non-lossy cache key helper (B2)"
@@ -57,8 +59,9 @@ has "TestScopeParity_ReviewList_AllSurfaces" test/integration/scope_parity_test.
 has "TestScopeParity_ReviewResolve_CrossUserDenied" test/integration/scope_parity_test.go "cross-user MUTATE-denied parity guard present (B-2)"
 has "TestScopeParity_HTTPConstructionScope" test/integration/scope_parity_test.go "HTTP construction-scope guard present (B-1)"
 has "TestEmbedder_BackfillSweep_PreservesUserScope" internal/reconcile/embedder_test.go "backfill scope-preservation guard present (B1 follow-on)"
+has "TestReflectSweep_BatchCarriesTrajectoryOwner" internal/lifecycle/reflect_test.go "reflection owner-scope guard present (B1 follow-on)"
 
 go build ./... >/dev/null 2>&1 && ok "build green" || failc "build"
-total=37
+total=39
 echo "phase-30 smoke: $((total - fails)) passed, $fails failed"
 exit "$fails"
