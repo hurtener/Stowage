@@ -422,3 +422,25 @@ unchanged (open question in the h6 plan: opt-in vs on-by-default).
 | h7 | bifrost custom-provider rerank (full OpenRouter stack) + benchmark rebase to cheaper models | `internal/gateway/bifrost`, `eval/harness` | D-075 |
  Waves A (h1/h2), B (h3/h4), C (h5) + three
 checkpoint audits shipped; the "same code, same seams" parity gap is closed.
+
+## Performance & resource hardening track (D-126)
+
+An orthogonal, post-launch track — same posture as the D-067 productionization program
+— that gives Stowage a **measured** picture of its runtime resource behaviour (CPU,
+heap, goroutines, block/mutex contention) instead of an asserted one. The latency SLO
+(`make slo`, D-031/D-095) is a p99 stopwatch on the read path; it says nothing about
+idle CPU, heap growth, goroutine leaks, or drain-on-shutdown — the P2 contract — which
+this track measures and regression-gates. Numbered `phase-pN-*` so it does not collide
+with the launch (01–27), post-launch (22–27), or productionization (`h*`) slots; smoke
+scripts still match the `scripts/smoke/phase-*.sh` gate. **Harness-first** (D-126): the
+lead phase builds the instrumentation + baselines; each leak/inefficiency it surfaces
+lands as a scoped `pN` follow-up gated by the baseline (the eval continuous model,
+D-035), not one open-ended mega-phase.
+
+| # | Phase | Owns | RFC | Deps | Decision |
+|---|-------|------|-----|------|----------|
+| p1 | Profiling & leak-detection harness + baselines — auth-gated off-by-default pprof listener (`server.pprof_listen`), `MemStats`/`NumGoroutine` telemetry sampler, `goleak` in the goroutine-heavy packages (advisory), the `internal/bench/profile/` load+profile rig (goroutine-stability + idle gates), committed `eval/PROFILE.md` baselines | `internal/bench`, `internal/telemetry`, `cmd/stowage`, `internal/config`, `internal/api` | §2.1 (P2), §8.2, §11, §13/§14 | 03–14, h1 | D-126 |
+
+Plan: `phase-p1-profiling-harness.md`. Posture: **build + baseline, don't fix** — fixes
+are scoped `pN` follow-ups. Gating is **advisory-then-promote**; scope covers in-process
+Go concurrency **and** backends under load (pgx pool, sqlite writer goroutine).

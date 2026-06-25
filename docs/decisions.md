@@ -3422,3 +3422,54 @@ statements. `PromptTemplateVersion` bumped 5 → 6; golden files regenerated. Th
 upstream half of the sub-case-b fix (D-129 is the downstream half): better content makes both
 the crowded-neighbor summaries and the reader answers meaningful, and reduces same-fact
 mis-collapse at the reconcile decision.
+
+## D-126 — Performance & resource hardening track (harness-first; pprof off-by-default; advisory-then-promote)
+
+2026-06-25. Owner-initiated. Across the launch track (01–30) and the productionization
+program (h1–h7) Stowage never had a profiling phase: there is **no** `net/http/pprof`,
+`runtime/trace`, or `MemStats`/`NumGoroutine` sampling anywhere in `internal/`, `cmd/`,
+or `sdk/`. The only runtime measurement we ship is the latency SLO (`make slo`,
+D-031/D-095) — a reference-hardware p99 stopwatch on the retrieval read path. That says
+nothing about CPU at idle, heap growth, goroutine leaks, or block/mutex contention,
+even though P2 (fire-and-forget, **supervised goroutine stages that drain on
+shutdown**) and the whole pipeline/sweeps/vindex architecture are concurrency-heavy and
+have only ever been *asserted* safe, never profiled. Not a launch product yet; not time
+constrained — the right moment to build the fundamentals.
+
+**Decision.** Open a **Performance & resource hardening track** (`phase-pN-*`),
+orthogonal to the launch roadmap in the same way the D-067 productionization track is.
+Four ratified choices (owner-confirmed 2026-06-25):
+
+1. **Harness-first structure.** The lead phase (**P1**, `phase-p1-profiling-harness.md`)
+   builds the instrumentation + load/profile rig + leak detection and **commits
+   baselines** (`eval/PROFILE.md`); it does **not** fix what it finds. Each leak or
+   inefficiency the harness surfaces lands as a scoped `phase-pN` follow-up gated by the
+   baseline — the eval continuous model (D-035), not one open-ended "fix everything"
+   mega-phase whose acceptance criteria can't be called done.
+2. **pprof off-by-default, auth-gated, on a separate listener.** `net/http/pprof` is an
+   operator tool that leaks internal state and allows CPU-burning captures, so it is
+   **never** mounted on the public API mux. New knob `server.pprof_listen` (default
+   empty = no listener, zero-config preserved per D-034); when set it starts a second
+   `http.Server` with explicit timeouts, loopback-default, gated by the same
+   constant-time admin-key check as the admin API (CLAUDE.md §7).
+3. **Advisory-then-promote gating.** `go.uber.org/goleak` (already transitive in
+   `go.sum`) wires into every goroutine-launching package's `TestMain`, and the rig's
+   goroutine-stability + idle ceilings are **advisory** first — they record measured
+   numbers and only fail on a configured regression once a clean baseline is committed.
+   Promotion to a hard CI gate is per-package/per-ceiling and deliberate, so the harness
+   PR is never blocked on pre-existing leaks (couples infra to cleanup otherwise).
+4. **Scope: in-process Go concurrency AND backends under load.** The rig profiles the Go
+   concurrency (pipeline, sweeps, vindex sidecar, boot supervisor drain, gateway
+   batching) **and** backend-under-load behaviour — pgx pool saturation and the sqlite
+   dedicated-writer goroutine contention (RFC §8.2, the CC-memory lesson behind D-022) —
+   the full picture for a memory server.
+
+**Relationship to the SLO (explicit).** Resource profiling is a **sibling** of the
+latency SLO under `internal/bench/`, not folded into it: different question (CPU/heap/
+goroutine resource behaviour vs p99 latency), different cost (the noisy long-duration +
+Postgres cuts stay on-demand like `make slo`/`make bench`, out of the per-PR matrix per
+D-095; the sqlite + mock-gateway cut is the fast always-on CI cut). The
+goroutine-stability gate (`post-drain NumGoroutine ≤ post-boot + ε`) is the P2
+drain-on-shutdown contract made measurable; the idle gate (zero-traffic CPU/alloc
+ceiling) is the direct rebuttal to the brief-01 polling-worker-pool tax P2 was designed
+to remove. No prior decision is reversed; §11 observability is extended, not contradicted.
