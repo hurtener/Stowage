@@ -3351,3 +3351,34 @@ Tested by `TestCandidateOlderThanTarget` (predicate) and `TestStageDateDirection
 (end-to-end both directions via the realistic near-dup→numeral-divergence→LLM-supersede path,
 plus the normal-direction rollback round-trip). Pre-existing bug (Phase 30 did not touch
 reconcile); fixed ahead of the gpt-5.4-nano 100q re-baseline so it cannot corrupt that DB.
+
+## D-128 — Learner reasoning effort is an eval knob (STOWAGE_EVAL_MODEL_EFFORT)
+
+Post-Phase-30 baseline work. To run a reasoning-only learner (openai/gpt-5.4-nano) for the
+LongMemEval re-baseline we need to pass a provider reasoning-effort on the extraction and
+reconcile completion calls. gpt-5.4-nano REJECTS disabled reasoning (HTTP 400 "Reasoning is
+mandatory for this endpoint and cannot be disabled") and treats `effort=low` as the floor;
+at `low` it stays schema-compliant and all-passing while cutting extraction latency markedly
+(2–17 s vs 14–33 s at default). `gateway.CompleteRequest.ReasoningEffort` already existed
+(D-100) and the eval reader/judge already set it (STOWAGE_EVAL_READER_EFFORT), but
+`pipeline.ExtractStage` and `reconcile.ReconcileStage` never set it on their decision calls.
+
+**Decision: add an eval-only env knob `STOWAGE_EVAL_MODEL_EFFORT`, parallel to the existing
+`STOWAGE_EVAL_READER_EFFORT`.** Both stages gain an optional `reasoningEffort` field with a
+`SetReasoningEffort` setter (matching the existing optional-setter pattern — SetEmbedder,
+SetVIndex, SetRecordStore); the field defaults to "" so the production path and the default
+gemini learner are unaffected (no reasoning param sent). The eval harness
+(`eval/harness/server.go`) reads the env var once and applies it to BOTH the extract and
+reconcile stages (they call the same learner model, so they share the effort). The eval
+scripts default it to "" and document it.
+
+**Why an eval knob, not a D-034 production config key.** The need is eval-driven (choosing a
+reasoning-only LEARNER model for the benchmark), exactly like the reader/judge effort, which
+is also an eval-only env var with no production-config-knob treatment. Production extraction
+uses a non-reasoning model where the param is irrelevant, so adding it to `GatewayConfig`
+(allKeys/Explain/profiles/golden/example/smoke) would be config surface with no production
+default to tune — YAGNI. A production reasoning-effort config key is deferred until a real
+production need for a reasoning extraction model exists; the gateway field and the stage
+setters are already in place to make that a small follow-up. Verified by wiring tests
+(`TestExtract_ReasoningEffortWiring`, `TestStageReasoningEffortWiring`): effort flows to the
+request; unset sends no param.

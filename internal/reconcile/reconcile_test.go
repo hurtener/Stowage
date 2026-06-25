@@ -50,9 +50,11 @@ type stubGateway struct {
 	responses []gateway.CompleteResponse
 	errs      []error
 	calls     int
+	lastReq   gateway.CompleteRequest // captured for assertions (e.g. ReasoningEffort, D-128)
 }
 
-func (g *stubGateway) Complete(_ context.Context, _ gateway.CompleteRequest) (gateway.CompleteResponse, error) {
+func (g *stubGateway) Complete(_ context.Context, req gateway.CompleteRequest) (gateway.CompleteResponse, error) {
+	g.lastReq = req
 	i := g.calls
 	g.calls++
 	if i < len(g.errs) && g.errs[i] != nil {

@@ -8,6 +8,8 @@
 #
 # Models (override any via env before running):
 #   extraction/reconcile : STOWAGE_EVAL_MODEL         (default google/gemini-2.5-flash — reliable structured extraction)
+#   learner reasoning    : STOWAGE_EVAL_MODEL_EFFORT  (default ""=no reasoning param; set "low" for a reasoning-only
+#                                                       learner like openai/gpt-5.4-nano that cannot disable reasoning — D-128)
 #   reader + judge       : STOWAGE_EVAL_READER_MODEL  (default anthropic/claude-sonnet-4.6, reasoning effort medium)
 #   embeddings           : STOWAGE_EVAL_EMBED_MODEL   (default perplexity/pplx-embed-v1-0.6b @ 1024)
 #   rerank               : STOWAGE_EVAL_RERANK_MODEL  (default cohere/rerank-4-fast)
@@ -32,6 +34,7 @@ export STOWAGE_EVAL_BASE_URL="${STOWAGE_EVAL_BASE_URL:-https://openrouter.ai/api
 export STOWAGE_EVAL_RERANK_BASE_URL="${STOWAGE_EVAL_RERANK_BASE_URL:-https://openrouter.ai/api/v1}"
 export STOWAGE_EVAL_API_KEY_REF="${STOWAGE_EVAL_API_KEY_REF:-env.OPENROUTER_API_KEY}"
 export STOWAGE_EVAL_MODEL="${STOWAGE_EVAL_MODEL:-google/gemini-2.5-flash}"
+export STOWAGE_EVAL_MODEL_EFFORT="${STOWAGE_EVAL_MODEL_EFFORT:-}"   # learner (extract+reconcile) reasoning effort; ""=none (D-128)
 export STOWAGE_EVAL_READER_MODEL="${STOWAGE_EVAL_READER_MODEL:-anthropic/claude-sonnet-4.6}"
 export STOWAGE_EVAL_READER_EFFORT="${STOWAGE_EVAL_READER_EFFORT:-medium}"
 export STOWAGE_EVAL_EMBED_MODEL="${STOWAGE_EVAL_EMBED_MODEL:-perplexity/pplx-embed-v1-0.6b}"
@@ -45,7 +48,7 @@ GO_TIMEOUT="${STOWAGE_EVAL_GO_TIMEOUT:-180m}"
 
 echo "── LongMemEval ${STOWAGE_EVAL_LIMIT}q ──────────────────────────────────────"
 echo "  dataset    : ${STOWAGE_EVAL_DATASET}"
-echo "  extraction : ${STOWAGE_EVAL_MODEL}"
+echo "  extraction : ${STOWAGE_EVAL_MODEL} (learner reasoning=${STOWAGE_EVAL_MODEL_EFFORT:-none})"
 echo "  reader+judge: ${STOWAGE_EVAL_READER_MODEL} (reasoning=${STOWAGE_EVAL_READER_EFFORT}, abstain+context-only)"
 echo "  embed      : ${STOWAGE_EVAL_EMBED_MODEL}@${STOWAGE_EVAL_EMBED_DIMS}   rerank: ${STOWAGE_EVAL_RERANK_MODEL}"
 echo "  settle     : ${STOWAGE_EVAL_SETTLE_TIMEOUT}   go timeout: ${GO_TIMEOUT}"

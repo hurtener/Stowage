@@ -222,6 +222,13 @@ func NewTestServer(t testing.TB, tenantID string) *TestServer {
 	topicSvc := topics.New(st.Topics(), log, cfg.Profile)
 	srv.SetTopicService(topicSvc)
 	extractStage := pipeline.NewExtractStage(st, gw, topicSvc, log, cfg.Profile, bufStage.Downstream())
+	// STOWAGE_EVAL_MODEL_EFFORT sets the learner's provider reasoning effort on the
+	// extraction AND reconcile Complete calls (D-128), parallel to the reader's
+	// STOWAGE_EVAL_READER_EFFORT. Empty (default) sends no reasoning param, so the gemini
+	// learner is unaffected; "low" lets a reasoning-only learner (gpt-5.4-nano, which
+	// cannot disable reasoning) run at its floor for a fast, cheap learn pass.
+	modelEffort := os.Getenv("STOWAGE_EVAL_MODEL_EFFORT")
+	extractStage.SetReasoningEffort(modelEffort)
 	extractStage.Start(ctx)
 
 	vi, err := vindex.Open(cfg.VIndex, st.Vectors(), cfg.Gateway.EmbedDims, cfg.Gateway.EmbedModel)
@@ -260,7 +267,8 @@ func NewTestServer(t testing.TB, tenantID string) *TestServer {
 	)
 	reconcileStage.SetEmbedder(embedder)
 	reconcileStage.SetScopeInvalidator(retriever.Cache())
-	reconcileStage.SetRecordStore(st.Records()) // D-108: conversation context in the supersede decision
+	reconcileStage.SetRecordStore(st.Records())    // D-108: conversation context in the supersede decision
+	reconcileStage.SetReasoningEffort(modelEffort) // D-128: match the extraction learner's reasoning effort
 	reconcileStage.Start(ctx)
 
 	// Phase 14 re-enqueue sweep. Ingest is fire-and-forget over a bounded

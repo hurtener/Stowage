@@ -54,6 +54,14 @@ type ExtractStage struct {
 	log     *slog.Logger
 	profile string
 
+	// reasoningEffort is the optional provider reasoning/thinking effort for the
+	// extraction Complete call ("" = send no reasoning param; "none"|"minimal"|
+	// "low"|"medium"|"high"). Empty by default so production is unaffected; the eval
+	// harness sets it (STOWAGE_EVAL_MODEL_EFFORT) so a reasoning-only learner model
+	// can run at its floor (e.g. gpt-5.4-nano, which rejects disabled reasoning and
+	// whose "low" floor cuts extraction latency markedly). Set once before Start.
+	reasoningEffort string
+
 	in  <-chan FlushedBuffer
 	out chan CandidateBatch
 
@@ -80,6 +88,11 @@ func NewExtractStage(
 		out:     make(chan CandidateBatch, extractDownstreamCap),
 	}
 }
+
+// SetReasoningEffort sets the optional provider reasoning effort for the extraction
+// Complete call (see the reasoningEffort field). Empty disables the parameter. Must be
+// called before Start.
+func (e *ExtractStage) SetReasoningEffort(effort string) { e.reasoningEffort = effort }
 
 // Downstream returns the read-end of the CandidateBatch channel.
 // Phase 08 replaces the no-op consumer with reconciliation dispatch.
@@ -177,9 +190,10 @@ func (e *ExtractStage) processFlush(ctx context.Context, fb FlushedBuffer) {
 		Messages: []gateway.Message{
 			{Role: "user", Content: prompt.UserContent},
 		},
-		Schema:      CandidateSchema,
-		MaxTokens:   extractMaxTokens,
-		Temperature: 0.0,
+		Schema:          CandidateSchema,
+		MaxTokens:       extractMaxTokens,
+		Temperature:     0.0,
+		ReasoningEffort: e.reasoningEffort, // "" → no reasoning param (D-128)
 	}
 	// Scope the ctx so the extraction gateway call is attributed in the usage event
 	// stream (§10); the pipeline stage runs on a scope-less background ctx.

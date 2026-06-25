@@ -75,6 +75,12 @@ type ReconcileStage struct {
 	vi          vindex.Index      // optional; nil = structural neighbors only (A4)
 	invalidator ScopeInvalidator  // optional; nil = cache invalidation disabled (Phase 12, D-053)
 	recs        store.RecordStore // optional; nil = no conversation context in the decision (D-108)
+
+	// reasoningEffort is the optional provider reasoning effort for the reconcile
+	// decision Complete call ("" = no reasoning param). Empty by default so production
+	// is unaffected; the eval harness sets it (STOWAGE_EVAL_MODEL_EFFORT) so a
+	// reasoning-only learner model runs at its floor, matching the extract stage (D-128).
+	reasoningEffort string
 }
 
 // augmentWithVectorNeighbors merges SEMANTIC neighbors (vector lane, cosine ≥ floor)
@@ -172,6 +178,11 @@ func (r *ReconcileStage) SetEmbedder(e *Embedder) {
 func (r *ReconcileStage) SetRecordStore(recs store.RecordStore) {
 	r.recs = recs
 }
+
+// SetReasoningEffort sets the optional provider reasoning effort for the reconcile
+// decision Complete call (see the reasoningEffort field). Empty disables the parameter.
+// Must be called before Start.
+func (r *ReconcileStage) SetReasoningEffort(effort string) { r.reasoningEffort = effort }
 
 // maxContextRecords bounds the conversation turns fed to one reconcile decision (P2/cost).
 const maxContextRecords = 12
@@ -416,11 +427,12 @@ func (r *ReconcileStage) processCandidate(ctx context.Context, scope identity.Sc
 	userPrompt := BuildUserPrompt(c, neighbors, rc)
 
 	resp, err := r.gw.Complete(ctx, gateway.CompleteRequest{
-		System:      systemPrompt,
-		Messages:    []gateway.Message{{Role: "user", Content: userPrompt}},
-		Schema:      DecisionSchema,
-		MaxTokens:   decisionMaxTokens,
-		Temperature: 0,
+		System:          systemPrompt,
+		Messages:        []gateway.Message{{Role: "user", Content: userPrompt}},
+		Schema:          DecisionSchema,
+		MaxTokens:       decisionMaxTokens,
+		Temperature:     0,
+		ReasoningEffort: r.reasoningEffort, // "" → no reasoning param (D-128)
 	})
 	if err != nil {
 		return fmt.Errorf("reconcile: gateway.Complete: %w", err)
