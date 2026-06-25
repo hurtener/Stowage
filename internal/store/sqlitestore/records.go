@@ -15,6 +15,17 @@ import (
 type recordStore struct{ s *sqliteStore }
 
 // Append stores records. Duplicate IDs are silently ignored (idempotent).
+// scopeOrRecord implements the scope-authoritative write rule (D-124): the scope value wins
+// when set; the per-record value only fills a dimension the scope left empty. This lets a
+// tenant-only batch persist each record's own project/user/session, while a declared scope
+// dimension can never be overridden by a record (a write can't escape its authorized scope, P3).
+func scopeOrRecord(scopeVal, recVal string) string {
+	if scopeVal != "" {
+		return scopeVal
+	}
+	return recVal
+}
+
 func (r *recordStore) Append(ctx context.Context, scope identity.Scope, records []store.Record) error {
 	if scope.Tenant == "" { // S1: fail closed
 		return store.ErrScopeRequired
@@ -35,7 +46,10 @@ func (r *recordStore) Append(ctx context.Context, scope identity.Scope, records 
 					 role, content, source_agent, response_id, outcome, outcome_detail,
 					 token_estimate, occurred_at, created_at, processed_at)
 				VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-				rec.ID, scope.Tenant, nullStr(scope.Project), nullStr(scope.User), nullStr(scope.Session),
+				// Scope-authoritative write (D-124): a declared scope dimension WINS (a record can
+				// never escape its authorized scope, P3); the per-record value only fills a dimension
+				// the scope left empty (so a tenant-only batch keeps each record's own project/user/session).
+				rec.ID, scope.Tenant, nullStr(scopeOrRecord(scope.Project, rec.ProjectID)), nullStr(scopeOrRecord(scope.User, rec.UserID)), nullStr(scopeOrRecord(scope.Session, rec.SessionID)),
 				rec.BranchID, rec.Role, rec.Content, rec.SourceAgent, rec.ResponseID,
 				rec.Outcome, rec.OutcomeDetail, rec.TokenEstimate,
 				rec.OccurredAt, createdAt, rec.ProcessedAt,

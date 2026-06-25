@@ -12,6 +12,10 @@ import (
 type verifyRequestJSON struct {
 	Claim     string   `json:"claim"`
 	Citations []string `json:"citations,omitempty"`
+	// ProjectID/UserID scope the citation/memory reads to a sub-tenant identity (P3,
+	// D-125); empty = tenant-wide. A claim verifies only against the scope's memories.
+	ProjectID string `json:"project_id"`
+	UserID    string `json:"user_id"`
 }
 
 // verifyResponseJSON is the verification verdict envelope.
@@ -30,7 +34,6 @@ func (s *Server) handleVerify(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	authKey := keyFromContext(r.Context())
-	scope := identity.Scope{Tenant: authKey.TenantID}
 
 	var req verifyRequestJSON
 	dec := json.NewDecoder(r.Body)
@@ -43,6 +46,7 @@ func (s *Server) handleVerify(w http.ResponseWriter, r *http.Request) {
 		respondJSON(w, http.StatusBadRequest, errBody("claim must be set"))
 		return
 	}
+	scope := identity.Scope{Tenant: authKey.TenantID, Project: req.ProjectID, User: req.UserID}
 	v, err := trust.VerifyClaim(r.Context(), s.st, s.gw, scope, req.Claim, req.Citations)
 	if err != nil {
 		s.log.ErrorContext(r.Context(), "api: verify failed", "err", err)

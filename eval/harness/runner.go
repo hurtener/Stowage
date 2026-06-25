@@ -156,6 +156,20 @@ func (r *Runner) RunCI(ctx context.Context) (*RunResult, error) {
 		prevMemCount = r.srv.ActiveMemoryCount(ctx)
 	}
 
+	// Wait for FULL pipeline quiescence before scoring. The per-conversation
+	// WaitForMemories(+1) above only confirms the FIRST new memory per conversation —
+	// a conversation that derives several memories, plus the now-active episode
+	// boundary/narrative writes (session_id persists per-record since D-124), can still
+	// have async work in flight when the loop advances. On a CPU-starved CI runner
+	// (2 cores, -race + coverage) that tail is wide enough to leave answer-bearing
+	// memories uncommitted at scoring time → spurious context-hit misses and a flaky
+	// benchmark gate. Quiescence (no unprocessed records + a stable active-memory count)
+	// makes the gate deterministic regardless of scheduler pressure; it errors loud on
+	// timeout, so a genuinely stuck pipeline still fails rather than scoring a partial run.
+	if err := r.srv.WaitForQuiescence(ctx, 2*time.Minute); err != nil {
+		return nil, fmt.Errorf("pipeline did not settle before scoring — run would be invalid: %w", err)
+	}
+
 	// Score all questions.
 	results := make([]QuestionResult, 0, len(fixtures.Questions))
 	for _, q := range fixtures.Questions {

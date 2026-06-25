@@ -1477,6 +1477,59 @@ func TestResultCache_LimitInKey(t *testing.T) {
 	}
 }
 
+// TestResultCache_UserKeyNonLossy is the Phase-30 B2 guard: {Tenant,User:alice} and
+// {Tenant,User:bob} are DISTINCT cache keys (the old scope.String() dropped User when Project
+// was empty, collapsing both to the tenant and serving one user the other's cached items).
+func TestResultCache_UserKeyNonLossy(t *testing.T) {
+	t.Parallel()
+	c := retrieval.ExportNewResultCache(16)
+	alice := identity.Scope{Tenant: "t", User: "alice"}
+	bob := identity.Scope{Tenant: "t", User: "bob"}
+
+	c.Put(alice, "sig", "balanced", "", 0, 0, nil, false, 0, nil, retrieval.Support{Strength: "strong"})
+
+	// bob (same tenant, no project, different user) must MISS — not be served alice's entry.
+	if _, _, ok := c.Get(bob, "sig", "balanced", "", 0, 0, nil, false, 0); ok {
+		t.Error("P3 CACHE LEAK: bob hit alice's cache entry — scope key is lossy on User")
+	}
+	// alice still hits her own entry.
+	if _, _, ok := c.Get(alice, "sig", "balanced", "", 0, 0, nil, false, 0); !ok {
+		t.Error("alice must hit her own cache entry")
+	}
+}
+
+// TestResultCache_AncestorInvalidation is the Phase-30 B2 follow-on guard: a tenant-wide
+// InvalidateScope({Tenant}) — what the lifecycle sweeps emit — must bust a per-USER cached read
+// ({Tenant,User}), because scopeGen sums the scope's gen with its ancestors'. A per-user
+// invalidate, conversely, busts only that user. Without the ancestor sum, per-user reads would
+// be served stale after a tenant sweep.
+func TestResultCache_AncestorInvalidation(t *testing.T) {
+	t.Parallel()
+	c := retrieval.ExportNewResultCache(16)
+	tenant := identity.Scope{Tenant: "t"}
+	alice := identity.Scope{Tenant: "t", User: "alice"}
+	bob := identity.Scope{Tenant: "t", User: "bob"}
+
+	c.Put(alice, "sig", "balanced", "", 0, 0, nil, false, 0, nil, retrieval.Support{Strength: "strong"})
+	c.Put(bob, "sig", "balanced", "", 0, 0, nil, false, 0, nil, retrieval.Support{Strength: "strong"})
+
+	// A per-user invalidate busts ONLY that user.
+	c.InvalidateScope(alice)
+	if _, _, ok := c.Get(alice, "sig", "balanced", "", 0, 0, nil, false, 0); ok {
+		t.Error("per-user invalidate must bust alice's entry")
+	}
+	if _, _, ok := c.Get(bob, "sig", "balanced", "", 0, 0, nil, false, 0); !ok {
+		t.Error("per-user invalidate of alice must NOT bust bob's entry")
+	}
+
+	// Re-prime alice; a TENANT-WIDE invalidate must bust the per-user read too.
+	c.Put(alice, "sig", "balanced", "", 0, 0, nil, false, 0, nil, retrieval.Support{Strength: "strong"})
+	c.InvalidateScope(tenant)
+	if _, _, ok := c.Get(alice, "sig", "balanced", "", 0, 0, nil, false, 0); ok {
+		t.Error("tenant-wide invalidate must bust the per-user cached read (ancestor-summed generation)")
+	}
+}
+
 // TestResultCache_Stats tracks hits and misses.
 func TestResultCache_Stats(t *testing.T) {
 	t.Parallel()
@@ -2018,5 +2071,101 @@ func TestResultCache_KeyIncludesKindsAndLanes(t *testing.T) {
 	c.Put(scope, "sig2", "balanced", "", 0, 0, []string{"fact", "task"}, false, 0, nil, retrieval.Support{})
 	if _, _, ok := c.Get(scope, "sig2", "balanced", "", 0, 0, []string{"task", "fact"}, false, 0); !ok {
 		t.Error("Kinds key must be order-independent")
+	}
+}
+
+// TestRetrieve_UserScopeIsolation is the Phase-30 read-isolation guard (P3, D-125): two users
+// under ONE tenant with identical-topic memories — a retrieve scoped to user A returns ONLY A's
+// memory across the LEXICAL AND VECTOR lanes, never B's; a tenant-only retrieve (no user) sees
+// both (back-compat). Proves the store-layer scope filtering reaches every lane through the
+// retriever. The B2 sub-test proves the RESULT CACHE keys on the full sub-scope: an identical
+// query issued as B right after A is a cache MISS (not served A's cached items).
+func TestRetrieve_UserScopeIsolation(t *testing.T) {
+	t.Parallel()
+	st := openStore(t)
+	gw := openMockGateway(t, 4)
+	vi := vindex.New(st.Vectors(), 4, "test")
+	r := retrieval.New(st.Memories(), st.Records(), vi, gw, slog.New(slog.NewTextHandler(os.Stderr, nil)))
+
+	tenant := "tenant-iso"
+	alice := identity.Scope{Tenant: tenant, User: "alice"}
+	bob := identity.Scope{Tenant: tenant, User: "bob"}
+	ctx := context.Background()
+
+	// Identical embeddable term for both users so the VECTOR lane (mock embeddings are
+	// sha-seeded → identical text yields identical vectors) would surface either memory
+	// absent scope filtering. Vectors are upserted under each user's scope.
+	term := "machine learning model training pipeline"
+	aID := insertMemory(t, st, alice, term, "preference", nil, []string{"favoritedatabasepostgresql"}, nil, 0)
+	bID := insertMemory(t, st, bob, term, "preference", nil, []string{"favoritedatabasepostgresql"}, nil, 0)
+	embedResp, err := gw.Embed(ctx, gateway.EmbedRequest{Inputs: []string{term}})
+	if err != nil {
+		t.Fatalf("embed: %v", err)
+	}
+	if err := vi.Upsert(ctx, alice, aID, embedResp.Vectors[0]); err != nil {
+		t.Fatalf("vindex upsert alice: %v", err)
+	}
+	if err := vi.Upsert(ctx, bob, bID, embedResp.Vectors[0]); err != nil {
+		t.Fatalf("vindex upsert bob: %v", err)
+	}
+
+	// Scoped to alice → only alice's memory, never bob's — through the lexical AND vector lanes.
+	resp, err := r.Retrieve(ctx, alice, retrieval.Request{Query: term, Limit: 10, IncludeLanes: true})
+	if err != nil {
+		t.Fatalf("retrieve(alice): %v", err)
+	}
+	sawA, sawB, sawVector := false, false, false
+	for _, it := range resp.Items {
+		switch it.Memory.ID {
+		case aID:
+			sawA = true
+			for _, l := range it.Lanes {
+				if l == "vector" {
+					sawVector = true
+				}
+			}
+		case bID:
+			sawB = true
+		}
+	}
+	if !sawA {
+		t.Errorf("alice-scoped retrieve must return alice's own memory")
+	}
+	if sawB {
+		t.Errorf("P3 LEAK: alice-scoped retrieve surfaced bob's memory %q", bID)
+	}
+	if !sawVector {
+		t.Errorf("vector lane not exercised — alice's memory must be attributed to the vector lane (proves vindex.Search filters by user)")
+	}
+
+	// B2 cache-isolation: the SAME query+params issued as bob immediately after alice must NOT
+	// be served alice's cached items. With the lossy Scope.String() key both {T,user:alice} and
+	// {T,user:bob} collapsed to "T" → a cache HIT would have leaked alice's items to bob.
+	respBob, err := r.Retrieve(ctx, bob, retrieval.Request{Query: term, Limit: 10, IncludeLanes: true})
+	if err != nil {
+		t.Fatalf("retrieve(bob): %v", err)
+	}
+	for _, it := range respBob.Items {
+		if it.Memory.ID == aID {
+			t.Errorf("P3 CACHE LEAK: bob-scoped retrieve surfaced alice's memory %q (lossy cache key)", aID)
+		}
+	}
+	if respBob.CacheHit {
+		t.Errorf("bob's retrieve must be a cache MISS, not a hit on alice's entry")
+	}
+
+	// Tenant-only (no user) → both (back-compat / tenant-admin view).
+	resp2, err := r.Retrieve(ctx, identity.Scope{Tenant: tenant}, retrieval.Request{Query: term, Limit: 10})
+	if err != nil {
+		t.Fatalf("retrieve(tenant): %v", err)
+	}
+	n := 0
+	for _, it := range resp2.Items {
+		if it.Memory.ID == aID || it.Memory.ID == bID {
+			n++
+		}
+	}
+	if n != 2 {
+		t.Errorf("tenant-only retrieve should see both users' memories (back-compat), saw %d", n)
 	}
 }

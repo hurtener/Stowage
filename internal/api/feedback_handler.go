@@ -23,6 +23,10 @@ type feedbackRequest struct {
 	MemoryID   string `json:"memory_id"`   // memory-level feedback
 	Citation   string `json:"citation"`    // citation-level feedback (wrong_citation only)
 	Signal     string `json:"signal"`      // use|save|fail|noise|wrong_citation
+	// ProjectID/UserID scope the injection/memory mutate to a sub-tenant identity (P3,
+	// D-125); empty = tenant-wide. Prevents applying feedback to another user's memory.
+	ProjectID string `json:"project_id"`
+	UserID    string `json:"user_id"`
 }
 
 // feedbackResponse is the wire format for POST /v1/feedback.
@@ -91,7 +95,7 @@ func (s *Server) handleFeedback(w http.ResponseWriter, r *http.Request) {
 	}
 
 	authKey := keyFromContext(r.Context())
-	scope := identity.Scope{Tenant: authKey.TenantID}
+	scope := identity.Scope{Tenant: authKey.TenantID, Project: req.ProjectID, User: req.UserID}
 
 	switch {
 	case req.Citation != "":

@@ -16,12 +16,51 @@ import (
 	"github.com/hurtener/stowage/internal/store"
 )
 
+// addScopeParams sets the project_id/user_id read sub-scope query params (P3, D-125)
+// when non-empty, so a GET/path-based endpoint scopes to a sub-tenant identity. The
+// server handlers read these via scopeFromRequest. Body-based endpoints carry the same
+// dimensions as JSON fields instead.
+func addScopeParams(v url.Values, projectID, userID string) {
+	if projectID != "" {
+		v.Set("project_id", projectID)
+	}
+	if userID != "" {
+		v.Set("user_id", userID)
+	}
+}
+
 // httpClient implements Client via the Stowage HTTP API.
 // It is safe for concurrent use after construction.
 type httpClient struct {
 	baseURL string
 	apiKey  string
 	http    *http.Client
+	// projectID/userID are the construction-time read/mutate sub-scope (WithProject/
+	// WithUser, P3 D-125). Each call's effective scope is the per-call request field
+	// when set, else this default (see effScope) — parity with the embedded client's
+	// callScope. The tenant is the API key (server-derived).
+	projectID string
+	userID    string
+}
+
+// effScope resolves the effective project/user for a call: the per-call value when
+// non-empty, else the construction-time default. Mirrors embeddedClient.callScope so
+// WithProject/WithUser bind the HTTP client to a sub-scope identically to embedded.
+func (c *httpClient) effScope(project, user string) (string, string) {
+	if project == "" {
+		project = c.projectID
+	}
+	if user == "" {
+		user = c.userID
+	}
+	return project, user
+}
+
+// addEffScope sets the project_id/user_id query params from the effective scope
+// (per-call value, else the client's construction default — see effScope).
+func (c *httpClient) addEffScope(v url.Values, project, user string) {
+	p, u := c.effScope(project, user)
+	addScopeParams(v, p, u)
 }
 
 // Option configures a Client constructed by NewHTTP or NewEmbedded.
@@ -29,6 +68,8 @@ type Option func(*options)
 
 type options struct {
 	tenantID   string        // embedded: default tenant scope
+	projectID  string        // embedded: default project sub-scope (P3, D-125)
+	userID     string        // embedded: default user sub-scope (P3, D-125)
 	httpClient *http.Client  // HTTP: custom transport
 	timeout    time.Duration // HTTP: per-request timeout (default 30s)
 }
@@ -55,6 +96,21 @@ func WithTenantID(id string) Option {
 	return func(o *options) { o.tenantID = id }
 }
 
+// WithProject sets the default project sub-scope for the embedded client (P3,
+// D-125). All operations run under this project unless a per-call request field
+// overrides it. Optional — empty means tenant-wide (no project predicate).
+func WithProject(id string) Option {
+	return func(o *options) { o.projectID = id }
+}
+
+// WithUser sets the default user sub-scope for the embedded client (P3, D-125).
+// All operations run under this user unless a per-call request field overrides
+// it. Optional — empty means tenant-wide (no user predicate). Set this to bind a
+// single-user embedded client to one user's isolated memory partition.
+func WithUser(id string) Option {
+	return func(o *options) { o.userID = id }
+}
+
 // NewHTTP returns a Client that communicates with a Stowage HTTP server at
 // baseURL using apiKey for Bearer authentication. The tenant scope is derived
 // from the API key on the server side.
@@ -72,9 +128,11 @@ func NewHTTP(baseURL, apiKey string, opts ...Option) Client {
 	}
 
 	return &httpClient{
-		baseURL: baseURL,
-		apiKey:  apiKey,
-		http:    hc,
+		baseURL:   baseURL,
+		apiKey:    apiKey,
+		http:      hc,
+		projectID: o.projectID,
+		userID:    o.userID,
 	}
 }
 
@@ -175,6 +233,7 @@ func (c *httpClient) Ingest(ctx context.Context, req IngestRequest) (IngestRespo
 
 // Retrieve implements Client.
 func (c *httpClient) Retrieve(ctx context.Context, req RetrieveRequest) (RetrieveResponse, error) {
+	req.ProjectID, req.UserID = c.effScope(req.ProjectID, req.UserID)
 	var resp RetrieveResponse
 	if err := c.do(ctx, http.MethodPost, "/v1/retrieve", req, &resp); err != nil {
 		return RetrieveResponse{}, err
@@ -184,6 +243,7 @@ func (c *httpClient) Retrieve(ctx context.Context, req RetrieveRequest) (Retriev
 
 // Drilldown implements Client.
 func (c *httpClient) Drilldown(ctx context.Context, req DrilldownRequest) (DrilldownResponse, error) {
+	req.ProjectID, req.UserID = c.effScope(req.ProjectID, req.UserID)
 	var resp DrilldownResponse
 	if err := c.do(ctx, http.MethodPost, "/v1/drilldown", req, &resp); err != nil {
 		return DrilldownResponse{}, err
@@ -193,6 +253,7 @@ func (c *httpClient) Drilldown(ctx context.Context, req DrilldownRequest) (Drill
 
 // Feedback implements Client.
 func (c *httpClient) Feedback(ctx context.Context, req FeedbackRequest) (FeedbackResponse, error) {
+	req.ProjectID, req.UserID = c.effScope(req.ProjectID, req.UserID)
 	var resp FeedbackResponse
 	if err := c.do(ctx, http.MethodPost, "/v1/feedback", req, &resp); err != nil {
 		return FeedbackResponse{}, err
@@ -202,6 +263,7 @@ func (c *httpClient) Feedback(ctx context.Context, req FeedbackRequest) (Feedbac
 
 // ResolveCitations implements Client.
 func (c *httpClient) ResolveCitations(ctx context.Context, req ResolveCitationsRequest) (ResolveCitationsResponse, error) {
+	req.ProjectID, req.UserID = c.effScope(req.ProjectID, req.UserID)
 	var resp ResolveCitationsResponse
 	if err := c.do(ctx, http.MethodPost, "/v1/citations/resolve", req, &resp); err != nil {
 		return ResolveCitationsResponse{}, err
@@ -223,9 +285,14 @@ func (c *httpClient) Topics(ctx context.Context) (TopicsResponse, error) {
 // Playbook implements Client via GET /v1/playbook (D-072). SessionID, when set,
 // is passed as the ?session_id= query param for session-affinity.
 func (c *httpClient) Playbook(ctx context.Context, req PlaybookRequest) (PlaybookResponse, error) {
-	path := "/v1/playbook"
+	v := url.Values{}
 	if req.SessionID != "" {
-		path += "?session_id=" + url.QueryEscape(req.SessionID)
+		v.Set("session_id", req.SessionID)
+	}
+	c.addEffScope(v, req.ProjectID, req.UserID)
+	path := "/v1/playbook"
+	if enc := v.Encode(); enc != "" {
+		path += "?" + enc
 	}
 	var resp PlaybookResponse
 	if err := c.do(ctx, http.MethodGet, path, nil, &resp); err != nil {
@@ -264,6 +331,7 @@ func (c *httpClient) Episodes(ctx context.Context, req EpisodesRequest) (Episode
 	if req.ArcOf != "" {
 		v.Set("arc_of", req.ArcOf)
 	}
+	c.addEffScope(v, req.ProjectID, req.UserID)
 	path := "/v1/episodes"
 	if enc := v.Encode(); enc != "" {
 		path += "?" + enc
@@ -288,6 +356,7 @@ func (c *httpClient) Causal(ctx context.Context, req CausalRequest) (CausalRespo
 	if req.Depth > 0 {
 		v.Set("depth", strconv.Itoa(req.Depth))
 	}
+	c.addEffScope(v, req.ProjectID, req.UserID)
 	var resp CausalResponse
 	if err := c.do(ctx, http.MethodGet, "/v1/causal?"+v.Encode(), nil, &resp); err != nil {
 		return CausalResponse{}, err
@@ -300,6 +369,7 @@ func (c *httpClient) Verify(ctx context.Context, req VerifyRequest) (VerifyRespo
 	if req.Claim == "" {
 		return VerifyResponse{}, errors.New("sdk: verify: claim must not be empty")
 	}
+	req.ProjectID, req.UserID = c.effScope(req.ProjectID, req.UserID)
 	var resp VerifyResponse
 	if err := c.do(ctx, http.MethodPost, "/v1/verify", req, &resp); err != nil {
 		return VerifyResponse{}, err
@@ -318,6 +388,7 @@ func (c *httpClient) Review(ctx context.Context, req ReviewRequest) (ReviewRespo
 		if req.Cursor != "" {
 			v.Set("cursor", req.Cursor)
 		}
+		c.addEffScope(v, req.ProjectID, req.UserID)
 		path := "/v1/review"
 		if enc := v.Encode(); enc != "" {
 			path += "?" + enc
@@ -331,9 +402,12 @@ func (c *httpClient) Review(ctx context.Context, req ReviewRequest) (ReviewRespo
 		if req.MemoryID == "" {
 			return ReviewResponse{}, errors.New("sdk: review: memory_id required for approve/reject")
 		}
+		p, u := c.effScope(req.ProjectID, req.UserID)
 		body := struct {
-			Action string `json:"action"`
-		}{Action: req.Action}
+			Action    string `json:"action"`
+			ProjectID string `json:"project_id,omitempty"`
+			UserID    string `json:"user_id,omitempty"`
+		}{Action: req.Action, ProjectID: p, UserID: u}
 		var resp ReviewResponse
 		if err := c.do(ctx, http.MethodPost, "/v1/review/"+url.PathEscape(req.MemoryID), body, &resp); err != nil {
 			return ReviewResponse{}, err
@@ -349,8 +423,14 @@ func (c *httpClient) Trace(ctx context.Context, req TraceRequest) (TraceResponse
 	if req.ResponseID == "" {
 		return TraceResponse{}, errors.New("sdk: trace: response_id must not be empty")
 	}
+	path := "/v1/traces/" + url.PathEscape(req.ResponseID)
+	v := url.Values{}
+	c.addEffScope(v, req.ProjectID, req.UserID)
+	if enc := v.Encode(); enc != "" {
+		path += "?" + enc
+	}
 	var resp TraceResponse
-	if err := c.do(ctx, http.MethodGet, "/v1/traces/"+url.PathEscape(req.ResponseID), nil, &resp); err != nil {
+	if err := c.do(ctx, http.MethodGet, path, nil, &resp); err != nil {
 		return TraceResponse{}, err
 	}
 	return resp, nil
@@ -405,8 +485,17 @@ func (c *httpClient) GetMemory(ctx context.Context, id string) (GetMemoryRespons
 	if id == "" {
 		return GetMemoryResponse{}, errors.New("sdk: get_memory: id must not be empty")
 	}
+	// GetMemory takes a bare id (no per-call request struct), so it carries only the
+	// client's construction sub-scope (WithProject/WithUser). Per-call override is not
+	// available on this surface — a documented exception in D-125.
+	path := "/v1/memories/" + url.PathEscape(id)
+	v := url.Values{}
+	c.addEffScope(v, "", "")
+	if enc := v.Encode(); enc != "" {
+		path += "?" + enc
+	}
 	var resp GetMemoryResponse
-	if err := c.do(ctx, http.MethodGet, "/v1/memories/"+url.PathEscape(id), nil, &resp); err != nil {
+	if err := c.do(ctx, http.MethodGet, path, nil, &resp); err != nil {
 		return GetMemoryResponse{}, err
 	}
 	return resp, nil
@@ -417,8 +506,14 @@ func (c *httpClient) Rollback(ctx context.Context, req RollbackRequest) (Memory,
 	if req.MemoryID == "" {
 		return Memory{}, errors.New("sdk: rollback: memory_id must not be empty")
 	}
+	path := "/v1/memories/" + url.PathEscape(req.MemoryID) + "/rollback"
+	v := url.Values{}
+	c.addEffScope(v, req.ProjectID, req.UserID)
+	if enc := v.Encode(); enc != "" {
+		path += "?" + enc
+	}
 	var resp Memory
-	if err := c.do(ctx, http.MethodPost, "/v1/memories/"+url.PathEscape(req.MemoryID)+"/rollback", nil, &resp); err != nil {
+	if err := c.do(ctx, http.MethodPost, path, nil, &resp); err != nil {
 		return Memory{}, err
 	}
 	return resp, nil
@@ -432,6 +527,7 @@ func (c *httpClient) ResolveMemory(ctx context.Context, req ResolveRequest) (Res
 	if req.Action != "confirm" && req.Action != "reject" {
 		return ResolveResponse{}, errors.New("sdk: resolve_memory: action must be confirm or reject")
 	}
+	req.ProjectID, req.UserID = c.effScope(req.ProjectID, req.UserID)
 	var resp ResolveResponse
 	if err := c.do(ctx, http.MethodPatch, "/v1/memories/"+url.PathEscape(req.MemoryID), req, &resp); err != nil {
 		return ResolveResponse{}, err
@@ -485,39 +581,48 @@ type branchHTTPRequest struct {
 	SessionID      string `json:"session_id,omitempty"`
 	BranchID       string `json:"branch_id,omitempty"`
 	ParentBranchID string `json:"parent_branch_id,omitempty"`
+	ProjectID      string `json:"project_id,omitempty"`
+	UserID         string `json:"user_id,omitempty"`
 }
 
 // ForkBranch implements Client via POST /v1/branches (D-029/D-071).
 func (c *httpClient) ForkBranch(ctx context.Context, req ForkBranchRequest) (ForkBranchResponse, error) {
+	p, u := c.effScope(req.ProjectID, req.UserID)
 	var resp ForkBranchResponse
 	if err := c.do(ctx, http.MethodPost, "/v1/branches", branchHTTPRequest{
 		Action: "fork", SessionID: req.SessionID, ParentBranchID: req.ParentBranchID,
+		ProjectID: p, UserID: u,
 	}, &resp); err != nil {
 		return ForkBranchResponse{}, err
 	}
 	return resp, nil
 }
 
-// MergeBranch implements Client via POST /v1/branches (D-029/D-071).
+// MergeBranch implements Client via POST /v1/branches (D-029/D-071). It takes a bare
+// branchID (no request struct), so it carries only the client's construction sub-scope
+// (WithProject/WithUser); per-call override is a documented exception (D-125).
 func (c *httpClient) MergeBranch(ctx context.Context, branchID string) (BranchResponse, error) {
 	if branchID == "" {
 		return BranchResponse{}, errors.New("sdk: merge_branch: branch_id must not be empty")
 	}
+	p, u := c.effScope("", "")
 	if err := c.do(ctx, http.MethodPost, "/v1/branches", branchHTTPRequest{
-		Action: "merge", BranchID: branchID,
+		Action: "merge", BranchID: branchID, ProjectID: p, UserID: u,
 	}, nil); err != nil {
 		return BranchResponse{}, err
 	}
 	return BranchResponse{BranchID: branchID, Status: "merged"}, nil
 }
 
-// DiscardBranch implements Client via POST /v1/branches (D-029/D-071).
+// DiscardBranch implements Client via POST /v1/branches (D-029/D-071). Bare branchID:
+// construction sub-scope only (per-call override is a documented exception, D-125).
 func (c *httpClient) DiscardBranch(ctx context.Context, branchID string) (BranchResponse, error) {
 	if branchID == "" {
 		return BranchResponse{}, errors.New("sdk: discard_branch: branch_id must not be empty")
 	}
+	p, u := c.effScope("", "")
 	if err := c.do(ctx, http.MethodPost, "/v1/branches", branchHTTPRequest{
-		Action: "discard", BranchID: branchID,
+		Action: "discard", BranchID: branchID, ProjectID: p, UserID: u,
 	}, nil); err != nil {
 		return BranchResponse{}, err
 	}

@@ -3,6 +3,12 @@
   "properties": {
     "memory_id": {
       "type": "string"
+    },
+    "project_id": {
+      "type": "string"
+    },
+    "user_id": {
+      "type": "string"
     }
   },
   "required": [

@@ -67,10 +67,13 @@ type RetrieveInput struct {
 	Until        int64    `json:"until,omitempty"`
 	Kinds        []string `json:"kinds,omitempty"`
 	IncludeLanes bool     `json:"include_lanes,omitempty"`
-	SessionID    string   `json:"session_id,omitempty"`
-	Debug        bool     `json:"debug,omitempty"`
-	ResponseID   string   `json:"response_id,omitempty"`
-	Profile      string   `json:"profile,omitempty"`
+	// ProjectID/UserID scope the read to a sub-tenant identity (P3, D-125); empty = tenant-wide.
+	ProjectID  string `json:"project_id,omitempty"`
+	UserID     string `json:"user_id,omitempty"`
+	SessionID  string `json:"session_id,omitempty"`
+	Debug      bool   `json:"debug,omitempty"`
+	ResponseID string `json:"response_id,omitempty"`
+	Profile    string `json:"profile,omitempty"`
 }
 
 // RetrieveItem is one result in the memory_retrieve output.
@@ -120,6 +123,9 @@ type RetrieveOutput struct {
 // profile-internal (D-034/D-042) — there is no client-supplied limit.
 type PlaybookInput struct {
 	SessionID string `json:"session_id,omitempty"`
+	// ProjectID/UserID scope assembly to a sub-tenant identity (P3, D-125); empty = tenant-wide.
+	ProjectID string `json:"project_id,omitempty"`
+	UserID    string `json:"user_id,omitempty"`
 }
 
 // PlaybookProvRef is a compact provenance span reference for P1 drill-down.
@@ -178,6 +184,9 @@ type EpisodesInput struct {
 	// ArcOf, when set, returns the cross-session arc of the given episode id — the
 	// episodes threaded to it via relates_to edges (§6b threading, Phase 24b/D-081).
 	ArcOf string `json:"arc_of,omitempty"`
+	// ProjectID/UserID scope the read to a sub-tenant identity (P3, D-125); empty = tenant-wide.
+	ProjectID string `json:"project_id,omitempty"`
+	UserID    string `json:"user_id,omitempty"`
 }
 
 // EpisodeItem is one episode + its narrative (byte-identical to the HTTP/SDK shape).
@@ -209,6 +218,9 @@ type CausalInput struct {
 	MemoryID  string `json:"memory_id"`
 	Direction string `json:"direction,omitempty"`
 	Depth     int    `json:"depth,omitempty"`
+	// ProjectID/UserID scope the traversal to a sub-tenant identity (P3, D-125); empty = tenant-wide.
+	ProjectID string `json:"project_id,omitempty"`
+	UserID    string `json:"user_id,omitempty"`
 }
 
 // CausalProvRefItem is a compact provenance span for P1 drill-down at a node.
@@ -251,6 +263,9 @@ type CausalOutput struct {
 type VerifyInput struct {
 	Claim     string   `json:"claim"`
 	Citations []string `json:"citations,omitempty"`
+	// ProjectID/UserID scope the citation/memory reads to a sub-tenant identity (P3, D-125); empty = tenant-wide.
+	ProjectID string `json:"project_id,omitempty"`
+	UserID    string `json:"user_id,omitempty"`
 }
 
 // VerifyOutput is the memory_verify tool output: the entailment verdict.
@@ -270,6 +285,10 @@ type ReviewInput struct {
 	ID     string `json:"id,omitempty"`
 	Limit  int    `json:"limit,omitempty"`
 	Cursor string `json:"cursor,omitempty"`
+	// ProjectID/UserID scope the list + approve/reject to a sub-tenant identity (P3, D-125);
+	// empty = tenant-wide. Prevents resolving another user's pending_review memory.
+	ProjectID string `json:"project_id,omitempty"`
+	UserID    string `json:"user_id,omitempty"`
 }
 
 // ReviewItem is one pending_review memory in the queue.
@@ -297,6 +316,9 @@ type ReviewOutput struct {
 // byte-identical to GET /v1/traces/{response_id} and the SDK TraceResponse.
 type TraceInput struct {
 	ResponseID string `json:"response_id"`
+	// ProjectID/UserID scope the trace reconstruction to a sub-tenant identity (P3, D-125); empty = tenant-wide.
+	ProjectID string `json:"project_id,omitempty"`
+	UserID    string `json:"user_id,omitempty"`
 }
 
 // ─── memory_drilldown ────────────────────────────────────────────────────────
@@ -305,6 +327,9 @@ type TraceInput struct {
 type DrilldownInput struct {
 	MemoryID string `json:"memory_id,omitempty"`
 	Citation string `json:"citation,omitempty"`
+	// ProjectID/UserID scope the lookup to a sub-tenant identity (P3, D-125); empty = tenant-wide.
+	ProjectID string `json:"project_id,omitempty"`
+	UserID    string `json:"user_id,omitempty"`
 }
 
 // DrilldownSpan is one provenance span in the drilldown output.
@@ -331,6 +356,10 @@ type FeedbackInput struct {
 	MemoryID   string `json:"memory_id,omitempty"`
 	Citation   string `json:"citation,omitempty"`
 	Signal     string `json:"signal"`
+	// ProjectID/UserID scope the injection/memory mutate to a sub-tenant identity (P3, D-125);
+	// empty = tenant-wide. Prevents applying feedback to another user's memory.
+	ProjectID string `json:"project_id,omitempty"`
+	UserID    string `json:"user_id,omitempty"`
 }
 
 // FeedbackOutput is the memory_feedback tool output.
@@ -417,6 +446,9 @@ type BranchInput struct {
 	SessionID      string `json:"session_id,omitempty"`       // required for fork
 	BranchID       string `json:"branch_id,omitempty"`        // required for merge/discard
 	ParentBranchID string `json:"parent_branch_id,omitempty"` // optional for fork
+	// ProjectID/UserID scope the branch mutate to a sub-tenant identity (P3, D-125); empty = tenant-wide.
+	ProjectID string `json:"project_id,omitempty"`
+	UserID    string `json:"user_id,omitempty"`
 }
 
 // BranchOutput is the memory_branch tool output.
@@ -539,6 +571,9 @@ type MemoryProvRef struct {
 // GetInput is the memory_get tool input (mirrors HTTP GET /v1/memories/{id}).
 type GetInput struct {
 	MemoryID string `json:"memory_id"`
+	// ProjectID/UserID scope the read to a sub-tenant identity (P3, D-125); empty = tenant-wide.
+	ProjectID string `json:"project_id,omitempty"`
+	UserID    string `json:"user_id,omitempty"`
 }
 
 // GetOutput is the memory_get tool output.
@@ -556,6 +591,9 @@ type GetOutput struct {
 // RollbackInput is the memory_rollback tool input (mirrors POST /v1/memories/{id}/rollback).
 type RollbackInput struct {
 	MemoryID string `json:"memory_id"`
+	// ProjectID/UserID scope the rollback to a sub-tenant identity (P3, D-125); empty = tenant-wide.
+	ProjectID string `json:"project_id,omitempty"`
+	UserID    string `json:"user_id,omitempty"`
 }
 
 // RollbackOutput is the memory_rollback tool output: the restored memory.
@@ -570,6 +608,9 @@ type RollbackOutput struct {
 type ResolveInput struct {
 	MemoryID string `json:"memory_id"`
 	Action   string `json:"action"`
+	// ProjectID/UserID scope the confirm/reject to a sub-tenant identity (P3, D-125); empty = tenant-wide.
+	ProjectID string `json:"project_id,omitempty"`
+	UserID    string `json:"user_id,omitempty"`
 }
 
 // ResolveOutput is the memory_resolve tool output.

@@ -19,9 +19,13 @@ var ErrInvalidScope = errors.New("identity: invalid scope")
 // Scope identifies the tenant, project, user, and session for an operation.
 //
 // Constraints (enforced by Validate):
-//   - Tenant is required.
-//   - Lower levels are optional but contiguous: Session requires User; User
-//     requires Project. (No "holes" in the scope chain.)
+//   - Tenant is required (the auth boundary).
+//   - Project, User, and Session are INDEPENDENT optional dimensions — any
+//     combination is valid (e.g. {Tenant, User} with no Project is a legitimate
+//     multi-user-no-projects deployment, D-125). This matches the store's
+//     buildScopeWhere, which filters each set dimension independently. (Earlier
+//     versions required a contiguous chain; that contradicted read scoping and
+//     was relaxed in Phase 30, B4.)
 type Scope struct {
 	Tenant  string
 	Project string
@@ -52,17 +56,15 @@ func (s Scope) String() string {
 	return strings.Join(parts, "/")
 }
 
-// Validate checks scope constraints.
-// Returns ErrInvalidScope (wrapped) on failure.
+// Validate checks scope constraints. Returns ErrInvalidScope (wrapped) on failure.
+//
+// Only Tenant is required. Project/User/Session are independent optional
+// dimensions (Phase 30, B4): the store filters each one independently via
+// buildScopeWhere, and a per-user read with no project ({Tenant, User}) is a
+// first-class shape (D-125). There is no contiguity requirement.
 func (s Scope) Validate() error {
 	if s.Tenant == "" {
 		return fmt.Errorf("%w: tenant is required", ErrInvalidScope)
-	}
-	if s.Session != "" && s.User == "" {
-		return fmt.Errorf("%w: session requires user", ErrInvalidScope)
-	}
-	if s.User != "" && s.Project == "" {
-		return fmt.Errorf("%w: user requires project", ErrInvalidScope)
 	}
 	return nil
 }

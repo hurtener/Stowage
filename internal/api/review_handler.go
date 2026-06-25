@@ -29,6 +29,12 @@ type reviewListResponseJSON struct {
 
 type reviewResolveRequestJSON struct {
 	Action string `json:"action"` // approve | reject
+	// ProjectID/UserID scope the resolve to a sub-tenant identity (P3, D-125); empty =
+	// tenant-wide. CRITICAL for review: without it any caller in the tenant could
+	// approve/reject another user's pending_review memory (the store WHERE-clause
+	// narrows the mutate to the owning scope when these are set).
+	ProjectID string `json:"project_id"`
+	UserID    string `json:"user_id"`
 }
 
 type reviewResolveResponseJSON struct {
@@ -39,8 +45,7 @@ type reviewResolveResponseJSON struct {
 // handleReviewList implements GET /v1/review (RFC §6c, D-084): list the scope's
 // pending_review memories.
 func (s *Server) handleReviewList(w http.ResponseWriter, r *http.Request) {
-	authKey := keyFromContext(r.Context())
-	scope := identity.Scope{Tenant: authKey.TenantID}
+	scope := scopeFromRequest(r)
 	q := r.URL.Query()
 
 	mems, next, err := trust.ListPending(r.Context(), s.st, scope, atoiDefault(q.Get("limit"), 0), q.Get("cursor"))
@@ -63,7 +68,6 @@ func (s *Server) handleReviewResolve(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	authKey := keyFromContext(r.Context())
-	scope := identity.Scope{Tenant: authKey.TenantID}
 	id := r.PathValue("id")
 	if id == "" {
 		respondJSON(w, http.StatusBadRequest, errBody("memory id required"))
@@ -76,6 +80,7 @@ func (s *Server) handleReviewResolve(w http.ResponseWriter, r *http.Request) {
 		respondJSON(w, http.StatusBadRequest, errBody("decode: "+sanitizeDecodeErr(err)))
 		return
 	}
+	scope := identity.Scope{Tenant: authKey.TenantID, Project: req.ProjectID, User: req.UserID}
 	if req.Action != string(trust.ReviewApprove) && req.Action != string(trust.ReviewReject) {
 		respondJSON(w, http.StatusBadRequest, errBody("action must be approve or reject"))
 		return

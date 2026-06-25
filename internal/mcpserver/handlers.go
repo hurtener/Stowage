@@ -172,6 +172,9 @@ func makeRetrieveHandler(svc *Services) tool.Handler[RetrieveInput, RetrieveOutp
 		if err != nil {
 			return tool.Result[RetrieveOutput]{}, fmt.Errorf("memory_retrieve: resolve scope: %w", err)
 		}
+		// Tenant is the auth boundary (ScopeFn); project/user are caller-supplied read sub-scopes
+		// (P3, D-125). Empty = tenant-wide (back-compat). The store hard-isolates to this scope.
+		scope = identity.Scope{Tenant: scope.Tenant, Project: in.ProjectID, User: in.UserID}
 
 		if in.Query == "" {
 			return tool.Result[RetrieveOutput]{}, fmt.Errorf("memory_retrieve: query must not be empty")
@@ -252,6 +255,7 @@ func makePlaybookHandler(svc *Services) tool.Handler[PlaybookInput, PlaybookOutp
 		if err != nil {
 			return tool.Result[PlaybookOutput]{}, fmt.Errorf("memory_playbook: resolve scope: %w", err)
 		}
+		scope = identity.Scope{Tenant: scope.Tenant, Project: in.ProjectID, User: in.UserID}
 
 		// LLM-free assembly core (D-072) — identical to GET /v1/playbook + the
 		// embedded SDK Playbook. The token budget is profile-internal (D-042).
@@ -307,6 +311,7 @@ func makeDrilldownHandler(svc *Services) tool.Handler[DrilldownInput, DrilldownO
 		if err != nil {
 			return tool.Result[DrilldownOutput]{}, fmt.Errorf("memory_drilldown: resolve scope: %w", err)
 		}
+		scope = identity.Scope{Tenant: scope.Tenant, Project: in.ProjectID, User: in.UserID}
 
 		if in.MemoryID == "" && in.Citation == "" {
 			return tool.Result[DrilldownOutput]{}, fmt.Errorf("memory_drilldown: one of memory_id or citation must be set")
@@ -391,6 +396,7 @@ func makeFeedbackHandler(svc *Services) tool.Handler[FeedbackInput, FeedbackOutp
 		if err != nil {
 			return tool.Result[FeedbackOutput]{}, fmt.Errorf("memory_feedback: resolve scope: %w", err)
 		}
+		scope = identity.Scope{Tenant: scope.Tenant, Project: in.ProjectID, User: in.UserID}
 
 		if in.Signal == "" {
 			return tool.Result[FeedbackOutput]{}, fmt.Errorf("memory_feedback: signal must be set")
@@ -545,6 +551,7 @@ func makeGetHandler(svc *Services) tool.Handler[GetInput, GetOutput] {
 		if err != nil {
 			return tool.Result[GetOutput]{}, fmt.Errorf("memory_get: resolve scope: %w", err)
 		}
+		scope = identity.Scope{Tenant: scope.Tenant, Project: in.ProjectID, User: in.UserID}
 		if in.MemoryID == "" {
 			return tool.Result[GetOutput]{}, fmt.Errorf("memory_get: memory_id must not be empty")
 		}
@@ -577,6 +584,7 @@ func makeRollbackHandler(svc *Services) tool.Handler[RollbackInput, RollbackOutp
 		if err != nil {
 			return tool.Result[RollbackOutput]{}, fmt.Errorf("memory_rollback: resolve scope: %w", err)
 		}
+		scope = identity.Scope{Tenant: scope.Tenant, Project: in.ProjectID, User: in.UserID}
 		if in.MemoryID == "" {
 			return tool.Result[RollbackOutput]{}, fmt.Errorf("memory_rollback: memory_id must not be empty")
 		}
@@ -604,6 +612,7 @@ func makeResolveHandler(svc *Services) tool.Handler[ResolveInput, ResolveOutput]
 		if err != nil {
 			return tool.Result[ResolveOutput]{}, fmt.Errorf("memory_resolve: resolve scope: %w", err)
 		}
+		scope = identity.Scope{Tenant: scope.Tenant, Project: in.ProjectID, User: in.UserID}
 		if in.MemoryID == "" {
 			return tool.Result[ResolveOutput]{}, fmt.Errorf("memory_resolve: memory_id must not be empty")
 		}
@@ -746,6 +755,7 @@ func makeBranchHandler(svc *Services) tool.Handler[BranchInput, BranchOutput] {
 		if err != nil {
 			return tool.Result[BranchOutput]{}, fmt.Errorf("memory_branch: resolve scope: %w", err)
 		}
+		scope = identity.Scope{Tenant: scope.Tenant, Project: in.ProjectID, User: in.UserID}
 
 		var out BranchOutput
 		switch in.Action {
@@ -931,6 +941,7 @@ func makeEpisodesHandler(svc *Services) tool.Handler[EpisodesInput, EpisodesOutp
 		if err != nil {
 			return tool.Result[EpisodesOutput]{}, fmt.Errorf("memory_episodes: resolve scope: %w", err)
 		}
+		scope = identity.Scope{Tenant: scope.Tenant, Project: in.ProjectID, User: in.UserID}
 		var out EpisodesOutput
 		switch {
 		case in.ID != "":
@@ -1006,6 +1017,7 @@ func makeCausalHandler(svc *Services) tool.Handler[CausalInput, CausalOutput] {
 		if err != nil {
 			return tool.Result[CausalOutput]{}, fmt.Errorf("memory_causal: resolve scope: %w", err)
 		}
+		scope = identity.Scope{Tenant: scope.Tenant, Project: in.ProjectID, User: in.UserID}
 		if in.MemoryID == "" {
 			return tool.Result[CausalOutput]{}, fmt.Errorf("memory_causal: memory_id is required")
 		}
@@ -1048,6 +1060,7 @@ func makeVerifyHandler(svc *Services) tool.Handler[VerifyInput, VerifyOutput] {
 		if err != nil {
 			return tool.Result[VerifyOutput]{}, fmt.Errorf("memory_verify: resolve scope: %w", err)
 		}
+		scope = identity.Scope{Tenant: scope.Tenant, Project: in.ProjectID, User: in.UserID}
 		if in.Claim == "" {
 			return tool.Result[VerifyOutput]{}, fmt.Errorf("memory_verify: claim is required")
 		}
@@ -1071,6 +1084,7 @@ func makeReviewHandler(svc *Services) tool.Handler[ReviewInput, ReviewOutput] {
 		if err != nil {
 			return tool.Result[ReviewOutput]{}, fmt.Errorf("memory_review: resolve scope: %w", err)
 		}
+		scope = identity.Scope{Tenant: scope.Tenant, Project: in.ProjectID, User: in.UserID}
 		switch in.Action {
 		case "list":
 			mems, next, lerr := trust.ListPending(ctx, svc.Store, scope, in.Limit, in.Cursor)
@@ -1111,6 +1125,7 @@ func makeTraceHandler(svc *Services) tool.Handler[TraceInput, traces.Bundle] {
 		if err != nil {
 			return tool.Result[traces.Bundle]{}, fmt.Errorf("memory_trace: resolve scope: %w", err)
 		}
+		scope = identity.Scope{Tenant: scope.Tenant, Project: in.ProjectID, User: in.UserID}
 		if in.ResponseID == "" {
 			return tool.Result[traces.Bundle]{}, fmt.Errorf("memory_trace: response_id is required")
 		}

@@ -440,3 +440,7 @@ New terms land here in the same PR that introduces them (CLAUDE.md §14).
   relationships, numbers, updates) rather than only the default preferences pack.
 - **Conversation context (reconcile)** — the raw provenance turns of the candidate and its neighbors, supplied to the supersede/merge decision so the model distinguishes a correction from a distinct fact that merely shares words (Phase 29b, D-108).
 - **Assertion date / `occurred_at`** — when a fact was stated in conversation (vs `created_at`, when extracted). Captured on the memory as `ValidFrom` and surfaced at retrieval as `occurred_at` / "When:", so a reader can reason temporally and date-resolve stale values (Phase 29c, D-109).
+
+**scope-authoritative write** — the records `Append` rule (D-124): a declared scope dimension
+(project/user/session) wins; the per-record value only fills a dimension the scope left empty, so a
+write can never escape its authorized scope (P3).

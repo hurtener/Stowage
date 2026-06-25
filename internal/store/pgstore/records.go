@@ -15,6 +15,15 @@ import (
 
 type recordStore struct{ s *pgStore }
 
+// scopeOrRecord implements the scope-authoritative write rule (D-124): scope wins when set,
+// the per-record value fills an empty dimension — a record can never override a declared scope (P3).
+func scopeOrRecord(scopeVal, recVal string) string {
+	if scopeVal != "" {
+		return scopeVal
+	}
+	return recVal
+}
+
 func (r *recordStore) Append(ctx context.Context, scope identity.Scope, records []store.Record) error {
 	if scope.Tenant == "" { // S1: fail closed
 		return store.ErrScopeRequired
@@ -41,7 +50,8 @@ func (r *recordStore) Append(ctx context.Context, scope identity.Scope, records 
 				 token_estimate, occurred_at, created_at, processed_at)
 			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
 			ON CONFLICT(id) DO NOTHING`,
-			rec.ID, scope.Tenant, nullStr(scope.Project), nullStr(scope.User), nullStr(scope.Session),
+			// Scope-authoritative write (D-124): scope dimension wins; record fills an empty one (P3).
+			rec.ID, scope.Tenant, nullStr(scopeOrRecord(scope.Project, rec.ProjectID)), nullStr(scopeOrRecord(scope.User, rec.UserID)), nullStr(scopeOrRecord(scope.Session, rec.SessionID)),
 			rec.BranchID, rec.Role, rec.Content, rec.SourceAgent, rec.ResponseID,
 			rec.Outcome, rec.OutcomeDetail, rec.TokenEstimate,
 			rec.OccurredAt, createdAt, rec.ProcessedAt,

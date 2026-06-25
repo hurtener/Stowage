@@ -4,7 +4,6 @@ import (
 	"net/http"
 
 	"github.com/hurtener/stowage/internal/config"
-	"github.com/hurtener/stowage/internal/identity"
 	"github.com/hurtener/stowage/internal/playbook"
 )
 
@@ -54,8 +53,7 @@ type playbookResponseJSON struct {
 // only — no gateway. The token budget is profile-internal (D-034/D-042); the
 // optional ?session_id= query param narrows assembly to one session.
 func (s *Server) handlePlaybook(w http.ResponseWriter, r *http.Request) {
-	authKey := keyFromContext(r.Context())
-	scope := identity.Scope{Tenant: authKey.TenantID}
+	scope := scopeFromRequest(r)
 
 	pb, err := playbook.Assemble(r.Context(), s.st, scope, playbook.Options{
 		SessionID:   r.URL.Query().Get("session_id"),

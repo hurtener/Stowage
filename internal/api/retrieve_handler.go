@@ -19,10 +19,15 @@ type retrieveRequest struct {
 	Until        int64    `json:"until"` // unix millis; 0 = unbounded
 	Kinds        []string `json:"kinds"`
 	IncludeLanes bool     `json:"include_lanes"`
-	SessionID    string   `json:"session_id"`  // used for cooldown + scope affinity (Phase 10)
-	Debug        bool     `json:"debug"`       // if true, include per-item scoring breakdowns (Phase 10)
-	ResponseID   string   `json:"response_id"` // caller-supplied; generated when absent (D-051)
-	Profile      string   `json:"profile"`     // "precise"|"balanced"|"broad"; default "balanced"
+	// ProjectID/UserID scope the read to a sub-tenant identity (P3, D-125). The tenant comes
+	// from the API key; the caller supplies project/user per request (as ingest does). Empty =
+	// tenant-wide (back-compat). The lanes filter on these via the store's buildScopeWhere.
+	ProjectID  string `json:"project_id"`
+	UserID     string `json:"user_id"`
+	SessionID  string `json:"session_id"`  // cooldown + scope-affinity signal (Phase 10), NOT a read-isolation boundary
+	Debug      bool   `json:"debug"`       // if true, include per-item scoring breakdowns (Phase 10)
+	ResponseID string `json:"response_id"` // caller-supplied; generated when absent (D-051)
+	Profile    string `json:"profile"`     // "precise"|"balanced"|"broad"; default "balanced"
 }
 
 // retrieveBreakdown is the wire format for a per-item scoring breakdown.
@@ -125,7 +130,9 @@ func (s *Server) handleRetrieve(w http.ResponseWriter, r *http.Request) {
 	}
 
 	authKey := keyFromContext(r.Context())
-	scope := identity.Scope{Tenant: authKey.TenantID}
+	// Tenant is the auth boundary (the key); project/user are caller-supplied read sub-scopes
+	// (D-125). The store hard-isolates to this scope; grants may widen it (EffectiveScopes).
+	scope := identity.Scope{Tenant: authKey.TenantID, Project: req.ProjectID, User: req.UserID}
 
 	if s.retriever == nil {
 		respondJSON(w, http.StatusServiceUnavailable, errBody("retrieval not available"))

@@ -31,8 +31,10 @@ else
 fi
 
 # --- H1: extraction prompt retains qualifiers; template version bumped ----------
-if grep -q 'PromptTemplateVersion = "4"' internal/pipeline/prompt.go; then
-  ok "H1 extraction PromptTemplateVersion bumped to 4"
+# Phase 29 bumped the template to v4; later phases bump it further (v5 today), so assert
+# it is at the phase-29 floor or higher (single digit ≥ 4) rather than pinning an exact value.
+if grep -qE 'PromptTemplateVersion = "[4-9]"' internal/pipeline/prompt.go; then
+  ok "H1 extraction PromptTemplateVersion bumped (≥ 4)"
 else
   failc "H1 extraction PromptTemplateVersion not bumped"
 fi

@@ -182,8 +182,15 @@ func (e *Embedder) backfillPass(ctx context.Context) {
 	}
 	e.log.InfoContext(ctx, "embedder: backfill sweep enqueuing", "count", len(mems))
 	for _, m := range mems {
+		// Carry the memory's project/user into the embed scope so the vector is upserted
+		// under the SAME sub-scope as its memory row (Phase 30 B1 follow-on). The backfill
+		// sweep is the guaranteed-recovery path when the best-effort primary enqueue drops
+		// or dead-letters a job; a tenant-only scope here would write a NULL-user vector that
+		// (a) escapes its declared scope and (b) is excluded from the owning user's vector-lane
+		// read — making a user-scoped memory unfindable semantically. Session stays empty:
+		// memories are session-less post-B1, matching the memory row.
 		e.Enqueue(EmbedJob{
-			Scope:        identity.Scope{Tenant: m.TenantID},
+			Scope:        identity.Scope{Tenant: m.TenantID, Project: m.ProjectID, User: m.UserID},
 			MemoryID:     m.MemoryID,
 			EnrichedText: buildEnrichedText(m),
 		})

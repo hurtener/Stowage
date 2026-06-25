@@ -4,7 +4,6 @@ import (
 	"net/http"
 
 	"github.com/hurtener/stowage/internal/causal"
-	"github.com/hurtener/stowage/internal/identity"
 )
 
 // causalNodeJSON is one memory in the causal graph (byte-identical to SDK + MCP).
@@ -41,8 +40,7 @@ type causalResponseJSON struct {
 // gateway-free why-traversal of the caused_by/led_to graph from `memory_id`.
 // `direction` ∈ {backward (default), forward, both}; `depth` bounds the hops.
 func (s *Server) handleCausal(w http.ResponseWriter, r *http.Request) {
-	authKey := keyFromContext(r.Context())
-	scope := identity.Scope{Tenant: authKey.TenantID}
+	scope := scopeFromRequest(r)
 	q := r.URL.Query()
 
 	memID := q.Get("memory_id")

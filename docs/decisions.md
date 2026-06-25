@@ -3223,3 +3223,80 @@ the markdown-vs-JSON token saving is already captured (our `[N]` numbering is le
 `## Memory N`). Guards: TestReaderPrompt_QuestionDateAndShapeRules, TestJudgePrompt_PerCategoryLeniency,
 TestNormalize_QuestionDate. All testable on the persisted store via a judged K=50 re-score with no
 re-learning.
+
+## D-124 — Scope-authoritative record write (Append fills per-record scope)
+
+Phase 30. `Records().Append` (both drivers) bound `project_id/user_id/session_id` from the batch
+`scope` arg only — never from each `store.Record` — so a `/v1/records` ingest with a tenant-only
+scope dropped every per-record project/user/session to NULL (confirmed: all 2056 eval records NULL).
+This broke session-keyed features (episodes never fired — `DistinctSessions` filters `session_id IS
+NOT NULL`) and meant the write path couldn't carry per-user data. Decision: bind each dimension as
+`scopeOrRecord(scope.X, rec.X)` — the **scope WINS when set** (a record can never override a declared
+non-empty scope dimension); the per-record value only fills a dimension the scope left empty.
+`scope.Tenant` stays authoritative + the fail-closed guard stays. Guarded by conformance
+`RecordAppendScopeFill` (fill + scope-wins, both drivers).
+
+**Scope of the P3 guarantee (precise).** This makes the scope dimensions that ARE set un-escapable,
+but it is NOT a claim that the store re-verifies per-record identity against the API key. Live ingest
+passes a tenant-only scope (the auth key carries only TenantID — D-030/D-125), so on that path the
+record's project/user/session are trusted as supplied — a tenant key CAN attribute a record to any
+user_id it claims. That is the deliberate app-supplies-identity model (the calling app, Harbor, owns
+end-user attribution; Stowage hard-isolates *reads* to whatever identity is supplied). The hard P3
+boundary enforced in the store is the TENANT; project/user are isolation dimensions the trusted caller
+populates, not independently-authenticated principals. The same applies to the derived-memory commit
+(B1, below): `scopeOrRecord` there fills from the candidate's memory fields only when the commit scope
+left a dimension empty.
+
+## D-125 — Read scope is caller-supplied per request (tenant = auth boundary)
+
+Phase 30. Every retrieve surface built a TENANT-ONLY scope, so the lexical+vector lanes returned all
+users' memories within a tenant — violating the RFC's "hard isolation at tenant AND user" (line 364)
+for the multi-user-per-tenant model. Decision: the **tenant is the auth/trust boundary** (the API key
+carries TenantID); **project/user are caller-supplied per-request read sub-scopes** (HTTP/MCP request
+fields `project_id`/`user_id`; SDK `RetrieveRequest.ProjectID/UserID`), exactly as ingest accepts
+per-record identity — the calling app (Harbor) supplies the end-user, Stowage hard-isolates the query
+to it via the store's `buildScopeWhere`. Empty project/user = tenant-wide (back-compat). Grants
+(Phase 16 `EffectiveScopes`) still widen reads from the caller's real scope. `session_id` stays the
+Phase-10 cooldown/affinity signal, NOT a read-isolation boundary. No per-user keys in v1 (heavier
+key-issuance model, deferred). Guarded by `TestRetrieve_UserScopeIsolation` + SDK/HTTP/MCP parity.
+
+**Dual-review remediation (the read filter is only as good as the write + the cache + every surface).**
+The first pass scoped *only* `/v1/retrieve`; two independent adversarial reviews found that inert and
+the phase was completed across four fronts:
+- **B1 — derived memories were written tenant-only.** The pipeline built the flush/commit scope as
+  `{Tenant: rec.TenantID}` (`pipeline.go` processItem + the age-flush in `tickScan`), discarding
+  `rec.Project/User`, so every memory persisted with user_id=NULL and the D-125 read filter matched
+  nothing (tenant-wide still leaked). Fix: the flush scope carries `rec.Project/User` (Session is
+  deliberately NOT propagated — a memory is a cross-session abstraction and reconcile dedupe keys on
+  tenant/project/user); the memory commit binds `scopeOrRecord` (mirrors D-124). Guarded by
+  `TestFlushScopeFromRecord`.
+- **B2 — the result cache key was lossy.** `identity.Scope.String()` nested User inside `if Project!=""`
+  so `{T,user:alice}` and `{T,user:bob}` both keyed to "T" → a cache HIT served one user another's
+  items once B1 landed. Fix: a non-lossy 4-dimension `scopeCacheKey` + an ancestor-summed `scopeGen`
+  (a per-user cached read is still busted by the tenant-wide `InvalidateScope` the sweeps emit, and a
+  per-user invalidate busts only that user). `hotset` uses the same key. Guarded by
+  `TestResultCache_UserKeyNonLossy` + `TestResultCache_AncestorInvalidation`.
+- **B3 — every OTHER single-user read+mutate surface was still tenant-only.** Extended the
+  per-request project/user sub-scope to playbook, episodes, causal, drilldown, citations, review
+  (list + the approve/reject MUTATE), memories get/rollback/patch, traces, feedback, verify, and
+  branches — across HTTP (query params for GET via `scopeFromRequest`, body fields for POST/PATCH),
+  MCP (input fields + a per-handler merge), and the SDK (request fields + construction-time
+  `WithProject`/`WithUser` + a `callScope` per-call override). Guarded by
+  `TestScopeParity_ReviewList_AllSurfaces` (embedded/HTTP/MCP byte-identical + alice-only).
+- **B4 — `Scope.Validate()` required a contiguous chain** (user implied project), contradicting
+  `buildScopeWhere` (each dimension independent) and the `{Tenant,User}`-no-project shape. Relaxed
+  to require only Tenant; project/user/session are independent optional dimensions.
+
+**Second-round dual review (the isolation machinery is correct; the survivors were producers/surfaces that fed it the wrong scope — the same illusory pattern).** Two more independent adversarial reviews found and fixed:
+- **Embedder backfill stripped project/user (BLOCK).** `reconcile/embedder.go` backfillPass enqueued `{Tenant: m.TenantID}` only — and the backfill sweep is the *guaranteed-recovery* embed path (the primary enqueue is best-effort: dropped on full queue, dead-lettered on gateway outage). A tenant-only vector escapes its scope AND is excluded from the owning user's vector-lane read → a user-scoped memory becomes semantically unfindable. Fix: enqueue `{Tenant, Project: m.ProjectID, User: m.UserID}` (session stays empty, matching the memory row). Guarded by `TestEmbedder_BackfillSweep_PreservesUserScope`.
+- **HTTP client dropped `WithProject`/`WithUser` (BLOCK).** `NewHTTP` discarded the construction-scope options → an HTTP SDK client built `NewHTTP(url, key, WithUser("alice"))` silently read tenant-wide. Fix: `httpClient` stores project/user; each method resolves an effective scope (`effScope`: per-call value, else construction default — parity with embedded `callScope`) and sends it (query params for GET, body fields for POST/PATCH). Guarded by `TestScopeParity_HTTPConstructionScope`.
+- **Review approve/reject MUTATE was untested cross-surface (BLOCK).** The parity test only covered the read (`list`). Added `TestScopeParity_ReviewResolve_CrossUserDenied`: an alice-scoped approve of bob's pending memory must FAIL on embedded/HTTP/MCP and leave bob's memory `pending_review` (the store narrows the resolve's WHERE to alice → bob's row is not found).
+- **hnsw filter failed OPEN on missing sidecar meta (hardening).** `vindex/hnsw` `filterCandidates` emitted a candidate with no provenance meta even under a sub-scoped query. No reachable instance found (every `graph.Add` pairs a meta set), but flipped to fail CLOSED: drop a meta-less node when any of project/user/session is set.
+- **Rollup digest was written tenant-only (latent, hardened).** `lifecycle/rollup.go` promoted a session digest under `{Tenant}` with no user/project. Currently unreachable (the pipeline produces no session-scoped memories — true before B1 too, so NOT a B1 regression), but a session belongs to one user, so the digest now inherits the owner's project/user (`ownerScope` from the grouped memories) — it can't leak if a session-scoped memory ever exists.
+
+**Third-round convergence sweep (exhaustive enumeration of every `identity.Scope{}` producer) — one last stripper, then PASS.** A reviewer enumerated all ~86 production scope-construction sites; 85 were legitimately scoped, 1 was a real stripper:
+- **Reflection sweep wrote the distilled memory tenant-only (HIGH).** `lifecycle/reflect.go` assembled per-user trajectories (`reflect.AssembleTrajectories` groups records by project/user/session/branch, so each `Trajectory` carries its owner) but emitted the `CandidateBatch` with the tenant-only sweep scope. The `pipeline.Candidate` has no owner fields, so the distilled `strategy`/`failure_mode` memory — and its vector via `enqueueEmbed` — persisted `project_id/user_id=NULL`: unfindable by its own user, visible tenant-wide. Same stripper class as the pipeline/backfill paths. Fix: build `trajScope = {Tenant, traj.ProjectID, traj.UserID}` and use it for the gateway-attribution ctx, the `reflect.Reflect` call, and the emitted batch (the tenant-only `scope` stays correct only for the `ListByOutcome` tenant-wide scan). Guarded by `TestReflectSweep_BatchCarriesTrajectoryOwner`. With this, the sweep confirmed convergence: no remaining per-user-data write/read feeds a tenant-only scope.
+
+**Documented exceptions / known minor limitations:**
+- **Bare-param SDK methods carry construction-scope only.** `GetMemory(ctx, id)`, `MergeBranch`/`DiscardBranch(ctx, branchID)` have no per-call request struct, so they scope by the client's construction `WithProject`/`WithUser` (honored on both embedded and HTTP now) but cannot be overridden per call. Changing the `Client` interface signatures is a broad breaking change deferred past v1; the construction-scope path is sufficient for the single-user-client model.
+- **Cache freshness under project-asymmetric reads (minor, TTL-bounded, NOT a leak).** `scopeGen` keys the user-ancestor as `{Tenant, Project, User}`; a read scope `{Tenant, User}` with no project (key `{T,"",alice}`) is not busted by a reconcile that invalidates a project-bearing scope `{T,proj,alice}`. The key still includes the user, so no cross-user leak — only a stale (own) result for up to the 60s TTL, and only when read/write project dimensions are asymmetric. Accepted; tightening it would require enumerating per-user projects.

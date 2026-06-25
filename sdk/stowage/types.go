@@ -47,10 +47,13 @@ type RetrieveRequest struct {
 	Until        int64    `json:"until,omitempty"` // unix millis; 0 = unbounded
 	Kinds        []string `json:"kinds,omitempty"`
 	IncludeLanes bool     `json:"include_lanes,omitempty"`
-	SessionID    string   `json:"session_id,omitempty"`
-	Debug        bool     `json:"debug,omitempty"`
-	ResponseID   string   `json:"response_id,omitempty"`
-	Profile      string   `json:"profile,omitempty"` // precise|balanced|broad
+	// ProjectID/UserID scope the read to a sub-tenant identity (P3, D-125); empty = tenant-wide.
+	ProjectID  string `json:"project_id,omitempty"`
+	UserID     string `json:"user_id,omitempty"`
+	SessionID  string `json:"session_id,omitempty"`
+	Debug      bool   `json:"debug,omitempty"`
+	ResponseID string `json:"response_id,omitempty"`
+	Profile    string `json:"profile,omitempty"` // precise|balanced|broad
 }
 
 // RetrieveBreakdown is the per-item scoring breakdown (present when Debug:true).
@@ -121,6 +124,10 @@ type RetrieveResponse struct {
 type DrilldownRequest struct {
 	MemoryID string `json:"memory_id,omitempty"`
 	Citation string `json:"citation,omitempty"`
+	// ProjectID/UserID scope the lookup to a sub-tenant identity (P3, D-125); empty
+	// inherits the client's construction scope (WithProject/WithUser), then tenant-wide.
+	ProjectID string `json:"project_id,omitempty"`
+	UserID    string `json:"user_id,omitempty"`
 }
 
 // DrilldownSpan is one provenance span in the drilldown response.
@@ -148,6 +155,10 @@ type FeedbackRequest struct {
 	MemoryID   string `json:"memory_id,omitempty"`
 	Citation   string `json:"citation,omitempty"`
 	Signal     string `json:"signal"` // use|save|fail|noise|wrong_citation
+	// ProjectID/UserID scope the mutate to a sub-tenant identity (P3, D-125); empty
+	// inherits the client's construction scope, then tenant-wide.
+	ProjectID string `json:"project_id,omitempty"`
+	UserID    string `json:"user_id,omitempty"`
 }
 
 // FeedbackResponse is the response from Feedback.
@@ -161,6 +172,10 @@ type FeedbackResponse struct {
 // ResolveCitationsRequest is the request for ResolveCitations.
 type ResolveCitationsRequest struct {
 	Citations []string `json:"citations"`
+	// ProjectID/UserID scope the injection/memory reads to a sub-tenant identity (P3,
+	// D-125); empty inherits the client's construction scope, then tenant-wide.
+	ProjectID string `json:"project_id,omitempty"`
+	UserID    string `json:"user_id,omitempty"`
 }
 
 // ResolveProvenanceRef is a single provenance span reference.
@@ -256,6 +271,10 @@ type FlushResponse struct {
 type ForkBranchRequest struct {
 	SessionID      string `json:"session_id"`
 	ParentBranchID string `json:"parent_branch_id,omitempty"`
+	// ProjectID/UserID scope the fork to a sub-tenant identity (P3, D-125); empty
+	// inherits the client's construction scope, then tenant-wide.
+	ProjectID string `json:"project_id,omitempty"`
+	UserID    string `json:"user_id,omitempty"`
 }
 
 // ForkBranchResponse is the response from ForkBranch.
@@ -296,6 +315,10 @@ type AssertResponse struct {
 type VerifyRequest struct {
 	Claim     string   `json:"claim"`
 	Citations []string `json:"citations,omitempty"`
+	// ProjectID/UserID scope the citation/memory reads to a sub-tenant identity (P3,
+	// D-125); empty inherits the client's construction scope, then tenant-wide.
+	ProjectID string `json:"project_id,omitempty"`
+	UserID    string `json:"user_id,omitempty"`
 }
 
 // VerifyResponse is the entailment verdict. Degraded is set when the gateway was
@@ -314,6 +337,10 @@ type ReviewRequest struct {
 	MemoryID string `json:"memory_id,omitempty"`
 	Limit    int    `json:"limit,omitempty"`
 	Cursor   string `json:"cursor,omitempty"`
+	// ProjectID/UserID scope the list + approve/reject to a sub-tenant identity (P3,
+	// D-125); empty inherits the client's construction scope, then tenant-wide.
+	ProjectID string `json:"project_id,omitempty"`
+	UserID    string `json:"user_id,omitempty"`
 }
 
 // ReviewItem is one pending_review memory.
@@ -339,6 +366,10 @@ type ReviewResponse struct {
 // TraceRequest exports the reasoning trace for a response_id.
 type TraceRequest struct {
 	ResponseID string `json:"response_id"`
+	// ProjectID/UserID scope the trace reconstruction to a sub-tenant identity (P3,
+	// D-125); empty inherits the client's construction scope, then tenant-wide.
+	ProjectID string `json:"project_id,omitempty"`
+	UserID    string `json:"user_id,omitempty"`
 }
 
 // TraceSpan is one drill-down provenance span.
@@ -485,6 +516,11 @@ type GetMemoryResponse struct {
 // RollbackRequest identifies the memory to roll back (D-064).
 type RollbackRequest struct {
 	MemoryID string `json:"-"`
+	// ProjectID/UserID scope the rollback to a sub-tenant identity (P3, D-125); empty
+	// inherits the client's construction scope, then tenant-wide. Sent as query params
+	// (the HTTP route carries memory_id in the path).
+	ProjectID string `json:"-"`
+	UserID    string `json:"-"`
 }
 
 // ResolveRequest confirms or rejects a pending_confirmation memory (D-065).
@@ -492,6 +528,11 @@ type RollbackRequest struct {
 type ResolveRequest struct {
 	MemoryID string `json:"-"`
 	Action   string `json:"action"`
+	// ProjectID/UserID scope the confirm/reject to a sub-tenant identity (P3, D-125);
+	// empty inherits the client's construction scope, then tenant-wide. Sent in the
+	// PATCH body (the route carries memory_id in the path).
+	ProjectID string `json:"project_id,omitempty"`
+	UserID    string `json:"user_id,omitempty"`
 }
 
 // ResolveResponse is the result of ResolveMemory (mirrors the PATCH response).
@@ -507,6 +548,10 @@ type ResolveResponse struct {
 // profile-internal (D-034/D-042) — there is no client-supplied limit.
 type PlaybookRequest struct {
 	SessionID string `json:"session_id,omitempty"`
+	// ProjectID/UserID scope assembly to a sub-tenant identity (P3, D-125); empty
+	// inherits the client's construction scope, then tenant-wide. Sent as query params.
+	ProjectID string `json:"-"`
+	UserID    string `json:"-"`
 }
 
 // PlaybookProvenanceRef is a compact provenance span reference for P1 drill-down.
@@ -565,6 +610,10 @@ type EpisodesRequest struct {
 	// ArcOf, when set, returns the cross-session arc of the given episode id —
 	// the episodes threaded to it via relates_to edges (§6b threading, Phase 24b).
 	ArcOf string
+	// ProjectID/UserID scope the read to a sub-tenant identity (P3, D-125); empty
+	// inherits the client's construction scope, then tenant-wide. Sent as query params.
+	ProjectID string
+	UserID    string
 }
 
 // Episode is one episode + its narrative.
@@ -595,6 +644,10 @@ type CausalRequest struct {
 	MemoryID  string
 	Direction string
 	Depth     int
+	// ProjectID/UserID scope the traversal to a sub-tenant identity (P3, D-125); empty
+	// inherits the client's construction scope, then tenant-wide. Sent as query params.
+	ProjectID string
+	UserID    string
 }
 
 // CausalProvRef is a compact provenance span for P1 drill-down at a node.

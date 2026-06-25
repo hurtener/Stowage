@@ -131,6 +131,14 @@ func (m *Manager) rollupSession(ctx context.Context, scope identity.Scope, sessI
 		return
 	}
 
+	// The promoted digest inherits the session's OWNER (project/user), not the bare tenant
+	// (P3, Phase 30): a session belongs to one user, so its rolled-up digest must stay in that
+	// user's partition — a tenant-only digest would expose one user's aggregated session content
+	// tenant-wide. All promotable memories share the session, hence the same owner; take the
+	// first. (Currently latent — the pipeline produces no session-scoped memories — but kept
+	// correct so this can't silently leak if one ever does.)
+	ownerScope := identity.Scope{Tenant: scope.Tenant, Project: promotable[0].ProjectID, User: promotable[0].UserID}
+
 	// Build narrative digest from ALL promotable memories.
 	digestContent := buildDigestContent(sessID, promotable)
 	digestHash := reconcile.ContentHash(reconcile.NormalizeContent(digestContent))
@@ -174,6 +182,8 @@ func (m *Manager) rollupSession(ctx context.Context, scope identity.Scope, sessI
 	digest := store.Memory{
 		ID:          ulid.Make().String(),
 		TenantID:    scope.Tenant,
+		ProjectID:   ownerScope.Project,
+		UserID:      ownerScope.User,
 		Kind:        "narrative",
 		Content:     digestContent,
 		Status:      "active",
@@ -254,14 +264,14 @@ func (m *Manager) rollupSession(ctx context.Context, scope identity.Scope, sessI
 		Provenance: digestProv,
 		Targets:    promotable,
 		Events:     events,
-		Scope:      scope,
+		Scope:      ownerScope,
 	}
-	if err := m.st.Memories().Commit(ctx, scope, cs); err != nil {
+	if err := m.st.Memories().Commit(ctx, ownerScope, cs); err != nil {
 		m.log.WarnContext(ctx, "lifecycle/rollup: commit failed",
 			"session", sessID, "err", err)
 		return
 	}
-	m.invalidateScope(scope) // D-118: sources superseded + digest added — drop cached results
+	m.invalidateScope(ownerScope) // D-118: sources superseded + digest added — drop cached results (ancestor-aware bust also covers tenant-wide reads)
 	m.log.InfoContext(ctx, "lifecycle/rollup: session rolled up",
 		"tenant", scope.Tenant, "session", sessID,
 		"sources", len(promotable), "digest", digest.ID)

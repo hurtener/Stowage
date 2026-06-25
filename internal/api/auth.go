@@ -62,3 +62,19 @@ func keyFromContext(ctx context.Context) *auth.Key {
 	}
 	return k
 }
+
+// scopeFromRequest builds the read/mutate scope for a single-user-tier handler:
+// the tenant from the authenticated key (the auth boundary), and the optional
+// project/user sub-scope supplied per request via ?project_id=/?user_id= query
+// params (P3, D-125). Empty params = tenant-wide (back-compat). The store layer
+// hard-isolates to this scope via buildScopeWhere. Use this for GET handlers; POST
+// handlers with a JSON body carry project_id/user_id as body fields instead.
+func scopeFromRequest(r *http.Request) identity.Scope {
+	authKey := keyFromContext(r.Context())
+	q := r.URL.Query()
+	return identity.Scope{
+		Tenant:  authKey.TenantID,
+		Project: q.Get("project_id"),
+		User:    q.Get("user_id"),
+	}
+}

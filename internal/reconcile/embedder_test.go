@@ -253,6 +253,59 @@ func TestEmbedder_BackfillSweep(t *testing.T) {
 	t.Error("backfill did not produce a vector within timeout")
 }
 
+// TestEmbedder_BackfillSweep_PreservesUserScope is the Phase-30 B1 follow-on guard: the backfill
+// sweep (the guaranteed-recovery embed path) must upsert the vector under the memory's OWN
+// project/user, not tenant-only. Otherwise the backfilled vector escapes its scope and is excluded
+// from the owning user's vector-lane read — making a user-scoped memory unfindable semantically.
+// Seeds an alice-scoped memory with no vector, backfills, then asserts alice's scoped search finds
+// it and bob's does not.
+func TestEmbedder_BackfillSweep_PreservesUserScope(t *testing.T) {
+	t.Parallel()
+	s, cleanup := newTestStore(t)
+	defer cleanup()
+
+	gw := &embedGW{}
+	vi := vindex.New(s.Vectors(), 4, "test-model")
+	e := reconcile.NewEmbedder(s.Vectors(), vi, gw, discardLogger())
+
+	alice := identity.Scope{Tenant: "t-bf", User: "alice"}
+	bob := identity.Scope{Tenant: "t-bf", User: "bob"}
+	memID := seedMemory(t, s, alice, "alice backfill content", "fact")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	e.Start(ctx)
+	sweepDone := make(chan struct{})
+	go func() { defer close(sweepDone); e.BackfillSweep(ctx) }()
+
+	deadline := time.Now().Add(4 * time.Second)
+	for time.Now().Before(deadline) {
+		sc, scCancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+		hits, err := vi.Search(sc, alice, []float32{0.5, 0.5, 0.5, 0.5}, 1, vindex.Filter{})
+		scCancel()
+		if err == nil && len(hits) == 1 && hits[0].MemoryID == memID {
+			// alice can find it; bob (different user, same tenant) must NOT.
+			bc, bCancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+			bobHits, bErr := vi.Search(bc, bob, []float32{0.5, 0.5, 0.5, 0.5}, 5, vindex.Filter{})
+			bCancel()
+			cancel()
+			<-sweepDone
+			if bErr != nil {
+				t.Fatalf("bob search: %v", bErr)
+			}
+			for _, h := range bobHits {
+				if h.MemoryID == memID {
+					t.Errorf("P3 LEAK: backfilled vector for alice's memory %q is visible to bob (backfill stamped tenant-only scope)", memID)
+				}
+			}
+			return
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	cancel()
+	<-sweepDone
+	t.Error("backfill did not produce an alice-scoped vector within timeout")
+}
+
 // TestEmbedder_BackfillSweep_ListError proves BackfillSweep handles a
 // ListWithoutVectors error gracefully (logged, not fatal; backfill recovers on
 // next tick per D-047).

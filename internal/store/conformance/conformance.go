@@ -90,6 +90,7 @@ func Run(t *testing.T, factory Factory) {
 	t.Run("EpisodeNeedingNarrative", func(t *testing.T) { testEpisodeNeedingNarrative(t, factory) })
 	t.Run("EpisodeScopeIsolation", func(t *testing.T) { testEpisodeScopeIsolation(t, factory) })
 	t.Run("RecordDistinctSessions", func(t *testing.T) { testRecordDistinctSessions(t, factory) })
+	t.Run("RecordAppendScopeFill", func(t *testing.T) { testRecordAppendScopeFill(t, factory) })
 	// Keyring.List
 	t.Run("KeyringList", func(t *testing.T) { testKeyringList(t, factory) })
 	// S1 — empty-tenant guard (P3: store layer fails closed)
@@ -4459,5 +4460,49 @@ func testMemoryListActiveInScope(t *testing.T, factory Factory) {
 	// Fails closed without a tenant (P3).
 	if _, _, err := s.Memories().ListActiveInScope(ctx, identity.Scope{}, 10, ""); err == nil {
 		t.Errorf("ListActiveInScope with empty tenant must return an error (P3 fail-closed)")
+	}
+}
+
+// testRecordAppendScopeFill pins D-124 (scope-authoritative record write): a TENANT-ONLY
+// batch whose records carry their own session/user/project persists those per-record
+// dimensions (they were dropped to NULL before — the episode-non-fire root cause), while a
+// declared scope dimension WINS and a record can never override it (P3 — no scope escape).
+func testRecordAppendScopeFill(t *testing.T, factory Factory) {
+	t.Helper()
+	s, cleanup := factory()
+	defer cleanup()
+	ctx := context.Background()
+	tenant := "t-scopefill-" + newID()
+
+	// (a) tenant-only scope + per-record session/user/project → persisted (filled from the record).
+	if err := s.Records().Append(ctx, identity.Scope{Tenant: tenant}, []store.Record{{
+		ID: newID(), ProjectID: "px", UserID: "alice", SessionID: "sess-A",
+		BranchID: "main", Role: "user", Content: "scoped record", OccurredAt: 100, CreatedAt: 100,
+	}}); err != nil {
+		t.Fatalf("append tenant-only w/ per-record scope: %v", err)
+	}
+	// (b) declared scope user=carol + a record CLAIMING user=mallory → scope wins (carol), no escape.
+	if err := s.Records().Append(ctx, identity.Scope{Tenant: tenant, User: "carol"}, []store.Record{{
+		ID: newID(), UserID: "mallory", SessionID: "sess-B",
+		BranchID: "main", Role: "user", Content: "escape attempt", OccurredAt: 200, CreatedAt: 200,
+	}}); err != nil {
+		t.Fatalf("append declared-scope record: %v", err)
+	}
+
+	got, err := s.Records().DistinctSessions(ctx, tenantScope(tenant), 1000, 10)
+	if err != nil {
+		t.Fatalf("DistinctSessions: %v", err)
+	}
+	by := map[string]store.SessionInfo{}
+	for _, si := range got {
+		by[si.SessionID] = si
+	}
+	a, ok := by["sess-A"]
+	if !ok || a.UserID != "alice" || a.ProjectID != "px" {
+		t.Errorf("sess-A scope not filled from per-record fields: %+v (NULL session/user/project = the dropped-scope bug)", a)
+	}
+	b, ok := by["sess-B"]
+	if !ok || b.UserID != "carol" {
+		t.Errorf("scope-escape: sess-B user = %q, want carol (declared scope must win over the record's claimed user)", b.UserID)
 	}
 }
