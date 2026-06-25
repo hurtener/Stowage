@@ -31,7 +31,7 @@ var LongMemEvalTopics = []struct{ Key, Description string }{
 	{"numbers-and-quantities", "Specific numeric details the user shared — counts, amounts, measurements, prices, and durations"},
 	{"updates-and-corrections", "Changes, updates, or corrections to previously stated facts — what changed and when"},
 	{"opinions-and-experiences", "The user's opinions, reactions, and experiences with things they tried or encountered"},
-	{"assistant-provided-info", "Recommendations, answers, instructions, or facts the assistant gave the user (for recall of what was said in-conversation, not about the user)"},
+	{"assistant-provided-info", "Specific things the ASSISTANT told the user that may be asked about later: capture the EXACT specific — recommended/named items (a suggested product, brand, ingredient, book, tool, place), exact values the assistant stated (a number, percentage, measurement, count, price, score), specific moves/steps/answers given (e.g. a chess move like '28. Kg3', a configuration step, a named example), and concrete instructions. Record the actual name/number/move, not merely that advice was given."},
 }
 
 // SeedEvalTopics installs LongMemEvalTopics at the eval tenant scope via the live
