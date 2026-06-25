@@ -3382,3 +3382,43 @@ production need for a reasoning extraction model exists; the gateway field and t
 setters are already in place to make that a small follow-up. Verified by wiring tests
 (`TestExtract_ReasoningEffortWiring`, `TestStageReasoningEffortWiring`): effort flows to the
 request; unset sends no param.
+
+## D-129 — Reconcile decision context budgets turns PER NEIGHBOR, not one shared pool
+
+Follow-up to D-127/D-108. The reconcile decision (add/update/merge/supersede/park) is fed raw
+conversation turns so it can tell a correction of the same fact from a distinct fact that
+merely shares words/numbers (D-108, prompt rule 8). That context used a single shared budget
+of 12 turns, spent candidate-first then neighbor-by-neighbor until exhausted. With the
+augmented neighbor set (up to ~8 structural + ~8 semantic), only the first 2–4 neighbors got
+ANY source turns; the rest appeared as their one-line memory content only. So rule 8 — the
+distinct-fact discriminator — could not fire for most neighbors, while prompt rules 2–3 push
+hard toward "supersede" on any same-subject value difference. This is a direct cause of the
+over-supersede / distinct-fact-collapse class (handoff sub-case b: a "$200 goal" wrongly
+superseded by a "$250 raised" outcome).
+
+**Decision: allocate the turn budget per source.** The candidate gets up to
+`maxCandidateContextTurns = 4` of its own turns; EACH neighbor gets up to
+`maxNeighborContextTurns = 3`, under a global ceiling `maxContextRecords = 40` (cost backstop,
+raised from 12). Every neighbor the decision may supersede now arrives with its own
+conversation frame, so rule 8 can adjudicate each one. Tested by
+`TestBuildReconcileContext_PerNeighborBudget` (candidate capped at 4; all three crowded
+neighbors get their guaranteed 3 — none starved). Pairs with D-130 (the learner writes
+self-contained content so the one-line summary itself is meaningful even without the turns).
+
+## D-130 — Extracted memory content must be self-contained (names subject + purpose)
+
+Follow-up to D-129. The reader AND the reconciler see a memory primarily as its one-line
+`content`. An over-compressed extraction like "$200 raised goal" is uninterpretable on its own
+— $200 goal for what? a target or an actual? — which both starves the reader and makes the
+reconciler unable to tell a goal from an outcome (so it over-supersedes). The disambiguating
+frame lived only in the separate `context` field (rule 5), leaving `content` free to be a bare
+fragment.
+
+**Decision: strengthen extraction prompt rule 2** — content must be a complete statement that
+NAMES its subject and purpose, fully interpretable without the conversation or the `context`
+field, never a bare value/fragment ("The user set a $200 fundraising goal for a charity cycling
+event", never "$200 raised goal"), with goals/targets/results each phrased as distinct named
+statements. `PromptTemplateVersion` bumped 5 → 6; golden files regenerated. This is the
+upstream half of the sub-case-b fix (D-129 is the downstream half): better content makes both
+the crowded-neighbor summaries and the reader answers meaningful, and reduces same-fact
+mis-collapse at the reconcile decision.

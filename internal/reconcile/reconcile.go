@@ -184,8 +184,21 @@ func (r *ReconcileStage) SetRecordStore(recs store.RecordStore) {
 // Must be called before Start.
 func (r *ReconcileStage) SetReasoningEffort(effort string) { r.reasoningEffort = effort }
 
-// maxContextRecords bounds the conversation turns fed to one reconcile decision (P2/cost).
-const maxContextRecords = 12
+const (
+	// maxContextRecords is the GLOBAL hard ceiling on raw conversation turns fed to one
+	// reconcile decision (P2/cost) — a backstop across the candidate plus all neighbors.
+	maxContextRecords = 40
+
+	// maxCandidateContextTurns bounds the candidate's own source turns in the decision context.
+	maxCandidateContextTurns = 4
+
+	// maxNeighborContextTurns is the GUARANTEED per-neighbor source-turn budget (D-129). Turns
+	// are allocated per source — NOT greedily candidate-first under one shared budget — so every
+	// neighbor the decision may supersede arrives with its own conversation frame. This lets the
+	// correction-vs-distinct-fact rule fire for each neighbor (e.g. a "$200 goal" turn vs a "$250
+	// raised" turn) instead of only the first few before a shared 12-turn budget ran dry.
+	maxNeighborContextTurns = 3
+)
 
 // buildReconcileContext fetches the raw turns behind the candidate and its neighbors so the
 // decision can distinguish a correction from a distinct fact (D-108). Bounded and degrade-safe:
@@ -196,17 +209,22 @@ func (r *ReconcileStage) buildReconcileContext(ctx context.Context, scope identi
 		return ReconcileContext{}
 	}
 	seen := map[string]bool{}
-	budget := maxContextRecords
+	remaining := maxContextRecords // global ceiling across candidate + all neighbors
 
-	collect := func(ids []string) []store.Record {
+	// collect fetches up to `limit` not-yet-seen turns for ONE source, bounded by the global
+	// `remaining` ceiling. The per-source `limit` (not a single shared running budget) is what
+	// guarantees each neighbor its own turns rather than the candidate consuming them all (D-129).
+	collect := func(ids []string, limit int) []store.Record {
 		var want []string
+		n := 0
 		for _, id := range ids {
-			if id == "" || seen[id] || budget <= 0 {
+			if id == "" || seen[id] || remaining <= 0 || n >= limit {
 				continue
 			}
 			seen[id] = true
 			want = append(want, id)
-			budget--
+			n++
+			remaining--
 		}
 		if len(want) == 0 {
 			return nil
@@ -224,11 +242,11 @@ func (r *ReconcileStage) buildReconcileContext(ctx context.Context, scope identi
 	for _, p := range c.Provenance {
 		candIDs = append(candIDs, p.RecordID)
 	}
-	rc.CandidateTurns = collect(candIDs)
+	rc.CandidateTurns = collect(candIDs, maxCandidateContextTurns)
 
 	rc.NeighborTurns = map[string][]store.Record{}
 	for _, n := range neighbors {
-		if budget <= 0 {
+		if remaining <= 0 {
 			break
 		}
 		j, err := r.mem.GetJunctions(ctx, scope, n.ID)
@@ -239,7 +257,7 @@ func (r *ReconcileStage) buildReconcileContext(ctx context.Context, scope identi
 		for _, p := range j.Provenance {
 			nIDs = append(nIDs, p.RecordID)
 		}
-		if turns := collect(nIDs); len(turns) > 0 {
+		if turns := collect(nIDs, maxNeighborContextTurns); len(turns) > 0 {
 			rc.NeighborTurns[n.ID] = turns
 		}
 	}

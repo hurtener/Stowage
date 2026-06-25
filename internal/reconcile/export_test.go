@@ -52,6 +52,11 @@ const ExportContradictionBoostStabilityDelta = contradictionBoostStabilityDelta
 // ExportNearDupThreshold exposes the near-dup Jaccard threshold for tests.
 const ExportNearDupThreshold = nearDupThreshold
 
+// ExportMaxCandidateContextTurns / ExportMaxNeighborContextTurns expose the D-129
+// per-source decision-context budgets for tests.
+const ExportMaxCandidateContextTurns = maxCandidateContextTurns
+const ExportMaxNeighborContextTurns = maxNeighborContextTurns
+
 // ExportCandidateOlderThanTarget exposes candidateOlderThanTarget for the D-127
 // date-direction-guard test.
 func ExportCandidateOlderThanTarget(c pipeline.Candidate, target store.Memory) bool {
