@@ -130,7 +130,10 @@ func TestRunGainScenario_Wiring(t *testing.T) {
 		EvalQuestion:   "what frontend?",
 		ExpectedAnswer: "React",
 	}
-	gr, err := RunGainScenario(context.Background(), srv, runner, gw, sc, 30*time.Second)
+	// 90s settle (not 30s): under CI's -race + coverage instrumentation the mock pipeline
+	// runs ~2-3x slower and a 30s quiescence barrier flakes with a single record still in
+	// flight. Generous headroom keeps the wiring assertion while still failing fast on a hang.
+	gr, err := RunGainScenario(context.Background(), srv, runner, gw, sc, 90*time.Second)
 	if err != nil {
 		t.Fatalf("RunGainScenario: %v", err)
 	}
