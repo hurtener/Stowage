@@ -3223,3 +3223,28 @@ the markdown-vs-JSON token saving is already captured (our `[N]` numbering is le
 `## Memory N`). Guards: TestReaderPrompt_QuestionDateAndShapeRules, TestJudgePrompt_PerCategoryLeniency,
 TestNormalize_QuestionDate. All testable on the persisted store via a judged K=50 re-score with no
 re-learning.
+
+## D-124 — Scope-authoritative record write (Append fills per-record scope)
+
+Phase 30. `Records().Append` (both drivers) bound `project_id/user_id/session_id` from the batch
+`scope` arg only — never from each `store.Record` — so a `/v1/records` ingest with a tenant-only
+scope dropped every per-record project/user/session to NULL (confirmed: all 2056 eval records NULL).
+This broke session-keyed features (episodes never fired — `DistinctSessions` filters `session_id IS
+NOT NULL`) and meant the write path couldn't carry per-user data. Decision: bind each dimension as
+`scopeOrRecord(scope.X, rec.X)` — the **scope WINS when set** (a record can never override a declared
+non-empty scope dimension → a write cannot escape its authorized scope, P3); the per-record value only
+fills a dimension the scope left empty. `scope.Tenant` stays authoritative + the fail-closed guard
+stays. Guarded by conformance `RecordAppendScopeFill` (fill + scope-wins, both drivers).
+
+## D-125 — Read scope is caller-supplied per request (tenant = auth boundary)
+
+Phase 30. Every retrieve surface built a TENANT-ONLY scope, so the lexical+vector lanes returned all
+users' memories within a tenant — violating the RFC's "hard isolation at tenant AND user" (line 364)
+for the multi-user-per-tenant model. Decision: the **tenant is the auth/trust boundary** (the API key
+carries TenantID); **project/user are caller-supplied per-request read sub-scopes** (HTTP/MCP request
+fields `project_id`/`user_id`; SDK `RetrieveRequest.ProjectID/UserID`), exactly as ingest accepts
+per-record identity — the calling app (Harbor) supplies the end-user, Stowage hard-isolates the query
+to it via the store's `buildScopeWhere`. Empty project/user = tenant-wide (back-compat). Grants
+(Phase 16 `EffectiveScopes`) still widen reads from the caller's real scope. `session_id` stays the
+Phase-10 cooldown/affinity signal, NOT a read-isolation boundary. No per-user keys in v1 (heavier
+key-issuance model, deferred). Guarded by `TestRetrieve_UserScopeIsolation` + SDK/HTTP/MCP parity.

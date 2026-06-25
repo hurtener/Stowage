@@ -67,10 +67,13 @@ type RetrieveInput struct {
 	Until        int64    `json:"until,omitempty"`
 	Kinds        []string `json:"kinds,omitempty"`
 	IncludeLanes bool     `json:"include_lanes,omitempty"`
-	SessionID    string   `json:"session_id,omitempty"`
-	Debug        bool     `json:"debug,omitempty"`
-	ResponseID   string   `json:"response_id,omitempty"`
-	Profile      string   `json:"profile,omitempty"`
+	// ProjectID/UserID scope the read to a sub-tenant identity (P3, D-125); empty = tenant-wide.
+	ProjectID  string `json:"project_id,omitempty"`
+	UserID     string `json:"user_id,omitempty"`
+	SessionID  string `json:"session_id,omitempty"`
+	Debug      bool   `json:"debug,omitempty"`
+	ResponseID string `json:"response_id,omitempty"`
+	Profile    string `json:"profile,omitempty"`
 }
 
 // RetrieveItem is one result in the memory_retrieve output.

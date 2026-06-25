@@ -172,6 +172,9 @@ func makeRetrieveHandler(svc *Services) tool.Handler[RetrieveInput, RetrieveOutp
 		if err != nil {
 			return tool.Result[RetrieveOutput]{}, fmt.Errorf("memory_retrieve: resolve scope: %w", err)
 		}
+		// Tenant is the auth boundary (ScopeFn); project/user are caller-supplied read sub-scopes
+		// (P3, D-125). Empty = tenant-wide (back-compat). The store hard-isolates to this scope.
+		scope = identity.Scope{Tenant: scope.Tenant, Project: in.ProjectID, User: in.UserID}
 
 		if in.Query == "" {
 			return tool.Result[RetrieveOutput]{}, fmt.Errorf("memory_retrieve: query must not be empty")

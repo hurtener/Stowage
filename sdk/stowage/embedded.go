@@ -248,7 +248,10 @@ func (c *embeddedClient) Retrieve(ctx context.Context, req RetrieveRequest) (Ret
 		return RetrieveResponse{}, errors.New("sdk: retrieve: query must not be empty")
 	}
 
-	resp, err := c.stack.Retriever.Retrieve(ctx, c.scope, retrieval.Request{
+	// Tenant is the client's auth boundary; project/user are per-call read sub-scopes (P3, D-125).
+	// Empty project/user = tenant-wide (back-compat). The store hard-isolates to this scope.
+	scope := identity.Scope{Tenant: c.scope.Tenant, Project: req.ProjectID, User: req.UserID}
+	resp, err := c.stack.Retriever.Retrieve(ctx, scope, retrieval.Request{
 		Query:        req.Query,
 		Limit:        req.Limit,
 		Window:       store.Window{From: req.From, Until: req.Until},

@@ -47,10 +47,13 @@ type RetrieveRequest struct {
 	Until        int64    `json:"until,omitempty"` // unix millis; 0 = unbounded
 	Kinds        []string `json:"kinds,omitempty"`
 	IncludeLanes bool     `json:"include_lanes,omitempty"`
-	SessionID    string   `json:"session_id,omitempty"`
-	Debug        bool     `json:"debug,omitempty"`
-	ResponseID   string   `json:"response_id,omitempty"`
-	Profile      string   `json:"profile,omitempty"` // precise|balanced|broad
+	// ProjectID/UserID scope the read to a sub-tenant identity (P3, D-125); empty = tenant-wide.
+	ProjectID  string `json:"project_id,omitempty"`
+	UserID     string `json:"user_id,omitempty"`
+	SessionID  string `json:"session_id,omitempty"`
+	Debug      bool   `json:"debug,omitempty"`
+	ResponseID string `json:"response_id,omitempty"`
+	Profile    string `json:"profile,omitempty"` // precise|balanced|broad
 }
 
 // RetrieveBreakdown is the per-item scoring breakdown (present when Debug:true).

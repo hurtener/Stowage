@@ -2020,3 +2020,59 @@ func TestResultCache_KeyIncludesKindsAndLanes(t *testing.T) {
 		t.Error("Kinds key must be order-independent")
 	}
 }
+
+// TestRetrieve_UserScopeIsolation is the Phase-30 read-isolation guard (P3, D-125): two users
+// under ONE tenant with identical-topic memories — a retrieve scoped to user A returns ONLY A's
+// memory (lexical AND vector lanes), never B's; a tenant-only retrieve (no user) sees both
+// (back-compat). Proves the store-layer scope filtering reaches the lanes through the retriever.
+func TestRetrieve_UserScopeIsolation(t *testing.T) {
+	t.Parallel()
+	st := openStore(t)
+	gw := openMockGateway(t, 4)
+	vi := vindex.New(st.Vectors(), 4, "test")
+	r := retrieval.New(st.Memories(), st.Records(), vi, gw, slog.New(slog.NewTextHandler(os.Stderr, nil)))
+
+	tenant := "tenant-iso"
+	alice := identity.Scope{Tenant: tenant, User: "alice"}
+	bob := identity.Scope{Tenant: tenant, User: "bob"}
+	term := "favoritedatabasepostgresql"
+	aID := insertMemory(t, st, alice, "alice's favorite is "+term, "preference", nil, []string{term}, nil, 0)
+	bID := insertMemory(t, st, bob, "bob's favorite is "+term, "preference", nil, []string{term}, nil, 0)
+
+	ctx := context.Background()
+	// Scoped to alice → only alice's memory, never bob's.
+	resp, err := r.Retrieve(ctx, alice, retrieval.Request{Query: term, Limit: 10, IncludeLanes: true})
+	if err != nil {
+		t.Fatalf("retrieve(alice): %v", err)
+	}
+	sawA, sawB := false, false
+	for _, it := range resp.Items {
+		switch it.Memory.ID {
+		case aID:
+			sawA = true
+		case bID:
+			sawB = true
+		}
+	}
+	if !sawA {
+		t.Errorf("alice-scoped retrieve must return alice's own memory")
+	}
+	if sawB {
+		t.Errorf("P3 LEAK: alice-scoped retrieve surfaced bob's memory %q", bID)
+	}
+
+	// Tenant-only (no user) → both (back-compat / tenant-admin view).
+	resp2, err := r.Retrieve(ctx, identity.Scope{Tenant: tenant}, retrieval.Request{Query: term, Limit: 10})
+	if err != nil {
+		t.Fatalf("retrieve(tenant): %v", err)
+	}
+	n := 0
+	for _, it := range resp2.Items {
+		if it.Memory.ID == aID || it.Memory.ID == bID {
+			n++
+		}
+	}
+	if n != 2 {
+		t.Errorf("tenant-only retrieve should see both users' memories (back-compat), saw %d", n)
+	}
+}
