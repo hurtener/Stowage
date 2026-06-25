@@ -318,8 +318,10 @@ New terms land here in the same PR that introduces them (CLAUDE.md §14).
 - **Goroutine-stability gate** — the post-boot / steady-state / post-drain
   `NumGoroutine` triple-sample check; `post-drain ≤ post-boot + ε` is the P2
   drain-on-shutdown contract made measurable (D-126).
-- **Idle gate** — the zero-traffic CPU/alloc ceiling check proving sweeps and
-  tickers impose no polling tax at idle (D-126).
+- **Idle gate** — the zero-traffic ceiling check proving sweeps and tickers
+  impose no polling tax at idle: deterministic alloc + goroutine-delta signals
+  gate the always-on CI cut; the noisy idle CPU-time ceiling is on-demand
+  (`make profile`) only (D-126).
 - **Resource sample** — the `events/v1` event + Prometheus gauges
   (`stowage_goroutines`, heap) emitted by the runtime sampler reading
   `runtime.NumGoroutine`/`MemStats` (D-126, Phase P1).

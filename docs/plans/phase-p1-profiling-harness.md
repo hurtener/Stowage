@@ -62,12 +62,21 @@ transport protections are set explicitly, never inherited).
 - New config knob `server.pprof_listen` (string, **default empty = disabled**). When
   empty, no pprof listener is started and `serve` behaves exactly as today (the
   five-minute-rule zero-config invariant, D-034, is preserved). When set (e.g.
-  `127.0.0.1:6060`), `cmd/stowage serve` starts a second `http.Server` with explicit
-  timeouts and binds the `/debug/pprof/*` tree.
+  `127.0.0.1:6060`), `cmd/stowage serve` starts a second `http.Server` and binds the
+  `/debug/pprof/*` tree.
+- **This mirrors the proven `server.mcp_listen` two-listener pattern (D-074,
+  `cmd/stowage/main.go`):** a *separate* `http.Server` whose lifecycle (Shutdown) is
+  wired into the same `serve` teardown as the API and MCP listeners, **deliberately not
+  inheriting the REST middleware/timeouts.** pprof in particular must **not** inherit the
+  API `WriteTimeout` — a 30 s CPU-profile capture would be truncated mid-stream — exactly
+  the reasoning that justified the MCP listener's own server. The listener wiring
+  therefore lives in `cmd/stowage/main.go` next to `mcpHTTP`, not on the API mux; it sets
+  `ReadHeaderTimeout` but no `WriteTimeout`.
 - The listener is **auth-gated** by the same constant-time API-key check as the admin
-  API (reuse `internal/auth`); a request without a valid admin key gets 401. It binds
-  loopback by default in every profile; binding a non-loopback address requires the
-  operator to set it explicitly (documented as a deliberate exposure).
+  API (reuse `internal/auth`) via a small handler wrapper around the pprof mux; a request
+  without a valid admin key gets 401. It binds loopback by default in every profile;
+  binding a non-loopback address requires the operator to set it explicitly (documented
+  as a deliberate exposure).
 - Knob-guardrail treatment (D-034): tuned default (empty), placement in every profile
   (`assistant`/`coding-agent`/`fleet` all default it empty), docs in the example config
   and this plan, and a smoke check.
@@ -82,6 +91,11 @@ non-blocking and off the hot path. This gives the "is the platform healthy" feed
 (RFC §11 usage-analytics framing) a resource dimension. Default sample interval is a
 profile-defaulted knob; default OFF for `assistant`, ON at a coarse interval for
 `fleet`.
+
+The sampler is itself a ticker goroutine, so it is **wired into the `boot.Stack`
+lifecycle**: started under the Stack, stopped and drained on `Stack.Close`, and it must
+pass its own goleak check. The harness must not introduce the leak class it hunts — a
+sampler that outlives `Close` would itself fail the goroutine-stability gate.
 
 ### Workstream C — goleak in the test suite (advisory → gate)
 
@@ -108,19 +122,36 @@ A `-tags=profile` test rig (sibling to `internal/bench/slo`) that:
    extract → reconcile → commit), M retrieve streams, with sweeps **running** — for a
    bounded duration.
 3. Captures CPU, heap, goroutine, block, and mutex profiles to artifact files.
+   **Block and mutex profiling are off by default in the Go runtime** — the rig must
+   enable them in profile-mode via `runtime.SetBlockProfileRate` and
+   `runtime.SetMutexProfileFraction` (and reset them after), or those two profiles come
+   back empty. They are enabled only under `-tags=profile` / the pprof listener, never
+   in the shipped steady state, because the sampling adds per-contention-event overhead.
 4. Asserts the gates below.
 
 **Goroutine-stability gate.** Sample `NumGoroutine` at three points: post-boot (S0),
-steady-state under load (S1), and **post-drain** after `Stack.Shutdown` + a settle
-window (S2). Assert `S2 ≤ S0 + ε` (drain returns to baseline — the P2 contract) and
-that S1 is bounded by a configured ceiling (no unbounded fan-out). A monotonic climb in
-`NumGoroutine` across repeated load cycles is the canonical leak signature and fails the
-gate.
+steady-state under load (S1), and **post-drain** after `Stack.Close(ctx)` (which drains
+the pipeline via `Drain` and closes the injection/emitter/sampler goroutines) plus a
+settle window (S2). Assert `S2 ≤ S0 + ε` (drain returns to baseline — the P2 contract)
+and that S1 is bounded by a configured ceiling (no unbounded fan-out). A monotonic climb
+in `NumGoroutine` across repeated load cycles is the canonical leak signature and fails
+the gate. The settle window retries until the count stabilises (bounded) so an in-flight
+teardown goroutine doesn't read as a false positive.
 
-**Idle gate.** With all sweeps/tickers running and **zero** request traffic for a
-bounded window, assert CPU time consumed and bytes allocated stay under configured
-ceilings — this is the "are we burning CPU at idle / leaking via tickers" check the
-owner called out, and the direct rebuttal to the brief-01 polling tax.
+**Idle gate (two signals, split by determinism).** With all sweeps/tickers running and
+**zero** request traffic for a bounded window:
+
+- *CI cut (deterministic):* assert **bytes-allocated and goroutine-count deltas** stay
+  under configured ceilings. Allocations and goroutine counts are stable across machines,
+  so this is the signal the always-on sqlite cut gates on — the "leaking via tickers /
+  allocating at idle" check.
+- *On-demand cut (noisy):* the **idle CPU-time** ceiling runs only under `make profile`
+  (alongside the Postgres / long-duration cuts), never in the per-PR matrix — CPU time at
+  idle is too noisy on shared CI runners to gate on (the same reasoning that keeps the SLO
+  off the per-PR matrix, D-095).
+
+Together these are the "are we burning CPU / leaking via tickers at idle" check the owner
+called out, and the direct rebuttal to the brief-01 polling tax.
 
 **Backend-under-load (Workstream D, Postgres + sqlite cuts).** Profile the pgx pool
 (acquisition wait, saturation) and the sqlite dedicated-writer goroutine (queue depth,
@@ -151,8 +182,8 @@ internal/bench/profile/profile_test.go      # the load+profile rig (-tags=profil
 internal/bench/profile/workload.go          # mixed ingest/retrieve/sweep driver
 internal/telemetry/runtime_sampler.go       # MemStats/NumGoroutine sampler + gauges
 internal/telemetry/runtime_sampler_test.go
-internal/api/pprof.go                        # auth-gated pprof listener wiring
-cmd/stowage/serve.go                         # start pprof listener when configured
+internal/api/pprof.go                        # auth wrapper around the pprof mux (reuses internal/auth)
+cmd/stowage/main.go                          # start/Shutdown pprof listener next to mcpHTTP (D-074 pattern)
 internal/config/config.go                    # server.pprof_listen + sampler knobs
 internal/config/profiles.go                  # profile placements (all default safe)
 internal/<goroutine-pkgs>/main_test.go       # goleak.VerifyTestMain per package
@@ -179,12 +210,16 @@ docs/plans/phase-p1-profiling-harness.md     # this file
    Workstream C, advisory, with documented ignore-rules; `make test` stays green under
    `-race`.
 4. The `-tags=profile` rig boots a full stack (sqlite cut), drives the concurrent
-   workload, and writes CPU/heap/goroutine/block/mutex profile artifacts.
-5. The goroutine-stability gate computes S0/S1/S2 and records them; **post-drain
-   S2 ≤ S0 + ε** holds for the sqlite cut (if it does not, that is a leak finding filed
-   for a P-series follow-up, and the baseline records it as a known gap rather than
-   silently passing).
-6. The idle gate records idle CPU + alloc over a zero-traffic window to `eval/PROFILE.md`.
+   workload, and writes CPU/heap/goroutine/block/mutex profile artifacts — with block and
+   mutex sampling explicitly enabled (`SetBlockProfileRate`/`SetMutexProfileFraction`) so
+   those two are non-empty, and reset afterward.
+5. The goroutine-stability gate computes S0/S1/S2 (S2 after `Stack.Close(ctx)` + settle)
+   and records them; **post-drain S2 ≤ S0 + ε** holds for the sqlite cut (if it does not,
+   that is a leak finding filed for a P-series follow-up, and the baseline records it as a
+   known gap rather than silently passing).
+6. The idle gate's deterministic signals (idle alloc + goroutine delta) are asserted in
+   the always-on CI cut; the noisy idle CPU-time ceiling is recorded under `make profile`
+   only. Both are written to `eval/PROFILE.md`.
 7. Reference baselines (idle heap, idle goroutines, goroutines @ N sessions, alloc/op on
    the ingest and retrieve hot paths) are committed in `eval/PROFILE.md` with a
    one-command reproduction.
