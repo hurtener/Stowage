@@ -131,6 +131,10 @@ func TestFullMode(t *testing.T) {
 		SeedTopics:    !skipIngest,      // broad LongMemEval magnets (topic-gated extraction) — already seeded on the first learn
 		Reader:        reader,
 		SkipIngest:    skipIngest,
+		// Production-faithful by default: run the consolidation sweeps (29d near-dup merge +
+		// supersede) once after learning, before scoring. Opt out with STOWAGE_EVAL_NO_CONSOLIDATE
+		// to measure the consolidation delta. Auto-skipped on SkipIngest (already consolidated).
+		Consolidate: os.Getenv("STOWAGE_EVAL_NO_CONSOLIDATE") == "",
 	})
 	if err != nil {
 		t.Fatalf("run dataset %s: %v", datasetName, err)

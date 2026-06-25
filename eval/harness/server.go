@@ -86,7 +86,18 @@ type TestServer struct {
 	extractStage   *pipeline.ExtractStage
 	reconcileStage *reconcile.ReconcileStage
 	gw             gateway.Gateway
+	lc             *lifecycle.Manager
 	cancel         context.CancelFunc
+}
+
+// RunConsolidation runs ONE synchronous, deterministic pass of every lifecycle sweep
+// (decay/dedupe/rollup/reenqueue/confirm — reflect/episodes stay off in the harness). The
+// background sweeps are parked at 24h so CI stays deterministic; this explicit pass makes a
+// re-baseline production-faithful — the same consolidation machinery production runs on a
+// timer (the dedupe near-dup merge + supersede that the 29d wave hardened) actually executes
+// before scoring, instead of the store being scored in its raw post-ingest state.
+func (s *TestServer) RunConsolidation(ctx context.Context) {
+	s.lc.RunForce(ctx)
 }
 
 // NewTestServer creates a fully-wired in-process server for eval.
@@ -265,6 +276,11 @@ func NewTestServer(t testing.TB, tenantID string) *TestServer {
 	lcProfile.ReenqueueInterval = 3 * time.Second
 	lcProfile.ReenqueueDeadline = 5 * time.Second
 	lcMgr := lifecycle.New(st, log, lcProfile, srv.PipelineIn())
+	// D-118: the lifecycle sweeps invalidate the retrieval cache after a status-mutating
+	// commit (decay-expire/dedupe-merge/rollup). Production wires this in boot.StartPipeline;
+	// the harness must too, so an explicit consolidation pass (RunConsolidation) doesn't leave
+	// merged-away memories served from the 60s cache during scoring.
+	lcMgr.SetScopeInvalidator(retriever.Cache())
 	lcMgr.Start(ctx)
 
 	httpSrv := httptest.NewServer(srv)
@@ -302,6 +318,7 @@ func NewTestServer(t testing.TB, tenantID string) *TestServer {
 		extractStage:   extractStage,
 		reconcileStage: reconcileStage,
 		gw:             gw,
+		lc:             lcMgr,
 		cancel:         cancel,
 	}
 

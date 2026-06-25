@@ -3180,3 +3180,18 @@ two requests differing only by `limit` collided within the TTL; the effective li
 cache key. Invalidation-scope granularity must equal retrieve cache-key granularity. Also tightened:
 dedupe audit events now name the real survivor/loser (the survivor became dynamic in D-111), the
 `lifecycle.dedupe` event subject is the merged row, and the payload carries survivor_id/loser_id/merged_id.
+
+## D-122 — The eval harness runs a production-faithful consolidation pass before scoring
+
+Phase 29d exit gate. The eval harness parks the mutating lifecycle sweeps (decay/dedupe/rollup)
+at 24h intervals so CI stays deterministic — but that means the public-benchmark baseline scored
+the RAW post-ingest store, never running the near-dup merge + supersede consolidation (the 29d
+machinery) that production runs on a timer. Decision: `RunDatasetOpts.Consolidate` runs ONE
+synchronous, deterministic `RunConsolidation` pass (lifecycle `RunForce`: decay/dedupe/rollup/
+reenqueue/confirm — reflect/episodes stay off in the harness) after the final settle and before
+scoring, then re-settles so re-enqueued work drains and the embedder reindexes merged rows.
+`TestFullMode` enables it by default (opt out with `STOWAGE_EVAL_NO_CONSOLIDATE` to measure the
+delta); it is auto-skipped on `SkipIngest` (K-sweep re-scores already consolidated). The harness
+also now wires `lcMgr.SetScopeInvalidator(retriever.Cache())` (D-118 parity with boot) so a merge
+during the pass doesn't leave a stale row served from the 60s cache. The background sweeps stay
+parked — this is the explicit equivalent, giving a more realistic baseline without timer nondeterminism.
