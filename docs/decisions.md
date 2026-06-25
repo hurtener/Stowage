@@ -3300,3 +3300,54 @@ the phase was completed across four fronts:
 **Documented exceptions / known minor limitations:**
 - **Bare-param SDK methods carry construction-scope only.** `GetMemory(ctx, id)`, `MergeBranch`/`DiscardBranch(ctx, branchID)` have no per-call request struct, so they scope by the client's construction `WithProject`/`WithUser` (honored on both embedded and HTTP now) but cannot be overridden per call. Changing the `Client` interface signatures is a broad breaking change deferred past v1; the construction-scope path is sufficient for the single-user-client model.
 - **Cache freshness under project-asymmetric reads (minor, TTL-bounded, NOT a leak).** `scopeGen` keys the user-ancestor as `{Tenant, Project, User}`; a read scope `{Tenant, User}` with no project (key `{T,"",alice}`) is not busted by a reconcile that invalidates a project-bearing scope `{T,proj,alice}`. The key still includes the user, so no cross-user leak — only a stale (own) result for up to the 60s TTL, and only when read/write project dimensions are asymmetric. Accepted; tightening it would require enumerating per-user projects.
+
+## D-127 — Supersede direction is date-ordered, not arrival-ordered (deterministic guard)
+
+Post-Phase-30 LongMemEval root-cause (handoff sub-case a). The reconciler let an
+**OLDER-dated fact supersede a NEWER one**: "The user has completed 5 projects…"
+(valid_from 2023-10-09) ended up `superseded`, superseded_by the older "4 projects…"
+(valid_from 2023-08-16), leaving the stale value current (qid `06db6396`,
+knowledge-update). Same class for an in-place UPDATE, which overwrites the target's
+content and would bury the newer value identically.
+
+**The model was not wrong about the pair.** "4 projects" and "5 projects" are the same
+fact at two times — a genuine supersede pair, correctly identified. The only defect is
+**direction/ordering**: which member wins. D-106 made within-flush direction deterministic
+(process candidates oldest-asserted first so the newer supersedes the older), but it only
+orders WITHIN one flush. Across sessions the commit order is ingestion/processing order,
+not assertion order — so the newer fact can land in the store first, and a later-arriving
+OLDER candidate then "supersedes" it. Arrival order, not the date, was deciding the winner.
+
+**Decision: assertion date is the deterministic authority for supersede/update direction.**
+A new guard in `reconcile.commit` (`candidateOlderThanTarget`) compares the candidate's
+`OccurredAt` (→ `Memory.ValidFrom`, the conversation date, D-024/D-109) against the target's
+`ValidFrom`. When the candidate is strictly older (both dates known; equal/unknown dates
+fall through to the existing path), the supersede is **honored but re-ordered**: the newer
+target stays active and the older candidate is committed as a `superseded` memory whose
+`superseded_by_id` points at the target (`commitInvertedSupersede`). The candidate is never
+discarded (P1) — the supersede relationship is preserved in the correct direction, and
+dual-visibility (D-105/D-114) surfaces "superseded by «the current value»". The guard runs
+REGARDLESS of the LLM verdict and the trust gate, and applies to both `supersede` and
+`update` (an older update would bury the newer content the same way).
+
+**Reversibility (D-017).** The re-ordered case is a NON-destructive `ActionAdd` of a
+born-superseded row — no existing memory is mutated, so rollback simply tombstones the added
+row. We deliberately do NOT emit `memory.superseded` here: that event is restorable and,
+since the older candidate has no prior ACTIVE state, a rollback would flip the direction and
+re-bury the newer fact. A `reconcile.warned` event records the date-ordering for audit. The
+normal (correct-direction) supersede path and its `memory.superseded` rollback are unchanged.
+
+**Scope / known limitations (follow-ups, NOT fixed here):**
+- **Distinct-fact collapse (handoff sub-case b)** — a goal ("$200 raised goal") vs an outcome
+  ("$250 raised") wrongly judged "same fact" and superseded. This is an over-supersede /
+  same-fact mis-judgment by the reconcile LLM, not a direction error; the date guard does not
+  address it (the two should coexist). Tracked separately.
+- **Both-active coexistence** — if the older and newer facts arrive in separate flushes and the
+  model judges each an `add` (never proposing a supersede), both stay active and the stale one
+  can still be retrieved. The date guard only adjudicates direction once a supersede/update
+  pair is proposed; detecting an unproposed same-fact pair is the model's job.
+
+Tested by `TestCandidateOlderThanTarget` (predicate) and `TestStageDateDirectionGuard`
+(end-to-end both directions via the realistic near-dup→numeral-divergence→LLM-supersede path,
+plus the normal-direction rollback round-trip). Pre-existing bug (Phase 30 did not touch
+reconcile); fixed ahead of the gpt-5.4-nano 100q re-baseline so it cannot corrupt that DB.

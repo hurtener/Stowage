@@ -528,6 +528,16 @@ func (r *ReconcileStage) commit(
 
 	case store.ActionUpdate:
 		target := findNeighborByID(neighbors, d.TargetIDs[0])
+
+		// Date-direction guard (D-127): an UPDATE overwrites the target's content in
+		// place, so an OLDER-dated candidate updating a NEWER target buries the current
+		// value exactly as a wrong-direction supersede would. Invert to a superseded
+		// record instead of applying the stale overwrite. Runs regardless of the LLM
+		// verdict and the trust gate.
+		if candidateOlderThanTarget(c, target) {
+			return r.commitInvertedSupersede(ctx, scope, c, normalized, hash, target, d)
+		}
+
 		jt := r.getJunctions(ctx, scope, target.ID) // M6: fetch junctions for prior-state
 
 		// Trust gate: high-trust targets cannot be silently updated (D-044).
@@ -605,6 +615,19 @@ func (r *ReconcileStage) commit(
 
 	case store.ActionSupersede:
 		target := findNeighborByID(neighbors, d.TargetIDs[0])
+
+		// Date-direction guard (D-127): the supersede PAIR is trusted (the model found a
+		// real correction); the DIRECTION is decided deterministically by assertion date.
+		// D-106 only orders candidates WITHIN a flush, so across sessions the newer fact can
+		// commit first and a later-arriving OLDER candidate then "supersedes" it — burying
+		// the current value under a stale one. This guard runs REGARDLESS of the verdict and
+		// the trust gate: when the candidate's assertion date precedes the target's, order
+		// the supersede the other way — keep the newer target active and record the older
+		// candidate as superseded-by it (handoff sub-case a).
+		if candidateOlderThanTarget(c, target) {
+			return r.commitInvertedSupersede(ctx, scope, c, normalized, hash, target, d)
+		}
+
 		jt := r.getJunctions(ctx, scope, target.ID) // M6: fetch junctions for prior-state
 
 		// Trust gate: high-trust targets cannot be silently superseded (D-044).
@@ -774,6 +797,87 @@ func (r *ReconcileStage) commit(
 	default:
 		return fmt.Errorf("reconcile: unhandled action %q", action)
 	}
+}
+
+// candidateOlderThanTarget reports whether the arriving candidate's assertion date
+// (occurred_at, which becomes Memory.ValidFrom) strictly precedes the target memory's.
+// Both dates must be known (> 0); an unknown date on either side disables the guard so
+// it never fires on missing data (D-127). Equal dates are NOT "older" — the D-106
+// turn-order tiebreak handles same-date contradictions within a flush.
+func candidateOlderThanTarget(c pipeline.Candidate, target store.Memory) bool {
+	return c.OccurredAt > 0 && target.ValidFrom > 0 && c.OccurredAt < target.ValidFrom
+}
+
+// commitInvertedSupersede applies the date-direction guard (D-127). The reconcile
+// decision identified a genuine supersede PAIR — `c` and `target` are the same fact at
+// two points in time (e.g. "4 projects" → "5 projects") — but asserted the wrong
+// DIRECTION: it would have superseded `target` with the OLDER-dated `c`. The pair is
+// correct; only the ordering is wrong. So we HONOR the supersede and let the assertion
+// date pick the winner: the newer `target` stays active and the older candidate is
+// committed as a `superseded` memory whose superseded_by_id points at it, so the supersede
+// relationship is preserved (and dual-visibility, D-105/D-114, can surface "superseded by
+// «the current value»") — the candidate is never discarded.
+//
+// Mechanically this is a NON-destructive ActionAdd: no existing memory is mutated, so it is
+// trivially reversible (the added row tombstones on rollback) and replay-safe. We
+// deliberately do NOT emit a memory.superseded event — that event type is restorable and,
+// because the older candidate has no prior ACTIVE state to restore, a rollback would flip
+// the direction back and re-bury the newer fact. A reconcile.warned event records that the
+// direction was date-ordered, for the audit trail.
+func (r *ReconcileStage) commitInvertedSupersede(
+	ctx context.Context,
+	scope identity.Scope,
+	c pipeline.Candidate,
+	normalized, hash string,
+	target store.Memory,
+	d DecisionOutput,
+) error {
+	now := nowMs()
+	mem := candidateToMemory(c, normalized, hash, "superseded")
+	mem.SupersededByID = target.ID
+
+	// The older candidate contradicts the current (newer) value — record the edge.
+	links := []store.Link{
+		{
+			ID:         ulid.Make().String(),
+			FromMemory: mem.ID,
+			ToMemory:   target.ID,
+			Type:       "contradicts",
+			Source:     "reconciler",
+			Confidence: 1.0,
+		},
+	}
+	links = append(links, decisionLinksToStore(mem.ID, d.Links)...)
+
+	cs := store.CommitSet{
+		Action:   store.ActionAdd,
+		Memory:   mem,
+		Entities: c.Entities,
+		Keywords: c.Keywords,
+		Queries:  c.AnticipatedQueries,
+		Topics:   c.Topics,
+		Links:    links,
+		Events: []store.Event{
+			buildEvent("memory.added", mem.ID,
+				"date-ordered supersede: candidate predates the existing fact; committed as superseded-by the newer memory (D-127)", now),
+			buildEvent("reconcile.warned", mem.ID,
+				"date-ordered supersede: supersede pair honored, direction set by assertion date (older candidate → superseded) (D-127)", now),
+		},
+	}
+	cs.Provenance = buildProvenance(mem.ID, c.Provenance)
+	if err := r.mem.Commit(ctx, scope, cs); err != nil {
+		if errors.Is(err, store.ErrDuplicateContent) {
+			return r.handleDuplicateContent(ctx, scope, hash)
+		}
+		return err
+	}
+	r.invalidateScope(scope) // a superseded sibling can surface via dual-visibility (D-114)
+	r.log.DebugContext(ctx, "reconcile: inverted supersede — older candidate recorded as superseded",
+		"tenant", scope.Tenant,
+		"candidate_date", c.OccurredAt,
+		"target_id", target.ID,
+		"target_date", target.ValidFrom)
+	return nil
 }
 
 // invalidateScope bumps the scope's result-cache generation counter (D-053).

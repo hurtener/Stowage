@@ -52,6 +52,12 @@ const ExportContradictionBoostStabilityDelta = contradictionBoostStabilityDelta
 // ExportNearDupThreshold exposes the near-dup Jaccard threshold for tests.
 const ExportNearDupThreshold = nearDupThreshold
 
+// ExportCandidateOlderThanTarget exposes candidateOlderThanTarget for the D-127
+// date-direction-guard test.
+func ExportCandidateOlderThanTarget(c pipeline.Candidate, target store.Memory) bool {
+	return candidateOlderThanTarget(c, target)
+}
+
 // ExportValidateDecision exposes validateDecision for external tests.
 // It operates on a copy so callers observe the deduplicated target_ids.
 func ExportValidateDecision(d DecisionOutput) error {
