@@ -4434,4 +4434,30 @@ func testMemoryListActiveInScope(t *testing.T, factory Factory) {
 	if total != 4 {
 		t.Errorf("round-trip covered %d rows, want all 4", total)
 	}
+
+	// Session-leaf scope: exact matching must honour the session dimension too.
+	sessScope := identity.Scope{Tenant: tenant, User: "alice", Session: "s1"}
+	mk(sessScope, "alice session fact")
+	if c := contentsIn(sessScope); !c["alice session fact"] || c["alice fact"] || len(c) != 1 {
+		t.Errorf("session-leaf partition = %v, want only {alice session fact}", c)
+	}
+
+	// Pagination: a second alice row + limit=1 must return a cursor that fetches the rest.
+	mk(alice, "alice fact 2")
+	page1, cur, err := s.Memories().ListActiveInScope(ctx, alice, 1, "")
+	if err != nil || len(page1) != 1 || cur == "" {
+		t.Fatalf("ListActiveInScope page1: got %d rows cursor=%q err=%v, want 1 row + cursor", len(page1), cur, err)
+	}
+	page2, _, err := s.Memories().ListActiveInScope(ctx, alice, 100, cur)
+	if err != nil {
+		t.Fatalf("ListActiveInScope page2: %v", err)
+	}
+	if len(page2) == 0 {
+		t.Errorf("cursor pagination returned no further alice rows")
+	}
+
+	// Fails closed without a tenant (P3).
+	if _, _, err := s.Memories().ListActiveInScope(ctx, identity.Scope{}, 10, ""); err == nil {
+		t.Errorf("ListActiveInScope with empty tenant must return an error (P3 fail-closed)")
+	}
 }

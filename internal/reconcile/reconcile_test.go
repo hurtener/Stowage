@@ -160,6 +160,66 @@ func eventsByType(t *testing.T, st store.Store, scope identity.Scope, typ string
 	return out
 }
 
+// TestBuildReconcileContext_CollectsTurns covers the D-108 context builder: it fetches the
+// raw turns behind the candidate AND each neighbor (so a decision can tell a correction from a
+// distinct fact), and degrades to an empty context when no RecordStore is wired.
+func TestBuildReconcileContext_CollectsTurns(t *testing.T) {
+	st, cleanup := newTestStore(t)
+	defer cleanup()
+	ctx := context.Background()
+	scope := tenantScope("t-rc-ctx")
+	now := time.Now().UnixMilli()
+
+	candRec := store.Record{ID: ulid.Make().String(), TenantID: scope.Tenant, Role: "user", Content: "my commute is 45 minutes", OccurredAt: now, CreatedAt: now}
+	nbrRec := store.Record{ID: ulid.Make().String(), TenantID: scope.Tenant, Role: "user", Content: "my drive is 30 minutes", OccurredAt: now, CreatedAt: now}
+	if err := st.Records().Append(ctx, scope, []store.Record{candRec, nbrRec}); err != nil {
+		t.Fatalf("append records: %v", err)
+	}
+
+	// Neighbor memory whose provenance points at nbrRec.
+	nbr := store.Memory{ID: ulid.Make().String(), Kind: "fact", Content: "commute about 30 minutes",
+		Status: "active", Confidence: 0.8, TrustSource: "llm_extracted", Stability: 1.0, CreatedAt: now, UpdatedAt: now}
+	cs := store.CommitSet{
+		Action: store.ActionAdd, Memory: nbr, Scope: scope,
+		Provenance: []store.Provenance{{ID: ulid.Make().String(), MemoryID: nbr.ID, RecordID: nbrRec.ID,
+			SpanEnd: len(nbrRec.Content), TenantID: scope.Tenant, CreatedAt: now}},
+	}
+	if err := st.Memories().Commit(ctx, scope, cs); err != nil {
+		t.Fatalf("commit neighbor: %v", err)
+	}
+
+	cand := pipeline.Candidate{Content: "commute 45 min", Provenance: []pipeline.ProvSpan{{RecordID: candRec.ID}}}
+	ch := make(chan pipeline.CandidateBatch)
+	stage := reconcile.New(st.Memories(), st.Ops(), st.Events(), &stubGateway{}, discardLogger(), ch)
+
+	// No RecordStore wired → empty context (degrade-safe branch).
+	if rc := stage.ExportBuildReconcileContext(ctx, scope, cand, []store.Memory{nbr}); len(rc.CandidateTurns) != 0 || len(rc.NeighborTurns) != 0 {
+		t.Errorf("no RecordStore should yield empty context, got %+v", rc)
+	}
+
+	stage.SetRecordStore(st.Records())
+	rc := stage.ExportBuildReconcileContext(ctx, scope, cand, []store.Memory{nbr})
+	if len(rc.CandidateTurns) != 1 || rc.CandidateTurns[0].Content != candRec.Content {
+		t.Errorf("CandidateTurns = %+v, want the candidate's source turn", rc.CandidateTurns)
+	}
+	if turns := rc.NeighborTurns[nbr.ID]; len(turns) != 1 || turns[0].Content != nbrRec.Content {
+		t.Errorf("NeighborTurns[%s] = %+v, want the neighbor's source turn", nbr.ID, rc.NeighborTurns[nbr.ID])
+	}
+}
+
+// TestTrustRank_KnownAndFallback covers both branches of trustRank (D-111): a registered
+// source returns its mapped weight; an unknown one falls back to the default multiplier.
+func TestTrustRank_KnownAndFallback(t *testing.T) {
+	known := reconcile.ExportTrustRank("user_stated") // registered (high)
+	fallback := reconcile.ExportTrustRank("legacy-empty-or-unknown")
+	if known <= 0 || fallback <= 0 {
+		t.Fatalf("trustRank must be positive: known=%v fallback=%v", known, fallback)
+	}
+	if known <= reconcile.ExportTrustRank("llm_extracted") {
+		t.Errorf("a user_stated source should outrank llm_extracted")
+	}
+}
+
 // --- AC unit-level tests (prefilter functions) --------------------------------
 
 func TestNormalizeContent(t *testing.T) {
