@@ -1133,6 +1133,144 @@ func TestProfileByName(t *testing.T) {
 	}
 }
 
+// TestRetrieveLimitHonoredPastScoringK proves the D-103 floor: a request whose limit
+// exceeds the profile's preset ScoringK still returns up to limit items (the limit is
+// floored up into the scoring window) — not silently clamped to ScoringK. Before the
+// fix, the precise preset (ScoringK=10) capped every result at 10 regardless of limit.
+func TestRetrieveLimitHonoredPastScoringK(t *testing.T) {
+	t.Parallel()
+	st := openStore(t)
+	gw := openMockGateway(t, 4)
+	vi := vindex.New(st.Vectors(), 4, "test")
+	log := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	r := retrieval.New(st.Memories(), st.Records(), vi, gw, log)
+
+	scope := identity.Scope{Tenant: "tenant-floor-" + newID()}
+	// Seed 25 memories all sharing the query keyword so the lexical lane alone yields
+	// well over the precise preset's ScoringK=10.
+	for i := 0; i < 25; i++ {
+		_ = insertMemory(t, st, scope, "widget configuration note "+itoa(i), "fact",
+			[]string{"widget"}, []string{"widget"}, []string{"widget config"}, int64(1_000+i))
+	}
+
+	resp, err := r.Retrieve(context.Background(), scope, retrieval.Request{
+		Query:   "widget config",
+		Limit:   20, // > precise preset ScoringK (10)
+		Profile: "precise",
+	})
+	if err != nil {
+		t.Fatalf("Retrieve: %v", err)
+	}
+	if len(resp.Items) <= 10 {
+		t.Fatalf("limit=20 with precise profile returned %d items — clamped at the ScoringK=10 wall (D-103 floor not applied)", len(resp.Items))
+	}
+	if len(resp.Items) != 20 {
+		t.Errorf("limit=20 returned %d items, want 20", len(resp.Items))
+	}
+}
+
+// TestWithProfilesOverridesDefaultLimit proves config-driven profile tuning (D-103):
+// WithProfiles raises precise.DefaultLimit, so a no-limit request returns the configured
+// count rather than the built-in preset's DefaultLimit (5).
+func TestWithProfilesOverridesDefaultLimit(t *testing.T) {
+	t.Parallel()
+	st := openStore(t)
+	gw := openMockGateway(t, 4)
+	vi := vindex.New(st.Vectors(), 4, "test")
+	log := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	r := retrieval.New(st.Memories(), st.Records(), vi, gw, log).
+		WithProfiles(retrieval.BuildProfiles(
+			retrieval.ProfileOverride{DefaultLimit: 15}, // precise: 5 → 15
+			retrieval.ProfileOverride{},                 // balanced inherits
+			retrieval.ProfileOverride{},                 // broad inherits
+		))
+
+	scope := identity.Scope{Tenant: "tenant-override-" + newID()}
+	for i := 0; i < 25; i++ {
+		_ = insertMemory(t, st, scope, "gadget note "+itoa(i), "fact",
+			[]string{"gadget"}, []string{"gadget"}, []string{"gadget note"}, int64(1_000+i))
+	}
+
+	resp, err := r.Retrieve(context.Background(), scope, retrieval.Request{
+		Query:   "gadget note",
+		Limit:   0, // omitted → use the (overridden) DefaultLimit
+		Profile: "precise",
+	})
+	if err != nil {
+		t.Fatalf("Retrieve: %v", err)
+	}
+	if len(resp.Items) != 15 {
+		t.Fatalf("no-limit precise retrieve returned %d items, want 15 (overridden DefaultLimit)", len(resp.Items))
+	}
+}
+
+// TestIncludeSupersededDualVisibility proves H5/D-105: with include_superseded on, a
+// retrieved memory's superseded predecessor is surfaced flagged Stale (dual-visibility,
+// §6c); with it off, only the active value is returned.
+func TestIncludeSupersededDualVisibility(t *testing.T) {
+	t.Parallel()
+	st := openStore(t)
+	gw := openMockGateway(t, 4)
+	vi := vindex.New(st.Vectors(), 4, "test")
+	log := slog.New(slog.NewTextHandler(os.Stderr, nil))
+
+	scope := identity.Scope{Tenant: "tenant-supersede-" + newID()}
+	// Active current value (the successor).
+	curID := insertMemory(t, st, scope, "User commute is 45 minutes each way", "fact",
+		[]string{"commute"}, []string{"commute"}, []string{"commute time"}, 2000)
+	// Superseded predecessor pointing at the current one.
+	ctx := context.Background()
+	staleID := newID()
+	if err := st.Memories().Insert(ctx, scope, store.Memory{
+		ID: staleID, Kind: "fact", Content: "User commute is about 30 minutes", Context: "ctx",
+		Status: "superseded", SupersededByID: curID, Confidence: 0.8, TrustSource: "llm_extracted",
+		Stability: 1.0, ContentHash: newID(), CreatedAt: 1000, UpdatedAt: 1000,
+	}); err != nil {
+		t.Fatalf("insert superseded: %v", err)
+	}
+
+	req := retrieval.Request{Query: "commute time", Limit: 5, Profile: "balanced"}
+
+	// OFF: active-only.
+	rOff := retrieval.New(st.Memories(), st.Records(), vi, gw, log)
+	respOff, err := rOff.Retrieve(ctx, scope, req)
+	if err != nil {
+		t.Fatalf("retrieve (off): %v", err)
+	}
+	for _, it := range respOff.Items {
+		if it.Stale {
+			t.Fatalf("include_superseded OFF returned a stale item %q", it.Memory.Content)
+		}
+	}
+
+	// ON: the superseded predecessor rides along, flagged.
+	rOn := retrieval.New(st.Memories(), st.Records(), vi, gw, log).WithIncludeSuperseded(true)
+	respOn, err := rOn.Retrieve(ctx, scope, req)
+	if err != nil {
+		t.Fatalf("retrieve (on): %v", err)
+	}
+	var sawStale bool
+	for _, it := range respOn.Items {
+		if it.Stale {
+			sawStale = true
+			if it.Memory.ID != staleID {
+				t.Errorf("stale item id = %s, want %s", it.Memory.ID, staleID)
+			}
+			if it.Memory.SupersededByID != curID {
+				t.Errorf("stale item superseded_by = %s, want %s", it.Memory.SupersededByID, curID)
+			}
+			// Idea 1 (D-114): the stale item is self-contained — it carries the current
+			// successor's VALUE inline, not just an ID, so non-prompt (MCP) clients know it.
+			if it.SupersededByContent != "User commute is 45 minutes each way" {
+				t.Errorf("stale item SupersededByContent = %q, want the successor's value", it.SupersededByContent)
+			}
+		}
+	}
+	if !sawStale {
+		t.Fatalf("include_superseded ON did not surface the superseded predecessor")
+	}
+}
+
 // --- Fuzz target for request decoder ----------------------------------------
 
 func FuzzRetrieveRequest(f *testing.F) {
@@ -1299,10 +1437,10 @@ func TestResultCache_TTLExpiry(t *testing.T) {
 	c.SetTestNow(func() time.Time { return now })
 
 	// Put an entry.
-	c.Put(scope, "sig", "balanced", "", 0, 0, nil, retrieval.Support{Strength: "weak"})
+	c.Put(scope, "sig", "balanced", "", 0, 0, nil, false, 0, nil, retrieval.Support{Strength: "weak"})
 
 	// Should hit before TTL.
-	_, _, ok := c.Get(scope, "sig", "balanced", "", 0, 0)
+	_, _, ok := c.Get(scope, "sig", "balanced", "", 0, 0, nil, false, 0)
 	if !ok {
 		t.Fatal("expected cache hit before TTL")
 	}
@@ -1311,9 +1449,31 @@ func TestResultCache_TTLExpiry(t *testing.T) {
 	now = now.Add(61 * time.Second)
 	c.SetTestNow(func() time.Time { return now })
 
-	_, _, ok = c.Get(scope, "sig", "balanced", "", 0, 0)
+	_, _, ok = c.Get(scope, "sig", "balanced", "", 0, 0, nil, false, 0)
 	if ok {
 		t.Error("expected cache miss after TTL expiry")
+	}
+}
+
+// TestResultCache_LimitInKey is the regression guard for 29d S3: the cached value is the
+// post-trim items[:limit] slice returned verbatim, so two requests differing only by the
+// effective limit must NOT collide within the TTL.
+func TestResultCache_LimitInKey(t *testing.T) {
+	t.Parallel()
+
+	c := retrieval.ExportNewResultCache(16)
+	scope := identity.Scope{Tenant: "limit-test"}
+
+	// Put a result under limit=5.
+	c.Put(scope, "sig", "balanced", "", 0, 0, nil, false, 5, nil, retrieval.Support{Strength: "weak"})
+
+	// A limit=50 request must MISS (different result-set size), not over-serve the 5-item slice.
+	if _, _, ok := c.Get(scope, "sig", "balanced", "", 0, 0, nil, false, 50); ok {
+		t.Error("limit=50 must not hit a limit=5 cache entry (result-set collision)")
+	}
+	// The same effective limit still hits.
+	if _, _, ok := c.Get(scope, "sig", "balanced", "", 0, 0, nil, false, 5); !ok {
+		t.Error("same effective limit must hit")
 	}
 }
 
@@ -1324,9 +1484,9 @@ func TestResultCache_Stats(t *testing.T) {
 	c := retrieval.ExportNewResultCache(16)
 	scope := identity.Scope{Tenant: "stats-test"}
 
-	c.Get(scope, "sig", "balanced", "", 0, 0) // miss
-	c.Put(scope, "sig", "balanced", "", 0, 0, nil, retrieval.Support{})
-	c.Get(scope, "sig", "balanced", "", 0, 0) // hit
+	c.Get(scope, "sig", "balanced", "", 0, 0, nil, false, 0) // miss
+	c.Put(scope, "sig", "balanced", "", 0, 0, nil, false, 0, nil, retrieval.Support{})
+	c.Get(scope, "sig", "balanced", "", 0, 0, nil, false, 0) // hit
 
 	hits, misses := c.Stats()
 	if hits != 1 {
@@ -1347,15 +1507,15 @@ func TestResultCache_LRUEviction(t *testing.T) {
 	// Fill to cap.
 	for i := range cap {
 		scope := identity.Scope{Tenant: "evict-test"}
-		c.Put(scope, itoa(i), "balanced", "", 0, 0, nil, retrieval.Support{})
+		c.Put(scope, itoa(i), "balanced", "", 0, 0, nil, false, 0, nil, retrieval.Support{})
 	}
 
 	// Add one more — should evict LRU (entry 0).
 	scope := identity.Scope{Tenant: "evict-test"}
-	c.Put(scope, "overflow", "balanced", "", 0, 0, nil, retrieval.Support{})
+	c.Put(scope, "overflow", "balanced", "", 0, 0, nil, false, 0, nil, retrieval.Support{})
 
 	// The oldest entry (sig "0") should be evicted.
-	_, _, ok := c.Get(scope, "0", "balanced", "", 0, 0)
+	_, _, ok := c.Get(scope, "0", "balanced", "", 0, 0, nil, false, 0)
 	if ok {
 		t.Error("expected LRU entry to be evicted")
 	}
@@ -1479,6 +1639,80 @@ func (g *rerankTrackingGateway) Rerank(ctx context.Context, req gateway.RerankRe
 }
 func (g *rerankTrackingGateway) Probe(ctx context.Context) error { return g.inner.Probe(ctx) }
 func (g *rerankTrackingGateway) Close(ctx context.Context) error { return g.inner.Close(ctx) }
+
+// markerReranker gives the candidate whose content contains markerToken the maximum
+// rerank score (others 0), and records how many documents it was handed. Used to prove
+// rerank runs over the FULL scored pool BEFORE the trim (29d S6 / D-115 #9): the marked
+// candidate ranks below the limit on phase-10, so it only survives if rerank precedes trim.
+type markerReranker struct {
+	inner     gateway.Gateway
+	markerTok string
+	gotDocs   int
+}
+
+func (g *markerReranker) Embed(ctx context.Context, req gateway.EmbedRequest) (gateway.EmbedResponse, error) {
+	return g.inner.Embed(ctx, req)
+}
+func (g *markerReranker) Complete(ctx context.Context, req gateway.CompleteRequest) (gateway.CompleteResponse, error) {
+	return g.inner.Complete(ctx, req)
+}
+func (g *markerReranker) Rerank(ctx context.Context, req gateway.RerankRequest) (gateway.RerankResponse, error) {
+	g.gotDocs = len(req.Documents)
+	results := make([]gateway.RerankResult, len(req.Documents))
+	for i, d := range req.Documents {
+		score := 0.0
+		if strings.Contains(d, g.markerTok) {
+			score = 1.0
+		}
+		results[i] = gateway.RerankResult{Index: i, Score: score}
+	}
+	return gateway.RerankResponse{Results: results}, nil
+}
+func (g *markerReranker) Probe(ctx context.Context) error { return g.inner.Probe(ctx) }
+func (g *markerReranker) Close(ctx context.Context) error { return g.inner.Close(ctx) }
+
+// TestRerankPromotesBelowLimitCandidate is the regression guard for 29d S6 / D-115 #9:
+// the rerank pass must run over the FULL scored pool and promote a below-limit candidate
+// BEFORE the trim. Four candidates match the query phrase strongly; one weak "PROMOTEME"
+// candidate matches only the shared keyword (so it ranks low on phase-10). The reranker
+// favors PROMOTEME; with limit=2 it must appear in the result — impossible if the trim
+// (top-2 by phase-10) ran before rerank, since PROMOTEME would already be cut.
+func TestRerankPromotesBelowLimitCandidate(t *testing.T) {
+	t.Parallel()
+	st := openStore(t)
+	gw := &markerReranker{inner: openMockGateway(t, 4), markerTok: "PROMOTEME"}
+	vi := vindex.New(st.Vectors(), 4, "test")
+	log := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	r := retrieval.New(st.Memories(), st.Records(), vi, gw, log)
+
+	scope := identity.Scope{Tenant: "tenant-rerank-trim-" + newID()}
+	// Four strong matches repeating the full query phrase.
+	for i := 0; i < 4; i++ {
+		c := "shared rerank trim token strong match variant " + string(rune('A'+i))
+		_ = insertMemory(t, st, scope, c, "fact", nil, []string{"reranktrim"}, nil, int64(i+1))
+	}
+	// One weak match: shares only the keyword lane, low lexical overlap → low phase-10 rank.
+	_ = insertMemory(t, st, scope, "PROMOTEME unrelated wording here", "fact", nil, []string{"reranktrim"}, []string{"shared rerank trim token"}, 99)
+
+	resp, err := r.Retrieve(context.Background(), scope, retrieval.Request{
+		Query: "shared rerank trim token", Profile: "precise", Limit: 2,
+	})
+	if err != nil {
+		t.Fatalf("retrieve: %v", err)
+	}
+	if gw.gotDocs < 5 {
+		t.Fatalf("rerank saw %d docs, want the full pool of 5 (rerank must run before trim)", gw.gotDocs)
+	}
+	var promoted bool
+	for _, it := range resp.Items {
+		if strings.Contains(it.Memory.Content, "PROMOTEME") {
+			promoted = true
+		}
+	}
+	if !promoted {
+		t.Errorf("the below-limit PROMOTEME candidate was not promoted into the top-%d result; rerank must precede the trim", len(resp.Items))
+	}
+}
 
 // TestRerankOnlyForPreciseProfile verifies that the rerank pass runs for
 // "precise" profile but not for "balanced" or "broad".
@@ -1760,5 +1994,29 @@ func TestRetrieveQueryCaptured(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("expected a retrieve.query event keyed by response_id %q, got %+v", resp.ResponseID, evs)
+	}
+}
+
+// TestResultCache_KeyIncludesKindsAndLanes covers D-115/audit #8: Kinds and IncludeLanes are
+// part of the cache key, so a kind-filtered or lanes-on request can't collide with a plain one.
+func TestResultCache_KeyIncludesKindsAndLanes(t *testing.T) {
+	t.Parallel()
+	c := retrieval.NewResultCache(0)
+	scope := identity.Scope{Tenant: "t-cachekey"}
+	c.Put(scope, "sig", "balanced", "", 0, 0, []string{"fact"}, false, 0, nil, retrieval.Support{Strength: "weak"})
+
+	if _, _, ok := c.Get(scope, "sig", "balanced", "", 0, 0, []string{"preference"}, false, 0); ok {
+		t.Error("different Kinds must MISS the cache")
+	}
+	if _, _, ok := c.Get(scope, "sig", "balanced", "", 0, 0, []string{"fact"}, true, 0); ok {
+		t.Error("different IncludeLanes must MISS the cache")
+	}
+	if _, _, ok := c.Get(scope, "sig", "balanced", "", 0, 0, []string{"fact"}, false, 0); !ok {
+		t.Error("same Kinds+IncludeLanes must HIT the cache")
+	}
+	// Kinds order-independent.
+	c.Put(scope, "sig2", "balanced", "", 0, 0, []string{"fact", "task"}, false, 0, nil, retrieval.Support{})
+	if _, _, ok := c.Get(scope, "sig2", "balanced", "", 0, 0, []string{"task", "fact"}, false, 0); !ok {
+		t.Error("Kinds key must be order-independent")
 	}
 }

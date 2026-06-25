@@ -139,6 +139,11 @@ type Candidate struct {
 	Provenance         []ProvSpan `json:"provenance"`
 	TrustSource        string     `json:"-"` // server-set; "" → "llm_extracted"
 	Stability          float64    `json:"-"` // server-set seed; 0 → 1.0
+	// OccurredAt is the assertion time of this candidate (earliest occurred_at among its
+	// provenance records) — the conversation date, NOT extraction time. Server-set in the
+	// extract stage; flows to Memory.ValidFrom so retrieval can surface "when" (D-024 day-one
+	// signal, D-109). 0 when unknown.
+	OccurredAt int64 `json:"-"`
 }
 
 // CandidateList is the top-level object the model returns.

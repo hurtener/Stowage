@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sort"
 	"sync"
 	"time"
 
@@ -70,9 +71,10 @@ type ReconcileStage struct {
 	log         *slog.Logger
 	in          <-chan pipeline.CandidateBatch
 	wg          sync.WaitGroup
-	embedder    *Embedder        // optional; nil = no embedding (degraded-embed mode)
-	vi          vindex.Index     // optional; nil = structural neighbors only (A4)
-	invalidator ScopeInvalidator // optional; nil = cache invalidation disabled (Phase 12, D-053)
+	embedder    *Embedder         // optional; nil = no embedding (degraded-embed mode)
+	vi          vindex.Index      // optional; nil = structural neighbors only (A4)
+	invalidator ScopeInvalidator  // optional; nil = cache invalidation disabled (Phase 12, D-053)
+	recs        store.RecordStore // optional; nil = no conversation context in the decision (D-108)
 }
 
 // augmentWithVectorNeighbors merges SEMANTIC neighbors (vector lane, cosine ≥ floor)
@@ -164,6 +166,75 @@ func (r *ReconcileStage) SetEmbedder(e *Embedder) {
 	r.embedder = e
 }
 
+// SetRecordStore wires an optional RecordStore so the supersede/merge decision sees the
+// candidate's and neighbors' original conversation turns (D-108, Phase 29b). Must be called
+// before Start. If not set, the decision runs on memories only (current behaviour).
+func (r *ReconcileStage) SetRecordStore(recs store.RecordStore) {
+	r.recs = recs
+}
+
+// maxContextRecords bounds the conversation turns fed to one reconcile decision (P2/cost).
+const maxContextRecords = 12
+
+// buildReconcileContext fetches the raw turns behind the candidate and its neighbors so the
+// decision can distinguish a correction from a distinct fact (D-108). Bounded and degrade-safe:
+// a fetch error logs and yields an empty/partial context — the decision still runs. Returns the
+// zero value when no RecordStore is wired.
+func (r *ReconcileStage) buildReconcileContext(ctx context.Context, scope identity.Scope, c pipeline.Candidate, neighbors []store.Memory) ReconcileContext {
+	if r.recs == nil {
+		return ReconcileContext{}
+	}
+	seen := map[string]bool{}
+	budget := maxContextRecords
+
+	collect := func(ids []string) []store.Record {
+		var want []string
+		for _, id := range ids {
+			if id == "" || seen[id] || budget <= 0 {
+				continue
+			}
+			seen[id] = true
+			want = append(want, id)
+			budget--
+		}
+		if len(want) == 0 {
+			return nil
+		}
+		recs, err := r.recs.GetMany(ctx, scope, want)
+		if err != nil {
+			r.log.WarnContext(ctx, "reconcile: context record fetch failed — proceeding without", "err", err)
+			return nil
+		}
+		return recs
+	}
+
+	rc := ReconcileContext{}
+	candIDs := make([]string, 0, len(c.Provenance))
+	for _, p := range c.Provenance {
+		candIDs = append(candIDs, p.RecordID)
+	}
+	rc.CandidateTurns = collect(candIDs)
+
+	rc.NeighborTurns = map[string][]store.Record{}
+	for _, n := range neighbors {
+		if budget <= 0 {
+			break
+		}
+		j, err := r.mem.GetJunctions(ctx, scope, n.ID)
+		if err != nil {
+			continue // best-effort: skip this neighbor's turns
+		}
+		nIDs := make([]string, 0, len(j.Provenance))
+		for _, p := range j.Provenance {
+			nIDs = append(nIDs, p.RecordID)
+		}
+		if turns := collect(nIDs); len(turns) > 0 {
+			rc.NeighborTurns[n.ID] = turns
+		}
+	}
+	return rc
+}
+
 // SetScopeInvalidator wires an optional ScopeInvalidator for cache invalidation
 // after every content-changing commit (D-053). Must be called before Start.
 // If not set, cache invalidation is skipped (safe — cache entries expire via TTL).
@@ -188,9 +259,32 @@ func (r *ReconcileStage) Drain(_ context.Context) {
 	r.wg.Wait()
 }
 
+// candidateAssertionKey returns a candidate's assertion-order key: the LATEST source
+// record ID among its provenance. Record IDs are ULIDs — monotonic in ingestion order,
+// which IS conversation/turn order — so this orders candidates by when they were said,
+// finer than session-granular occurred_at (D-106).
+func candidateAssertionKey(c pipeline.Candidate) string {
+	key := ""
+	for _, p := range c.Provenance {
+		if p.RecordID > key {
+			key = p.RecordID
+		}
+	}
+	return key
+}
+
 // worker processes CandidateBatch events until the input channel is closed.
 func (r *ReconcileStage) worker(ctx context.Context) {
 	for batch := range r.in {
+		// Process a flush's candidates OLDEST-asserted first (by source-record/turn order),
+		// so that when two candidates in the same flush state contradictory values for one
+		// fact ("6 months" then "9 months"), the older commits first and the newer supersedes
+		// it — the current value wins deterministically. Without this, the LLM's arbitrary
+		// candidate output order decided the winner, so supersede kept the stale value ~half
+		// the time (D-106). Stable sort preserves emission order within the same record.
+		sort.SliceStable(batch.Candidates, func(i, j int) bool {
+			return candidateAssertionKey(batch.Candidates[i]) < candidateAssertionKey(batch.Candidates[j])
+		})
 		for _, c := range batch.Candidates {
 			if err := r.processCandidate(ctx, batch.Scope, c); err != nil {
 				r.log.WarnContext(ctx, "reconcile: candidate failed",
@@ -285,6 +379,17 @@ func (r *ReconcileStage) processCandidate(ctx context.Context, scope identity.Sc
 	// swallow corrections — semantic similarity drives RECALL (above), never auto-discard.
 	for _, n := range neighbors {
 		if BigramJaccard(normalized, n.Content) >= nearDupThreshold {
+			// D-104 numeric-correction guard: a lexically near-identical candidate that
+			// carries a DIFFERENT numeral for the same fact ("...120 stars" vs "...125
+			// stars"; "...9 months" vs "...6 months") is a correction, NOT a duplicate.
+			// Auto-discarding it would swallow the correction AND bump the stale memory's
+			// match_count (raising its rank) — the exact stale-value miss. Fall through to
+			// the LLM decision (supersede path) instead.
+			if NumeralsDiverge(normalized, n.Content) {
+				r.log.DebugContext(ctx, "reconcile: near-dup numeral divergence — routing to LLM (D-104)",
+					"tenant", scope.Tenant, "neighbor_id", n.ID)
+				continue
+			}
 			if incErr := r.mem.IncrementCounter(ctx, scope, n.ID, "match"); incErr != nil {
 				r.log.WarnContext(ctx, "reconcile: IncrementCounter failed",
 					"id", n.ID, "err", incErr)
@@ -303,9 +408,12 @@ func (r *ReconcileStage) processCandidate(ctx context.Context, scope identity.Sc
 		return r.commitFastAdd(ctx, scope, c, normalized, hash)
 	}
 
-	// Step 6: Build LLM prompt and call gateway.
+	// Step 6: Build LLM prompt and call gateway. Enrich with the original conversation
+	// turns behind the candidate + neighbors so the decision distinguishes a correction
+	// from a distinct fact (D-108); degrade-safe (empty context when no RecordStore).
 	systemPrompt := BuildSystemPrompt()
-	userPrompt := BuildUserPrompt(c, neighbors)
+	rc := r.buildReconcileContext(ctx, scope, c, neighbors)
+	userPrompt := BuildUserPrompt(c, neighbors, rc)
 
 	resp, err := r.gw.Complete(ctx, gateway.CompleteRequest{
 		System:      systemPrompt,
@@ -850,6 +958,7 @@ func candidateToMemory(c pipeline.Candidate, normalized, hash, status string) st
 		TrustSource: trust,
 		Stability:   stability,
 		ContentHash: hash,
+		ValidFrom:   c.OccurredAt, // assertion (conversation) date — surfaced as "when" at retrieval (D-109)
 	}
 }
 

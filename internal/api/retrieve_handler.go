@@ -64,6 +64,17 @@ type retrieveMemoryItem struct {
 	Citation  string             `json:"citation"` // injection ULID = citation handle (D-051)
 	Lanes     []string           `json:"lanes,omitempty"`
 	Breakdown *retrieveBreakdown `json:"breakdown,omitempty"` // present when debug:true
+	// Stale marks a superseded value surfaced for dual-visibility (D-105, §6c); prefer
+	// the current value, SupersededBy links to its successor, and SupersededByContent/Date
+	// carry that successor's value + assertion date inline so the item is self-contained
+	// without a reader-prompt section (D-114, Idea 1).
+	Stale               bool   `json:"stale,omitempty"`
+	SupersededBy        string `json:"superseded_by,omitempty"`
+	SupersededByContent string `json:"superseded_by_content,omitempty"`
+	SupersededByDate    int64  `json:"superseded_by_date,omitempty"`
+	// OccurredAt is the assertion (conversation) date of the memory in unix millis, so a
+	// reader can do temporal reasoning and date-resolve stale values (D-109). 0 when unknown.
+	OccurredAt int64 `json:"occurred_at,omitempty"`
 }
 
 // retrieveResponse is the wire format for POST /v1/retrieve (envelope v1).
@@ -148,6 +159,13 @@ func (s *Server) handleRetrieve(w http.ResponseWriter, r *http.Request) {
 			Score:    item.Score,
 			Citation: item.Citation,
 		}
+		if item.Stale {
+			ri.Stale = true
+			ri.SupersededBy = item.Memory.SupersededByID
+			ri.SupersededByContent = item.SupersededByContent
+			ri.SupersededByDate = item.SupersededByDate
+		}
+		ri.OccurredAt = item.Memory.ValidFrom
 		if req.IncludeLanes {
 			ri.Lanes = item.Lanes
 		}

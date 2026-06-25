@@ -50,8 +50,39 @@ type Config struct {
 	Telemetry TelemetryConfig `yaml:"telemetry"`
 	MCP       MCPConfig       `yaml:"mcp"`
 	Trace     TraceConfig     `yaml:"trace"`
+	Retrieval RetrievalConfig `yaml:"retrieval"`
 
 	prov Provenance
+}
+
+// RetrievalConfig tunes the named retrieval profiles (D-103). Each profile's candidate
+// windows are operator-tunable; an omitted/zero field inherits the built-in preset, so
+// a partial override (e.g. only precise.scoring_k) is valid and the all-empty default
+// reproduces the shipped presets exactly. Reranking is not configured here — it is a
+// property of the precise profile, wired via gateway.rerank_model.
+type RetrievalConfig struct {
+	Precise  ProfileTuning `yaml:"precise"`
+	Balanced ProfileTuning `yaml:"balanced"`
+	Broad    ProfileTuning `yaml:"broad"`
+	// IncludeSuperseded surfaces the superseded predecessors of returned memories,
+	// flagged stale with a link to the current value, so the reader can reason about
+	// the history while preferring the current value (dual-visibility, §6c, D-105).
+	// Default true. Bounded per response; superseded items are demoted, never ranked
+	// above their current successor.
+	IncludeSuperseded bool `yaml:"include_superseded"`
+}
+
+// ProfileTuning overrides one retrieval profile's candidate windows. A zero field
+// inherits the built-in preset value.
+//
+//	LaneK        — candidates fetched per lane before RRF fusion.
+//	ScoringK     — fused candidates scored/reranked (the cap on memories reaching the
+//	               reader; the per-request limit is floored up into this window).
+//	DefaultLimit — final result count when the caller omits limit.
+type ProfileTuning struct {
+	LaneK        int `yaml:"lane_k"`
+	ScoringK     int `yaml:"scoring_k"`
+	DefaultLimit int `yaml:"default_limit"`
 }
 
 // TraceConfig holds reasoning-trace export tuning (Phase 26, §6c, D-086).
@@ -145,6 +176,16 @@ var allKeys = []string{
 	"telemetry.metrics_listen",
 	"mcp.stdio_tenant",
 	"trace.signing_key",
+	"retrieval.precise.lane_k",
+	"retrieval.precise.scoring_k",
+	"retrieval.precise.default_limit",
+	"retrieval.balanced.lane_k",
+	"retrieval.balanced.scoring_k",
+	"retrieval.balanced.default_limit",
+	"retrieval.broad.lane_k",
+	"retrieval.broad.scoring_k",
+	"retrieval.broad.default_limit",
+	"retrieval.include_superseded",
 }
 
 // secretKeyPaths is the set of keys that hold env.VAR_NAME references.
@@ -222,6 +263,9 @@ func Defaults() *Config {
 		},
 		MCP: MCPConfig{
 			StdioTenant: "default",
+		},
+		Retrieval: RetrievalConfig{
+			IncludeSuperseded: true, // dual-visibility default (§6c, D-105)
 		},
 		prov: make(Provenance),
 	}
@@ -444,6 +488,28 @@ func (c *Config) Validate() error {
 		errs = append(errs, fmt.Errorf("config.telemetry.log_format: unknown format %q", c.Telemetry.LogFormat))
 	}
 
+	// retrieval profile tuning (D-103): an omitted field inherits the preset; a set
+	// field must be non-negative, scoring_k must not exceed lane_k, and default_limit
+	// must stay within the hard result cap (50). Ordered slice → deterministic errors.
+	for _, pt := range []struct {
+		name string
+		t    ProfileTuning
+	}{
+		{"precise", c.Retrieval.Precise},
+		{"balanced", c.Retrieval.Balanced},
+		{"broad", c.Retrieval.Broad},
+	} {
+		if pt.t.LaneK < 0 || pt.t.ScoringK < 0 || pt.t.DefaultLimit < 0 {
+			errs = append(errs, fmt.Errorf("config.retrieval.%s: lane_k/scoring_k/default_limit must be >= 0", pt.name))
+		}
+		if pt.t.DefaultLimit > 50 {
+			errs = append(errs, fmt.Errorf("config.retrieval.%s.default_limit: %d exceeds the hard result cap (50)", pt.name, pt.t.DefaultLimit))
+		}
+		if pt.t.ScoringK > 0 && pt.t.LaneK > 0 && pt.t.ScoringK > pt.t.LaneK {
+			errs = append(errs, fmt.Errorf("config.retrieval.%s: scoring_k (%d) must not exceed lane_k (%d)", pt.name, pt.t.ScoringK, pt.t.LaneK))
+		}
+	}
+
 	return errors.Join(errs...)
 }
 
@@ -594,6 +660,26 @@ func (c *Config) getByPath(path string) string {
 		return c.MCP.StdioTenant
 	case "trace.signing_key":
 		return c.Trace.SigningKey
+	case "retrieval.precise.lane_k":
+		return strconv.Itoa(c.Retrieval.Precise.LaneK)
+	case "retrieval.precise.scoring_k":
+		return strconv.Itoa(c.Retrieval.Precise.ScoringK)
+	case "retrieval.precise.default_limit":
+		return strconv.Itoa(c.Retrieval.Precise.DefaultLimit)
+	case "retrieval.balanced.lane_k":
+		return strconv.Itoa(c.Retrieval.Balanced.LaneK)
+	case "retrieval.balanced.scoring_k":
+		return strconv.Itoa(c.Retrieval.Balanced.ScoringK)
+	case "retrieval.balanced.default_limit":
+		return strconv.Itoa(c.Retrieval.Balanced.DefaultLimit)
+	case "retrieval.broad.lane_k":
+		return strconv.Itoa(c.Retrieval.Broad.LaneK)
+	case "retrieval.broad.scoring_k":
+		return strconv.Itoa(c.Retrieval.Broad.ScoringK)
+	case "retrieval.broad.default_limit":
+		return strconv.Itoa(c.Retrieval.Broad.DefaultLimit)
+	case "retrieval.include_superseded":
+		return strconv.FormatBool(c.Retrieval.IncludeSuperseded)
 	default:
 		return ""
 	}
@@ -670,6 +756,39 @@ func (c *Config) setByPath(path, value string) error {
 		c.MCP.StdioTenant = value
 	case "trace.signing_key":
 		c.Trace.SigningKey = value
+	case "retrieval.precise.lane_k", "retrieval.precise.scoring_k", "retrieval.precise.default_limit",
+		"retrieval.balanced.lane_k", "retrieval.balanced.scoring_k", "retrieval.balanced.default_limit",
+		"retrieval.broad.lane_k", "retrieval.broad.scoring_k", "retrieval.broad.default_limit":
+		n, err := strconv.Atoi(value)
+		if err != nil {
+			return fmt.Errorf("config.%s: %w", path, err)
+		}
+		switch path {
+		case "retrieval.precise.lane_k":
+			c.Retrieval.Precise.LaneK = n
+		case "retrieval.precise.scoring_k":
+			c.Retrieval.Precise.ScoringK = n
+		case "retrieval.precise.default_limit":
+			c.Retrieval.Precise.DefaultLimit = n
+		case "retrieval.balanced.lane_k":
+			c.Retrieval.Balanced.LaneK = n
+		case "retrieval.balanced.scoring_k":
+			c.Retrieval.Balanced.ScoringK = n
+		case "retrieval.balanced.default_limit":
+			c.Retrieval.Balanced.DefaultLimit = n
+		case "retrieval.broad.lane_k":
+			c.Retrieval.Broad.LaneK = n
+		case "retrieval.broad.scoring_k":
+			c.Retrieval.Broad.ScoringK = n
+		case "retrieval.broad.default_limit":
+			c.Retrieval.Broad.DefaultLimit = n
+		}
+	case "retrieval.include_superseded":
+		b, err := strconv.ParseBool(value)
+		if err != nil {
+			return fmt.Errorf("config.%s: %w", path, err)
+		}
+		c.Retrieval.IncludeSuperseded = b
 	default:
 		return fmt.Errorf("config: unknown key path %q", path)
 	}

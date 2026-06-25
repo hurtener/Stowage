@@ -485,7 +485,12 @@ func (m *memoryStore) FindNeighbors(ctx context.Context, scope identity.Scope, q
 	if len(q.Entities) == 0 && len(q.Keywords) == 0 {
 		return nil, nil
 	}
+	// ExactScope (dedupe sweep): an empty leaf matches IS NULL, so a NULL-leaf
+	// partition cannot pull neighbors from other users (D-111 / 29d B1).
 	scopeWhere, scopeArgs, err := buildScopeWhere(scope)
+	if q.ExactScope {
+		scopeWhere, scopeArgs, err = buildExactScopeWhere(scope)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -1040,6 +1045,52 @@ func (m *memoryStore) ListActiveForDecay(ctx context.Context, scope identity.Sco
 	return out, nextCursor, nil
 }
 
+// ListActiveInScope is ListActiveForDecay with EXACT-leaf scope semantics
+// (empty project/user/session → IS NULL). Used by the dedupe sweep so a
+// per-(tenant,project,user) pass only ever sees its own partition (D-111 / 29d B1).
+func (m *memoryStore) ListActiveInScope(ctx context.Context, scope identity.Scope, limit int, cursor string) ([]store.Memory, string, error) {
+	scopeWhere, args, err := buildExactScopeWhere(scope)
+	if err != nil {
+		return nil, "", err
+	}
+	whereClause := scopeWhere + " AND status = 'active'"
+
+	if cursor != "" {
+		ts, cid, perr := parseCursor(cursor)
+		if perr != nil {
+			return nil, "", perr
+		}
+		whereClause += " AND (created_at > ? OR (created_at = ? AND id > ?))"
+		args = append(args, ts, ts, cid)
+	}
+	args = append(args, limit+1)
+
+	q := `SELECT ` + memorySelectCols + ` FROM memories WHERE ` + whereClause + ` ORDER BY created_at ASC, id ASC LIMIT ?` //nolint:gosec
+	rows, err := m.s.rdb.QueryContext(ctx, q, args...)
+	if err != nil {
+		return nil, "", fmt.Errorf("sqlitestore: list active in scope: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var out []store.Memory
+	for rows.Next() {
+		mem, err := scanMemory(rows)
+		if err != nil {
+			return nil, "", err
+		}
+		out = append(out, *mem)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, "", err
+	}
+	var nextCursor string
+	if len(out) > limit {
+		nextCursor = encodeCursor(out[limit-1].CreatedAt, out[limit-1].ID)
+		out = out[:limit]
+	}
+	return out, nextCursor, nil
+}
+
 // ListByKinds returns active memories in scope whose kind is one of kinds,
 // ordered by (created_at, id) ascending (D-072 playbook view). Scope-enforced
 // (P3); empty kinds returns an empty slice.
@@ -1163,4 +1214,29 @@ func scanMemory(row rowScanner) (*store.Memory, error) {
 		return nil, err
 	}
 	return &mem, nil
+}
+
+// DistinctScopes returns the distinct (project_id, user_id) scopes with at least one active
+// memory under scope (D-111). Tenant-scoped via buildScopeWhere; the consolidation sweep runs
+// per returned scope so it never compares memories across users (P3).
+func (m *memoryStore) DistinctScopes(ctx context.Context, scope identity.Scope) ([]identity.Scope, error) {
+	whereClause, args, err := buildScopeWhere(scope)
+	if err != nil {
+		return nil, err
+	}
+	q := `SELECT DISTINCT COALESCE(project_id,''), COALESCE(user_id,'') FROM memories WHERE ` + whereClause + ` AND status = 'active'` //nolint:gosec // whereClause from controlled helper; values bound
+	rows, err := m.s.rdb.QueryContext(ctx, q, args...)
+	if err != nil {
+		return nil, fmt.Errorf("sqlitestore: distinct scopes: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	var out []identity.Scope
+	for rows.Next() {
+		var project, user string
+		if err := rows.Scan(&project, &user); err != nil {
+			return nil, fmt.Errorf("sqlitestore: scan distinct scope: %w", err)
+		}
+		out = append(out, identity.Scope{Tenant: scope.Tenant, Project: project, User: user})
+	}
+	return out, rows.Err()
 }

@@ -10,6 +10,7 @@ import (
 	"github.com/hurtener/stowage/internal/identity"
 	"github.com/hurtener/stowage/internal/lifecycle"
 	"github.com/hurtener/stowage/internal/pipeline"
+	"github.com/hurtener/stowage/internal/reconcile"
 	"github.com/hurtener/stowage/internal/store"
 )
 
@@ -137,6 +138,15 @@ func TestDecaySweepBelowFloorSetsValidUntil(t *testing.T) {
 	}
 	if mem.ValidUntil == 0 {
 		t.Error("expected valid_until set after first below-floor sweep")
+	}
+	// D-110 regression: grace must be DecayGraceSweeps * DecayInterval in MILLISECONDS
+	// (2 * 10min = 20min), not nanoseconds-as-ms (~38 years). The old `!= 0` assertion
+	// let a 10^6x inflation through. Bound it tightly: well under an hour from now.
+	wantGraceMs := int64(profile.DecayGraceSweeps) * profile.DecayInterval.Milliseconds() // 1_200_000
+	nowMs := time.Now().UnixMilli()
+	got := mem.ValidUntil - nowMs
+	if got < wantGraceMs-60_000 || got > wantGraceMs+60_000 {
+		t.Errorf("valid_until grace = %d ms from now; want ≈ %d ms (≈20min). A nanosecond/ms unit bug yields ~1.2e12 ms (~38 years).", got, wantGraceMs)
 	}
 }
 
@@ -321,5 +331,68 @@ func TestDecaySweepActivityAxisDrivesDecay(t *testing.T) {
 	}
 	if m := getMemory(t, st, scope, fresh); m.ValidUntil != 0 {
 		t.Errorf("fresh memory (0 activity turns) should stay healthy; got valid_until=%d", m.ValidUntil)
+	}
+}
+
+// countingInvalidator records InvalidateScope calls (D-118 test double).
+type countingInvalidator struct{ scopes []identity.Scope }
+
+func (c *countingInvalidator) InvalidateScope(s identity.Scope) { c.scopes = append(c.scopes, s) }
+
+// TestDecayExpireInvalidatesCache proves D-118/audit #15: a status-mutating sweep (expire)
+// invalidates the retrieval cache, so it can't serve the expired memory for the TTL.
+func TestDecayExpireInvalidatesCache(t *testing.T) {
+	st, cleanup := newTestStore(t)
+	defer cleanup()
+	scope := identity.Scope{Tenant: "decay-inv"}
+	past := time.Now().Add(-1 * time.Hour).UnixMilli()
+	id := insertMemory(t, st, scope, store.Memory{Stability: 1.0,
+		LastAccessedAt: time.Now().Add(-30 * 24 * time.Hour).UnixMilli(), ValidUntil: past})
+
+	inv := &countingInvalidator{}
+	profile := lifecycle.Profile{DecayInterval: 10 * time.Minute, DecayBatchSize: 100, DecayGraceSweeps: 2}
+	mgr := lifecycle.New(st, testLogger(), profile, make(chan pipeline.Item, 8))
+	mgr.SetScopeInvalidator(inv)
+	mgr.SweepDecayOnce(context.Background())
+
+	if mem := getMemory(t, st, scope, id); mem.Status != "expired" {
+		t.Fatalf("memory status = %q, want expired", mem.Status)
+	}
+	if len(inv.scopes) == 0 {
+		t.Error("expire did not invalidate the retrieval cache (D-118)")
+	}
+}
+
+// TestDecayExpireIsReversible is the regression guard for 29d S1 (P4 / D-070): a decay
+// expire must round-trip via Rollback. memory.expired carries a flat MarshalPriorState
+// snapshot (status=active, valid_until cleared), so un-expiry restores a fresh active
+// memory. Pre-fix the event used an incompatible nested payload and was absent from
+// isRestorable, so Rollback returned ErrNoPriorState.
+func TestDecayExpireIsReversible(t *testing.T) {
+	st, cleanup := newTestStore(t)
+	defer cleanup()
+	ctx := context.Background()
+	scope := identity.Scope{Tenant: "decay-rb"}
+	past := time.Now().Add(-1 * time.Hour).UnixMilli()
+	id := insertMemory(t, st, scope, store.Memory{Stability: 1.0,
+		LastAccessedAt: time.Now().Add(-30 * 24 * time.Hour).UnixMilli(), ValidUntil: past})
+
+	profile := lifecycle.Profile{DecayInterval: 10 * time.Minute, DecayBatchSize: 100, DecayGraceSweeps: 2}
+	mgr := lifecycle.New(st, testLogger(), profile, make(chan pipeline.Item, 8))
+	mgr.SweepDecayOnce(ctx)
+
+	if mem := getMemory(t, st, scope, id); mem.Status != "expired" {
+		t.Fatalf("pre-rollback status = %q, want expired", mem.Status)
+	}
+
+	if _, err := reconcile.Rollback(ctx, st, scope, id); err != nil {
+		t.Fatalf("Rollback memory.expired: %v", err)
+	}
+	mem := getMemory(t, st, scope, id)
+	if mem.Status != "active" {
+		t.Errorf("after rollback status = %q, want active (un-expired)", mem.Status)
+	}
+	if mem.ValidUntil != 0 {
+		t.Errorf("after rollback valid_until = %d, want 0 (grace timer cleared so it does not immediately re-expire)", mem.ValidUntil)
 	}
 }

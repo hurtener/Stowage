@@ -49,7 +49,7 @@ func TestReaderPrompt_Golden(t *testing.T) {
 	if !strings.Contains(sys, "ABSTAIN") {
 		t.Errorf("reader system prompt missing abstention instruction: %q", sys)
 	}
-	wantUser := "Context:\n[1] User spent $60 on coffee mugs.\n[2] The mugs cost $12 each.\n\nQuestion: How many mugs did the user buy?"
+	wantUser := "CURRENT memories (answer from these):\n[1] User spent $60 on coffee mugs.\n[2] The mugs cost $12 each.\n\nQuestion: How many mugs did the user buy?"
 	if user != wantUser {
 		t.Errorf("reader user prompt mismatch:\n got: %q\nwant: %q", user, wantUser)
 	}
@@ -58,8 +58,29 @@ func TestReaderPrompt_Golden(t *testing.T) {
 // TestReaderPrompt_NoContext renders an explicit no-memories block.
 func TestReaderPrompt_NoContext(t *testing.T) {
 	_, user := BuildReaderPrompt("Q?", nil)
-	if !strings.Contains(user, "(no memories retrieved)") {
+	if !strings.Contains(user, "(no current memories retrieved)") {
 		t.Errorf("empty-context reader prompt should note no memories: %q", user)
+	}
+}
+
+// TestReaderPrompt_SupersededSection puts [OUTDATED]-marked items in a separate
+// SUPERSEDED section (history only), not inline among current memories (D-105).
+func TestReaderPrompt_SupersededSection(t *testing.T) {
+	_, user := BuildReaderPrompt("How long is the commute?",
+		[]string{"Commute is 45 minutes each way.", "[OUTDATED — the user later changed this] Commute is 30 minutes."})
+	if !strings.Contains(user, "CURRENT memories") || !strings.Contains(user, "SUPERSEDED memories") {
+		t.Errorf("prompt missing current/superseded sections: %q", user)
+	}
+	// The current value is in the CURRENT block; the stale value is below the SUPERSEDED header.
+	cur := user[:strings.Index(user, "SUPERSEDED memories")]
+	if !strings.Contains(cur, "45 minutes each way") {
+		t.Errorf("current value not in CURRENT section: %q", cur)
+	}
+	if strings.Contains(cur, "30 minutes") {
+		t.Errorf("superseded value leaked into CURRENT section: %q", cur)
+	}
+	if strings.Contains(user, "[OUTDATED") {
+		t.Errorf("inline [OUTDATED marker should be stripped once sectioned: %q", user)
 	}
 }
 

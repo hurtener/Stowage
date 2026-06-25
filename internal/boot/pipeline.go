@@ -136,6 +136,7 @@ func StartPipeline(ctx context.Context, stk *Stack, cfg config.Config) (*Pipelin
 	rec.SetEmbedder(stk.Embedder)
 	rec.SetVIndex(stk.VIndex)                      // semantic neighbor augmentation (A4)
 	rec.SetScopeInvalidator(stk.Retriever.Cache()) // Phase 12 cache invalidation (D-053)
+	rec.SetRecordStore(stk.Store.Records())        // D-108: conversation context in the supersede decision
 	rec.Start(ctx)
 
 	p := &Pipeline{
@@ -178,6 +179,7 @@ func StartPipeline(ctx context.Context, stk *Stack, cfg config.Config) (*Pipelin
 	lcProfile.ThreadWindow = episodeCfg.ThreadWindow
 	lcProfile.ThreadBatchSize = episodeCfg.ThreadBatchSize
 	lc := lifecycle.New(stk.Store, stk.Log, lcProfile, ch)
+	lc.SetScopeInvalidator(stk.Retriever.Cache()) // D-118: lifecycle sweeps invalidate the retrieval cache
 	if reflectCfg.Enabled {
 		// Wire the reflection sweep: it calls the gateway and emits into the
 		// reconcile fan-in (Phase 19, D-077). Set before RunForce/Start.

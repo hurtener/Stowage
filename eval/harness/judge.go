@@ -88,17 +88,47 @@ func BuildReaderPrompt(question string, contexts []string) (system, user string)
 		"Rules: (1) Use ONLY the retrieved context — never rely on outside knowledge, prior " +
 		"training, or assumptions; do not answer anything that is not supported by the context. " +
 		"(2) You MAY do arithmetic, counting, or temporal reasoning OVER the context when the " +
-		"question requires it. (3) If the retrieved context does not contain enough information " +
+		"question requires it; each memory may carry a '| When: YYYY-MM-DD' assertion date — use " +
+		"these dates for temporal questions (how long ago, how many days/months since). " +
+		"(3) If the CURRENT memories do not contain enough information " +
 		"to answer, ABSTAIN: state explicitly that the provided context is insufficient — do not " +
-		"guess. Answer concisely and directly."
+		"guess. (4) Your answer MUST come from the CURRENT memories. The SUPERSEDED section lists " +
+		"earlier values the user has since CHANGED — they are there only so you can understand the " +
+		"history; NEVER answer with a superseded value. (5) When two CURRENT memories give DIFFERENT " +
+		"values for the SAME fact, the one with the LATER '| When:' date is the current value — use " +
+		"it and treat the earlier one as outdated; never average or hedge between them. Answer " +
+		"concisely and directly with a single value."
+
+	// Partition into current vs superseded (the runner prefixes superseded items with
+	// "[OUTDATED …]"). A clearly-separated section is far harder for the reader to miss
+	// than an inline tag buried among 30+ items (D-105 reader-prompt hardening).
+	const staleMark = "[OUTDATED"
+	var current, superseded []string
+	for _, c := range contexts {
+		if strings.HasPrefix(strings.TrimSpace(c), staleMark) {
+			// Strip the inline marker; the section header carries the instruction.
+			if i := strings.Index(c, "] "); i >= 0 {
+				c = c[i+2:]
+			}
+			superseded = append(superseded, c)
+		} else {
+			current = append(current, c)
+		}
+	}
 
 	var b strings.Builder
-	b.WriteString("Context:\n")
-	if len(contexts) == 0 {
-		b.WriteString("(no memories retrieved)\n")
+	b.WriteString("CURRENT memories (answer from these):\n")
+	if len(current) == 0 {
+		b.WriteString("(no current memories retrieved)\n")
 	}
-	for i, c := range contexts {
+	for i, c := range current {
 		fmt.Fprintf(&b, "[%d] %s\n", i+1, strings.TrimSpace(c))
+	}
+	if len(superseded) > 0 {
+		b.WriteString("\nSUPERSEDED memories (earlier values the user CHANGED — history only, NEVER answer with these):\n")
+		for i, c := range superseded {
+			fmt.Fprintf(&b, "[S%d] %s\n", i+1, strings.TrimSpace(c))
+		}
 	}
 	b.WriteString("\nQuestion: ")
 	b.WriteString(strings.TrimSpace(question))
@@ -130,13 +160,28 @@ func BuildJudgePrompt(question, gold, answer string) (system, user string) {
 // harness sets Model to a stronger reader model (e.g. anthropic/claude-sonnet-4.6,
 // distinct from the cheap extraction model) and ReasoningEffort (e.g. "medium").
 type ReaderOpts struct {
-	// Model overrides the completion model for both the reader and the judge
-	// calls. Empty = the gateway's configured model.
+	// Model overrides the completion model for the READER call. Empty = the
+	// gateway's configured model.
 	Model string
+	// JudgeModel overrides the completion model for the JUDGE call. Empty = Model
+	// (so the judge follows the reader unless explicitly varied — the cost/quality
+	// sweep varies reader and judge independently).
+	JudgeModel string
 	// ReasoningEffort requests provider extended thinking for the READER call
-	// ("none"|"minimal"|"low"|"medium"|"high"). Empty = none. The judge runs
-	// without reasoning (a short classification).
+	// ("none"|"minimal"|"low"|"medium"|"high"). Empty = none.
 	ReasoningEffort string
+	// JudgeReasoningEffort requests reasoning for the JUDGE call. Empty = none (a
+	// short classification rarely needs it).
+	JudgeReasoningEffort string
+}
+
+// judgeModel returns the model the judge call should use (JudgeModel, falling back
+// to Model when unset).
+func (o ReaderOpts) judgeModel() string {
+	if o.JudgeModel != "" {
+		return o.JudgeModel
+	}
+	return o.Model
 }
 
 // readerBudget returns the reader's output-token budget. With reasoning enabled the
@@ -181,12 +226,13 @@ func JudgeQuestionWith(ctx context.Context, gw gateway.Gateway, opts ReaderOpts,
 
 	jSys, jUser := BuildJudgePrompt(question, gold, ro.Answer)
 	jResp, err := gw.Complete(ctx, gateway.CompleteRequest{
-		System:      jSys,
-		Messages:    []gateway.Message{{Role: "user", Content: jUser}},
-		Schema:      judgeSchema,
-		MaxTokens:   judgeMaxTokens,
-		Temperature: 0.0,
-		Model:       opts.Model, // judge uses the same (strong) model; no reasoning
+		System:          jSys,
+		Messages:        []gateway.Message{{Role: "user", Content: jUser}},
+		Schema:          judgeSchema,
+		MaxTokens:       judgeMaxTokens,
+		Temperature:     0.0,
+		Model:           opts.judgeModel(),
+		ReasoningEffort: opts.JudgeReasoningEffort,
 	})
 	if err != nil {
 		return JudgedResult{}, fmt.Errorf("judge complete: %w", err)

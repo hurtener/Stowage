@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -159,6 +160,66 @@ func eventsByType(t *testing.T, st store.Store, scope identity.Scope, typ string
 	return out
 }
 
+// TestBuildReconcileContext_CollectsTurns covers the D-108 context builder: it fetches the
+// raw turns behind the candidate AND each neighbor (so a decision can tell a correction from a
+// distinct fact), and degrades to an empty context when no RecordStore is wired.
+func TestBuildReconcileContext_CollectsTurns(t *testing.T) {
+	st, cleanup := newTestStore(t)
+	defer cleanup()
+	ctx := context.Background()
+	scope := tenantScope("t-rc-ctx")
+	now := time.Now().UnixMilli()
+
+	candRec := store.Record{ID: ulid.Make().String(), TenantID: scope.Tenant, Role: "user", Content: "my commute is 45 minutes", OccurredAt: now, CreatedAt: now}
+	nbrRec := store.Record{ID: ulid.Make().String(), TenantID: scope.Tenant, Role: "user", Content: "my drive is 30 minutes", OccurredAt: now, CreatedAt: now}
+	if err := st.Records().Append(ctx, scope, []store.Record{candRec, nbrRec}); err != nil {
+		t.Fatalf("append records: %v", err)
+	}
+
+	// Neighbor memory whose provenance points at nbrRec.
+	nbr := store.Memory{ID: ulid.Make().String(), Kind: "fact", Content: "commute about 30 minutes",
+		Status: "active", Confidence: 0.8, TrustSource: "llm_extracted", Stability: 1.0, CreatedAt: now, UpdatedAt: now}
+	cs := store.CommitSet{
+		Action: store.ActionAdd, Memory: nbr, Scope: scope,
+		Provenance: []store.Provenance{{ID: ulid.Make().String(), MemoryID: nbr.ID, RecordID: nbrRec.ID,
+			SpanEnd: len(nbrRec.Content), TenantID: scope.Tenant, CreatedAt: now}},
+	}
+	if err := st.Memories().Commit(ctx, scope, cs); err != nil {
+		t.Fatalf("commit neighbor: %v", err)
+	}
+
+	cand := pipeline.Candidate{Content: "commute 45 min", Provenance: []pipeline.ProvSpan{{RecordID: candRec.ID}}}
+	ch := make(chan pipeline.CandidateBatch)
+	stage := reconcile.New(st.Memories(), st.Ops(), st.Events(), &stubGateway{}, discardLogger(), ch)
+
+	// No RecordStore wired → empty context (degrade-safe branch).
+	if rc := stage.ExportBuildReconcileContext(ctx, scope, cand, []store.Memory{nbr}); len(rc.CandidateTurns) != 0 || len(rc.NeighborTurns) != 0 {
+		t.Errorf("no RecordStore should yield empty context, got %+v", rc)
+	}
+
+	stage.SetRecordStore(st.Records())
+	rc := stage.ExportBuildReconcileContext(ctx, scope, cand, []store.Memory{nbr})
+	if len(rc.CandidateTurns) != 1 || rc.CandidateTurns[0].Content != candRec.Content {
+		t.Errorf("CandidateTurns = %+v, want the candidate's source turn", rc.CandidateTurns)
+	}
+	if turns := rc.NeighborTurns[nbr.ID]; len(turns) != 1 || turns[0].Content != nbrRec.Content {
+		t.Errorf("NeighborTurns[%s] = %+v, want the neighbor's source turn", nbr.ID, rc.NeighborTurns[nbr.ID])
+	}
+}
+
+// TestTrustRank_KnownAndFallback covers both branches of trustRank (D-111): a registered
+// source returns its mapped weight; an unknown one falls back to the default multiplier.
+func TestTrustRank_KnownAndFallback(t *testing.T) {
+	known := reconcile.ExportTrustRank("user_stated") // registered (high)
+	fallback := reconcile.ExportTrustRank("legacy-empty-or-unknown")
+	if known <= 0 || fallback <= 0 {
+		t.Fatalf("trustRank must be positive: known=%v fallback=%v", known, fallback)
+	}
+	if known <= reconcile.ExportTrustRank("llm_extracted") {
+		t.Errorf("a user_stated source should outrank llm_extracted")
+	}
+}
+
 // --- AC unit-level tests (prefilter functions) --------------------------------
 
 func TestNormalizeContent(t *testing.T) {
@@ -221,6 +282,67 @@ func TestBigramJaccard(t *testing.T) {
 	j2 := reconcile.BigramJaccard("Python was created by Guido", "Python was created by Guido in")
 	if j2 < reconcile.ExportNearDupThreshold {
 		t.Errorf("near-dup pair: Jaccard = %.3f, want ≥ %.2f", j2, reconcile.ExportNearDupThreshold)
+	}
+}
+
+// TestNumeralsDiverge covers the D-104 numeric-correction guard: a numeric correction
+// that is lexically a near-dup must be flagged as divergent so it routes to the LLM
+// (supersede) instead of being auto-discarded.
+func TestNumeralsDiverge(t *testing.T) {
+	cases := []struct {
+		name, a, b string
+		want       bool
+	}{
+		{"same numerals", "120 stars to reach gold", "120 stars to reach gold", false},
+		{"no numerals", "the user likes tea", "the user likes coffee", false},
+		{"stars correction", "You need 120 stars for gold level", "You need 125 stars for gold level", true},
+		{"months correction", "Fitbit Charge 3 used for 9 months", "Fitbit Charge 3 used for 6 months", true},
+		{"thousands separator equal", "raised $5,850 total", "raised $5850 total", false},
+		{"reorder same set", "2 cats and 3 dogs", "3 dogs and 2 cats", false},
+		{"extra numeral", "I have 2 cats", "I have 2 cats and 1 dog", true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := reconcile.NumeralsDiverge(tc.a, tc.b); got != tc.want {
+				t.Errorf("NumeralsDiverge(%q,%q) = %v, want %v", tc.a, tc.b, got, tc.want)
+			}
+		})
+	}
+	// Invariant: a numeric correction is BOTH a lexical near-dup AND numeral-divergent,
+	// so the guard fires exactly where the auto-discard would otherwise swallow it.
+	a, b := "You need 120 stars for gold level", "You need 125 stars for gold level"
+	if reconcile.BigramJaccard(a, b) < reconcile.ExportNearDupThreshold {
+		t.Fatalf("precondition: star correction is not a near-dup (Jaccard %.3f)", reconcile.BigramJaccard(a, b))
+	}
+	if !reconcile.NumeralsDiverge(a, b) {
+		t.Fatalf("star correction must be numeral-divergent so the guard routes it to the LLM")
+	}
+}
+
+// TestCandidateAssertionOrdering proves the D-106 winner-determinism fix: within a flush,
+// candidates are processed oldest-asserted first (by latest source-record ULID = turn
+// order), so the newer value supersedes the older — never the reverse. Records are ULIDs;
+// here we use lexically-ordered stand-ins.
+func TestCandidateAssertionOrdering(t *testing.T) {
+	older := pipeline.Candidate{Content: "6 months", Provenance: []pipeline.ProvSpan{{RecordID: "01A"}, {RecordID: "01B"}}}
+	newer := pipeline.Candidate{Content: "9 months", Provenance: []pipeline.ProvSpan{{RecordID: "01C"}}}
+
+	// Key = latest (max) record among provenance.
+	if k := reconcile.ExportCandidateAssertionKey(older); k != "01B" {
+		t.Errorf("older key = %q, want 01B (latest of its records)", k)
+	}
+	if k := reconcile.ExportCandidateAssertionKey(newer); k != "01C" {
+		t.Errorf("newer key = %q, want 01C", k)
+	}
+
+	// Even when the LLM emits newest-first, the stable sort puts the older assertion first
+	// so it commits before the newer one supersedes it.
+	cands := []pipeline.Candidate{newer, older}
+	sort.SliceStable(cands, func(i, j int) bool {
+		return reconcile.ExportCandidateAssertionKey(cands[i]) < reconcile.ExportCandidateAssertionKey(cands[j])
+	})
+	if cands[0].Content != "6 months" || cands[1].Content != "9 months" {
+		t.Fatalf("ordering = [%q,%q], want [6 months, 9 months]", cands[0].Content, cands[1].Content)
 	}
 }
 
@@ -1297,7 +1419,7 @@ func TestBuildUserPromptNoNeighbors(t *testing.T) {
 		Importance: 3,
 		Confidence: 0.9,
 	}
-	got := reconcile.BuildUserPrompt(c, nil)
+	got := reconcile.BuildUserPrompt(c, nil, reconcile.ReconcileContext{})
 	if !strings.Contains(got, "None found") {
 		t.Errorf("BuildUserPrompt with no neighbors: expected 'None found', got:\n%s", got)
 	}
@@ -1351,7 +1473,7 @@ func TestGoldenUserPrompt(t *testing.T) {
 		},
 	}
 
-	got := reconcile.BuildUserPrompt(c, neighbors)
+	got := reconcile.BuildUserPrompt(c, neighbors, reconcile.ReconcileContext{})
 	if len(got) == 0 {
 		t.Fatal("BuildUserPrompt returned empty string")
 	}
@@ -1371,6 +1493,37 @@ func TestGoldenUserPrompt(t *testing.T) {
 	}
 	if string(want) != got {
 		t.Errorf("user prompt differs from golden\ngot:\n%s\nwant:\n%s", got, want)
+	}
+}
+
+// TestBuildUserPrompt_ConversationContext proves D-108: when ReconcileContext carries the
+// candidate's and neighbors' source turns, BuildUserPrompt appends an "Original conversation
+// context" section; with the zero value it does not, and the system prompt carries the
+// correction-vs-distinct-fact rule.
+func TestBuildUserPrompt_ConversationContext(t *testing.T) {
+	c := pipeline.Candidate{Kind: "fact", Content: "commute is 45 minutes each way", Importance: 3, Confidence: 0.9}
+	neighbors := []store.Memory{{ID: "mem-30", Kind: "fact", Content: "commute is about 30 minutes", Status: "active", Confidence: 0.8, Importance: 3}}
+
+	// Without context: no section.
+	plain := reconcile.BuildUserPrompt(c, neighbors, reconcile.ReconcileContext{})
+	if strings.Contains(plain, "Original conversation context") {
+		t.Errorf("empty context should render no conversation section")
+	}
+
+	// With context: section present with both the candidate's and neighbor's turns.
+	rc := reconcile.ReconcileContext{
+		CandidateTurns: []store.Record{{Role: "user", Content: "my audiobook commute is 45 minutes each way"}},
+		NeighborTurns:  map[string][]store.Record{"mem-30": {{Role: "user", Content: "my drive to the office is about 30 minutes"}}},
+	}
+	withCtx := reconcile.BuildUserPrompt(c, neighbors, rc)
+	for _, want := range []string{"Original conversation context", "audiobook commute is 45 minutes each way", "drive to the office is about 30 minutes"} {
+		if !strings.Contains(withCtx, want) {
+			t.Errorf("context prompt missing %q", want)
+		}
+	}
+	// System prompt instructs correction-vs-distinct-fact disambiguation.
+	if !strings.Contains(reconcile.BuildSystemPrompt(), "DIFFERENT fact that merely shares words") {
+		t.Errorf("system prompt missing the D-108 disambiguation rule")
 	}
 }
 
@@ -1619,5 +1772,41 @@ func TestSetScopeInvalidator(t *testing.T) {
 
 	if inv.count == 0 {
 		t.Error("ScopeInvalidator.InvalidateScope: not called after fast-add; want >= 1 call")
+	}
+}
+
+// TestSelectSurvivor covers the D-111 deterministic survivor rule used by reconcile + the
+// lifecycle consolidation sweep: later ValidFrom wins; then trust tier; then importance; then
+// CreatedAt; then ULID.
+func TestSelectSurvivor(t *testing.T) {
+	mk := func(id string, validFrom int64, trust string, imp int, created int64) store.Memory {
+		return store.Memory{ID: id, ValidFrom: validFrom, TrustSource: trust, Importance: imp, CreatedAt: created}
+	}
+	cases := []struct {
+		name   string
+		a, b   store.Memory
+		winner string
+	}{
+		{"later date wins", mk("A", 200, "llm_extracted", 3, 10), mk("B", 100, "user_stated", 5, 99), "A"},
+		{"trust breaks date tie", mk("A", 100, "llm_extracted", 5, 10), mk("B", 100, "user_stated", 1, 10), "B"},
+		{"importance breaks trust tie", mk("A", 100, "llm_extracted", 5, 10), mk("B", 100, "llm_extracted", 2, 10), "A"},
+		{"created breaks importance tie", mk("A", 100, "llm_extracted", 3, 50), mk("B", 100, "llm_extracted", 3, 10), "A"},
+		{"ulid final tiebreak", mk("B", 100, "llm_extracted", 3, 10), mk("A", 100, "llm_extracted", 3, 10), "B"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			w, l := reconcile.SelectSurvivor(tc.a, tc.b)
+			if w.ID != tc.winner {
+				t.Errorf("winner = %s, want %s", w.ID, tc.winner)
+			}
+			if l.ID == w.ID {
+				t.Errorf("loser must differ from winner")
+			}
+			// Symmetric: order of args must not change the winner.
+			w2, _ := reconcile.SelectSurvivor(tc.b, tc.a)
+			if w2.ID != w.ID {
+				t.Errorf("SelectSurvivor not symmetric: %s vs %s", w.ID, w2.ID)
+			}
+		})
 	}
 }

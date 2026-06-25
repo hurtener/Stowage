@@ -121,10 +121,17 @@ func (m *Manager) rollupSession(ctx context.Context, scope identity.Scope, sessI
 	}
 
 	if len(promotable) == 0 {
+		// Personal-zone-only session: rows were expired above but the sole
+		// invalidateScope below is unreachable — drop cached results here so an
+		// expired memory isn't served for the 60s TTL (D-118 / 29d S2). scope is
+		// already tenant-only, which matches the tenant-keyed result cache.
+		if len(personal) > 0 {
+			m.invalidateScope(scope)
+		}
 		return
 	}
 
-	// Build narrative digest from promotable memories.
+	// Build narrative digest from ALL promotable memories.
 	digestContent := buildDigestContent(sessID, promotable)
 	digestHash := reconcile.ContentHash(reconcile.NormalizeContent(digestContent))
 
@@ -189,9 +196,13 @@ func (m *Manager) rollupSession(ctx context.Context, scope identity.Scope, sessI
 	for _, mem := range promotable {
 		jt, _ := m.st.Memories().GetJunctions(ctx, scope, mem.ID)
 		priorJSON := reconcile.MarshalPriorState(mem, jt)
+		// memory.merged (NOT memory.superseded): this is a many-to-one merge into one
+		// digest. memory.merged routes to rollbackMerged, which restores ALL siblings via
+		// ListSupersededBy(digest); memory.superseded would restore only the one subject and
+		// strand the N-1 siblings on a tombstoned digest (P4 / D-070, 29d S1).
 		events = append(events, store.Event{
 			ID:        ulid.Make().String(),
-			Type:      "memory.superseded",
+			Type:      "memory.merged",
 			SubjectID: mem.ID,
 			Reason:    "rollup: session working memory rolled into digest",
 			Payload:   priorJSON,
@@ -250,19 +261,20 @@ func (m *Manager) rollupSession(ctx context.Context, scope identity.Scope, sessI
 			"session", sessID, "err", err)
 		return
 	}
+	m.invalidateScope(scope) // D-118: sources superseded + digest added — drop cached results
 	m.log.InfoContext(ctx, "lifecycle/rollup: session rolled up",
 		"tenant", scope.Tenant, "session", sessID,
 		"sources", len(promotable), "digest", digest.ID)
 }
 
-// buildDigestContent builds a concise narrative digest content string.
+// buildDigestContent builds the narrative digest content string from ALL the session's
+// promotable memories. It must include every memory whose content is being superseded by this
+// digest — the previous 10-item cap silently dropped the content of memories 11+ even though
+// they were all retired via Targets (D-116, audit #6). A session digest is bounded in practice
+// (rollup only fires on idle, aged sessions of working memory).
 func buildDigestContent(sessID string, mems []store.Memory) string {
 	s := fmt.Sprintf("Session digest [%s]:", sessID)
-	for i, mem := range mems {
-		if i >= 10 { // cap at 10 to avoid huge content
-			s += fmt.Sprintf(" [+%d more]", len(mems)-10)
-			break
-		}
+	for _, mem := range mems {
 		s += fmt.Sprintf(" %s.", mem.Content)
 	}
 	return s

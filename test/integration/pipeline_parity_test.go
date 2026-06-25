@@ -55,10 +55,11 @@ const (
 	parityQuery = "capital of France Paris"
 	paritySess  = "parity-sess"
 	recContent  = "Paris is the capital of France and a major European city."
-	// countTrigger is the assistant-profile buffer count trigger (config.D-042).
-	// We ingest exactly this many records so the buffer flushes deterministically
-	// without depending on the age ticker.
-	countTrigger = 12
+	// countTrigger is the assistant-profile buffer count trigger (config.D-042;
+	// coarsened to 18 in Phase 29, D-107). We ingest exactly this many records so the
+	// buffer flushes deterministically on the count trigger (~252 tokens « the 2500-token
+	// trigger) without depending on the age ticker.
+	countTrigger = 18
 )
 
 // retrieved is the surface-agnostic shape we compare across entrypoints.

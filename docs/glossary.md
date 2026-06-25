@@ -45,6 +45,16 @@ New terms land here in the same PR that introduces them (CLAUDE.md §14).
 - **Anticipated queries** — 3–5 search phrases generated at extraction time and
   indexed in their own lexical lane.
 - **RRF** — reciprocal-rank fusion of lane results.
+- **Retrieval profile** — a named retrieval preset (`precise` | `balanced` | `broad`)
+  encoding the `{laneK, scoringK, defaultLimit, enableRerank}` tuple; selected per
+  `/v1/retrieve` call and config-tunable via the `retrieval:` section (D-103). Distinct
+  from the deployment **Profile** below.
+- **Dual-visibility** — retrieval surfacing a superseded value alongside its current successor,
+  flagged `stale` with a `superseded_by` link, so an agent reasons about a correction's history
+  rather than losing it (RFC §6c calibrated uncertainty; `retrieval.include_superseded`, D-105).
+- **ScoringK** — the number of fused candidates a retrieval profile scores/reranks; the
+  cap on memories that can reach the reader. The per-request `limit` is floored up into
+  this window, so a request is never silently clamped below what it asked for (D-103).
 - **Gateway** — the single intelligence seam (`internal/gateway`) through which
   every embedding and LLM call flows; drivers: `bifrost`, `mock`.
 - **Gain** — the performance delta an agent shows with memory on vs. off (the
@@ -428,3 +438,5 @@ New terms land here in the same PR that introduces them (CLAUDE.md §14).
   (`eval/harness/topics_seed.go`, D-101) seeded for a full-mode LongMemEval run so
   topic-gated extraction captures the breadth of probed facts (events, dates, possessions,
   relationships, numbers, updates) rather than only the default preferences pack.
+- **Conversation context (reconcile)** — the raw provenance turns of the candidate and its neighbors, supplied to the supersede/merge decision so the model distinguishes a correction from a distinct fact that merely shares words (Phase 29b, D-108).
+- **Assertion date / `occurred_at`** — when a fact was stated in conversation (vs `created_at`, when extracted). Captured on the memory as `ValidFrom` and surfaced at retrieval as `occurred_at` / "When:", so a reader can reason temporally and date-resolve stale values (Phase 29c, D-109).

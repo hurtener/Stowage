@@ -35,6 +35,7 @@ node_modules/
 # Eval runtime artifacts (fetched datasets, run results)
 /eval/data/
 /eval/results/*.json
+/eval/results/*.jsonl
 
 # Go workspace (local dev only — never committed; see go.work for rationale)
 go.work

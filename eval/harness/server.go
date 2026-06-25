@@ -99,6 +99,16 @@ func NewTestServer(t testing.TB, tenantID string) *TestServer {
 
 	dir := t.TempDir()
 	dbPath := filepath.Join(dir, "eval.db")
+	// STOWAGE_EVAL_DB_PATH persists the store outside the test's temp dir so an
+	// operator can (a) inspect extraction health live during a long run — events,
+	// dead_letters, committed memories — and (b) reuse a learned store across runs.
+	// Migrate is idempotent, so re-opening an existing DB is safe.
+	if p := os.Getenv("STOWAGE_EVAL_DB_PATH"); p != "" {
+		dbPath = p
+		// gosec G703: p is an operator-supplied eval DB path (env var), not untrusted
+		// input, and this is test/eval-harness tooling — never the shipped binary.
+		_ = os.MkdirAll(filepath.Dir(p), 0o750) //nolint:gosec
+	}
 	mockScript := filepath.Join(dir, "mock-script.json")
 
 	// Start with an empty script file.
@@ -132,6 +142,13 @@ func NewTestServer(t testing.TB, tenantID string) *TestServer {
 	}
 	cfg.Server.Listen = ":0"
 	cfg.Profile = "assistant"
+	// STOWAGE_EVAL_VINDEX overrides the vector-index driver. The reuse-the-store
+	// (skip-ingest) re-score path uses "brute": it Scans the persisted vectors at
+	// query time, so a reopened store's vector lane is faithful without re-indexing
+	// (the default in-memory hnsw would start empty on reopen).
+	if v := os.Getenv("STOWAGE_EVAL_VINDEX"); v != "" {
+		cfg.VIndex.Driver = v
+	}
 
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	reg := prometheus.NewRegistry()
@@ -215,6 +232,11 @@ func NewTestServer(t testing.TB, tenantID string) *TestServer {
 	if os.Getenv("STOWAGE_EVAL_GATEWAY") != "" && cfg.Gateway.RerankModel != "" {
 		retriever = retriever.WithRerankModel(cfg.Gateway.RerankModel)
 	}
+	// Dual-visibility toggle for the H5 experiment (D-105): STOWAGE_EVAL_INCLUDE_SUPERSEDED
+	// = "1" surfaces superseded predecessors flagged stale; "0" keeps active-only (the
+	// #1-isolation control). Default ON to match the config default.
+	includeSup := os.Getenv("STOWAGE_EVAL_INCLUDE_SUPERSEDED") != "0"
+	retriever = retriever.WithIncludeSuperseded(includeSup)
 	srv.SetRetriever(retriever)
 
 	reconcileStage := reconcile.New(
@@ -227,6 +249,7 @@ func NewTestServer(t testing.TB, tenantID string) *TestServer {
 	)
 	reconcileStage.SetEmbedder(embedder)
 	reconcileStage.SetScopeInvalidator(retriever.Cache())
+	reconcileStage.SetRecordStore(st.Records()) // D-108: conversation context in the supersede decision
 	reconcileStage.Start(ctx)
 
 	// Phase 14 re-enqueue sweep. Ingest is fire-and-forget over a bounded

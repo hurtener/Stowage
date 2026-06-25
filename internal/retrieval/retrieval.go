@@ -83,6 +83,17 @@ type MemoryItem struct {
 	Lanes     []string           // populated when Request.IncludeLanes is true
 	Breakdown *scoring.Breakdown // populated when Request.Debug is true
 	Citation  string             // injection ULID = citation handle (Phase 11, D-051)
+	// Stale marks a superseded memory surfaced for dual-visibility (D-105, §6c): the
+	// reader sees the retired value alongside its current successor, flagged, so it can
+	// reason about the history while preferring the current value. Memory.SupersededByID
+	// links to the successor. Only set when retrieval.include_superseded is on.
+	Stale bool
+	// SupersededByContent and SupersededByDate carry the CURRENT successor's value and
+	// assertion date inline on a stale item (D-114, Idea 1) — so a client that can't inject
+	// a reader-prompt section (e.g. over MCP) is still self-contained: "this was superseded
+	// by «SupersededByContent» on «date»". Only set on Stale items.
+	SupersededByContent string
+	SupersededByDate    int64
 }
 
 // Response is the retrieve response payload.
@@ -100,17 +111,19 @@ type Response struct {
 // It is safe for concurrent use after New returns.
 // Call Close to drain the injection writer goroutine on shutdown.
 type Retriever struct {
-	mem         store.MemoryStore
-	recs        store.RecordStore
-	vi          vindex.Index
-	gw          gateway.Gateway
-	injSt       store.InjectionStore // read handle for the durable hub signal (D-092); nil ⇒ no dampening
-	log         *slog.Logger
-	injWr       *InjectionWriter // nil when no injection store is wired
-	cache       *ResultCache
-	hotSet      *HotSet
-	rerankModel string           // cross-encoder model; empty = use gateway default
-	grantsSt    store.GrantStore // nil when grants are not wired (Phase 15, D-060)
+	mem               store.MemoryStore
+	recs              store.RecordStore
+	vi                vindex.Index
+	gw                gateway.Gateway
+	injSt             store.InjectionStore // read handle for the durable hub signal (D-092); nil ⇒ no dampening
+	log               *slog.Logger
+	injWr             *InjectionWriter // nil when no injection store is wired
+	cache             *ResultCache
+	hotSet            *HotSet
+	rerankModel       string             // cross-encoder model; empty = use gateway default
+	grantsSt          store.GrantStore   // nil when grants are not wired (Phase 15, D-060)
+	profiles          map[string]Profile // config-overridden presets; nil ⇒ built-in defaults (D-103)
+	includeSuperseded bool               // D-105: surface superseded predecessors flagged stale (dual-visibility, §6c)
 }
 
 // New creates a Retriever wired to the given dependencies.
@@ -133,6 +146,97 @@ func New(mem store.MemoryStore, recs store.RecordStore, vi vindex.Index, gw gate
 func (r *Retriever) WithRerankModel(model string) *Retriever {
 	r.rerankModel = model
 	return r
+}
+
+// WithProfiles overrides the named retrieval presets from config (D-103). A nil or
+// empty map keeps the built-in defaults; a partial map overrides only the named
+// profiles and leaves the rest at their defaults. Call after New, before serving;
+// not safe to call concurrently with Retrieve.
+func (r *Retriever) WithProfiles(p map[string]Profile) *Retriever {
+	if len(p) == 0 {
+		return r
+	}
+	r.profiles = p
+	return r
+}
+
+// WithIncludeSuperseded enables dual-visibility (D-105, §6c): retrieval surfaces the
+// superseded predecessors of returned memories, flagged Stale, so the reader sees the
+// retired value alongside its current successor. Default off (active-only). Call after
+// New, before serving; not safe to call concurrently with Retrieve.
+func (r *Retriever) WithIncludeSuperseded(on bool) *Retriever {
+	r.includeSuperseded = on
+	return r
+}
+
+// maxStaleCompanions bounds how many superseded predecessors are attached per response
+// (across all returned items) so dual-visibility can never blow up the context size.
+const maxStaleCompanions = 8
+
+// attachStaleCompanions appends the superseded predecessors of the returned items,
+// flagged Stale, for dual-visibility (D-105). Bounded by maxStaleCompanions; scoped
+// (P3) via ListSupersededBy. Best-effort: a lookup error drops that item's history
+// rather than failing the retrieve.
+func (r *Retriever) attachStaleCompanions(ctx context.Context, scope identity.Scope, items []MemoryItem) []MemoryItem {
+	if !r.includeSuperseded || len(items) == 0 {
+		return items
+	}
+	out := make([]MemoryItem, 0, len(items)+maxStaleCompanions)
+	added := 0
+	for _, it := range items {
+		out = append(out, it)
+		if added >= maxStaleCompanions {
+			continue
+		}
+		preds, err := r.mem.ListSupersededBy(ctx, scope, it.Memory.ID)
+		if err != nil {
+			r.log.WarnContext(ctx, "retrieval: ListSupersededBy failed — dropping history",
+				"id", it.Memory.ID, "err", err)
+			continue
+		}
+		for _, p := range preds {
+			if added >= maxStaleCompanions {
+				break
+			}
+			// `it` is the current successor of predecessor `p`; carry its value + date inline
+			// so the stale item is self-contained for non-prompt clients (Idea 1, D-114).
+			out = append(out, MemoryItem{
+				Memory:              p,
+				Score:               it.Score * 0.5,
+				Stale:               true,
+				Citation:            ulid.Make().String(),
+				SupersededByContent: it.Memory.Content,
+				SupersededByDate:    it.Memory.ValidFrom,
+			})
+			added++
+		}
+	}
+	return out
+}
+
+// resolveProfile resolves a profile name against the config overrides first, then the
+// built-in presets. Mirrors profileByName's empty-string ⇒ balanced default.
+func (r *Retriever) resolveProfile(name string) (Profile, bool) {
+	if r.profiles != nil {
+		key := name
+		if key == "" {
+			key = "balanced"
+		}
+		if p, ok := r.profiles[key]; ok {
+			return p, true
+		}
+	}
+	return profileByName(name)
+}
+
+// defaultProfile is the fallback when a profile name fails to resolve (balanced).
+func (r *Retriever) defaultProfile() Profile {
+	if r.profiles != nil {
+		if p, ok := r.profiles["balanced"]; ok {
+			return p
+		}
+	}
+	return ProfileBalanced
 }
 
 // WithEventCapture wires the event store used for Phase-26 trace capture (the async
@@ -206,13 +310,12 @@ func (r *Retriever) Close() {
 // lanes run across all effective scopes and the result cache is bypassed.
 // Zone-ceiling filtering is applied in Go as the defense-in-depth predicate (AC-1).
 func (r *Retriever) Retrieve(ctx context.Context, scope identity.Scope, req Request) (*Response, error) {
-	// Resolve profile presets for laneK and scoringK.
-	prof, ok := profileByName(req.Profile)
+	// Resolve profile presets for laneK and scoringK (config-overridable, D-103).
+	prof, ok := r.resolveProfile(req.Profile)
 	if !ok {
 		// Caller validation should have caught this; degrade to balanced.
-		prof = ProfileBalanced
+		prof = r.defaultProfile()
 	}
-	laneK := prof.LaneK
 
 	limit := req.Limit
 	if limit <= 0 {
@@ -220,6 +323,21 @@ func (r *Retriever) Retrieve(ctx context.Context, scope identity.Scope, req Requ
 	}
 	if limit > maxLimit {
 		limit = maxLimit
+	}
+
+	// Honor the requested limit under every profile — including rerank. The fused
+	// candidate set is scored/reranked down to scoringK, then trimmed to limit; if
+	// scoringK < limit the precise preset (scoringK=10) silently caps the result
+	// below what the caller asked for, making the limit knob a no-op past the preset.
+	// Floor scoringK to the limit (and laneK to scoringK) so a larger K actually
+	// reaches the reader with rerank enabled (D-103).
+	scoringK := prof.ScoringK
+	if limit > scoringK {
+		scoringK = limit
+	}
+	laneK := prof.LaneK
+	if scoringK > laneK {
+		laneK = scoringK
 	}
 
 	// Resolve or generate the response ID (D-051).
@@ -244,7 +362,7 @@ func (r *Retriever) Retrieve(ctx context.Context, scope identity.Scope, req Requ
 	// affects the utility score (write-echo cooldown).
 	// Multi-scope requests are NOT cached: revocation must be effective immediately (D-060).
 	if !req.Debug && !multiScope {
-		if cachedItems, cachedSup, ok := r.cache.Get(scope, querySig, req.Profile, req.SessionID, req.Window.From, req.Window.Until); ok {
+		if cachedItems, cachedSup, ok := r.cache.Get(scope, querySig, req.Profile, req.SessionID, req.Window.From, req.Window.Until, req.Kinds, req.IncludeLanes, limit); ok {
 			return &Response{
 				ResponseID: responseID,
 				Items:      cachedItems,
@@ -382,8 +500,8 @@ func (r *Retriever) Retrieve(ctx context.Context, scope identity.Scope, req Requ
 	// Fuse — use a wider window before scoring to give scoring room to rerank.
 	fused := rrf(lanes)
 
-	// Trim to profile.ScoringK before scoring to bound the GetMany call.
-	scoringK := prof.ScoringK
+	// Trim to scoringK (≥ requested limit, see above) before scoring to bound the
+	// GetMany call while still feeding the reranker the full requested window.
 	if len(fused) > scoringK {
 		fused = fused[:scoringK]
 	}
@@ -570,22 +688,30 @@ func (r *Retriever) Retrieve(ctx context.Context, scope identity.Scope, req Requ
 		return scored[i].item.Memory.ID < scored[j].item.Memory.ID
 	})
 
-	// Trim to requested limit.
-	if len(scored) > limit {
-		scored = scored[:limit]
-	}
-
+	// Build the candidate pool from ALL scored items (up to scoringK) — NOT yet trimmed to
+	// limit — so the cross-encoder rerank can PROMOTE a relevant memory from below the limit
+	// cutoff, not merely reorder the already-cut top-`limit` (D-115, audit #9).
 	items := make([]MemoryItem, len(scored))
 	for i, s := range scored {
 		items[i] = s.item
 	}
 
-	// Cross-encoder rerank pass (Phase 12) — only for precise profile.
+	// Cross-encoder rerank pass (Phase 12) — only for precise profile, over the wider pool.
 	// On failure, degradedRerank=true and items retain Phase-10 order (D-052).
 	var degradedRerank bool
 	if prof.EnableRerank && r.gw != nil && len(items) > 0 {
 		degradedRerank, items = rerankPass(ctx, r.gw, r.rerankModel, req.Query, items, r.log)
 	}
+
+	// Trim to the requested limit AFTER ranking + rerank.
+	if len(items) > limit {
+		items = items[:limit]
+	}
+
+	// Dual-visibility (D-105, §6c): attach the superseded predecessors of the returned
+	// items, flagged Stale, AFTER ranking/rerank so the current values keep their order
+	// and the history rides along demoted. No-op unless include_superseded is on.
+	items = r.attachStaleCompanions(ctx, scope, items)
 
 	// Build support summary.
 	sup, supErr := buildSupport(ctx, r.mem, scope, items)
@@ -602,7 +728,7 @@ func (r *Retriever) Retrieve(ctx context.Context, scope identity.Scope, req Requ
 	// Debug requests are not cached (breakdowns are diagnostic and one-time).
 	// Multi-scope requests are not cached (revocation must be live, D-060).
 	if !req.Debug && !multiScope {
-		r.cache.Put(scope, querySig, req.Profile, req.SessionID, req.Window.From, req.Window.Until, items, sup)
+		r.cache.Put(scope, querySig, req.Profile, req.SessionID, req.Window.From, req.Window.Until, req.Kinds, req.IncludeLanes, limit, items, sup)
 	}
 
 	// Feed the hot set with the IDs of injected memories (Phase 12).

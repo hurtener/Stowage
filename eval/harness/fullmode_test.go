@@ -76,7 +76,16 @@ func TestFullMode(t *testing.T) {
 	// Rerank ENABLED in full mode (D-075): precise-profile retrieves run the
 	// cross-encoder pass against the bifrost-wired rerank model. Disable with
 	// STOWAGE_EVAL_RERANK_MODEL="".
-	runner := NewRunner(srv, RunConfig{EnableRerank: os.Getenv("STOWAGE_EVAL_RERANK_MODEL") != ""})
+	// RETRIEVE_LIMIT is the K knob (slots): how many compressed memories reach the
+	// reader. Memories are ~30 tokens each, so larger K is nearly free — raising
+	// recall at negligible context cost (the compression dividend).
+	rc := RunConfig{EnableRerank: os.Getenv("STOWAGE_EVAL_RERANK_MODEL") != ""}
+	if v := os.Getenv("STOWAGE_EVAL_RETRIEVE_LIMIT"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			rc.RetrieveLimit = n
+		}
+	}
+	runner := NewRunner(srv, rc)
 
 	ctx := context.Background()
 
@@ -106,6 +115,12 @@ func TestFullMode(t *testing.T) {
 			reader.Model, reader.ReasoningEffort, os.Getenv("STOWAGE_EVAL_MODEL"))
 	}
 
+	// SkipIngest re-scores an already-learned persistent store (STOWAGE_EVAL_DB_PATH)
+	// at a new K (STOWAGE_EVAL_RETRIEVE_LIMIT) without re-paying for extraction — the
+	// K-knob sweep. Pair with STOWAGE_EVAL_VINDEX=brute so the vector lane repopulates
+	// faithfully on reopen (the in-memory hnsw index would come up empty).
+	skipIngest := os.Getenv("STOWAGE_EVAL_SKIP_INGEST") != ""
+
 	start := time.Now()
 	res, err := RunDataset(ctx, srv, runner, convs, questions, RunDatasetOpts{
 		Limit:         limit,
@@ -113,8 +128,9 @@ func TestFullMode(t *testing.T) {
 		Settle:        settle,
 		PerConvSettle: 5 * time.Minute,
 		EmbedSettle:   10 * time.Second, // async embed backfill before scoring
-		SeedTopics:    true,             // broad LongMemEval magnets (topic-gated extraction)
+		SeedTopics:    !skipIngest,      // broad LongMemEval magnets (topic-gated extraction) — already seeded on the first learn
 		Reader:        reader,
+		SkipIngest:    skipIngest,
 	})
 	if err != nil {
 		t.Fatalf("run dataset %s: %v", datasetName, err)

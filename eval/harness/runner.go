@@ -69,10 +69,14 @@ func NewRunner(srv *TestServer, cfg RunConfig) *Runner {
 
 // retrieveItem is the wire-format shape of one item in a retrieve response.
 type retrieveItem struct {
-	ID      string   `json:"id"`
-	Content string   `json:"content"`
-	Score   float64  `json:"score"`
-	Lanes   []string `json:"lanes"`
+	ID                  string   `json:"id"`
+	Content             string   `json:"content"`
+	Score               float64  `json:"score"`
+	Lanes               []string `json:"lanes"`
+	Stale               bool     `json:"stale"`                 // D-105: superseded value surfaced for dual-visibility
+	OccurredAt          int64    `json:"occurred_at"`           // D-109: assertion (conversation) date, unix millis
+	SupersededByContent string   `json:"superseded_by_content"` // D-114: successor's current value inline
+	SupersededByDate    int64    `json:"superseded_by_date"`    // D-114: successor's assertion date
 }
 
 // RunCI runs the full CI eval: ingest conversations, retrieve + score questions.
@@ -174,11 +178,12 @@ func (r *Runner) RunCI(ctx context.Context) (*RunResult, error) {
 // with buffer_key = conv.ID. Returns the record IDs in ingest order.
 func (r *Runner) ingestConversation(ctx context.Context, conv *ConvFixture) ([]string, error) {
 	type recordInput struct {
-		Role      string `json:"role"`
-		Content   string `json:"content"`
-		SessionID string `json:"session_id"`
-		BranchID  string `json:"branch_id"`
-		BufferKey string `json:"buffer_key"`
+		Role       string `json:"role"`
+		Content    string `json:"content"`
+		SessionID  string `json:"session_id"`
+		BranchID   string `json:"branch_id"`
+		BufferKey  string `json:"buffer_key"`
+		OccurredAt int64  `json:"occurred_at,omitempty"` // real conversation date (D-109); 0 → server stamps now
 	}
 	type ingestReq struct {
 		Records []recordInput `json:"records"`
@@ -192,11 +197,12 @@ func (r *Runner) ingestConversation(ctx context.Context, conv *ConvFixture) ([]s
 	for _, sess := range conv.Sessions {
 		for _, turn := range sess.Turns {
 			records = append(records, recordInput{
-				Role:      turn.Role,
-				Content:   turn.Content,
-				SessionID: sess.ID,
-				BranchID:  conv.ID,
-				BufferKey: conv.ID,
+				Role:       turn.Role,
+				Content:    turn.Content,
+				SessionID:  sess.ID,
+				BranchID:   conv.ID,
+				BufferKey:  conv.ID,
+				OccurredAt: turn.OccurredAt,
 			})
 		}
 	}
@@ -292,12 +298,39 @@ func (r *Runner) scoreQuestion(ctx context.Context, q QuestionFixture) (Question
 		items = filterByLane(items, r.cfg.DisableLane)
 	}
 
-	contents := make([]string, 0, len(items))
-	for _, item := range items {
-		contents = append(contents, item.Content)
+	// withDate appends the assertion (conversation) date so the reader can do temporal
+	// reasoning and date-resolve stale values itself (D-109, mirroring what frontier
+	// memory-RAG systems inject). Daily granularity matches the dataset.
+	withDate := func(content string, occ int64) string {
+		if occ <= 0 {
+			return content
+		}
+		return content + " | When: " + time.UnixMilli(occ).UTC().Format("2006-01-02")
 	}
 
-	hit := AnswerContextHit(contents, q.Expected.Answer)
+	contents := make([]string, 0, len(items))
+	currentOnly := make([]string, 0, len(items))
+	for _, item := range items {
+		c := withDate(item.Content, item.OccurredAt)
+		if item.Stale {
+			// Dual-visibility (D-105) + self-contained successor (D-114, Idea 1): mark the
+			// retired value AND name what replaced it and when, so even a client without a
+			// prompt section knows the current value.
+			tag := "[OUTDATED — the user later changed this; prefer the current value, use only as history"
+			if item.SupersededByContent != "" {
+				tag += "; superseded by: " + withDate(item.SupersededByContent, item.SupersededByDate)
+			}
+			tag += "] "
+			contents = append(contents, tag+c)
+			continue
+		}
+		contents = append(contents, c)
+		currentOnly = append(currentOnly, item.Content) // raw content for the substring hit metric (no date suffix)
+	}
+
+	// answer_context_hit measures whether the gold (the CURRENT value) is retrievable —
+	// computed over current items only so a stale companion can't create a phantom hit.
+	hit := AnswerContextHit(currentOnly, q.Expected.Answer)
 
 	return QuestionResult{
 		QuestionID: q.ID,

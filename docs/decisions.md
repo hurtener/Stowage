@@ -2874,3 +2874,309 @@ memories, zero schema failures). The change also *rescued* models that were prev
 flaky for extraction (`inception/mercury-2`). No safety lost: server validation is
 unchanged. A regression guard asserts the exported schemas carry none of the forbidden
 keywords.
+
+## D-103 — Retrieval profile windows are config-tunable; the per-request limit is honored under rerank
+
+**Context.** The three retrieval profiles (`precise`, `balanced`, `broad`) encoded their
+`{laneK, scoringK, defaultLimit}` windows as hardcoded package presets. `precise`
+(the rerank profile) capped `scoringK` at **10**: only the top-10 fused candidates were
+scored/reranked, and the final result was trimmed to `limit` *after* that. So a caller
+asking `/v1/retrieve` for `limit: 25` with rerank on silently received **≤10** memories —
+the `limit` knob was a no-op past the preset, and there was no way to widen it.
+
+A LongMemEval K-sweep (re-scoring a frozen learn store at increasing K, brute vindex)
+exposed this: `answer_context_hit` rose 0.24→0.32 from K=5→10 and then **flat-lined** at
+every K≥10 with exactly 10 items returned per question — the `scoringK=10` wall, not a
+recall ceiling. Memories are compressed (~30–40 tokens each; the K=5 context was ~166
+tokens vs a ~6,200-token raw haystack — a ~37× dividend), so feeding *more* of them is
+nearly free. The cap was leaving recall on the table for no token saving.
+
+**Decision.**
+1. **Honor `limit` under every profile, including rerank.** `Retrieve` floors the scoring
+   window up to the requested limit (`scoringK = max(prof.ScoringK, limit)`) and the lane
+   window up to that (`laneK = max(prof.LaneK, scoringK)`). The reranker now sees the full
+   requested window; `limit` is the honest K knob on all surfaces. A request can never be
+   silently clamped below what it asked for (still bounded by the hard `maxLimit=50`).
+2. **Make the profile windows config-tunable** via a new optional `retrieval:` section
+   (`precise`/`balanced`/`broad`, each `{lane_k, scoring_k, default_limit}`). A zero/omitted
+   field inherits the built-in preset, so the all-empty default reproduces the shipped
+   presets exactly — the tuned default that applies in every deployment profile (D-034).
+   Reranking is **not** configured here — it remains a property of the `precise` profile,
+   wired via `gateway.rerank_model`. Validation: non-negative, `scoring_k ≤ lane_k`,
+   `default_limit ≤ 50`. Wired in `boot` via `Retriever.WithProfiles(retrieval.BuildProfiles(...))`.
+
+**Evidence.** With the floor fix, a rerank-on K-sweep over the same frozen learn store
+climbed monotonically: `answer_context_hit` 0.28 (K=5) → 0.32 (10) → 0.36 (20) → 0.38 (30)
+→ 0.40 (40) → **0.44 (50)** — ~+57% relative, still rising at the `maxLimit=50` cap, while
+per-question context stayed cheap (~1,025 tokens at K=30, still ~6× compression). The
+plateau was the bug, not the data.
+
+**Consequences.** The retrieval `limit` finally behaves as advertised with rerank. Operators
+who want a deeper rerank window (or a different recall/latency posture per profile) set
+`retrieval.precise.scoring_k` etc. instead of editing the binary. No behavior change for
+existing deployments (empty section = presets). Whether the recall lift translates to higher
+*judged* answer quality is measured separately (the judged K-sweep); `answer_context_hit` is
+the substring proxy and undercounts.
+
+## D-104 — Numeric corrections bypass the lexical near-dup auto-discard (route to supersede)
+
+Phase 29. The reconcile near-dup pre-filter auto-discarded any candidate whose
+`BigramJaccard` ≥ 0.85 against a neighbor, on the documented assumption that a real
+contradiction is never *lexically* near-identical (a polarity flip embeds at high cosine
+but reads differently). That assumption has a hole: a **numeric correction** — "120 stars"
+→ "125 stars", "6 months" → "9 months", "30 minutes" → "45 minutes" — IS lexically
+near-identical (one token differs) yet is a contradiction. The old path silently discarded
+the correction AND bumped the stale neighbor's `match_count`, *raising the stale value's
+retrieval rank* — the exact LongMemEval stale-value miss (see [[longmemeval-miss-analysis]]).
+
+**Decision.** Before the near-dup auto-discard, `NumeralsDiverge(candidate, neighbor)` checks
+whether the two carry a different multiset of numerals (commas stripped so "5,850"=="5850").
+If they diverge, the candidate is NOT discarded and the neighbor's match_count is NOT bumped —
+it falls through to the LLM decision, which supersedes the older value. Deterministic, no
+embedding/cosine cost. Paraphrase dups with identical numerals still take the fast discard.
+Pairs with D-105's prompt change (supersede-on-different-value) and the false-supersede metric.
+
+## D-107 — Assistant extraction buffer window coarsened for context retention
+
+Phase 29. The assistant profile flushed the extraction buffer at Count=12 / Tokens=1500 /
+MaxAge=90s. The low token cap meant extraction often saw only a few turns at a time, so a
+memory could be written shorn of the disambiguating context stated turns earlier — e.g.
+"about 30 minutes" losing the "each way" qualifier that the fuller assertion kept. That both
+starves the reader and *manufactures* false contradictions reconcile then cannot match.
+
+**Decision.** Coarsen the assistant (and fallback) buffer triggers to Count=18 / Tokens=2500 /
+MaxAge=180s (D-042 family; tuned default in every profile, D-034) so extraction sees more
+conversation per call and emits fewer, richer, better-contextualized memories. Paired with the
+Phase-29 extraction-prompt change (PromptTemplateVersion 3) requiring qualifier/unit/scope
+retention and a populated `context`. Guardrail: an over-broad-merged-memory eval metric watches
+the merge-two-distinct-facts hazard a wider window introduces.
+
+## D-105 — Superseded memories are retained-and-flagged in retrieval (dual-visibility, §6c)
+
+Phase 29 (H5). Once supersede fires (D-104/D-107 made it fire), the retired value is
+hidden from retrieval (the read path filters `status='active'`). That is the "keep one"
+behaviour; the human directed instead that BOTH values stay retrievable but the stale one
+be **flagged**, so the agent can reason "you said X, then Y" (RFC §6c calibrated
+uncertainty) rather than silently losing the history.
+
+**Decision.** Retrieval optionally surfaces the superseded predecessors of the returned
+memories, flagged `Stale` with a `superseded_by` link to the current value, demoted (score
+×0.5, ranked below their successor) and bounded (`maxStaleCompanions`=8 per response) so
+dual-visibility can never blow up the context. Driven off the existing scoped
+`ListSupersededBy` (P3 — no unscoped variant); best-effort (a lookup error drops that
+item's history, never fails the retrieve). Surfaced on **all read surfaces** (HTTP, MCP,
+SDK item payloads: `stale` + `superseded_by`) per D-067. The eval reader prompt and any
+consumer is told to prefer the current value and not hedge against an `[OUTDATED]`-tagged item.
+
+Config knob `retrieval.include_superseded` (default **true** — dual-visibility is the
+intended behaviour; D-034 tuned default in every profile). Operators who want active-only
+retrieval set it false. This is a read-time property and composes with the write-time
+supersede fixes: write-time decides which value is current; read-time decides whether the
+agent also sees the retired one (flagged).
+
+## D-106 — Reconcile winner-selection is deterministic by assertion order (record-ULID turn order)
+
+Phase 29. Supersede fires (D-104/D-105) but was picking the WRONG winner ~half the time:
+after a re-learn, Fitbit's correct "9 months" was superseded by the stale "6 months", and
+painting kept "4" over the gold "5". Cause: the reconcile decision prompt frames the
+candidate as "the newest assertion", but when two contradictory values land in the SAME
+flush (more likely after the D-107 window coarsening), they are extracted together and the
+LLM's arbitrary candidate output order — not conversation order — decided which superseded
+which. So the winner was a coin-flip.
+
+`occurred_at` cannot break the tie here: in the LongMemEval oracle it is session-granular
+(~60 distinct values over 1036 records), so both values in one session share it. Record IDs,
+however, are ULIDs — monotonic in ingestion order, which IS conversation/turn order.
+
+**Decision.** Before processing a flush's candidates, the reconcile worker stable-sorts them
+ascending by `candidateAssertionKey` = the LATEST source-record ULID among a candidate's
+provenance (turn order). The older assertion commits first; the newer one then supersedes it,
+so the CURRENT value wins deterministically regardless of LLM emission order. Cross-flush
+contradictions were already handled (a later flush is genuinely newer); this fixes only the
+within-flush ambiguity. Supersede reversibility (D-070) is unchanged. This realizes the
+D-024 "occurred_at recency" intent at a finer (turn) granularity than session occurred_at.
+
+## D-108 — The reconcile supersede/merge decision is context-aware (sees the original turns)
+
+Phase 29b. The reconcile decision (add/update/merge/supersede/park) is an LLM call that saw
+ONLY the derived memories — the candidate plus neighbor memories — with no conversational
+context. So when two memories carried different values, the model could not tell a *correction
+of one fact* from *two distinct facts that share words*, and over-superseded: the commute
+"45 minutes each way" and "about 30 minutes" (arguably audiobook-listening time vs work-commute
+time) were merged, and D-106 then kept the wrong one. Detection (H4) would only make
+over-supersede worse; the right lever is giving the existing decision more CONTEXT.
+
+**Decision.** `ReconcileStage` takes an optional `RecordStore` (`SetRecordStore`; nil ⇒ current
+behaviour, degrade-safe). Before the decision, it assembles a bounded conversation-context block —
+the raw provenance turns behind the candidate (`Candidate.Provenance` → `RecordStore.GetMany`)
+and behind each neighbor (`GetJunctions(neighbor).Provenance` → `GetMany`) — capped at
+`maxContextRecords`=12, deduped, best-effort (a fetch error proceeds with no block). `BuildUserPrompt`
+renders it as "## Original conversation context" and the system prompt instructs: use it to decide
+whether the candidate CORRECTS the neighbor (→ supersede/update) or states a DIFFERENT fact that
+merely shares words/numbers (→ add); when the turns don't show them as the same fact, prefer add.
+
+Safe under P2 (reconcile is async, off the ingest ACK) and reversible (D-070 unchanged). No schema
+change, no new store method (`GetMany`/`GetJunctions` already exist). Targets the over-supersede
+residue directly and sharpens every decision, lower-risk than H4.
+
+## D-109 — Memories capture the assertion (conversation) date and retrieval surfaces it
+
+Phase 29c. Investigating the SOTA gap (Hindsight reports 0.946 on longmemeval_s), their
+published injection output showed each "memory" carries a **timestamp** ("When: May 28, 2023" +
+`_mentioned:`) and their reader's own reasoning cites dates to answer temporal/knowledge-update
+questions. Two findings on our side: (1) memories never captured the assertion date —
+`candidateToMemory` left `ValidFrom=0`; (2) worse, the eval harness **discarded the dataset's
+session timestamps at ingest** and stamped `occurred_at = now`, so every record/memory shared
+"today" — useless for temporal reasoning or date-resolving stale values.
+
+**Decision.** Capture the assertion date end-to-end as a day-one signal (D-024) and surface it:
+- Extract stamps `Candidate.OccurredAt` = earliest `occurred_at` among the candidate's provenance
+  records (the conversation date, not extraction time).
+- `candidateToMemory` sets `Memory.ValidFrom = Candidate.OccurredAt`.
+- Retrieval surfaces it as `occurred_at` on the item across all read surfaces (HTTP/MCP/SDK), D-067.
+- The eval reader renders `| When: <YYYY-MM-DD>` per memory so it can do temporal reasoning and
+  pick the latest value among conflicting ones at read time — a cheaper complement to write-time
+  supersede for the stale-value/knowledge-update class.
+- The eval harness now passes the dataset's real per-turn timestamps to `record.occurred_at`
+  (the ingest API already accepted `occurred_at`; the harness was sending 0 → now).
+
+Production already supported caller-supplied `occurred_at` on ingest; this closes the
+memory-side capture + retrieval surfacing gap. Reversibility/scoping unchanged. Needs a re-learn
+to populate real dates on the existing eval store.
+
+## D-110 — Decay grace is computed in milliseconds (unit-bug fix)
+
+Phase 29d (audit finding #5). `lifecycle/decay.go` computed the below-floor grace as
+`int64(DecayGraceSweeps) * int64(DecayInterval)`. `DecayInterval` is a `time.Duration`
+(nanoseconds), so `int64(DecayInterval)` is a nanosecond count used as **milliseconds**
+against `nowMs` (UnixMilli) — a ~10^6x inflation (a 10-minute interval × 2 sweeps yields a
+~38-YEAR grace). Net effect: `valid_until` is set so far in the future that **decay never
+expires anything** — P4's primary forgetting mechanism was dead in production. The existing
+test only asserted `valid_until != 0`, which the inflated value satisfies, so it shipped.
+
+**Decision.** Compute grace as `int64(DecayGraceSweeps) * DecayInterval.Milliseconds()`
+(matching the pattern in `reflect.go`/`threading.go`). The regression test now bounds the
+grace to ≈ DecayGraceSweeps×DecayInterval in ms (well under an hour for the test profile), so
+a nanosecond/ms unit error fails the test. No data migration needed (existing inflated
+`valid_until` rows simply expire on schedule once recomputed on the next below-floor sweep).
+
+## D-111 — Lifecycle consolidation: deterministic survivor, numeral-aware merge, full scope
+
+Phase 29d (audit findings #1, #2). The lifecycle dedupe sweep was miswired three ways:
+(a) it kept `target` (the arbitrary neighbor) as the survivor — no date/trust logic, so a numeric
+CORRECTION could be merged away keeping the stale value; (b) it had no numeral guard (the D-104
+fix lived only in reconcile); (c) it ran at `{tenant}` scope, so `FindNeighbors` matched across
+DIFFERENT USERS and the merged survivor was written with NULL project/user/session — a P3 leak +
+P1 orphaning.
+
+**Decision.**
+1. **Shared survivor rule (D-067):** `reconcile.SelectSurvivor(a,b) (winner,loser)` — later
+   `ValidFrom` (assertion date) → higher trust tier → higher importance → later `CreatedAt` →
+   larger ULID. Used by the sweep (and available to reconcile) so the rule can't drift.
+2. **Numeral-aware merge:** the sweep keeps the SURVIVOR's content/date; when the pair is
+   numeral-divergent (a correction, `reconcile.NumeralsDiverge`) it keeps ONLY the survivor's
+   surface (entities/keywords/queries) so the stale value's wording can't pollute/resurface;
+   for a true duplicate it unions the surface. Counters unioned; both originals tombstoned with
+   prior-state (reversible, D-070).
+3. **Full-scope sweep:** dedup runs per `(tenant,project,user)` via a new scoped
+   `Memories().DistinctScopes` enumerator (both drivers + conformance), mirroring how
+   episodes/threading iterate — never cross-user, survivor inherits correct scope columns (P3).
+
+## D-115 — Retrieval rerank precedes the limit trim; cache key includes Kinds + IncludeLanes
+
+Phase 29d (audit #9, #8). (a) The cross-encoder rerank ran AFTER trimming the scored pool to the
+requested `limit`, so it could only reorder the already-cut top-`limit` — never PROMOTE a more
+relevant memory that fell just below the cutoff. Rerank now runs over the full scored pool
+(≤ ScoringK) and the trim-to-`limit` happens after, so the cross-encoder can pull a better
+candidate into the result set. (b) The result-cache key omitted `Kinds` and `IncludeLanes`, both
+of which change the result set / item payload, so a kind-filtered or lanes-on request could
+collide with a plain one within the 60s TTL and return the wrong items. Both are now in the key
+(Kinds sorted for order-independence).
+
+## D-116 — Rollup digests every memory it supersedes (no silent content loss)
+
+Phase 29d (audit #6). The session rollup set `Targets: promotable` (supersedes ALL of a session's
+promotable memories) but `buildDigestContent` capped the digest at the first 10, emitting
+"[+N more]" — so memories 11+ were RETIRED with their content omitted from the digest, silently
+lost (e.g. the newest correction in a long session). The digest must represent everything it
+supersedes. Decision: `buildDigestContent` includes all promotable memories' content (the count
+cap removed). A session digest is bounded in practice — rollup only fires on idle, aged sessions
+of working memory. Regression test asserts all 12 contents appear and no "[+N more]" elision.
+
+## D-117 — Review approve/reject are reversible (un-quarantine path)
+
+Phase 29d (audit #10). `trust.Resolve` flips a `pending_review` memory to `active` (approve) or
+`quarantined` (reject) and captures the prior state in `memory.review_approved` /
+`memory.review_rejected` events — but those types were NOT in `reconcile.isRestorable`, so
+`Rollback` refused them: the advertised reversibility (and the only un-quarantine path) was dead
+(D-084). Both are plain in-place status flips whose prior state is captured the same way as
+`memory.updated`, so they invert via the same `commitSimpleRollback` path. Added both to
+`isRestorable` and the rollback switch. Regression test: reject → Rollback restores `pending_review`.
+
+## D-118 — Lifecycle sweeps invalidate the retrieval cache
+
+Phase 29d (audit #15). The reconcile stage invalidates the retrieval result-cache after a
+content-changing commit (D-053), but the lifecycle Manager held no invalidator — so after a
+decay-expire, dedupe-merge, or rollup, the cache kept serving the now-expired/merged memory for
+up to its 60s TTL (P4 staleness). Added `Manager.SetScopeInvalidator` (the same
+`reconcile.ScopeInvalidator` seam) and a nil-safe `invalidateScope` call after each
+status-mutating sweep; boot wires the retriever cache into the Manager.
+
+## D-114 — Superseded items are self-contained for non-prompt (MCP) clients
+
+Phase 29d (Idea 1). Dual-visibility (D-105) flagged a superseded memory and linked its successor
+by ID, and the eval reader got a prompt section — but a real MCP client controls its own prompt
+and only sees the retrieve item, where `superseded_by` was a bare ID requiring a second lookup.
+Decision: a stale item now carries the successor's VALUE + assertion DATE inline
+(`superseded_by_content`, `superseded_by_date`) across all read surfaces (HTTP/MCP/SDK), so any
+client is self-contained: "this was superseded by «current value» on «date»". Populated in
+`attachStaleCompanions` from the retrieved successor; the eval reader renders it in the [OUTDATED]
+tag. (Configurable history depth beyond the immediate successor is a noted follow-up.)
+
+## D-119 — Dedupe sweep isolates partitions with exact-leaf scope (29d B1)
+
+Phase 29d adversarial review (two independent passes, both BLOCKING). D-111 iterated
+`DistinctScopes` per (tenant,project,user) but seeded each pass from `ListActiveForDecay`, which
+filters `tenant_id` ONLY — so the candidate batch was the whole tenant and a per-user pass could
+load another user's memory as the seed, find a same-content neighbour, and merge across users
+(P3 + P1). A second mechanism: `buildScopeWhere` treats an empty leaf as "omit the predicate"
+(prefix/wildcard), so a NULL-user/NULL-project bucket re-wildcarded across users. Decision: the
+dedupe sweep uses EXACT-leaf scope semantics — an empty project/user/session matches `IS NULL`,
+never wildcards. New `Memories().ListActiveInScope` (exact candidate list) + `buildExactScopeWhere`
+in both drivers + `NeighborQuery.ExactScope` (FindNeighbors honours exact matching when set, default
+false preserves the topic-extraction caller's wildcard behaviour). `ListActiveForDecay` and the
+decay/rollup sweeps are unchanged (they want tenant-wide). The eval ingests at tenant-only scope, so
+its memories live in the NULL-leaf bucket — exact-leaf is what makes that bucket dedupe in isolation
+rather than be skipped. Guarded by a conformance test (exact isolation incl. NULL bucket + a
+DistinctScopes→ListActiveInScope round-trip) and a sweep-level cross-user test (mutation-verified to
+fail on the tenant-wide seed).
+
+## D-120 — Decay expire is reversible; rollup is a reversible many-to-one merge (29d S1)
+
+Phase 29d adversarial review. D-110 activated the decay-expire path (previously dead via a ~10^6×
+grace inflation) without its reverse half: `memory.expired` was absent from `isRestorable` and its
+payload used a nested `{memory,junctions,decay_factor}` shape incompatible with the flat
+`parsePriorState`, so `Rollback` returned `ErrNoPriorState` (P4 violation). Separately, the rollup
+sweep committed `ActionMerge` (N sources → 1 digest) but emitted per-source `memory.superseded`,
+which routes to `rollbackSuperseded` — restoring only the one subject and stranding the N-1 siblings
+on a tombstoned digest. Decisions: (1) decay emits a flat `MarshalPriorState` snapshot of the restore
+TARGET (status=active, valid_until cleared) and `memory.expired` is restorable via the in-place path,
+so un-expiry restores a fresh active memory; (2) rollup emits `memory.merged` per source so
+`rollbackMerged` restores ALL siblings atomically via `ListSupersededBy`. Both guarded by
+round-trip tests (rollup mutation-verified to fail on the superseded event type).
+
+## D-121 — Cache invalidation matches the tenant-keyed retrieve cache; cache key includes effective limit (29d S3/S5/N3)
+
+Phase 29d adversarial review (two passes contradicted; resolved empirically). The retrieval result
+cache keys its generation counter by the REQUEST scope, and every retrieve surface
+(`api/retrieve_handler.go`, `sdk/stowage/embedded.go`) builds the request scope TENANT-ONLY. So a
+sweep must `InvalidateScope` at tenant granularity: the D-118 dedupe path invalidated at full
+`{tenant,project,user}` scope, bumping `gens["t/p/u"]`, which the tenant-keyed Get never checks →
+stale serve for the 60s TTL. Decisions: (1) dedupe invalidates at `{Tenant: scope.Tenant}`; decay/
+rollup were already tenant-only (correct) — the rollup personal-zone-only early-return path and the
+confirm/`promoteParked` path gained the missing invalidation. (2) D-115's cache key omitted the
+effective `limit`, but the cached value is the post-trim `items[:limit]` slice returned verbatim — so
+two requests differing only by `limit` collided within the TTL; the effective limit is now part of the
+cache key. Invalidation-scope granularity must equal retrieve cache-key granularity. Also tightened:
+dedupe audit events now name the real survivor/loser (the survivor became dynamic in D-111), the
+`lifecycle.dedupe` event subject is the merged row, and the payload carries survivor_id/loser_id/merged_id.

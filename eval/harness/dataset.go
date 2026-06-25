@@ -51,6 +51,12 @@ type RunDatasetOpts struct {
 	// Reader overrides the reader/judge model + reasoning effort for judged mode
 	// (D-100). Zero value = the gateway's configured model, no reasoning.
 	Reader ReaderOpts
+	// SkipIngest reuses an already-learned persistent store (STOWAGE_EVAL_DB_PATH):
+	// the ingest → extract → settle loop is skipped and the questions are scored
+	// directly against the existing memories. Used to re-score the SAME learning at
+	// different retrieve limits (the K knob) without re-paying for extraction. Pair
+	// with the brute vindex so the vector lane is faithful on reopen.
+	SkipIngest bool
 }
 
 // DatasetResult is the outcome of a RunDataset call.
@@ -93,63 +99,70 @@ func RunDataset(ctx context.Context, srv *TestServer, runner *Runner, convs []da
 		convByID[c.ID] = c
 	}
 
-	// Seed the broad extraction-magnet set so topic-gated extraction captures the
-	// breadth of facts the benchmark probes (not just the default preferences pack).
-	if opts.SeedTopics {
-		if err := SeedEvalTopics(ctx, srv); err != nil {
-			return nil, fmt.Errorf("seed topics: %w", err)
-		}
-	}
+	// SkipIngest reuses an already-learned store: bypass the whole ingest → extract →
+	// settle path and score directly against the existing memories (the K-knob
+	// re-score; cost/quality sweeps reuse the same learning).
+	if !opts.SkipIngest {
 
-	for id := range need {
-		c, ok := convByID[id]
-		if !ok {
-			return nil, fmt.Errorf("question references unknown conversation %s", id)
-		}
-		fix := toFixture(c)
-		ids, err := runner.ingestConversation(ctx, &fix)
-		if err != nil {
-			return nil, fmt.Errorf("ingest %s: %w", id, err)
-		}
-		if opts.BeforeFlush != nil {
-			// Mock/CI path: auto-flush is suppressed, so the deliberate flush must see
-			// the records — wait out the async ingest→buffer append first (D-096). Only
-			// here: in full mode the auto-flush triggers drain the buffer, so a
-			// fixed-count barrier would never reach len(ids) on a large conversation.
-			if err := srv.WaitForBuffered(ctx, fix.ID, len(ids)); err != nil {
-				return nil, fmt.Errorf("buffer %s: %w", id, err)
-			}
-			if err := opts.BeforeFlush(id, ids); err != nil {
-				return nil, fmt.Errorf("before-flush %s: %w", id, err)
+		// Seed the broad extraction-magnet set so topic-gated extraction captures the
+		// breadth of facts the benchmark probes (not just the default preferences pack).
+		if opts.SeedTopics {
+			if err := SeedEvalTopics(ctx, srv); err != nil {
+				return nil, fmt.Errorf("seed topics: %w", err)
 			}
 		}
-		if err := runner.flushBuffer(ctx, fix.ID); err != nil {
-			return nil, fmt.Errorf("flush %s: %w", id, err)
-		}
-		if opts.PerConvSettle > 0 {
-			if err := srv.WaitForQuiescence(ctx, opts.PerConvSettle); err != nil {
-				// Non-fatal: the re-enqueue sweep recovers; the final barrier still gates.
-				_ = err
-			}
-		}
-	}
 
-	settle := opts.Settle
-	if settle <= 0 {
-		settle = 20 * time.Minute
-	}
-	if err := srv.WaitForQuiescence(ctx, settle); err != nil {
-		return nil, fmt.Errorf("pipeline did not settle — run would be invalid: %w", err)
-	}
-	// Let the async embedder catch up before scoring (quiescence does not gate on
-	// pending embeddings — see EmbedSettle).
-	if opts.EmbedSettle > 0 {
-		select {
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		case <-time.After(opts.EmbedSettle):
+		for id := range need {
+			c, ok := convByID[id]
+			if !ok {
+				return nil, fmt.Errorf("question references unknown conversation %s", id)
+			}
+			fix := toFixture(c)
+			ids, err := runner.ingestConversation(ctx, &fix)
+			if err != nil {
+				return nil, fmt.Errorf("ingest %s: %w", id, err)
+			}
+			if opts.BeforeFlush != nil {
+				// Mock/CI path: auto-flush is suppressed, so the deliberate flush must see
+				// the records — wait out the async ingest→buffer append first (D-096). Only
+				// here: in full mode the auto-flush triggers drain the buffer, so a
+				// fixed-count barrier would never reach len(ids) on a large conversation.
+				if err := srv.WaitForBuffered(ctx, fix.ID, len(ids)); err != nil {
+					return nil, fmt.Errorf("buffer %s: %w", id, err)
+				}
+				if err := opts.BeforeFlush(id, ids); err != nil {
+					return nil, fmt.Errorf("before-flush %s: %w", id, err)
+				}
+			}
+			if err := runner.flushBuffer(ctx, fix.ID); err != nil {
+				return nil, fmt.Errorf("flush %s: %w", id, err)
+			}
+			if opts.PerConvSettle > 0 {
+				if err := srv.WaitForQuiescence(ctx, opts.PerConvSettle); err != nil {
+					// Non-fatal: the re-enqueue sweep recovers; the final barrier still gates.
+					_ = err
+				}
+			}
 		}
-	}
+
+		settle := opts.Settle
+		if settle <= 0 {
+			settle = 20 * time.Minute
+		}
+		if err := srv.WaitForQuiescence(ctx, settle); err != nil {
+			return nil, fmt.Errorf("pipeline did not settle — run would be invalid: %w", err)
+		}
+		// Let the async embedder catch up before scoring (quiescence does not gate on
+		// pending embeddings — see EmbedSettle).
+		if opts.EmbedSettle > 0 {
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-time.After(opts.EmbedSettle):
+			}
+		}
+
+	} // end !opts.SkipIngest
 
 	results := make([]QuestionResult, 0, len(questions))
 	var verdicts []string
@@ -196,7 +209,11 @@ func toFixture(c datasets.Conversation) ConvFixture {
 	for _, s := range c.Sessions {
 		sf := SessionFixture{ID: s.ID}
 		for _, turn := range s.Turns {
-			sf.Turns = append(sf.Turns, TurnFixture{Role: turn.Role, Content: turn.Content})
+			tf := TurnFixture{Role: turn.Role, Content: turn.Content}
+			if !turn.Timestamp.IsZero() {
+				tf.OccurredAt = turn.Timestamp.UnixMilli() // real conversation date → record.occurred_at (D-109)
+			}
+			sf.Turns = append(sf.Turns, tf)
 		}
 		fix.Sessions = append(fix.Sessions, sf)
 	}

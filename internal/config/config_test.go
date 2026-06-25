@@ -376,10 +376,10 @@ func TestBufferTriggersForProfile(t *testing.T) {
 		wantCount  int
 		wantTokens int64
 	}{
-		{"assistant", 12, 1500},
+		{"assistant", 18, 2500}, // Phase 29 (D-107): coarsened for richer per-extraction context
 		{"coding-agent", 20, 2500},
 		{"fleet", 30, 4000},
-		{"unknown", 12, 1500}, // fallback to assistant
+		{"unknown", 18, 2500}, // fallback to assistant
 	}
 	for _, tc := range cases {
 		tc := tc
@@ -393,6 +393,79 @@ func TestBufferTriggersForProfile(t *testing.T) {
 			}
 			if trig.MaxAge == 0 {
 				t.Errorf("MaxAge must be non-zero for profile %q", tc.profile)
+			}
+		})
+	}
+}
+
+// TestRetrievalTuningDefaultEmpty verifies the retrieval section defaults to all-zero
+// (inherit the built-in presets) and passes validation (D-103).
+func TestRetrievalTuningDefaultEmpty(t *testing.T) {
+	clearStowageEnv(t)
+	cfg := config.Defaults()
+	if cfg.Retrieval.Precise != (config.ProfileTuning{}) {
+		t.Errorf("Retrieval.Precise default = %+v, want zero (inherit preset)", cfg.Retrieval.Precise)
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Errorf("Defaults().Validate() with empty retrieval: %v", err)
+	}
+}
+
+// TestRetrievalTuningValid verifies a sane override loads and validates (D-103).
+func TestRetrievalTuningValid(t *testing.T) {
+	clearStowageEnv(t)
+	yaml := []byte("retrieval:\n  precise:\n    lane_k: 60\n    scoring_k: 30\n    default_limit: 10\n")
+	tmp := writeTmpFile(t, yaml)
+	cfg, err := config.Load(context.Background(), tmp)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Retrieval.Precise.ScoringK != 30 || cfg.Retrieval.Precise.LaneK != 60 {
+		t.Errorf("Retrieval.Precise = %+v, want lane_k=60 scoring_k=30", cfg.Retrieval.Precise)
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Errorf("Validate() with valid retrieval tuning: %v", err)
+	}
+}
+
+// TestIncludeSupersededDefaultAndOverride verifies the dual-visibility knob (D-105)
+// defaults true and accepts a YAML override.
+func TestIncludeSupersededDefaultAndOverride(t *testing.T) {
+	clearStowageEnv(t)
+	if !config.Defaults().Retrieval.IncludeSuperseded {
+		t.Errorf("retrieval.include_superseded default = false, want true (dual-visibility)")
+	}
+	tmp := writeTmpFile(t, []byte("retrieval:\n  include_superseded: false\n"))
+	cfg, err := config.Load(context.Background(), tmp)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Retrieval.IncludeSuperseded {
+		t.Errorf("retrieval.include_superseded override to false did not take")
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Errorf("Validate() with include_superseded override: %v", err)
+	}
+}
+
+// TestRetrievalTuningInvalid rejects negative windows, scoring_k > lane_k, and a
+// default_limit past the hard result cap (D-103).
+func TestRetrievalTuningInvalid(t *testing.T) {
+	clearStowageEnv(t)
+	cases := []struct {
+		name string
+		t    config.ProfileTuning
+	}{
+		{"negative", config.ProfileTuning{ScoringK: -1}},
+		{"scoring_k exceeds lane_k", config.ProfileTuning{LaneK: 10, ScoringK: 20}},
+		{"default_limit over cap", config.ProfileTuning{DefaultLimit: 51}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := config.Defaults()
+			cfg.Retrieval.Precise = tc.t
+			if err := cfg.Validate(); err == nil {
+				t.Errorf("Validate() = nil, want error for %s (%+v)", tc.name, tc.t)
 			}
 		})
 	}

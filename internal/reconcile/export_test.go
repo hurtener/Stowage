@@ -2,10 +2,26 @@
 package reconcile
 
 import (
+	"context"
 	"encoding/json"
 
+	"github.com/hurtener/stowage/internal/identity"
+	"github.com/hurtener/stowage/internal/pipeline"
 	"github.com/hurtener/stowage/internal/store"
 )
+
+// ExportBuildReconcileContext exposes buildReconcileContext for the D-108 context test.
+func (r *ReconcileStage) ExportBuildReconcileContext(ctx context.Context, scope identity.Scope, c pipeline.Candidate, neighbors []store.Memory) ReconcileContext {
+	return r.buildReconcileContext(ctx, scope, c, neighbors)
+}
+
+// ExportTrustRank exposes trustRank for the D-111 survivor-selection test.
+func ExportTrustRank(src string) float64 { return trustRank(src) }
+
+// ExportCandidateAssertionKey exposes candidateAssertionKey for the D-106 ordering test.
+func ExportCandidateAssertionKey(c pipeline.Candidate) string {
+	return candidateAssertionKey(c)
+}
 
 // ExportTargetTrustLevel exposes targetTrustLevel for external tests.
 func ExportTargetTrustLevel(m store.Memory) TrustLevel {

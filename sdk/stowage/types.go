@@ -92,6 +92,15 @@ type MemoryItem struct {
 	Citation  string             `json:"citation"` // injection ULID = citation handle (D-051)
 	Lanes     []string           `json:"lanes,omitempty"`
 	Breakdown *RetrieveBreakdown `json:"breakdown,omitempty"`
+	// Stale marks a superseded value surfaced for dual-visibility (D-105, §6c); prefer
+	// the current value. SupersededBy links to its successor; SupersededByContent/Date carry
+	// that successor's value + assertion date inline (D-114, Idea 1).
+	Stale               bool   `json:"stale,omitempty"`
+	SupersededBy        string `json:"superseded_by,omitempty"`
+	SupersededByContent string `json:"superseded_by_content,omitempty"`
+	SupersededByDate    int64  `json:"superseded_by_date,omitempty"`
+	// OccurredAt is the assertion (conversation) date in unix millis (D-109); 0 when unknown.
+	OccurredAt int64 `json:"occurred_at,omitempty"`
 }
 
 // RetrieveResponse is the response from Retrieve.

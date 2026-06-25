@@ -83,8 +83,8 @@ func TestRunDataset_Wiring(t *testing.T) {
 
 	res, err := RunDataset(ctx, srv, runner, convs, questions, RunDatasetOpts{
 		Limit:       1,
-		Judge:       false, // deterministic answer_context_hit only — no gateway Complete for judging
-		Settle:      30 * time.Second,
+		Judge:       false,            // deterministic answer_context_hit only — no gateway Complete for judging
+		Settle:      90 * time.Second, // headroom for CI -race + coverage instrumentation (avoids quiescence flake)
 		BeforeFlush: beforeFlush,
 	})
 	if err != nil {

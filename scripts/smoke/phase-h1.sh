@@ -111,9 +111,9 @@ ok "mcp stdio initialized"
 send '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"memory_topics","arguments":{"action":"upsert","topics":[{"key":"smokeh1-topic","description":"h1 smoke","status":"active"}]}}}'
 await_id 2 >/dev/null
 
-# 3. ingest 11 records (below the count=12 trigger — no flush yet).
+# 3. ingest 17 records (below the count=18 trigger — no flush yet; D-107 coarsened window).
 REC='{"role":"user","content":"Paris is the capital of France and a major European city.","session_id":"'"$SESS"'"}'
-RECS11=$(printf '%s,' $(yes "$REC" | head -11) | sed 's/,$//')
+RECS11=$(printf '%s,' $(yes "$REC" | head -17) | sed 's/,$//')
 send '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"memory_ingest","arguments":{"records":['"$RECS11"']}}}'
 if ! await_id 3; then failc "AC-3: ingest(11) no response"; exit "$fails"; fi
 REC_ID=$(field_of 3 '.result.structuredContent.ids[0]')
@@ -129,7 +129,7 @@ cat > "$SCRIPT_PATH" <<JSON
 [{"candidates":[{"kind":"fact","content":"The capital of France is Paris, a major European city.","context":"geography","entities":["france","paris"],"keywords":["capital","france","paris"],"anticipated_queries":["what is the capital of france"],"importance":3,"confidence":0.9,"provenance":[{"record_id":"${REC_ID}","span_start":0,"span_end":10}]}]}]
 JSON
 
-# 5. ingest the 12th record → fires the count trigger → flush → extract → reconcile.
+# 5. ingest the 18th record → fires the count trigger → flush → extract → reconcile.
 send '{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"memory_ingest","arguments":{"records":['"$REC"']}}}'
 await_id 4 >/dev/null
 

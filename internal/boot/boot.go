@@ -179,7 +179,16 @@ func Open(ctx context.Context, cfg *config.Config) (*Stack, error) {
 		s.Store.Injections(), s.Log,
 	)
 	s.Retriever.WithRerankModel(cfg.Gateway.RerankModel)
-	s.Retriever.WithEventCapture(s.Store.Events()) // Phase 26: async retrieve.query trace capture
+	// Config-overridable profile windows (D-103): operators can widen laneK/scoringK/
+	// defaultLimit per profile (e.g. precise.scoring_k=30 to rerank a deeper window).
+	// An all-empty [retrieval] section reproduces the built-in presets exactly.
+	s.Retriever.WithProfiles(retrieval.BuildProfiles(
+		retrieval.ProfileOverride(cfg.Retrieval.Precise),
+		retrieval.ProfileOverride(cfg.Retrieval.Balanced),
+		retrieval.ProfileOverride(cfg.Retrieval.Broad),
+	))
+	s.Retriever.WithIncludeSuperseded(cfg.Retrieval.IncludeSuperseded) // D-105 dual-visibility (§6c)
+	s.Retriever.WithEventCapture(s.Store.Events())                     // Phase 26: async retrieve.query trace capture
 	s.Retriever.SetGrants(s.Store.Grants())
 	s.closers = append(s.closers, func(context.Context) error {
 		s.Retriever.Close() // drains injection writer goroutine
