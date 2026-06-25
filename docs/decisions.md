@@ -3195,3 +3195,31 @@ delta); it is auto-skipped on `SkipIngest` (K-sweep re-scores already consolidat
 also now wires `lcMgr.SetScopeInvalidator(retriever.Cache())` (D-118 parity with boot) so a merge
 during the pass doesn't leave a stale row served from the 60s cache. The background sweeps stay
 parked — this is the explicit equivalent, giving a more realistic baseline without timer nondeterminism.
+
+## D-123 — Reader/judge upgrades for the LongMemEval re-baseline (AMB parity)
+
+Phase 29d exit gate, informed by the vectorize-io/agent-memory-benchmark reader/judge conventions
+and the 100q miss taxonomy (temporal-reasoning 0.30, single-session-preference 0.50). Four changes,
+all in the eval path except the cap:
+
+1. **Question Date injection.** The reader never received the reference "now" the question is asked
+   at, so relative-time questions ("how many days/months since X") were unanswerable — the largest
+   contributor to the temporal-reasoning collapse. Added `Question.Date` (dataset), parsed from
+   LongMemEval `question_date` in the normalizer (YYYY-MM-DD), threaded to `BuildReaderPrompt` and
+   rendered as a `Question Date:` line when present (empty = omitted, back-compat).
+2. **Per-question-shape reader rules** in `BuildReaderPrompt`'s system prompt: counting→enumerate-
+   then-count, location→include place name, recommendation→describe the KIND (don't invent recs —
+   the single-session-preference answer shape), comparative/date-diff→scoped abstention when a side
+   is missing, entity-mismatch→say so. Adapted from AMB's LongMemEval reader.
+3. **Per-category judge leniency** in `BuildJudgePrompt` (now takes the category): temporal off-by-one,
+   knowledge-update updated-value-wins, preference recall-is-enough — mirroring the LongMemEval-standard
+   judges AMB adopts, so we grade on the same bar. 3-way verdict (correct/partial/incorrect) retained;
+   empty category = generic rubric (back-compat).
+4. **maxLimit 50→100** (`internal/retrieval/retrieval.go`) so K-sweeps can probe K up to 100; memories
+   are ~36 tokens each so the ceiling is cheap. Production resource-guard const; no new knob.
+
+Not changed: the reader context is already lean plain-text (`[N] content | When: date`), NOT JSON —
+the markdown-vs-JSON token saving is already captured (our `[N]` numbering is leaner than AMB's
+`## Memory N`). Guards: TestReaderPrompt_QuestionDateAndShapeRules, TestJudgePrompt_PerCategoryLeniency,
+TestNormalize_QuestionDate. All testable on the persisted store via a judged K=50 re-score with no
+re-learning.

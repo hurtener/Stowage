@@ -2,10 +2,31 @@ package longmemeval_test
 
 import (
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/hurtener/stowage/eval/datasets/longmemeval"
 )
+
+// TestNormalize_QuestionDate verifies the LongMemEval question_date is carried onto
+// Question.Date, normalized to YYYY-MM-DD (the reader's temporal anchor — without it
+// "how many days/months since X" is unanswerable).
+func TestNormalize_QuestionDate(t *testing.T) {
+	raw := `[{"question_id":"q1","question":"how many days since X?","question_type":"temporal-reasoning",
+	  "question_date":"2023/05/20 (Sat) 02:21","answer":"5",
+	  "haystack_dates":["2023/05/15 (Mon) 09:00"],
+	  "haystack_sessions":[[{"role":"user","content":"X happened"}]],"evidence_list":[]}]`
+	_, qs, err := longmemeval.Normalize(strings.NewReader(raw))
+	if err != nil {
+		t.Fatalf("Normalize: %v", err)
+	}
+	if len(qs) != 1 {
+		t.Fatalf("want 1 question, got %d", len(qs))
+	}
+	if qs[0].Date != "2023-05-20" {
+		t.Errorf("Question.Date = %q, want 2023-05-20 (parsed from question_date)", qs[0].Date)
+	}
+}
 
 // TestNormalize_Mini golden-tests the normalizer on the committed mini-fixture.
 // The mini-fixture contains 5 hand-built questions with no licensed data.

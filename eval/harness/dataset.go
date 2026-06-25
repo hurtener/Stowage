@@ -198,7 +198,7 @@ func RunDataset(ctx context.Context, srv *TestServer, runner *Runner, convs []da
 			return nil, fmt.Errorf("score %s: %w", q.ID, err)
 		}
 		if opts.Judge {
-			jr, jerr := JudgeQuestionWith(ctx, srv.Gateway(), opts.Reader, q.Text, q.Expected.Answer, qr.Items)
+			jr, jerr := JudgeQuestionWith(ctx, srv.Gateway(), opts.Reader, q.Category, q.Text, q.Date, q.Expected.Answer, qr.Items)
 			if jerr != nil {
 				judgeErrors++
 				consecJudgeErr++

@@ -48,8 +48,11 @@ import (
 )
 
 const (
-	// maxLimit is the hard cap on the number of items returned.
-	maxLimit = 50
+	// maxLimit is the hard cap on the number of items a single retrieve may return
+	// (a caller-controlled resource guard on HTTP/MCP). Raised 50→100 so eval K-sweeps
+	// can probe K up to 100; memories are ~36 tokens each, so a larger ceiling is cheap
+	// in context terms and the lane/scoring work is already bounded by it.
+	maxLimit = 100
 )
 
 // Request is the retrieve request payload.
