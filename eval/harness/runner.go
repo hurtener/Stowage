@@ -334,6 +334,7 @@ func (r *Runner) scoreQuestion(ctx context.Context, q QuestionFixture) (Question
 
 	return QuestionResult{
 		QuestionID: q.ID,
+		Category:   q.Category,
 		Query:      q.Text,
 		Expected:   q.Expected.Answer,
 		Hit:        hit,

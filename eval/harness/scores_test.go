@@ -73,3 +73,35 @@ func TestAnswerContextHit_Normalization(t *testing.T) {
 		})
 	}
 }
+
+// TestComputeScores_ByCategory verifies the per-category breakout (the "open up by
+// categories" view): per-category context-hit and judged quality, and that a single
+// category collapses to nil (deterministic CI shape unchanged).
+func TestComputeScores_ByCategory(t *testing.T) {
+	results := []QuestionResult{
+		{Category: "single-session-user", Hit: true, JudgeVerdict: "correct"},
+		{Category: "single-session-user", Hit: false, JudgeVerdict: "incorrect"},
+		{Category: "multi-session", Hit: true, JudgeVerdict: "partial"},
+		{Category: "multi-session", Hit: true, JudgeVerdict: "correct"},
+	}
+	s := ComputeScores(results)
+	if s.ByCategory == nil {
+		t.Fatal("expected per-category breakout for >1 category")
+	}
+	ssu := s.ByCategory["single-session-user"]
+	if ssu.Total != 2 || ssu.Hits != 1 || ssu.AnswerContextHit != 0.5 {
+		t.Errorf("single-session-user = %+v, want total=2 hits=1 hit=0.5", ssu)
+	}
+	if ssu.AnswerQuality == nil || *ssu.AnswerQuality != 0.5 { // (1 correct + 0 partial)/2 judged
+		t.Errorf("single-session-user quality = %v, want 0.5", ssu.AnswerQuality)
+	}
+	ms := s.ByCategory["multi-session"]
+	if ms.AnswerQuality == nil || *ms.AnswerQuality != 0.75 { // (1 + 0.5)/2
+		t.Errorf("multi-session quality = %v, want 0.75", ms.AnswerQuality)
+	}
+
+	// Single category → nil (CI determinism).
+	if cs := ComputeScores([]QuestionResult{{Category: "x", Hit: true}, {Category: "x"}}); cs.ByCategory != nil {
+		t.Errorf("single category must yield nil ByCategory, got %+v", cs.ByCategory)
+	}
+}

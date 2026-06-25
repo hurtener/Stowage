@@ -28,6 +28,10 @@ type Question struct {
 	Text     string
 	ConvID   string // which Conversation this belongs to
 	Category string
+	// Date is the reference "now" the question is asked at (YYYY-MM-DD), when the
+	// dataset supplies it (LongMemEval question_date). The reader needs it to anchor
+	// relative-time questions ("how many days/months since X"); empty = not supplied.
+	Date     string
 	Expected Expected
 }
 

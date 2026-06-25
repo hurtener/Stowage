@@ -101,3 +101,62 @@ func TestRunDataset_Wiring(t *testing.T) {
 		t.Error("expected at least one committed memory from the scripted extraction")
 	}
 }
+
+// TestRunDataset_ConsolidatePass guards the production-faithful consolidation path
+// (RunConsolidation + re-settle before scoring). With a single memory the dedupe sweep is a
+// no-op, so the run must still complete cleanly and score the question — proving the harness
+// wiring (manager + cache invalidator + the dataset.go Consolidate barrier) drains without
+// deadlock and does not corrupt the scored store.
+func TestRunDataset_ConsolidatePass(t *testing.T) {
+	srv := NewTestServer(t, "eval-dataset-consolidate")
+	runner := NewRunner(srv, RunConfig{})
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+
+	convs := []datasets.Conversation{{
+		ID: "cons-conv-1",
+		Sessions: []datasets.Session{{
+			ID:    "cons-sess-1",
+			Turns: []datasets.Turn{{Role: "user", Content: "My code editor of choice is Neovim and I use it daily."}},
+		}},
+	}}
+	questions := []datasets.Question{{
+		ID: "cons-q-1", Text: "what code editor do I use", ConvID: "cons-conv-1",
+		Expected: datasets.Expected{Answer: "Neovim"},
+	}}
+	beforeFlush := func(_ string, recordIDs []string) error {
+		if len(recordIDs) == 0 {
+			return fmt.Errorf("no record IDs to cite")
+		}
+		entry, err := json.Marshal(map[string]any{
+			"candidates": []map[string]any{{
+				"kind": "preference", "content": "The user's code editor of choice is Neovim.",
+				"entities": []string{"Neovim"}, "keywords": []string{"Neovim", "code editor"},
+				"anticipated_queries": []string{"what code editor do I use"},
+				"importance":          3, "confidence": 0.95,
+				"provenance": []map[string]any{{"record_id": recordIDs[len(recordIDs)-1], "span_start": 0, "span_end": 30}},
+			}},
+		})
+		if err != nil {
+			return err
+		}
+		srv.PushExtractionScript(entry)
+		return nil
+	}
+
+	res, err := RunDataset(ctx, srv, runner, convs, questions, RunDatasetOpts{
+		Limit:       1,
+		Settle:      90 * time.Second,
+		BeforeFlush: beforeFlush,
+		Consolidate: true, // the path under test
+	})
+	if err != nil {
+		t.Fatalf("RunDataset with consolidation: %v", err)
+	}
+	if len(res.Results) != 1 || !res.Results[0].Hit {
+		t.Errorf("consolidation run must still score the question; got %+v", res.Results)
+	}
+	if srv.ActiveMemoryCount(ctx) != 1 {
+		t.Errorf("single memory must survive the consolidation pass (dedupe no-op), got %d active", srv.ActiveMemoryCount(ctx))
+	}
+}

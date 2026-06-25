@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"testing"
 	"time"
@@ -131,6 +132,10 @@ func TestFullMode(t *testing.T) {
 		SeedTopics:    !skipIngest,      // broad LongMemEval magnets (topic-gated extraction) — already seeded on the first learn
 		Reader:        reader,
 		SkipIngest:    skipIngest,
+		// Production-faithful by default: run the consolidation sweeps (29d near-dup merge +
+		// supersede) once after learning, before scoring. Opt out with STOWAGE_EVAL_NO_CONSOLIDATE
+		// to measure the consolidation delta. Auto-skipped on SkipIngest (already consolidated).
+		Consolidate: os.Getenv("STOWAGE_EVAL_NO_CONSOLIDATE") == "",
 	})
 	if err != nil {
 		t.Fatalf("run dataset %s: %v", datasetName, err)
@@ -159,4 +164,22 @@ func TestFullMode(t *testing.T) {
 	}
 	t.Logf("FULL-MODE dataset=%s n=%d answer_context_hit=%.4f (%d/%d) answer_quality=%s p50=%.0fms p95=%.0fms results=%s",
 		datasetName, len(res.Results), scores.AnswerContextHit, scores.HitCount, scores.TotalQuestions, quality, scores.P50LatencyMs, scores.P95LatencyMs, out)
+
+	// Per-category breakout (the "open up by categories" view). Sorted for stable output.
+	if len(scores.ByCategory) > 0 {
+		cats := make([]string, 0, len(scores.ByCategory))
+		for c := range scores.ByCategory {
+			cats = append(cats, c)
+		}
+		sort.Strings(cats)
+		for _, c := range cats {
+			cs := scores.ByCategory[c]
+			q := "n/a"
+			if cs.AnswerQuality != nil {
+				q = fmt.Sprintf("%.4f", *cs.AnswerQuality)
+			}
+			t.Logf("  category=%-22s n=%-3d context_hit=%.4f (%d/%d) quality=%s (judged %d)",
+				c, cs.Total, cs.AnswerContextHit, cs.Hits, cs.Total, q, cs.Judged)
+		}
+	}
 }

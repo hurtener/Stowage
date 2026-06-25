@@ -96,6 +96,13 @@ Fix the eval harness to be **production-faithful** (un-park the consolidation/de
 real consolidation pass), then re-baseline on **100 questions, broken out by category**, target
 **≥75% at the current compression rate**.
 
+**Harness fix landed (D-122, branch `feat/eval-harness-consolidation`):** `RunDatasetOpts.Consolidate`
+runs one deterministic `RunConsolidation` pass (lifecycle `RunForce`) after the final settle and
+re-settles before scoring; `TestFullMode` enables it by default (opt out via
+`STOWAGE_EVAL_NO_CONSOLIDATE`), auto-skipped on `SkipIngest`. The harness also wires the lifecycle
+cache invalidator (D-118 parity). Guard: `TestRunDataset_ConsolidatePass`. **Still pending:** the
+paid 100-question categorized re-baseline run (operator go-word + `STOWAGE_EVAL_*` env).
+
 ## Decisions filed
 
 - D-110: decay grace computed in milliseconds (unit-bug fix). **Filed below.**

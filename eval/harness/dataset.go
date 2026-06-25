@@ -57,6 +57,13 @@ type RunDatasetOpts struct {
 	// different retrieve limits (the K knob) without re-paying for extraction. Pair
 	// with the brute vindex so the vector lane is faithful on reopen.
 	SkipIngest bool
+	// Consolidate, when true, runs ONE deterministic lifecycle consolidation pass
+	// (RunConsolidation: decay/dedupe/rollup/reenqueue/confirm) after the final settle
+	// and before scoring, then re-settles. This makes the baseline production-faithful —
+	// the near-dup merge + supersede machinery (29d wave) actually runs, instead of
+	// scoring the raw post-ingest store. The background sweeps stay parked for CI
+	// determinism; this is the explicit, synchronous equivalent. Full re-baseline sets it.
+	Consolidate bool
 }
 
 // DatasetResult is the outcome of a RunDataset call.
@@ -162,6 +169,23 @@ func RunDataset(ctx context.Context, srv *TestServer, runner *Runner, convs []da
 			}
 		}
 
+		// Production-faithful consolidation: run the lifecycle sweeps once (the 29d
+		// near-dup merge + supersede), then re-settle so any re-enqueued work drains and
+		// the embedder reindexes merged rows before scoring.
+		if opts.Consolidate {
+			srv.RunConsolidation(ctx)
+			if err := srv.WaitForQuiescence(ctx, settle); err != nil {
+				return nil, fmt.Errorf("pipeline did not settle after consolidation — run would be invalid: %w", err)
+			}
+			if opts.EmbedSettle > 0 {
+				select {
+				case <-ctx.Done():
+					return nil, ctx.Err()
+				case <-time.After(opts.EmbedSettle):
+				}
+			}
+		}
+
 	} // end !opts.SkipIngest
 
 	results := make([]QuestionResult, 0, len(questions))
@@ -174,7 +198,7 @@ func RunDataset(ctx context.Context, srv *TestServer, runner *Runner, convs []da
 			return nil, fmt.Errorf("score %s: %w", q.ID, err)
 		}
 		if opts.Judge {
-			jr, jerr := JudgeQuestionWith(ctx, srv.Gateway(), opts.Reader, q.Text, q.Expected.Answer, qr.Items)
+			jr, jerr := JudgeQuestionWith(ctx, srv.Gateway(), opts.Reader, q.Category, q.Text, q.Date, q.Expected.Answer, qr.Items)
 			if jerr != nil {
 				judgeErrors++
 				consecJudgeErr++

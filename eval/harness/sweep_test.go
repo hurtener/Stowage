@@ -84,7 +84,7 @@ func TestReaderJudgeSweep(t *testing.T) {
 			abstain := 0
 			errs := 0
 			for i, q := range questions {
-				jr, jerr := JudgeQuestionWith(ctx, gw, opts, q.Query, q.Expected, q.Items)
+				jr, jerr := JudgeQuestionWith(ctx, gw, opts, q.Category, q.Query, "", q.Expected, q.Items)
 				if jerr != nil {
 					errs++
 					if errs >= 8 {
@@ -112,6 +112,7 @@ func TestReaderJudgeSweep(t *testing.T) {
 
 type sweepQ struct {
 	Query    string
+	Category string
 	Expected string
 	Items    []string
 }
@@ -135,6 +136,7 @@ func loadSweepQuestions(path string) ([]sweepQ, error) {
 		var row struct {
 			QuestionID string   `json:"question_id"`
 			Query      string   `json:"query"`
+			Category   string   `json:"category"`
 			Expected   string   `json:"expected"`
 			Items      []string `json:"items"`
 		}
@@ -144,7 +146,7 @@ func loadSweepQuestions(path string) ([]sweepQ, error) {
 		if row.QuestionID == "" {
 			continue
 		}
-		out = append(out, sweepQ{Query: row.Query, Expected: row.Expected, Items: row.Items})
+		out = append(out, sweepQ{Query: row.Query, Category: row.Category, Expected: row.Expected, Items: row.Items})
 	}
 	return out, sc.Err()
 }

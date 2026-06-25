@@ -41,7 +41,7 @@ func (f *fakeGateway) Rerank(context.Context, gateway.RerankRequest) (gateway.Re
 
 // TestReaderPrompt_Golden pins the reader prompt assembly (deterministic).
 func TestReaderPrompt_Golden(t *testing.T) {
-	sys, user := BuildReaderPrompt("How many mugs did the user buy?",
+	sys, user := BuildReaderPrompt("How many mugs did the user buy?", "",
 		[]string{"User spent $60 on coffee mugs.", "  The mugs cost $12 each.  "})
 	if !strings.Contains(sys, "ONLY the retrieved context") {
 		t.Errorf("reader system prompt missing context-only instruction: %q", sys)
@@ -55,9 +55,48 @@ func TestReaderPrompt_Golden(t *testing.T) {
 	}
 }
 
+// TestReaderPrompt_QuestionDateAndShapeRules pins the AMB-parity reader upgrades: the
+// Question Date is rendered when supplied (the temporal anchor) and the per-question-shape
+// guidance (counting/preference/comparative/date-diff) is present in the system prompt.
+func TestReaderPrompt_QuestionDateAndShapeRules(t *testing.T) {
+	sys, user := BuildReaderPrompt("How many days since my last museum visit?", "2023-06-01",
+		[]string{"Visited the Science Museum. | When: 2023-05-15"})
+	if !strings.Contains(user, "Question Date: 2023-06-01") {
+		t.Errorf("reader user prompt missing Question Date anchor: %q", user)
+	}
+	for _, want := range []string{"Counting", "Recommendation", "Comparative", "Date-difference"} {
+		if !strings.Contains(sys, want) {
+			t.Errorf("reader system prompt missing %q shape rule", want)
+		}
+	}
+	// Empty date → no Question Date line (back-compat for callers without a date).
+	if _, u2 := BuildReaderPrompt("Q?", "", nil); strings.Contains(u2, "Question Date:") {
+		t.Errorf("empty date must not render a Question Date line: %q", u2)
+	}
+}
+
+// TestJudgePrompt_PerCategoryLeniency pins the per-category rubric (LongMemEval-standard):
+// temporal off-by-one, knowledge-update updated-wins, preference recall-is-enough; and that
+// an empty/other category yields only the generic rubric.
+func TestJudgePrompt_PerCategoryLeniency(t *testing.T) {
+	cases := map[string]string{
+		"temporal-reasoning":        "off-by-one",
+		"knowledge-update":          "updated/current value",
+		"single-session-preference": "need not state every point",
+	}
+	for cat, want := range cases {
+		if sys, _ := BuildJudgePrompt(cat, "q", "g", "a"); !strings.Contains(sys, want) {
+			t.Errorf("judge prompt for %q missing leniency %q: %q", cat, want, sys)
+		}
+	}
+	if sys, _ := BuildJudgePrompt("multi-session", "q", "g", "a"); strings.Contains(sys, "off-by-one") {
+		t.Errorf("non-listed category must not get temporal leniency: %q", sys)
+	}
+}
+
 // TestReaderPrompt_NoContext renders an explicit no-memories block.
 func TestReaderPrompt_NoContext(t *testing.T) {
-	_, user := BuildReaderPrompt("Q?", nil)
+	_, user := BuildReaderPrompt("Q?", "", nil)
 	if !strings.Contains(user, "(no current memories retrieved)") {
 		t.Errorf("empty-context reader prompt should note no memories: %q", user)
 	}
@@ -66,7 +105,7 @@ func TestReaderPrompt_NoContext(t *testing.T) {
 // TestReaderPrompt_SupersededSection puts [OUTDATED]-marked items in a separate
 // SUPERSEDED section (history only), not inline among current memories (D-105).
 func TestReaderPrompt_SupersededSection(t *testing.T) {
-	_, user := BuildReaderPrompt("How long is the commute?",
+	_, user := BuildReaderPrompt("How long is the commute?", "",
 		[]string{"Commute is 45 minutes each way.", "[OUTDATED — the user later changed this] Commute is 30 minutes."})
 	if !strings.Contains(user, "CURRENT memories") || !strings.Contains(user, "SUPERSEDED memories") {
 		t.Errorf("prompt missing current/superseded sections: %q", user)
@@ -86,7 +125,7 @@ func TestReaderPrompt_SupersededSection(t *testing.T) {
 
 // TestJudgePrompt_Golden pins the judge prompt assembly (deterministic).
 func TestJudgePrompt_Golden(t *testing.T) {
-	sys, user := BuildJudgePrompt("How long did it take?", "over a year", "more than a year")
+	sys, user := BuildJudgePrompt("", "How long did it take?", "over a year", "more than a year")
 	if !strings.Contains(sys, "SEMANTIC equivalence") {
 		t.Errorf("judge system prompt missing semantic-equivalence instruction: %q", sys)
 	}

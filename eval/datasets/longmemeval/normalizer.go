@@ -34,6 +34,7 @@ type rawItem struct {
 	Question         string      `json:"question"`
 	Answer           any         `json:"answer"` // string OR number in the real dataset
 	QuestionType     string      `json:"question_type"`
+	QuestionDate     string      `json:"question_date"` // the reference "now" the question is asked at
 	HaystackDates    []string    `json:"haystack_dates"`
 	HaystackSessions [][]rawTurn `json:"haystack_sessions"`
 	EvidenceList     []string    `json:"evidence_list"`
@@ -95,11 +96,23 @@ func normalize(items []rawItem) ([]datasets.Conversation, []datasets.Question, e
 		}
 		convs = append(convs, conv)
 
+		// Normalize the question date to YYYY-MM-DD (the reader's daily granularity, matching
+		// the "| When:" memory dates). The dataset uses "2023/05/20 (Sat) 02:21"; fall back to
+		// the raw trimmed string if it doesn't parse, or empty when absent.
+		qDate := ""
+		if item.QuestionDate != "" {
+			if t := parseHaystackDate(item.QuestionDate); !t.IsZero() {
+				qDate = t.UTC().Format("2006-01-02")
+			} else {
+				qDate = strings.TrimSpace(item.QuestionDate)
+			}
+		}
 		q := datasets.Question{
 			ID:       item.QuestionID,
 			Text:     item.Question,
 			ConvID:   convID,
 			Category: item.QuestionType,
+			Date:     qDate,
 			Expected: datasets.Expected{
 				Answer:      stringifyAnswer(item.Answer),
 				EvidenceIDs: item.EvidenceList,
