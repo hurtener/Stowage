@@ -16,6 +16,19 @@ import (
 	"github.com/hurtener/stowage/internal/store"
 )
 
+// addScopeParams sets the project_id/user_id read sub-scope query params (P3, D-125)
+// when non-empty, so a GET/path-based endpoint scopes to a sub-tenant identity. The
+// server handlers read these via scopeFromRequest. Body-based endpoints carry the same
+// dimensions as JSON fields instead.
+func addScopeParams(v url.Values, projectID, userID string) {
+	if projectID != "" {
+		v.Set("project_id", projectID)
+	}
+	if userID != "" {
+		v.Set("user_id", userID)
+	}
+}
+
 // httpClient implements Client via the Stowage HTTP API.
 // It is safe for concurrent use after construction.
 type httpClient struct {
@@ -29,6 +42,8 @@ type Option func(*options)
 
 type options struct {
 	tenantID   string        // embedded: default tenant scope
+	projectID  string        // embedded: default project sub-scope (P3, D-125)
+	userID     string        // embedded: default user sub-scope (P3, D-125)
 	httpClient *http.Client  // HTTP: custom transport
 	timeout    time.Duration // HTTP: per-request timeout (default 30s)
 }
@@ -53,6 +68,21 @@ func WithTimeout(d time.Duration) Option {
 // operations run in this tenant's scope. Required for NewEmbedded.
 func WithTenantID(id string) Option {
 	return func(o *options) { o.tenantID = id }
+}
+
+// WithProject sets the default project sub-scope for the embedded client (P3,
+// D-125). All operations run under this project unless a per-call request field
+// overrides it. Optional — empty means tenant-wide (no project predicate).
+func WithProject(id string) Option {
+	return func(o *options) { o.projectID = id }
+}
+
+// WithUser sets the default user sub-scope for the embedded client (P3, D-125).
+// All operations run under this user unless a per-call request field overrides
+// it. Optional — empty means tenant-wide (no user predicate). Set this to bind a
+// single-user embedded client to one user's isolated memory partition.
+func WithUser(id string) Option {
+	return func(o *options) { o.userID = id }
 }
 
 // NewHTTP returns a Client that communicates with a Stowage HTTP server at
@@ -223,9 +253,14 @@ func (c *httpClient) Topics(ctx context.Context) (TopicsResponse, error) {
 // Playbook implements Client via GET /v1/playbook (D-072). SessionID, when set,
 // is passed as the ?session_id= query param for session-affinity.
 func (c *httpClient) Playbook(ctx context.Context, req PlaybookRequest) (PlaybookResponse, error) {
-	path := "/v1/playbook"
+	v := url.Values{}
 	if req.SessionID != "" {
-		path += "?session_id=" + url.QueryEscape(req.SessionID)
+		v.Set("session_id", req.SessionID)
+	}
+	addScopeParams(v, req.ProjectID, req.UserID)
+	path := "/v1/playbook"
+	if enc := v.Encode(); enc != "" {
+		path += "?" + enc
 	}
 	var resp PlaybookResponse
 	if err := c.do(ctx, http.MethodGet, path, nil, &resp); err != nil {
@@ -264,6 +299,7 @@ func (c *httpClient) Episodes(ctx context.Context, req EpisodesRequest) (Episode
 	if req.ArcOf != "" {
 		v.Set("arc_of", req.ArcOf)
 	}
+	addScopeParams(v, req.ProjectID, req.UserID)
 	path := "/v1/episodes"
 	if enc := v.Encode(); enc != "" {
 		path += "?" + enc
@@ -288,6 +324,7 @@ func (c *httpClient) Causal(ctx context.Context, req CausalRequest) (CausalRespo
 	if req.Depth > 0 {
 		v.Set("depth", strconv.Itoa(req.Depth))
 	}
+	addScopeParams(v, req.ProjectID, req.UserID)
 	var resp CausalResponse
 	if err := c.do(ctx, http.MethodGet, "/v1/causal?"+v.Encode(), nil, &resp); err != nil {
 		return CausalResponse{}, err
@@ -318,6 +355,7 @@ func (c *httpClient) Review(ctx context.Context, req ReviewRequest) (ReviewRespo
 		if req.Cursor != "" {
 			v.Set("cursor", req.Cursor)
 		}
+		addScopeParams(v, req.ProjectID, req.UserID)
 		path := "/v1/review"
 		if enc := v.Encode(); enc != "" {
 			path += "?" + enc
@@ -332,8 +370,10 @@ func (c *httpClient) Review(ctx context.Context, req ReviewRequest) (ReviewRespo
 			return ReviewResponse{}, errors.New("sdk: review: memory_id required for approve/reject")
 		}
 		body := struct {
-			Action string `json:"action"`
-		}{Action: req.Action}
+			Action    string `json:"action"`
+			ProjectID string `json:"project_id,omitempty"`
+			UserID    string `json:"user_id,omitempty"`
+		}{Action: req.Action, ProjectID: req.ProjectID, UserID: req.UserID}
 		var resp ReviewResponse
 		if err := c.do(ctx, http.MethodPost, "/v1/review/"+url.PathEscape(req.MemoryID), body, &resp); err != nil {
 			return ReviewResponse{}, err
@@ -349,8 +389,14 @@ func (c *httpClient) Trace(ctx context.Context, req TraceRequest) (TraceResponse
 	if req.ResponseID == "" {
 		return TraceResponse{}, errors.New("sdk: trace: response_id must not be empty")
 	}
+	path := "/v1/traces/" + url.PathEscape(req.ResponseID)
+	v := url.Values{}
+	addScopeParams(v, req.ProjectID, req.UserID)
+	if enc := v.Encode(); enc != "" {
+		path += "?" + enc
+	}
 	var resp TraceResponse
-	if err := c.do(ctx, http.MethodGet, "/v1/traces/"+url.PathEscape(req.ResponseID), nil, &resp); err != nil {
+	if err := c.do(ctx, http.MethodGet, path, nil, &resp); err != nil {
 		return TraceResponse{}, err
 	}
 	return resp, nil
@@ -417,8 +463,14 @@ func (c *httpClient) Rollback(ctx context.Context, req RollbackRequest) (Memory,
 	if req.MemoryID == "" {
 		return Memory{}, errors.New("sdk: rollback: memory_id must not be empty")
 	}
+	path := "/v1/memories/" + url.PathEscape(req.MemoryID) + "/rollback"
+	v := url.Values{}
+	addScopeParams(v, req.ProjectID, req.UserID)
+	if enc := v.Encode(); enc != "" {
+		path += "?" + enc
+	}
 	var resp Memory
-	if err := c.do(ctx, http.MethodPost, "/v1/memories/"+url.PathEscape(req.MemoryID)+"/rollback", nil, &resp); err != nil {
+	if err := c.do(ctx, http.MethodPost, path, nil, &resp); err != nil {
 		return Memory{}, err
 	}
 	return resp, nil
@@ -485,6 +537,8 @@ type branchHTTPRequest struct {
 	SessionID      string `json:"session_id,omitempty"`
 	BranchID       string `json:"branch_id,omitempty"`
 	ParentBranchID string `json:"parent_branch_id,omitempty"`
+	ProjectID      string `json:"project_id,omitempty"`
+	UserID         string `json:"user_id,omitempty"`
 }
 
 // ForkBranch implements Client via POST /v1/branches (D-029/D-071).
@@ -492,6 +546,7 @@ func (c *httpClient) ForkBranch(ctx context.Context, req ForkBranchRequest) (For
 	var resp ForkBranchResponse
 	if err := c.do(ctx, http.MethodPost, "/v1/branches", branchHTTPRequest{
 		Action: "fork", SessionID: req.SessionID, ParentBranchID: req.ParentBranchID,
+		ProjectID: req.ProjectID, UserID: req.UserID,
 	}, &resp); err != nil {
 		return ForkBranchResponse{}, err
 	}

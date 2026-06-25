@@ -4,7 +4,6 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/hurtener/stowage/internal/identity"
 	"github.com/hurtener/stowage/internal/traces"
 )
 
@@ -14,8 +13,7 @@ import (
 // response_id yields an empty trace (200, not 404) — `response_id` is a filter, not a
 // REST resource (parity with the other reads). Scope from the auth key (P3).
 func (s *Server) handleTrace(w http.ResponseWriter, r *http.Request) {
-	authKey := keyFromContext(r.Context())
-	scope := identity.Scope{Tenant: authKey.TenantID}
+	scope := scopeFromRequest(r)
 	// The mux pattern {response_id} guarantees a non-empty segment; an empty/unknown
 	// id is handled by Reconstruct returning an empty trace (200, not an error).
 	responseID := r.PathValue("response_id")

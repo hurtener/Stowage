@@ -203,7 +203,13 @@ func (s *Stage) processItem(ctx context.Context, item Item) error {
 	if err != nil {
 		return fmt.Errorf("lookup record %q: %w", item.RecordID, err)
 	}
-	scope := identity.Scope{Tenant: rec.TenantID}
+	// Carry the record's project/user into the flush scope so the DERIVED MEMORY is
+	// written user/project-scoped (Phase 30 B1). Without this the memory persists with
+	// NULL project/user — the D-125 read filter then matches nothing and tenant-wide
+	// reads leak across users. Session is intentionally NOT propagated to the memory
+	// scope: a memory is a cross-session abstraction and reconcile dedupe keys on
+	// (tenant,project,user) — session would fragment it.
+	scope := identity.Scope{Tenant: rec.TenantID, Project: rec.ProjectID, User: rec.UserID}
 
 	// Resolve buffer key: explicit hint, then derive from (session_id, branch_id).
 	// Prefer values carried on the Item (forwarded from the ingest payload) over
@@ -314,10 +320,13 @@ func (s *Stage) tickScan(ctx context.Context) {
 	}
 	seen := make(map[string]flushTarget)
 	for _, item := range items {
-		k := item.TenantID + "|" + item.BufferKey
+		// Key by the full sub-scope, not just tenant: a buffer_key could collide across
+		// users (empty session ⇒ key is just "/branch"), and merging two users' items
+		// into one flush target would stamp one user's memories with the other's scope.
+		k := item.TenantID + "|" + item.ProjectID + "|" + item.UserID + "|" + item.BufferKey
 		if _, ok := seen[k]; !ok {
 			seen[k] = flushTarget{
-				scope:     identity.Scope{Tenant: item.TenantID},
+				scope:     identity.Scope{Tenant: item.TenantID, Project: item.ProjectID, User: item.UserID},
 				bufferKey: item.BufferKey,
 				branchID:  item.BranchID,
 			}

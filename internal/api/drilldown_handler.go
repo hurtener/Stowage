@@ -14,6 +14,10 @@ import (
 type drilldownRequest struct {
 	MemoryID string `json:"memory_id"` // resolve by memory ID
 	Citation string `json:"citation"`  // resolve by citation handle (injection ULID, D-051)
+	// ProjectID/UserID scope the lookup to a sub-tenant identity (P3, D-125); empty =
+	// tenant-wide. The store hard-isolates the memory/injection/record reads to this scope.
+	ProjectID string `json:"project_id"`
+	UserID    string `json:"user_id"`
 }
 
 // drilldownSpan is one provenance span in the response.
@@ -62,7 +66,7 @@ func (s *Server) handleDrilldown(w http.ResponseWriter, r *http.Request) {
 	}
 
 	authKey := keyFromContext(r.Context())
-	scope := identity.Scope{Tenant: authKey.TenantID}
+	scope := identity.Scope{Tenant: authKey.TenantID, Project: req.ProjectID, User: req.UserID}
 
 	memoryID := req.MemoryID
 

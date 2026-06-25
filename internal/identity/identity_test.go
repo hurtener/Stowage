@@ -30,7 +30,8 @@ func TestScopeString(t *testing.T) {
 	}
 }
 
-// TestValidateMatrix covers the contiguity rules (AC-5).
+// TestValidateMatrix covers the scope rules: only Tenant is required; project/user/
+// session are INDEPENDENT optional dimensions (Phase 30 B4 — no contiguity).
 var validateTests = []struct {
 	scope   identity.Scope
 	wantErr bool
@@ -41,9 +42,10 @@ var validateTests = []struct {
 	{identity.Scope{Tenant: "acme", Project: "p1", User: "u1"}, false, "tenant+project+user — valid"},
 	{identity.Scope{Tenant: "acme", Project: "p1", User: "u1", Session: "s1"}, false, "all fields — valid"},
 	{identity.Scope{}, true, "empty tenant — invalid"},
-	{identity.Scope{Tenant: "acme", Session: "s1"}, true, "session without user — invalid"},
-	{identity.Scope{Tenant: "acme", User: "u1"}, true, "user without project — invalid"},
-	{identity.Scope{Tenant: "acme", Session: "s1", User: "u1"}, true, "session+user but no project — invalid"},
+	// Independent dimensions: each of these is now VALID (D-125 multi-user-no-projects, etc.).
+	{identity.Scope{Tenant: "acme", User: "u1"}, false, "tenant+user, no project — valid (D-125)"},
+	{identity.Scope{Tenant: "acme", Session: "s1"}, false, "tenant+session, no user — valid"},
+	{identity.Scope{Tenant: "acme", Session: "s1", User: "u1"}, false, "tenant+user+session, no project — valid"},
 }
 
 func TestValidate(t *testing.T) {

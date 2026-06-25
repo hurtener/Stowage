@@ -54,6 +54,35 @@ type cacheEntry struct {
 	expiresAt  time.Time
 }
 
+// scopeCacheKey is the NON-LOSSY scope identity used for cache keying and the per-scope
+// generation map. It encodes all four dimensions with a NUL delimiter — NOT scope.String(),
+// which omits User when Project is empty and would collapse {Tenant,User:alice} and
+// {Tenant,User:bob} to the same key, serving one user another's cached items (Phase 30 B2).
+func scopeCacheKey(s identity.Scope) string {
+	return s.Tenant + "\x00" + s.Project + "\x00" + s.User + "\x00" + s.Session
+}
+
+// scopeGen returns the effective generation for a read scope: the SUM of the generation
+// counters of the scope AND its ancestors (tenant → +project → +user → +session). This makes
+// invalidation hierarchical — a tenant-wide bump (the lifecycle sweeps invalidate at {Tenant})
+// still busts a per-user cached read ({Tenant,User}), while a per-user invalidate (a reconcile
+// commit at the memory's scope) busts only that user. Without this, B2's per-user cache key would
+// leave per-user reads served stale after a tenant-scoped sweep (Phase 30 B2 follow-on). Caller
+// holds c.mu.
+func (c *ResultCache) scopeGen(s identity.Scope) uint64 {
+	sum := c.gens[scopeCacheKey(identity.Scope{Tenant: s.Tenant})]
+	if s.Project != "" {
+		sum += c.gens[scopeCacheKey(identity.Scope{Tenant: s.Tenant, Project: s.Project})]
+	}
+	if s.User != "" {
+		sum += c.gens[scopeCacheKey(identity.Scope{Tenant: s.Tenant, Project: s.Project, User: s.User})]
+	}
+	if s.Session != "" {
+		sum += c.gens[scopeCacheKey(s)]
+	}
+	return sum
+}
+
 // cacheKey returns the canonical string key for a retrieve call.
 // sessionID is included because it affects the utility score (write-echo cooldown).
 func cacheKey(scope identity.Scope, querySig, profile, sessionID string, windowFrom, windowTo int64, kinds []string, includeLanes bool, limit int) string {
@@ -66,7 +95,7 @@ func cacheKey(scope identity.Scope, querySig, profile, sessionID string, windowF
 	ks := append([]string(nil), kinds...)
 	sort.Strings(ks)
 	return fmt.Sprintf("%s\x00%s\x00%s\x00%s\x00%d\x00%d\x00%s\x00%t\x00%d",
-		scope.String(), querySig, profile, sessionID, windowFrom, windowTo, strings.Join(ks, ","), includeLanes, limit)
+		scopeCacheKey(scope), querySig, profile, sessionID, windowFrom, windowTo, strings.Join(ks, ","), includeLanes, limit)
 }
 
 // NewResultCache creates a ResultCache with the given capacity.
@@ -102,7 +131,6 @@ func (c *ResultCache) Get(scope identity.Scope, querySig, profile, sessionID str
 		return nil, Support{}, false
 	}
 	key := cacheKey(scope, querySig, profile, sessionID, windowFrom, windowTo, kinds, includeLanes, limit)
-	scopeStr := scope.String()
 	now := c.nowFunc()
 
 	c.mu.Lock()
@@ -124,8 +152,9 @@ func (c *ResultCache) Get(scope identity.Scope, querySig, profile, sessionID str
 	}
 
 	// Generation check: scope must not have been written to since this entry
-	// was stored.
-	if e.generation != c.gens[scopeStr] {
+	// was stored. scopeGen sums the scope's own gen and its ancestors' so a
+	// tenant-wide sweep (InvalidateScope at {Tenant}) still busts per-user reads.
+	if e.generation != c.scopeGen(scope) {
 		c.lru.Remove(el)
 		delete(c.entries, key)
 		c.misses.Add(1)
@@ -144,13 +173,15 @@ func (c *ResultCache) Put(scope identity.Scope, querySig, profile, sessionID str
 		return
 	}
 	key := cacheKey(scope, querySig, profile, sessionID, windowFrom, windowTo, kinds, includeLanes, limit)
-	scopeStr := scope.String()
+	scopeStr := scopeCacheKey(scope)
 	now := c.nowFunc()
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	gen := c.gens[scopeStr]
+	// Stamp the entry with the effective (ancestor-summed) generation so a later
+	// tenant-wide InvalidateScope busts it via the same scopeGen sum on read.
+	gen := c.scopeGen(scope)
 
 	if el, ok := c.entries[key]; ok {
 		c.lru.MoveToFront(el)
@@ -188,7 +219,7 @@ func (c *ResultCache) Put(scope identity.Scope, querySig, profile, sessionID str
 // InvalidateScope bumps the per-scope generation counter, logically
 // invalidating all cached entries for the given scope without a scan. O(1).
 func (c *ResultCache) InvalidateScope(scope identity.Scope) {
-	scopeStr := scope.String()
+	scopeStr := scopeCacheKey(scope)
 	c.mu.Lock()
 	c.gens[scopeStr]++
 	c.mu.Unlock()

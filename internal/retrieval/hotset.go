@@ -54,7 +54,9 @@ func NewHotSet(cap int) *HotSet {
 // Record registers that memoryID was injected into a response for the given
 // scope. Thread-safe.
 func (h *HotSet) Record(scope identity.Scope, memoryID string) {
-	scopeStr := scope.String()
+	// Non-lossy key (not scope.String(), which drops User when Project is empty) so
+	// per-user injection sets don't conflate across users within a tenant (Phase 30 B2).
+	scopeStr := scopeCacheKey(scope)
 	h.injections.Add(1)
 
 	h.mu.Lock()
@@ -97,7 +99,7 @@ func (h *HotSet) TopN(scope identity.Scope, n int) []string {
 	if n <= 0 {
 		return nil
 	}
-	scopeStr := scope.String()
+	scopeStr := scopeCacheKey(scope)
 
 	h.mu.Lock()
 	defer h.mu.Unlock()

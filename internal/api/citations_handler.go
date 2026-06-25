@@ -11,6 +11,10 @@ import (
 // resolveRequest is the wire format for POST /v1/citations/resolve.
 type resolveRequest struct {
 	Citations []string `json:"citations"`
+	// ProjectID/UserID scope the injection/memory reads to a sub-tenant identity (P3,
+	// D-125); empty = tenant-wide. A citation outside the scope resolves to found:false.
+	ProjectID string `json:"project_id"`
+	UserID    string `json:"user_id"`
 }
 
 // resolveProvenanceRef is a single provenance span reference for a memory.
@@ -72,7 +76,7 @@ func (s *Server) handleCitationsResolve(w http.ResponseWriter, r *http.Request) 
 	}
 
 	authKey := keyFromContext(r.Context())
-	scope := identity.Scope{Tenant: authKey.TenantID}
+	scope := identity.Scope{Tenant: authKey.TenantID, Project: req.ProjectID, User: req.UserID}
 
 	// Resolve each citation to its injection, accumulating memory IDs.
 	type resolvedInj struct {

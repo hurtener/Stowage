@@ -47,12 +47,9 @@ func (m *memoryStore) Insert(ctx context.Context, scope identity.Scope, mem stor
 			mem.UpdatedAt = now
 		}
 		// Scope fields take precedence; fall back to the memory struct's own fields
-		// so that callers that pre-populate mem.SessionID (e.g. test helpers, imports)
-		// have their values persisted when no session is present in the scope.
-		sessionVal := scope.Session
-		if sessionVal == "" {
-			sessionVal = mem.SessionID
-		}
+		// so that callers that pre-populate mem.ProjectID/UserID/SessionID (test
+		// helpers, imports) have their values persisted when that dimension is absent
+		// from the scope. Scope-set dimensions always win (a write can't escape scope).
 		_, err := tx.Exec(`
 			INSERT INTO memories
 				(id, tenant_id, project_id, user_id, session_id, kind, content, context, status,
@@ -62,7 +59,10 @@ func (m *memoryStore) Insert(ctx context.Context, scope identity.Scope, mem stor
 				 episode_id, supersedes_id, superseded_by_id, privacy_zone,
 				 created_at, updated_at, content_hash)
 			VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-			mem.ID, scope.Tenant, nullStr(scope.Project), nullStr(scope.User), nullStr(sessionVal),
+			mem.ID, scope.Tenant,
+			nullStr(scopeOrRecord(scope.Project, mem.ProjectID)),
+			nullStr(scopeOrRecord(scope.User, mem.UserID)),
+			nullStr(scopeOrRecord(scope.Session, mem.SessionID)),
 			mem.Kind, mem.Content, mem.Context, mem.Status,
 			mem.Importance, mem.Confidence, mem.TrustSource,
 			mem.MatchCount, mem.InjectCount, mem.UseCount, mem.SaveCount, mem.FailCount, mem.NoiseCount,
@@ -813,6 +813,11 @@ func insertMemorySQLite(tx *sql.Tx, scope identity.Scope, mem store.Memory, now 
 	if mem.UpdatedAt == 0 {
 		mem.UpdatedAt = now
 	}
+	// Scope wins, the memory struct fills an empty dimension (Phase 30 B1, mirrors
+	// records.Append's scopeOrRecord): the commit scope carries project/user from the
+	// originating buffer, but a caller that pre-stamps mem.ProjectID/UserID under a
+	// tenant-only scope still persists them — and a scope-set dimension can never be
+	// overridden by the struct, so a write can't escape its declared scope.
 	_, err := tx.Exec(`
 		INSERT INTO memories
 			(id, tenant_id, project_id, user_id, session_id, kind, content, context, status,
@@ -822,7 +827,10 @@ func insertMemorySQLite(tx *sql.Tx, scope identity.Scope, mem store.Memory, now 
 			 episode_id, supersedes_id, superseded_by_id, privacy_zone,
 			 created_at, updated_at, content_hash)
 		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-		mem.ID, scope.Tenant, nullStr(scope.Project), nullStr(scope.User), nullStr(scope.Session),
+		mem.ID, scope.Tenant,
+		nullStr(scopeOrRecord(scope.Project, mem.ProjectID)),
+		nullStr(scopeOrRecord(scope.User, mem.UserID)),
+		nullStr(scopeOrRecord(scope.Session, mem.SessionID)),
 		mem.Kind, mem.Content, mem.Context, mem.Status,
 		mem.Importance, mem.Confidence, mem.TrustSource,
 		mem.MatchCount, mem.InjectCount, mem.UseCount, mem.SaveCount, mem.FailCount, mem.NoiseCount,

@@ -74,6 +74,10 @@ type provRefJSON struct {
 // patchMemoryRequest is the wire format for PATCH /v1/memories/{id}.
 type patchMemoryRequest struct {
 	Action string `json:"action"` // "confirm" | "reject"
+	// ProjectID/UserID scope the confirm/reject to a sub-tenant identity (P3, D-125);
+	// empty = tenant-wide. Prevents a caller resolving another user's parked memory.
+	ProjectID string `json:"project_id"`
+	UserID    string `json:"user_id"`
 }
 
 // --- GET /v1/memories/{id} --------------------------------------------------
@@ -87,8 +91,7 @@ func (s *Server) handleGetMemory(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	authKey := keyFromContext(r.Context())
-	scope := identity.Scope{Tenant: authKey.TenantID}
+	scope := scopeFromRequest(r)
 	ctx := r.Context()
 
 	view, err := reconcile.GetMemory(ctx, s.st, scope, id)
@@ -129,8 +132,7 @@ func (s *Server) handleRollbackMemory(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	authKey := keyFromContext(r.Context())
-	scope := identity.Scope{Tenant: authKey.TenantID}
+	scope := scopeFromRequest(r)
 	ctx := r.Context()
 
 	res, err := reconcile.Rollback(ctx, s.st, scope, id, s.scopeInvalidator())
@@ -176,7 +178,7 @@ func (s *Server) handlePatchMemory(w http.ResponseWriter, r *http.Request) {
 	}
 
 	authKey := keyFromContext(r.Context())
-	scope := identity.Scope{Tenant: authKey.TenantID}
+	scope := identity.Scope{Tenant: authKey.TenantID, Project: req.ProjectID, User: req.UserID}
 	ctx := r.Context()
 
 	res, err := reconcile.Resolve(ctx, s.st, scope, id, reconcile.ConfirmAction(req.Action), s.scopeInvalidator())

@@ -3232,9 +3232,20 @@ scope dropped every per-record project/user/session to NULL (confirmed: all 2056
 This broke session-keyed features (episodes never fired — `DistinctSessions` filters `session_id IS
 NOT NULL`) and meant the write path couldn't carry per-user data. Decision: bind each dimension as
 `scopeOrRecord(scope.X, rec.X)` — the **scope WINS when set** (a record can never override a declared
-non-empty scope dimension → a write cannot escape its authorized scope, P3); the per-record value only
-fills a dimension the scope left empty. `scope.Tenant` stays authoritative + the fail-closed guard
-stays. Guarded by conformance `RecordAppendScopeFill` (fill + scope-wins, both drivers).
+non-empty scope dimension); the per-record value only fills a dimension the scope left empty.
+`scope.Tenant` stays authoritative + the fail-closed guard stays. Guarded by conformance
+`RecordAppendScopeFill` (fill + scope-wins, both drivers).
+
+**Scope of the P3 guarantee (precise).** This makes the scope dimensions that ARE set un-escapable,
+but it is NOT a claim that the store re-verifies per-record identity against the API key. Live ingest
+passes a tenant-only scope (the auth key carries only TenantID — D-030/D-125), so on that path the
+record's project/user/session are trusted as supplied — a tenant key CAN attribute a record to any
+user_id it claims. That is the deliberate app-supplies-identity model (the calling app, Harbor, owns
+end-user attribution; Stowage hard-isolates *reads* to whatever identity is supplied). The hard P3
+boundary enforced in the store is the TENANT; project/user are isolation dimensions the trusted caller
+populates, not independently-authenticated principals. The same applies to the derived-memory commit
+(B1, below): `scopeOrRecord` there fills from the candidate's memory fields only when the commit scope
+left a dimension empty.
 
 ## D-125 — Read scope is caller-supplied per request (tenant = auth boundary)
 
@@ -3248,3 +3259,30 @@ to it via the store's `buildScopeWhere`. Empty project/user = tenant-wide (back-
 (Phase 16 `EffectiveScopes`) still widen reads from the caller's real scope. `session_id` stays the
 Phase-10 cooldown/affinity signal, NOT a read-isolation boundary. No per-user keys in v1 (heavier
 key-issuance model, deferred). Guarded by `TestRetrieve_UserScopeIsolation` + SDK/HTTP/MCP parity.
+
+**Dual-review remediation (the read filter is only as good as the write + the cache + every surface).**
+The first pass scoped *only* `/v1/retrieve`; two independent adversarial reviews found that inert and
+the phase was completed across four fronts:
+- **B1 — derived memories were written tenant-only.** The pipeline built the flush/commit scope as
+  `{Tenant: rec.TenantID}` (`pipeline.go` processItem + the age-flush in `tickScan`), discarding
+  `rec.Project/User`, so every memory persisted with user_id=NULL and the D-125 read filter matched
+  nothing (tenant-wide still leaked). Fix: the flush scope carries `rec.Project/User` (Session is
+  deliberately NOT propagated — a memory is a cross-session abstraction and reconcile dedupe keys on
+  tenant/project/user); the memory commit binds `scopeOrRecord` (mirrors D-124). Guarded by
+  `TestFlushScopeFromRecord`.
+- **B2 — the result cache key was lossy.** `identity.Scope.String()` nested User inside `if Project!=""`
+  so `{T,user:alice}` and `{T,user:bob}` both keyed to "T" → a cache HIT served one user another's
+  items once B1 landed. Fix: a non-lossy 4-dimension `scopeCacheKey` + an ancestor-summed `scopeGen`
+  (a per-user cached read is still busted by the tenant-wide `InvalidateScope` the sweeps emit, and a
+  per-user invalidate busts only that user). `hotset` uses the same key. Guarded by
+  `TestResultCache_UserKeyNonLossy` + `TestResultCache_AncestorInvalidation`.
+- **B3 — every OTHER single-user read+mutate surface was still tenant-only.** Extended the
+  per-request project/user sub-scope to playbook, episodes, causal, drilldown, citations, review
+  (list + the approve/reject MUTATE), memories get/rollback/patch, traces, feedback, verify, and
+  branches — across HTTP (query params for GET via `scopeFromRequest`, body fields for POST/PATCH),
+  MCP (input fields + a per-handler merge), and the SDK (request fields + construction-time
+  `WithProject`/`WithUser` + a `callScope` per-call override). Guarded by
+  `TestScopeParity_ReviewList_AllSurfaces` (embedded/HTTP/MCP byte-identical + alice-only).
+- **B4 — `Scope.Validate()` required a contiguous chain** (user implied project), contradicting
+  `buildScopeWhere` (each dimension independent) and the `{Tenant,User}`-no-project shape. Relaxed
+  to require only Tenant; project/user/session are independent optional dimensions.

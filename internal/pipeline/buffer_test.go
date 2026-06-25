@@ -483,6 +483,73 @@ func TestBufferFlushedEvents(t *testing.T) {
 	}
 }
 
+// insertScopedRecord appends a record carrying its own project/user/session via the
+// record fields, written with a TENANT-ONLY batch scope — the exact production write
+// path (the ingest handler passes a tenant-only scope; per-record dims come from the
+// payload, persisted by Append's scopeOrRecord, D-124).
+func insertScopedRecord(t *testing.T, st store.Store, tenantID, projectID, userID, sessionID, branchID string, tokens int64) string {
+	t.Helper()
+	id := ulid.Make().String()
+	rec := store.Record{
+		ID: id, TenantID: tenantID, ProjectID: projectID, UserID: userID,
+		SessionID: sessionID, BranchID: branchID, Role: "user", Content: "scoped content",
+		TokenEstimate: tokens, OccurredAt: time.Now().UnixMilli(), CreatedAt: time.Now().UnixMilli(),
+	}
+	if err := st.Records().Append(context.Background(), identity.Scope{Tenant: tenantID}, []store.Record{rec}); err != nil {
+		t.Fatalf("append scoped record: %v", err)
+	}
+	return id
+}
+
+// TestFlushScopeFromRecord is the Phase-30 B1 write-path guard (P3, D-124/D-125): a record
+// carrying its own project/user (written under a tenant-only batch scope, as ingest does) must
+// flush with a FlushedBuffer.Scope that carries that project/user — so the DERIVED MEMORY the
+// downstream extract→commit stage writes is user/project-scoped, not tenant-only. Without B1 the
+// flush scope was {Tenant} only → every memory persisted with NULL user → the D-125 read filter
+// matched nothing and tenant-wide reads leaked. Two users with distinct sessions flush as two
+// buffers, each stamped with its own user. Session is intentionally NOT propagated to the memory
+// scope (a memory is a cross-session abstraction; reconcile dedupe keys on tenant/project/user).
+func TestFlushScopeFromRecord(t *testing.T) {
+	t.Parallel()
+	st := newTestStore(t)
+	trig := pipeline.Triggers{Count: 1, Tokens: 10000, MaxAge: 10 * time.Second}
+	s, in := newStageAndChan(st, trig)
+	s.Start(context.Background())
+	t.Cleanup(func() {
+		close(in)
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		s.Drain(ctx)
+	})
+
+	tenant := "t-b1"
+	aID := insertScopedRecord(t, st, tenant, "proj-a", "alice", "sess-a", "br", 5)
+	bID := insertScopedRecord(t, st, tenant, "proj-b", "bob", "sess-b", "br", 5)
+	in <- pipeline.Item{RecordID: aID, TenantID: tenant, SessionID: "sess-a", BranchID: "br"}
+	in <- pipeline.Item{RecordID: bID, TenantID: tenant, SessionID: "sess-b", BranchID: "br"}
+
+	fbs := collectN(t, s.Downstream(), 2, 5*time.Second)
+	byUser := map[string]pipeline.FlushedBuffer{}
+	for _, fb := range fbs {
+		byUser[fb.Scope.User] = fb
+	}
+	a, okA := byUser["alice"]
+	b, okB := byUser["bob"]
+	if !okA || !okB {
+		t.Fatalf("expected one flush per user (alice, bob); got scopes %+v", []identity.Scope{fbs[0].Scope, fbs[1].Scope})
+	}
+	if a.Scope.Project != "proj-a" || a.Scope.Tenant != tenant {
+		t.Errorf("alice flush scope = %+v, want tenant=%s project=proj-a", a.Scope, tenant)
+	}
+	if b.Scope.Project != "proj-b" {
+		t.Errorf("bob flush scope = %+v, want project=proj-b", b.Scope)
+	}
+	// Session must NOT be propagated to the memory commit scope.
+	if a.Scope.Session != "" || b.Scope.Session != "" {
+		t.Errorf("flush scope must not carry session (cross-session dedupe); got a=%q b=%q", a.Scope.Session, b.Scope.Session)
+	}
+}
+
 // ── Golden test on FlushedBuffer JSON shape ──────────────────────────────────
 
 // TestFlushedBufferGolden is a golden test for the FlushedBuffer JSON shape

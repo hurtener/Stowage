@@ -6,7 +6,6 @@ import (
 	"strconv"
 
 	"github.com/hurtener/stowage/internal/episodes"
-	"github.com/hurtener/stowage/internal/identity"
 	"github.com/hurtener/stowage/internal/store"
 )
 
@@ -37,8 +36,7 @@ type episodesResponseJSON struct {
 // `?from=&until=` time window (the cross-episode structured summary). Tenant scope
 // from the auth key (a tenant query matches the tenant's episodes).
 func (s *Server) handleEpisodes(w http.ResponseWriter, r *http.Request) {
-	authKey := keyFromContext(r.Context())
-	scope := identity.Scope{Tenant: authKey.TenantID}
+	scope := scopeFromRequest(r)
 	q := r.URL.Query()
 
 	if id := q.Get("id"); id != "" {

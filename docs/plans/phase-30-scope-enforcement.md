@@ -37,6 +37,13 @@ P3 hard isolation real on both paths; additive + backward-compatible; no schema 
 - **Grants unchanged:** `resolveEffectiveScopes`/`EffectiveScopes` (Phase 16) still expands the caller scope to granted scopes for shared reads — now starting from the caller's real (project/user) scope instead of tenant-wide.
 - **No schema change** (§8.1): the columns exist; we stop dropping them.
 
+**Dual-review remediation (B1–B4 — the read filter is inert without the write, the cache, every surface, and a coherent Scope).** The first pass scoped only `/v1/retrieve`; two independent adversarial reviews (per AC#8) found that illusory and the phase was completed across four fronts (each detailed in D-124/D-125):
+
+- **B1 — derived MEMORIES were written tenant-only.** `pipeline.go` built the flush/commit scope as `{Tenant: rec.TenantID}` (processItem + the `tickScan` age-flush), discarding `rec.Project/User`, so every memory persisted with user_id=NULL and the R fix matched nothing. Fix: the flush scope carries `rec.Project/User` (Session deliberately NOT propagated to the memory — cross-session abstraction; reconcile dedupe keys on tenant/project/user); the memory commit (`insertMemorySQLite`/`insertMemoryPG` + `Insert`) binds `scopeOrRecord`, mirroring D-124.
+- **B2 — the result cache key was lossy.** `Scope.String()` dropped User when Project was empty, collapsing `{T,user:alice}`/`{T,user:bob}` to "T" → cross-user cache hit. Fix: non-lossy `scopeCacheKey` (4 dims) + ancestor-summed `scopeGen` so a tenant-wide `InvalidateScope` (sweeps) still busts per-user reads; `hotset` uses the same key.
+- **B3 — the OTHER single-user surfaces were still tenant-only.** Extended the per-request project/user sub-scope to **playbook, episodes, causal, drilldown, citations, review (list + the approve/reject MUTATE), memories get/rollback/patch, traces, feedback, verify, branches** — across HTTP (GET query params via `scopeFromRequest`; POST/PATCH body fields), MCP (input fields + per-handler merge), SDK (request fields + construction `WithProject`/`WithUser` + per-call `callScope` override).
+- **B4 — `Scope.Validate()` required a contiguous chain** (user⇒project), contradicting `buildScopeWhere` + the `{Tenant,User}`-no-project shape. Relaxed to require only Tenant; project/user/session independent. `Scope.String()` is unchanged (no longer used for cache isolation after B2).
+
 ## Files added or changed
 
 - `internal/store/sqlitestore/records.go`, `internal/store/pgstore/records.go` — Append scope-fill (+ a `firstNonEmpty` helper).
@@ -53,7 +60,10 @@ None (no new knob — D-034). Request/SDK fields only.
 
 1. **Write:** a tenant-only-scoped `Append` of records carrying per-record `session_id`/`user_id`/`project_id` persists them (not NULL); a record CANNOT override a non-empty scope dimension (scope wins) — conformance, both drivers.
 2. **Read isolation:** two users under one tenant; a retrieve scoped to user A returns ONLY A's memories (lexical AND vector lanes); A's query never surfaces B's memory. Integration test with real drivers (§17).
-3. **Parity (D-067):** the read scope works identically across SDK/HTTP/MCP, proven by a parity test (MCP included).
+3. **Parity (D-067):** the read scope works identically across SDK/HTTP/MCP, proven by a parity test (MCP included) — `TestScopeParity_ReviewList_AllSurfaces` (alice-only + byte-identical across the three surfaces).
+3a. **Write-path isolation (B1):** a record carrying its own project/user, ingested under a tenant-only batch scope, flushes with a project/user-scoped `FlushedBuffer` so the derived memory is user-scoped — `TestFlushScopeFromRecord`.
+3b. **Cache isolation (B2):** per-user cache keys don't collide (`TestResultCache_UserKeyNonLossy`) and a tenant-wide invalidate busts a per-user read (`TestResultCache_AncestorInvalidation`); the retrieve-level guard asserts no cross-user cache hit.
+3c. **All single-user surfaces scoped (B3):** every read+mutate-by-id surface (not just retrieve) accepts project/user — smoke-asserted across HTTP/MCP/SDK.
 4. **Episodes fire:** with the write fix, the eval (or a probe) builds episodes from per-record sessions.
 5. **Grants intact:** an existing grant still widens reads to the granted scope (no regression in Phase-16 tests).
 6. **Backward-compatible:** a caller that passes no project/user still works (tenant-wide read) — additive.

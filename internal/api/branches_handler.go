@@ -15,6 +15,10 @@ type branchRequest struct {
 	SessionID      string `json:"session_id"`       // required for fork
 	BranchID       string `json:"branch_id"`        // required for merge/discard
 	ParentBranchID string `json:"parent_branch_id"` // optional for fork
+	// ProjectID/UserID scope the branch mutate to a sub-tenant identity (P3, D-125);
+	// empty = tenant-wide. Prevents forking/merging/discarding another user's branch.
+	ProjectID string `json:"project_id"`
+	UserID    string `json:"user_id"`
 }
 
 type forkResponse struct {
@@ -40,7 +44,7 @@ func (s *Server) handleBranches(w http.ResponseWriter, r *http.Request) {
 	}
 
 	authKey := keyFromContext(r.Context())
-	scope := identity.Scope{Tenant: authKey.TenantID}
+	scope := identity.Scope{Tenant: authKey.TenantID, Project: req.ProjectID, User: req.UserID}
 
 	// All three actions route through the shared pipeline branch core (D-071) so
 	// the HTTP, MCP, and SDK surfaces cannot drift; discard sets SkipPromotion via
