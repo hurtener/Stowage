@@ -275,7 +275,22 @@ func NewTestServer(t testing.TB, tenantID string) *TestServer {
 	lcProfile.RollupInterval = 24 * time.Hour
 	lcProfile.ReenqueueInterval = 3 * time.Second
 	lcProfile.ReenqueueDeadline = 5 * time.Second
+	// Idea 4 (temporal/event retrieval): optionally build EPISODES during the eval so dated-event
+	// arcs become retrievable narratives with date spans (production enables episodes in
+	// boot.StartPipeline; the harness gates it behind STOWAGE_EVAL_EPISODES to keep the default CI
+	// run deterministic + free of narration gateway calls). A small idle window makes the batch's
+	// already-ingested sessions count as "closed" when RunConsolidation runs the detect+narrate sweeps.
+	episodesOn := os.Getenv("STOWAGE_EVAL_EPISODES") == "1"
+	if episodesOn {
+		lcProfile.EpisodeDetectInterval = time.Second
+		lcProfile.EpisodeNarrateInterval = time.Second
+		lcProfile.EpisodeIdleWindow = time.Second
+		lcProfile.CausalMinConfidence = 0.6
+	}
 	lcMgr := lifecycle.New(st, log, lcProfile, srv.PipelineIn())
+	if episodesOn {
+		lcMgr.SetEpisodes(gw) // detect + narrate sweeps (narration calls the gateway)
+	}
 	// D-118: the lifecycle sweeps invalidate the retrieval cache after a status-mutating
 	// commit (decay-expire/dedupe-merge/rollup). Production wires this in boot.StartPipeline;
 	// the harness must too, so an explicit consolidation pass (RunConsolidation) doesn't leave
