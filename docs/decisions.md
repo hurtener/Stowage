@@ -3300,3 +3300,125 @@ the phase was completed across four fronts:
 **Documented exceptions / known minor limitations:**
 - **Bare-param SDK methods carry construction-scope only.** `GetMemory(ctx, id)`, `MergeBranch`/`DiscardBranch(ctx, branchID)` have no per-call request struct, so they scope by the client's construction `WithProject`/`WithUser` (honored on both embedded and HTTP now) but cannot be overridden per call. Changing the `Client` interface signatures is a broad breaking change deferred past v1; the construction-scope path is sufficient for the single-user-client model.
 - **Cache freshness under project-asymmetric reads (minor, TTL-bounded, NOT a leak).** `scopeGen` keys the user-ancestor as `{Tenant, Project, User}`; a read scope `{Tenant, User}` with no project (key `{T,"",alice}`) is not busted by a reconcile that invalidates a project-bearing scope `{T,proj,alice}`. The key still includes the user, so no cross-user leak — only a stale (own) result for up to the 60s TTL, and only when read/write project dimensions are asymmetric. Accepted; tightening it would require enumerating per-user projects.
+
+## D-127 — Supersede direction is date-ordered, not arrival-ordered (deterministic guard)
+
+Post-Phase-30 LongMemEval root-cause (handoff sub-case a). The reconciler let an
+**OLDER-dated fact supersede a NEWER one**: "The user has completed 5 projects…"
+(valid_from 2023-10-09) ended up `superseded`, superseded_by the older "4 projects…"
+(valid_from 2023-08-16), leaving the stale value current (qid `06db6396`,
+knowledge-update). Same class for an in-place UPDATE, which overwrites the target's
+content and would bury the newer value identically.
+
+**The model was not wrong about the pair.** "4 projects" and "5 projects" are the same
+fact at two times — a genuine supersede pair, correctly identified. The only defect is
+**direction/ordering**: which member wins. D-106 made within-flush direction deterministic
+(process candidates oldest-asserted first so the newer supersedes the older), but it only
+orders WITHIN one flush. Across sessions the commit order is ingestion/processing order,
+not assertion order — so the newer fact can land in the store first, and a later-arriving
+OLDER candidate then "supersedes" it. Arrival order, not the date, was deciding the winner.
+
+**Decision: assertion date is the deterministic authority for supersede/update direction.**
+A new guard in `reconcile.commit` (`candidateOlderThanTarget`) compares the candidate's
+`OccurredAt` (→ `Memory.ValidFrom`, the conversation date, D-024/D-109) against the target's
+`ValidFrom`. When the candidate is strictly older (both dates known; equal/unknown dates
+fall through to the existing path), the supersede is **honored but re-ordered**: the newer
+target stays active and the older candidate is committed as a `superseded` memory whose
+`superseded_by_id` points at the target (`commitInvertedSupersede`). The candidate is never
+discarded (P1) — the supersede relationship is preserved in the correct direction, and
+dual-visibility (D-105/D-114) surfaces "superseded by «the current value»". The guard runs
+REGARDLESS of the LLM verdict and the trust gate, and applies to both `supersede` and
+`update` (an older update would bury the newer content the same way).
+
+**Reversibility (D-017).** The re-ordered case is a NON-destructive `ActionAdd` of a
+born-superseded row — no existing memory is mutated, so rollback simply tombstones the added
+row. We deliberately do NOT emit `memory.superseded` here: that event is restorable and,
+since the older candidate has no prior ACTIVE state, a rollback would flip the direction and
+re-bury the newer fact. A `reconcile.warned` event records the date-ordering for audit. The
+normal (correct-direction) supersede path and its `memory.superseded` rollback are unchanged.
+
+**Scope / known limitations (follow-ups, NOT fixed here):**
+- **Distinct-fact collapse (handoff sub-case b)** — a goal ("$200 raised goal") vs an outcome
+  ("$250 raised") wrongly judged "same fact" and superseded. This is an over-supersede /
+  same-fact mis-judgment by the reconcile LLM, not a direction error; the date guard does not
+  address it (the two should coexist). Tracked separately.
+- **Both-active coexistence** — if the older and newer facts arrive in separate flushes and the
+  model judges each an `add` (never proposing a supersede), both stay active and the stale one
+  can still be retrieved. The date guard only adjudicates direction once a supersede/update
+  pair is proposed; detecting an unproposed same-fact pair is the model's job.
+
+Tested by `TestCandidateOlderThanTarget` (predicate) and `TestStageDateDirectionGuard`
+(end-to-end both directions via the realistic near-dup→numeral-divergence→LLM-supersede path,
+plus the normal-direction rollback round-trip). Pre-existing bug (Phase 30 did not touch
+reconcile); fixed ahead of the gpt-5.4-nano 100q re-baseline so it cannot corrupt that DB.
+
+## D-128 — Learner reasoning effort is an eval knob (STOWAGE_EVAL_MODEL_EFFORT)
+
+Post-Phase-30 baseline work. To run a reasoning-only learner (openai/gpt-5.4-nano) for the
+LongMemEval re-baseline we need to pass a provider reasoning-effort on the extraction and
+reconcile completion calls. gpt-5.4-nano REJECTS disabled reasoning (HTTP 400 "Reasoning is
+mandatory for this endpoint and cannot be disabled") and treats `effort=low` as the floor;
+at `low` it stays schema-compliant and all-passing while cutting extraction latency markedly
+(2–17 s vs 14–33 s at default). `gateway.CompleteRequest.ReasoningEffort` already existed
+(D-100) and the eval reader/judge already set it (STOWAGE_EVAL_READER_EFFORT), but
+`pipeline.ExtractStage` and `reconcile.ReconcileStage` never set it on their decision calls.
+
+**Decision: add an eval-only env knob `STOWAGE_EVAL_MODEL_EFFORT`, parallel to the existing
+`STOWAGE_EVAL_READER_EFFORT`.** Both stages gain an optional `reasoningEffort` field with a
+`SetReasoningEffort` setter (matching the existing optional-setter pattern — SetEmbedder,
+SetVIndex, SetRecordStore); the field defaults to "" so the production path and the default
+gemini learner are unaffected (no reasoning param sent). The eval harness
+(`eval/harness/server.go`) reads the env var once and applies it to BOTH the extract and
+reconcile stages (they call the same learner model, so they share the effort). The eval
+scripts default it to "" and document it.
+
+**Why an eval knob, not a D-034 production config key.** The need is eval-driven (choosing a
+reasoning-only LEARNER model for the benchmark), exactly like the reader/judge effort, which
+is also an eval-only env var with no production-config-knob treatment. Production extraction
+uses a non-reasoning model where the param is irrelevant, so adding it to `GatewayConfig`
+(allKeys/Explain/profiles/golden/example/smoke) would be config surface with no production
+default to tune — YAGNI. A production reasoning-effort config key is deferred until a real
+production need for a reasoning extraction model exists; the gateway field and the stage
+setters are already in place to make that a small follow-up. Verified by wiring tests
+(`TestExtract_ReasoningEffortWiring`, `TestStageReasoningEffortWiring`): effort flows to the
+request; unset sends no param.
+
+## D-129 — Reconcile decision context budgets turns PER NEIGHBOR, not one shared pool
+
+Follow-up to D-127/D-108. The reconcile decision (add/update/merge/supersede/park) is fed raw
+conversation turns so it can tell a correction of the same fact from a distinct fact that
+merely shares words/numbers (D-108, prompt rule 8). That context used a single shared budget
+of 12 turns, spent candidate-first then neighbor-by-neighbor until exhausted. With the
+augmented neighbor set (up to ~8 structural + ~8 semantic), only the first 2–4 neighbors got
+ANY source turns; the rest appeared as their one-line memory content only. So rule 8 — the
+distinct-fact discriminator — could not fire for most neighbors, while prompt rules 2–3 push
+hard toward "supersede" on any same-subject value difference. This is a direct cause of the
+over-supersede / distinct-fact-collapse class (handoff sub-case b: a "$200 goal" wrongly
+superseded by a "$250 raised" outcome).
+
+**Decision: allocate the turn budget per source.** The candidate gets up to
+`maxCandidateContextTurns = 4` of its own turns; EACH neighbor gets up to
+`maxNeighborContextTurns = 3`, under a global ceiling `maxContextRecords = 40` (cost backstop,
+raised from 12). Every neighbor the decision may supersede now arrives with its own
+conversation frame, so rule 8 can adjudicate each one. Tested by
+`TestBuildReconcileContext_PerNeighborBudget` (candidate capped at 4; all three crowded
+neighbors get their guaranteed 3 — none starved). Pairs with D-130 (the learner writes
+self-contained content so the one-line summary itself is meaningful even without the turns).
+
+## D-130 — Extracted memory content must be self-contained (names subject + purpose)
+
+Follow-up to D-129. The reader AND the reconciler see a memory primarily as its one-line
+`content`. An over-compressed extraction like "$200 raised goal" is uninterpretable on its own
+— $200 goal for what? a target or an actual? — which both starves the reader and makes the
+reconciler unable to tell a goal from an outcome (so it over-supersedes). The disambiguating
+frame lived only in the separate `context` field (rule 5), leaving `content` free to be a bare
+fragment.
+
+**Decision: strengthen extraction prompt rule 2** — content must be a complete statement that
+NAMES its subject and purpose, fully interpretable without the conversation or the `context`
+field, never a bare value/fragment ("The user set a $200 fundraising goal for a charity cycling
+event", never "$200 raised goal"), with goals/targets/results each phrased as distinct named
+statements. `PromptTemplateVersion` bumped 5 → 6; golden files regenerated. This is the
+upstream half of the sub-case-b fix (D-129 is the downstream half): better content makes both
+the crowded-neighbor summaries and the reader answers meaningful, and reduces same-fact
+mis-collapse at the reconcile decision.

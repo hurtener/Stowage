@@ -11,7 +11,7 @@ import (
 // PromptTemplateVersion is the version of the extraction prompt template.
 // Increment when the template text changes; golden files must be regenerated
 // with UPDATE_GOLDEN=1.
-const PromptTemplateVersion = "5"
+const PromptTemplateVersion = "6"
 
 // systemPromptTemplate is the versioned system-prompt skeleton.
 // The literal "{topics}" placeholder is replaced by BuildPrompt.
@@ -27,7 +27,7 @@ Your task: read the conversation transcript that follows and extract memorable i
 
 For each piece of memorable information you identify:
 1. Choose the most fitting kind: fact | preference | decision | gotcha | pattern | task | narrative
-2. Write the content as a complete, self-contained statement (avoid pronouns without clear antecedents)
+2. Write the content as a complete, self-contained statement that NAMES its subject and purpose — fully interpretable on its own, without the conversation or the "context" field. Avoid pronouns without clear antecedents, and NEVER emit a bare value or fragment: write "The user set a $200 fundraising goal for a charity cycling event" — NEVER "$200 raised goal". A later reader, and the reconciler judging whether two memories are the same fact, sees only this sentence — so a goal, a target, and an actual result must each read as distinct, named statements rather than a number with a label.
 3. PRESERVE every quantitative qualifier, unit, scope, and condition exactly as stated — dropping one changes the fact. Write "45 minutes each way" (not "about 45 minutes"), "$5,850 gross" (not "$5,850"), "12,000 steps per day" (not "12,000 steps"), "120 stars within 12 months".
 4. When the user corrects or updates a value, record ONLY the current value as a plain present-tense assertion. Do NOT narrate the change. Write "The user has been using the Fitbit Charge 3 for 9 months" — NEVER "changed from 6 months to 9 months", "first said 6, later 9", or "was X, now Y". A memory must not contain two competing values for the same fact; the superseded value is forgotten elsewhere, not carried inside the new memory.
 5. Populate "context" with the disambiguating conversational frame — what was being discussed, and any comparison, condition, or timeframe that makes the value interpretable on its own later (e.g. "commute time discussed while choosing audiobooks vs podcasts").

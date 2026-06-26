@@ -155,7 +155,23 @@ func TestFullMode(t *testing.T) {
 	for _, r := range res.Results {
 		_ = enc.Encode(r)
 	}
-	summary := map[string]any{"summary": scores, "wall_time_sec": time.Since(start).Seconds(), "dataset": datasetName, "n": len(res.Results)}
+	// Record the run's provenance so each result file self-identifies — the K-sweep
+	// (ksweep.sh) writes one file per K, and the analyzer keys per-K aggregates off
+	// retrieve_limit rather than guessing from filenames.
+	effK := rc.RetrieveLimit
+	if effK == 0 {
+		effK = 5 // NewRunner's default
+	}
+	summary := map[string]any{
+		"summary":        scores,
+		"wall_time_sec":  time.Since(start).Seconds(),
+		"dataset":        datasetName,
+		"n":              len(res.Results),
+		"retrieve_limit": effK,
+		"learner_model":  os.Getenv("STOWAGE_EVAL_MODEL"),
+		"learner_effort": os.Getenv("STOWAGE_EVAL_MODEL_EFFORT"),
+		"reader_model":   reader.Model,
+	}
 	_ = enc.Encode(summary)
 
 	quality := "n/a (judging off)"
