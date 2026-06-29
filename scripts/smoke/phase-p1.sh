@@ -170,8 +170,71 @@ kill "$SERVER2_PID" 2>/dev/null || true
 wait "$SERVER2_PID" 2>/dev/null || true
 SERVER2_PID=""
 
-# 3. runtime gauges registered on the metrics endpoint when sampler on.
-skip "runtime gauges registered (stowage_goroutines)"
+# 3. runtime sampler emits periodic sample + go runtime gauges on /metrics.
+#    Start a server with runtime_sample_interval=1 (1 s), wait for /healthz,
+#    sleep 2 s, assert the serve log contains a "runtime.sample" line, then
+#    curl /metrics and assert it contains go_goroutines from the GoCollector.
+
+PORT3=$(( 58000 + RANDOM % 2000 ))
+while [ "$PORT3" -eq "$PORT" ] || [ "$PORT3" -eq "$PORT2" ] \
+   || [ "$PORT3" -eq "$PPORT" ] || [ "$PORT3" -eq "$PPORT2" ]; do
+  PORT3=$(( 58000 + RANDOM % 2000 ))
+done
+DB3="${TMPDIR_SMOKE}/smoke-p1-c.db"
+CFG3="${TMPDIR_SMOKE}/stowage-p1-c.yaml"
+cat > "$CFG3" <<YAML
+server:
+  listen: "127.0.0.1:${PORT3}"
+store:
+  driver: sqlite
+  dsn: "${DB3}"
+gateway:
+  driver: mock
+telemetry:
+  runtime_sample_interval: 1
+YAML
+
+"$BIN" serve --config "$CFG3" >"${TMPDIR_SMOKE}/serve-c.log" 2>&1 &
+SERVER_PID=$!
+
+# Wait for server ready (up to 10 s).
+for i in $(seq 1 20); do
+  if curl -sf "http://127.0.0.1:${PORT3}/healthz" >/dev/null 2>&1; then
+    break
+  fi
+  sleep 0.5
+  if [ "$i" -eq 20 ]; then
+    failc "runtime sampler emits periodic sample (server-c did not start)"
+    cat "${TMPDIR_SMOKE}/serve-c.log"
+    kill "$SERVER_PID" 2>/dev/null || true
+    SERVER_PID=""
+    # skip remaining runtime-sampler sub-checks and continue
+  fi
+done
+
+if [ -n "$SERVER_PID" ]; then
+  # Let at least two ticks fire (interval=1 s, wait 2.5 s with headroom).
+  sleep 2.5
+
+  if grep -q "runtime.sample" "${TMPDIR_SMOKE}/serve-c.log"; then
+    ok "runtime sampler emits periodic sample"
+  else
+    failc "runtime sampler emits periodic sample (no runtime.sample in log)"
+    cat "${TMPDIR_SMOKE}/serve-c.log"
+  fi
+
+  # /metrics is served on the main server port.
+  METRICS=$(curl -sf --max-time 5 "http://127.0.0.1:${PORT3}/metrics" 2>/dev/null)
+  if echo "$METRICS" | grep -q "^go_goroutines"; then
+    ok "go runtime gauges exposed on /metrics"
+  else
+    failc "go runtime gauges exposed on /metrics (go_goroutines not found)"
+  fi
+
+  kill "$SERVER_PID" 2>/dev/null || true
+  wait "$SERVER_PID" 2>/dev/null || true
+  SERVER_PID=""
+fi
 
 # 4. the -tags=profile rig compiles.
 if [ -d internal/bench/profile ]; then
