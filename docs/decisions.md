@@ -3611,3 +3611,41 @@ discoverability.
 **Consequences.** No code behavior change beyond the one startup log line; the change is docs +
 discoverability. `scripts/smoke/phase-a3.sh` asserts the README honesty, the startup hint, and
 that `phase-h6` (single-surface default) still passes. No RFC change.
+
+## D-134 — Per-concern provider/key/base_url for the embed + rerank lanes (a1b)
+
+2026-06-29. Phase a1b (Adoption & ergonomics track, D-131). a1 deferred per-concern keys once
+OpenRouter proved one key covers completion + embedding + rerank; they return here as
+optionality. The shared single `gateway.api_key` could not point embed/rerank at a DIFFERENT
+provider+credential than completion — "don't force one provider" (brief 02).
+
+**Decision.** Add five optional `GatewayConfig` keys, each inheriting the primary when empty so
+the one-key default is unchanged: `embed_provider`, `embed_api_key` (secret), `embed_base_url`,
+`rerank_provider`, `rerank_api_key` (secret). The two `*_api_key` are `env.VAR`-ref secrets
+(same rule + redaction as `gateway.api_key`).
+
+Routing lives in the bifrost `Account`/`Driver` (P5):
+- **Embed** routes to a distinct provider (`embed_provider`) with its own key (`embed_api_key`,
+  fallback primary) and base (`embed_base_url`, fallback the provider's default — OpenRouter's
+  `…/api`); `Driver.embedProvider` carries it. Empty → embed uses the primary entry.
+- **Rerank** gains `rerank_api_key` (the active rerank provider's credential, fallback primary)
+  and `rerank_provider`: validated against the known providers (a typo fails loud, like
+  `embed_provider`); a native-rerank provider routes natively to a distinct entry with the
+  operator's LITERAL `rerank_base_url` (empty -> that provider's native endpoint, NOT the
+  primary's OpenRouter host); a non-native one keeps the auto-wired Cohere-shape custom
+  provider (D-075).
+- The `Account` exposes the deduped set {primary, embed?, rerank?}, each with its own key +
+  config via `GetConfiguredProviders/GetKeysForProvider/GetConfigForProvider`.
+
+**Out of scope (enforced).** A distinct embed and a distinct native rerank that name the SAME
+provider with different key/base fail loud at construction (a provider name holds one
+credential). "Same provider name, different key" — bifrost's `Account` is keyed by provider
+name with unrestricted (`["*"]`) keys, so two keys for one provider name can't be disambiguated
+by model. The supported (and requested) shape is a DISTINCT provider name per concern; an
+operator wanting a different key for the same provider uses the primary key.
+
+**Consequences.** Five default-empty knobs (knob-guardrail cost paid only by operators who split
+providers); all-empty wiring is byte-identical to a1 (proven by the fallback test). Covered by
+Account routing tests (fallback, distinct embed provider+key, rerank key override, distinct
+native rerank) + a Driver embed-routing test; `scripts/smoke/phase-a1b.sh` gates keys/validation/
+redaction. The a1 default still live-validates unchanged (`TestLiveBifrost_DefaultConfig`).

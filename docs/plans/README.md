@@ -460,7 +460,7 @@ still match the `scripts/smoke/phase-*.sh` gate.
 | a1 | Gateway defaults → the real Bifrost/OpenRouter stack (one-secret five-minute start, fail-loud minimums, `mock` escape hatch) | `internal/config`, `internal/boot`, `internal/gateway/bifrost` | §9.4, §10 | 04, 09c, h7 | D-131 |
 | a2 | Per-learner-stage model selection (`extract`/`reconcile`/`reflect` models, fallback to `gateway.model`) | `internal/config`, `internal/pipeline`, `internal/reconcile`, `internal/reflect`, `internal/boot`, `internal/lifecycle` | §9.4, §10 | a1, 19 | D-132 |
 | a3 | Quickstart honesty & MCP opt-in clarity (README/getting-started/glossary + serve startup hint; MCP stays opt-in) | `README.md`, `docs/`, `cmd/stowage` | §9.2, §9.4, §9.5 | a1 | D-133 |
-| a1b | _(follow-up)_ Per-concern provider/key/base_url overrides (embed, rerank) with inherit-on-empty | `internal/config`, `internal/gateway/bifrost` | §10 | a1 | D-131 |
+| a1b | Per-concern provider/key/base_url overrides (embed, rerank) with inherit-on-empty | `internal/config`, `internal/gateway/bifrost` | §10 | a1 | D-131 |
 
 Plans: `phase-a1-gateway-defaults.md` (shipped), `phase-a2-learner-models.md` (shipped),
 `phase-a3-quickstart-honesty.md` (shipped). Per-concern keys (a1b) were folded out of a1 once OpenRouter

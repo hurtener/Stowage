@@ -883,3 +883,57 @@ func writeTmpFile(t *testing.T, data []byte) string {
 	}
 	return f.Name()
 }
+
+// TestGatewayPerConcernKeyValidation verifies the per-concern secret keys
+// (embed_api_key, rerank_api_key) require env.VAR indirection like gateway.api_key
+// (a1b, D-134/D-030).
+func TestGatewayPerConcernKeyValidation(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		set  func(*config.Config)
+		path string
+	}{
+		{"embed_api_key literal", func(c *config.Config) { c.Gateway.EmbedAPIKey = "sk-literal" }, "config.gateway.embed_api_key"},
+		{"rerank_api_key literal", func(c *config.Config) { c.Gateway.RerankAPIKey = "sk-literal" }, "config.gateway.rerank_api_key"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := config.Defaults()
+			tc.set(cfg)
+			err := cfg.Validate()
+			if err == nil {
+				t.Fatalf("Validate() = nil, want error for %s", tc.path)
+			}
+			if !strings.Contains(err.Error(), tc.path) {
+				t.Errorf("error %q does not name %s", err.Error(), tc.path)
+			}
+		})
+	}
+	// env. indirection passes.
+	cfg := config.Defaults()
+	cfg.Gateway.EmbedAPIKey = "env.MY_EMBED_KEY"
+	cfg.Gateway.RerankAPIKey = "env.MY_RERANK_KEY"
+	if err := cfg.Validate(); err != nil {
+		t.Errorf("Validate() with env. per-concern keys: %v", err)
+	}
+}
+
+// TestGatewayPerConcernSecretRedacted verifies a set embed_api_key is redacted in
+// config explain — the env value never prints (a1b, D-134).
+func TestGatewayPerConcernSecretRedacted(t *testing.T) {
+	clearStowageEnv(t)
+	t.Setenv("STOWAGE_TEST_EMBED_SECRET", "secret-embed-value")
+	cfg := config.Defaults()
+	cfg.Gateway.EmbedAPIKey = "env.STOWAGE_TEST_EMBED_SECRET"
+
+	var buf bytes.Buffer
+	if err := cfg.Explain(&buf); err != nil {
+		t.Fatalf("explain: %v", err)
+	}
+	out := buf.String()
+	if strings.Contains(out, "secret-embed-value") {
+		t.Error("Explain output must not contain the embed_api_key value")
+	}
+	if !strings.Contains(out, "STOWAGE_TEST_EMBED_SECRET (set)") {
+		t.Error("Explain should show the embed_api_key env-ref as (set)")
+	}
+}

@@ -154,6 +154,17 @@ type GatewayConfig struct {
 	ExtractModel   string `yaml:"extract_model"`
 	ReconcileModel string `yaml:"reconcile_model"`
 	ReflectModel   string `yaml:"reflect_model"`
+
+	// Per-concern provider/key/base_url for the embed and rerank lanes (D-134, a1b).
+	// Each is optional and inherits the primary provider/api_key/base_url when empty,
+	// so the one-key default is unchanged. Lets an operator point embed/rerank at a
+	// DISTINCT provider+credential than completion ("three providers for three
+	// things"). The two *APIKey fields are secrets — env.VAR indirection, like APIKey.
+	EmbedProvider  string `yaml:"embed_provider"`
+	EmbedAPIKey    string `yaml:"embed_api_key"` // secret:"true" — must be env.VAR
+	EmbedBaseURL   string `yaml:"embed_base_url"`
+	RerankProvider string `yaml:"rerank_provider"`
+	RerankAPIKey   string `yaml:"rerank_api_key"` // secret:"true" — must be env.VAR
 }
 
 // TelemetryConfig controls logging and metrics.
@@ -194,6 +205,11 @@ var allKeys = []string{
 	"gateway.extract_model",
 	"gateway.reconcile_model",
 	"gateway.reflect_model",
+	"gateway.embed_provider",
+	"gateway.embed_api_key",
+	"gateway.embed_base_url",
+	"gateway.rerank_provider",
+	"gateway.rerank_api_key",
 	"telemetry.log_level",
 	"telemetry.log_format",
 	"telemetry.metrics_listen",
@@ -214,8 +230,10 @@ var allKeys = []string{
 
 // secretKeyPaths is the set of keys that hold env.VAR_NAME references.
 var secretKeyPaths = map[string]bool{
-	"gateway.api_key":   true,
-	"trace.signing_key": true,
+	"gateway.api_key":        true,
+	"gateway.embed_api_key":  true,
+	"gateway.rerank_api_key": true,
+	"trace.signing_key":      true,
 }
 
 // envKeys maps STOWAGE_* env var names to config key paths.
@@ -249,6 +267,9 @@ var envKeys = []struct {
 	{"STOWAGE_GATEWAY_EXTRACT_MODEL", "gateway.extract_model"},
 	{"STOWAGE_GATEWAY_RECONCILE_MODEL", "gateway.reconcile_model"},
 	{"STOWAGE_GATEWAY_REFLECT_MODEL", "gateway.reflect_model"},
+	{"STOWAGE_GATEWAY_EMBED_PROVIDER", "gateway.embed_provider"},
+	{"STOWAGE_GATEWAY_EMBED_BASE_URL", "gateway.embed_base_url"},
+	{"STOWAGE_GATEWAY_RERANK_PROVIDER", "gateway.rerank_provider"},
 	{"STOWAGE_TELEMETRY_LOG_LEVEL", "telemetry.log_level"},
 	{"STOWAGE_TELEMETRY_LOG_FORMAT", "telemetry.log_format"},
 	{"STOWAGE_TELEMETRY_METRICS_LISTEN", "telemetry.metrics_listen"},
@@ -533,6 +554,13 @@ func (c *Config) Validate() error {
 	if c.Gateway.APIKey != "" && !strings.HasPrefix(c.Gateway.APIKey, "env.") {
 		errs = append(errs, errors.New("config.gateway.api_key: must use env.VAR indirection"))
 	}
+	// Per-concern keys are secrets too (D-134); same env.VAR rule. Empty → inherit api_key.
+	if c.Gateway.EmbedAPIKey != "" && !strings.HasPrefix(c.Gateway.EmbedAPIKey, "env.") {
+		errs = append(errs, errors.New("config.gateway.embed_api_key: must use env.VAR indirection"))
+	}
+	if c.Gateway.RerankAPIKey != "" && !strings.HasPrefix(c.Gateway.RerankAPIKey, "env.") {
+		errs = append(errs, errors.New("config.gateway.rerank_api_key: must use env.VAR indirection"))
+	}
 	// trace.signing_key is optional (empty → unsigned); when set it is a secret and
 	// must use env.VAR indirection (D-030/D-086).
 	if c.Trace.SigningKey != "" && !strings.HasPrefix(c.Trace.SigningKey, "env.") {
@@ -731,6 +759,16 @@ func (c *Config) getByPath(path string) string {
 		return c.Gateway.ReconcileModel
 	case "gateway.reflect_model":
 		return c.Gateway.ReflectModel
+	case "gateway.embed_provider":
+		return c.Gateway.EmbedProvider
+	case "gateway.embed_api_key":
+		return c.Gateway.EmbedAPIKey
+	case "gateway.embed_base_url":
+		return c.Gateway.EmbedBaseURL
+	case "gateway.rerank_provider":
+		return c.Gateway.RerankProvider
+	case "gateway.rerank_api_key":
+		return c.Gateway.RerankAPIKey
 	case "telemetry.log_level":
 		return c.Telemetry.LogLevel
 	case "telemetry.log_format":
@@ -837,6 +875,16 @@ func (c *Config) setByPath(path, value string) error {
 		c.Gateway.ReconcileModel = value
 	case "gateway.reflect_model":
 		c.Gateway.ReflectModel = value
+	case "gateway.embed_provider":
+		c.Gateway.EmbedProvider = value
+	case "gateway.embed_api_key":
+		c.Gateway.EmbedAPIKey = value
+	case "gateway.embed_base_url":
+		c.Gateway.EmbedBaseURL = value
+	case "gateway.rerank_provider":
+		c.Gateway.RerankProvider = value
+	case "gateway.rerank_api_key":
+		c.Gateway.RerankAPIKey = value
 	case "telemetry.log_level":
 		c.Telemetry.LogLevel = value
 	case "telemetry.log_format":

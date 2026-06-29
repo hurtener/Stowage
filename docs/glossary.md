@@ -486,3 +486,8 @@ for hermetic tests and offline runs. `mock` is a first-class driver, no longer t
 `gateway.model` when empty. Lets a cheap extractor run alongside a stronger
 reconciler/reflector through one gateway (D-132). Distinct from per-concern provider
 keys (a1b), which split the provider/credential rather than the model.
+
+**Per-concern gateway key** — an optional provider / `*_api_key` / base_url for the embedding or
+rerank lane, distinct from the primary completion provider and inheriting it when empty (a1b,
+D-134). The bifrost `Account` exposes each concern as its own provider entry with its own
+credential; "same provider name, different key" is out of scope (use a distinct provider name).
