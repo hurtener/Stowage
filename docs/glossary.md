@@ -311,20 +311,32 @@ New terms land here in the same PR that introduces them (CLAUDE.md §14).
   sessions, and reports p50/p95/p99 + cache hit rate. Results are recorded in
   `eval/SLO.md` (D-031, Phase 12).
 - **Profiling harness** — the `internal/bench/profile/` load+profile rig (build
-  tag `profile`) that drives a concurrent ingest/retrieve/sweep workload and
-  captures CPU/heap/goroutine/block/mutex profiles, asserting goroutine-stability
-  and idle ceilings. Sibling to the SLO rig — resource behaviour, not latency
-  (D-126, Phase P1). Baselines recorded in `eval/PROFILE.md`.
+  tag `profile`, `make profile`) that boots full embedded stacks across the
+  driver/store + entrypoint matrices, drives concurrent ingest/retrieve with sweeps
+  running, captures CPU/heap/goroutine/block/mutex profiles, and asserts
+  goroutine-stability + idle ceilings + a memory-footprint baseline. Sibling to the
+  SLO rig — resource behaviour, not latency (D-126, Phase P1). Baselines in
+  `eval/PROFILE.md`.
+- **Profiling matrix** — the two grids the harness profiles: the **driver/store**
+  matrix `{vindex: hnsw,brute} × {store: sqlite,postgres}` (Postgres on-demand via a
+  DSN) and the **entrypoint** matrix `{embedded, serve, mcp}` — so a goroutine or
+  memory leak in any driver, backend, or deployment shape is caught (D-126).
 - **Goroutine-stability gate** — the post-boot / steady-state / post-drain
-  `NumGoroutine` triple-sample check; `post-drain ≤ post-boot + ε` is the P2
-  drain-on-shutdown contract made measurable (D-126).
+  `NumGoroutine` check per cell; `post-drain ≤ post-boot + ε` is the P2
+  drain-on-shutdown contract made measurable. For the `serve` entrypoint it is a
+  goroutine-climb-across-load-cycles check via the pprof endpoint (D-126).
 - **Idle gate** — the zero-traffic ceiling check proving sweeps and tickers
   impose no polling tax at idle: deterministic alloc + goroutine-delta signals
-  gate the always-on CI cut; the noisy idle CPU-time ceiling is on-demand
+  gate the always-on cut; the noisy idle CPU-time ceiling is on-demand
   (`make profile`) only (D-126).
-- **Resource sample** — the `events/v1` event + Prometheus gauges
-  (`stowage_goroutines`, heap) emitted by the runtime sampler reading
-  `runtime.NumGoroutine`/`MemStats` (D-126, Phase P1).
+- **Memory-footprint baseline** — the `HeapAlloc/HeapInuse/HeapSys/StackInuse/Sys`
+  snapshot the rig records at post-boot / post-idle / steady-state / post-drain for
+  each matrix cell (D-126, Phase P1). Goroutine deltas are environment-independent;
+  absolute MiB are machine-specific.
+- **Runtime sampler** — `telemetry.RuntimeSampler`: a lifecycle-managed ticker that
+  logs a `runtime.sample` line (`NumGoroutine` + `MemStats`) at
+  `telemetry.runtime_sample_interval`. The pull-independent complement to the
+  GoCollector Prometheus gauges — no custom gauges, no event (D-126, Phase P1).
 - **CI eval fixture** — a deterministic conversation + mock script pair in
   `eval/ci-fixtures/` used by the CI eval harness (Phase 13). Fixtures require
   no external network calls; the mock gateway serves scripted `Complete`
