@@ -462,6 +462,6 @@ still match the `scripts/smoke/phase-*.sh` gate.
 | a3 | Quickstart honesty & MCP opt-in clarity (README/getting-started/glossary + serve startup hint; MCP stays opt-in) | `README.md`, `docs/`, `cmd/stowage` | §9.2, §9.4, §9.5 | a1 | D-133 |
 | a1b | _(follow-up)_ Per-concern provider/key/base_url overrides (embed, rerank) with inherit-on-empty | `internal/config`, `internal/gateway/bifrost` | §10 | a1 | D-131 |
 
-Plans: `phase-a1-gateway-defaults.md` (shipped), `phase-a2-learner-models.md`,
-`phase-a3-quickstart-honesty.md`. Per-concern keys (a1b) were folded out of a1 once OpenRouter
+Plans: `phase-a1-gateway-defaults.md` (shipped), `phase-a2-learner-models.md` (shipped),
+`phase-a3-quickstart-honesty.md` (shipped). Per-concern keys (a1b) were folded out of a1 once OpenRouter
 proved it serves all three lanes on one key (D-131 deviation note).

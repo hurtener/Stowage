@@ -3585,3 +3585,29 @@ surface in `config explain` and the env override resolves.
 (D-034) cost is paid only by operators who want the split — justified by a real need a
 profile can't absorb (a model choice, not a tuned constant). Per-concern provider keys
 (a1b) remain the orthogonal follow-up for splitting providers/keys, not models.
+
+## D-133 — Quickstart copy tracks shipped defaults; MCP stays opt-in (reaffirms D-074)
+
+2026-06-29. Phase a3 (Adoption & ergonomics track, D-131). The README quickstart claimed
+`stowage serve` gives "a co-mounted MCP listener" and that one env var points at "any
+OpenAI-compatible / Bifrost provider" — both overstated: MCP is opt-in (D-074,
+`server.mcp_listen` defaults empty) and, before a1, the default driver was `mock`. a1 made
+the one-secret claim true (default Bifrost/OpenRouter); a3 makes the MCP claim true and adds
+discoverability.
+
+**Decision.**
+1. **Quickstart honesty.** README + `docs/getting-started.md` state plainly that the HTTP API
+   is the single default surface and the **MCP tool surface is opt-in** via `server.mcp_listen`
+   (or `stowage mcp`), and that the one secret reaches the default OpenRouter stack (other
+   providers also set `provider`/`base_url`; offline uses `STOWAGE_GATEWAY_DRIVER=mock`).
+2. **Startup hint.** `stowage serve` logs one info line when `server.mcp_listen` is empty
+   ("MCP surface disabled — set server.mcp_listen … or run `stowage mcp`"), so the knob is
+   discoverable without changing the default single-port shape.
+3. **MCP remains opt-in.** D-074 is reaffirmed, not reversed: empty `mcp_listen` binds exactly
+   one port (no surprise second bound port for existing deployments). The principle settled
+   here: quickstart/marketing copy must track the shipped defaults — a claim the binary does
+   not honor is drift.
+
+**Consequences.** No code behavior change beyond the one startup log line; the change is docs +
+discoverability. `scripts/smoke/phase-a3.sh` asserts the README honesty, the startup hint, and
+that `phase-h6` (single-surface default) still passes. No RFC change.

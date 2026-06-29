@@ -66,10 +66,13 @@ One binary, one secret, a round-trip.
 # 1. Build the CGo-free binary
 make build                      # → bin/stowage
 
-# 2. Point it at any OpenAI-compatible / Bifrost provider — one env var
-export STOWAGE_GATEWAY_API_KEY=sk-...      # the only required secret
+# 2. One secret. The default is OpenRouter via the Bifrost driver — one key reaches
+#    completion + embedding + rerank. (Other providers: also set STOWAGE_GATEWAY_PROVIDER
+#    and STOWAGE_GATEWAY_BASE_URL — see getting-started. Offline/tests: STOWAGE_GATEWAY_DRIVER=mock.)
+export STOWAGE_GATEWAY_API_KEY=sk-or-...    # the only required secret
 
-# 3. Serve (HTTP + a co-mounted MCP listener). SQLite by default — zero config.
+# 3. Serve: HTTP API on :7160, SQLite by default — zero config. (MCP is opt-in:
+#    set server.mcp_listen to co-mount the MCP tool surface — see "surfaces" below.)
 bin/stowage serve
 ```
 
@@ -127,7 +130,7 @@ Every capability is implemented once in the core and exposed through thin, parit
 | Surface | What it's for |
 |---|---|
 | **HTTP API** (`stowage serve`) | the service: ingest, retrieve, drill-down, feedback, topics, grants, episodes, admin |
-| **MCP** (co-mounted, or `stowage mcp`) | the same memory tools for any MCP host — built with Dockyard |
+| **MCP** (co-mounted *opt-in* via `server.mcp_listen`, or `stowage mcp`) | the same memory tools for any MCP host — built with Dockyard |
 | **Go SDK** (`sdk/stowage`) | in-process embedding in Harbor, or an HTTP client — same API |
 | **CLI** (`stowage …`) | `serve`, `mcp`, `migrate`, `config explain`, `eval` |
 
@@ -153,8 +156,9 @@ calls) so retrieval quality can't silently regress.
   run the whole pipeline in your process — ideal for single-user agents and local dev.
 - **Standalone (Postgres).** `stowage serve` against Postgres (pgx) for multi-tenant, team-shared
   deployments. The same conformance suite proves both backends behave identically.
-- **MCP co-mount.** `serve` exposes the HTTP API and the MCP tool surface from one process and one
-  port policy — no second service to operate.
+- **MCP co-mount (opt-in).** Set `server.mcp_listen` and `serve` exposes the HTTP API and the MCP
+  tool surface from one process over one shared stack (D-074) — no second service to operate.
+  Left empty (the default), `serve` binds exactly one port.
 
 Migrations are forward-only (`stowage migrate`). The event stream (`events/v1`) is a versioned,
 consumable audit trail: every memory mutation and lifecycle decision emits an event with its reason.
