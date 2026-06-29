@@ -600,6 +600,91 @@ func TestProfileWriteBaseline(t *testing.T) {
 		ln("")
 	}
 
+	// ---------------------------------------------------------------------------
+	// Entrypoint Lifecycle section
+	// ---------------------------------------------------------------------------
+
+	ln("---")
+	ln("")
+	ln("## Entrypoint Lifecycle")
+	ln("")
+	ln("These results are collected by `TestProfileEntrypointServe` and")
+	ln("`TestProfileEntrypointMCP`, which spawn the real binary as a subprocess")
+	ln("and check goroutine stability + clean-shutdown behaviour.")
+	ln("")
+
+	entrypointMu.Lock()
+	epResults := entrypointResults
+	entrypointMu.Unlock()
+
+	// serve shape
+	ln("### serve (`stowage serve`)")
+	ln("")
+	if serveRes, ok := epResults["serve"]; ok && serveRes.ran {
+		stabilityStr := "PASS"
+		if !serveRes.stabilityOK {
+			stabilityStr = "ADVISORY"
+		}
+		shutdownStr := "yes"
+		if !serveRes.shutdownOK {
+			shutdownStr = "no (timeout)"
+		}
+		g0Str := fmt.Sprintf("%d", serveRes.g0)
+		if serveRes.g0 < 0 {
+			g0Str = "n/a (pprof unavailable)"
+		}
+		gFinalStr := fmt.Sprintf("%d", serveRes.gFinal)
+		if serveRes.gFinal < 0 {
+			gFinalStr = "n/a (pprof unavailable)"
+		}
+		climbStr := fmt.Sprintf("%d", serveRes.climbDelta)
+		if serveRes.g0 < 0 || serveRes.gFinal < 0 {
+			climbStr = "n/a"
+			stabilityStr = "n/a"
+		}
+		heapStr := fmt.Sprintf("%.1f MiB", serveRes.heapAllocBytes/(1024*1024))
+		if serveRes.heapAllocBytes == 0 {
+			heapStr = "n/a"
+		}
+		ln("| Metric                        | Value                     |")
+		ln("|-------------------------------|---------------------------|")
+		ln("| g0 (baseline goroutines)      | %-25s |", g0Str)
+		ln("| gFinal (after 3 cycles)       | %-25s |", gFinalStr)
+		ln("| climb delta                   | %-25s |", climbStr)
+		ln("| eps                           | %-25d |", *flEps)
+		ln("| stability gate                | %-25s |", stabilityStr)
+		ln("| heap_alloc                    | %-25s |", heapStr)
+		ln("| clean shutdown                | %-25s |", shutdownStr)
+		ln("| shutdown duration             | %-25s |", serveRes.shutdownDur.Round(time.Millisecond).String())
+	} else {
+		ln("n/a (TestProfileEntrypointServe not collected — run with `-run TestProfile`)")
+	}
+	ln("")
+
+	// mcp (stdio) shape
+	ln("### mcp (`stowage mcp --stdio`)")
+	ln("")
+	ln("No goroutine introspection is available for the MCP stdio entrypoint")
+	ln("(no pprof surface). This is a drain/hang check only.")
+	ln("")
+	if mcpRes, ok := epResults["mcp"]; ok && mcpRes.ran {
+		shutdownStr := "yes"
+		if !mcpRes.shutdownOK {
+			shutdownStr = "no (timeout)"
+		}
+		ln("| Metric                        | Value                     |")
+		ln("|-------------------------------|---------------------------|")
+		ln("| clean shutdown                | %-25s |", shutdownStr)
+		ln("| shutdown duration             | %-25s |", mcpRes.shutdownDur.Round(time.Millisecond).String())
+	} else {
+		ln("n/a (TestProfileEntrypointMCP not collected — run with `-run TestProfile`)")
+	}
+	ln("")
+
+	// ---------------------------------------------------------------------------
+	// Notes section
+	// ---------------------------------------------------------------------------
+
 	ln("---")
 	ln("")
 	ln("## Notes")

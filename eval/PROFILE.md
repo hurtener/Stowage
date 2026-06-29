@@ -75,29 +75,29 @@ Memory footprint MiB values are environment-specific; the delta pattern matters.
 |---------------------------------|---------------------------|
 | g0 (post-boot)                  | 30                        |
 | gIdle (post-idle)               | 30                        |
-| s1 (end-of-load)                | 33                        |
+| s1 (end-of-load)                | 32                        |
 | s2 (post-drain+settle)          | 2                         |
 | idle delta (gIdle-g0)           | 0                         |
 | post-drain delta (s2-g0)        | -28                       |
 | eps                             | 50                        |
 | idle gate                       | PASS                      |
 | stability gate                  | PASS                      |
-| ingest ops (successful)         | 33109                     |
-| retrieve ops (successful)       | 19432                     |
+| ingest ops (successful)         | 27092                     |
+| retrieve ops (successful)       | 15865                     |
 | errors (tolerated)              | 16                        |
 
 **Memory Footprint** *(environment-specific — MiB values vary by machine)*
 
 | Metric       | post-boot   | post-idle   | steady      | post-drain  |
 |--------------|-------------|-------------|-------------|-------------|
-| HeapAlloc    | 4.2 MiB     | 4.2 MiB     | 6.2 MiB     | 3.4 MiB     |
-| HeapInuse    | 6.3 MiB     | 6.3 MiB     | 10.0 MiB    | 6.1 MiB     |
-| HeapSys      | 11.2 MiB    | 11.2 MiB    | 21.8 MiB    | 21.8 MiB    |
-| StackInuse   | 0.8 MiB     | 0.8 MiB     | 2.2 MiB     | 2.2 MiB     |
-| Sys          | 18.8 MiB    | 18.8 MiB    | 33.4 MiB    | 33.6 MiB    |
-| NumGC        | 6           | 9           | 97          | 115         |
+| HeapAlloc    | 4.3 MiB     | 4.3 MiB     | 6.1 MiB     | 3.4 MiB     |
+| HeapInuse    | 6.6 MiB     | 6.6 MiB     | 9.6 MiB     | 6.0 MiB     |
+| HeapSys      | 14.9 MiB    | 14.9 MiB    | 21.6 MiB    | 21.4 MiB    |
+| StackInuse   | 1.1 MiB     | 1.1 MiB     | 2.4 MiB     | 2.6 MiB     |
+| Sys          | 22.8 MiB    | 22.8 MiB    | 33.0 MiB    | 33.5 MiB    |
+| NumGC        | 14          | 17          | 91          | 109         |
 
-pprof artifacts: /var/folders/qf/9hz3q9b55xb9hjwg0w478_h00000gn/T/TestProfileMatrix332261978/001/sqlite-hnsw
+pprof artifacts: /var/folders/qf/9hz3q9b55xb9hjwg0w478_h00000gn/T/TestProfileMatrix3498429446/001/sqlite-hnsw
 
 ---
 
@@ -109,15 +109,15 @@ pprof artifacts: /var/folders/qf/9hz3q9b55xb9hjwg0w478_h00000gn/T/TestProfileMat
 |---------------------------------|---------------------------|
 | g0 (post-boot)                  | 30                        |
 | gIdle (post-idle)               | 30                        |
-| s1 (end-of-load)                | 33                        |
+| s1 (end-of-load)                | 34                        |
 | s2 (post-drain+settle)          | 2                         |
 | idle delta (gIdle-g0)           | 0                         |
 | post-drain delta (s2-g0)        | -28                       |
 | eps                             | 50                        |
 | idle gate                       | PASS                      |
 | stability gate                  | PASS                      |
-| ingest ops (successful)         | 31196                     |
-| retrieve ops (successful)       | 18248                     |
+| ingest ops (successful)         | 25352                     |
+| retrieve ops (successful)       | 14718                     |
 | errors (tolerated)              | 16                        |
 
 **Memory Footprint** *(environment-specific — MiB values vary by machine)*
@@ -125,13 +125,13 @@ pprof artifacts: /var/folders/qf/9hz3q9b55xb9hjwg0w478_h00000gn/T/TestProfileMat
 | Metric       | post-boot   | post-idle   | steady      | post-drain  |
 |--------------|-------------|-------------|-------------|-------------|
 | HeapAlloc    | 4.5 MiB     | 4.5 MiB     | 6.2 MiB     | 3.4 MiB     |
-| HeapInuse    | 7.2 MiB     | 7.2 MiB     | 10.3 MiB    | 6.1 MiB     |
-| HeapSys      | 21.9 MiB    | 21.9 MiB    | 21.7 MiB    | 21.9 MiB    |
-| StackInuse   | 2.1 MiB     | 2.1 MiB     | 2.3 MiB     | 2.1 MiB     |
-| Sys          | 33.6 MiB    | 33.6 MiB    | 33.9 MiB    | 33.9 MiB    |
-| NumGC        | 118         | 121         | 210         | 227         |
+| HeapInuse    | 7.1 MiB     | 7.1 MiB     | 9.5 MiB     | 6.1 MiB     |
+| HeapSys      | 21.5 MiB    | 21.5 MiB    | 21.5 MiB    | 21.5 MiB    |
+| StackInuse   | 2.5 MiB     | 2.5 MiB     | 2.5 MiB     | 2.5 MiB     |
+| Sys          | 33.5 MiB    | 33.5 MiB    | 33.5 MiB    | 33.5 MiB    |
+| NumGC        | 112         | 115         | 189         | 206         |
 
-pprof artifacts: /var/folders/qf/9hz3q9b55xb9hjwg0w478_h00000gn/T/TestProfileMatrix332261978/001/sqlite-brute
+pprof artifacts: /var/folders/qf/9hz3q9b55xb9hjwg0w478_h00000gn/T/TestProfileMatrix3498429446/001/sqlite-brute
 
 ---
 
@@ -150,22 +150,22 @@ pprof artifacts: /var/folders/qf/9hz3q9b55xb9hjwg0w478_h00000gn/T/TestProfileMat
 | eps                             | 50                        |
 | idle gate                       | PASS                      |
 | stability gate                  | PASS                      |
-| ingest ops (successful)         | 15181                     |
-| retrieve ops (successful)       | 18268                     |
+| ingest ops (successful)         | 11087                     |
+| retrieve ops (successful)       | 13245                     |
 | errors (tolerated)              | 16                        |
 
 **Memory Footprint** *(environment-specific — MiB values vary by machine)*
 
 | Metric       | post-boot   | post-idle   | steady      | post-drain  |
 |--------------|-------------|-------------|-------------|-------------|
-| HeapAlloc    | 4.6 MiB     | 4.6 MiB     | 7.0 MiB     | 3.5 MiB     |
-| HeapInuse    | 7.3 MiB     | 7.3 MiB     | 12.2 MiB    | 6.4 MiB     |
-| HeapSys      | 21.8 MiB    | 21.8 MiB    | 26.2 MiB    | 26.4 MiB    |
-| StackInuse   | 2.2 MiB     | 2.2 MiB     | 1.8 MiB     | 1.6 MiB     |
-| Sys          | 33.9 MiB    | 33.9 MiB    | 38.1 MiB    | 38.1 MiB    |
-| NumGC        | 230         | 233         | 279         | 292         |
+| HeapAlloc    | 4.6 MiB     | 4.6 MiB     | 6.9 MiB     | 3.5 MiB     |
+| HeapInuse    | 7.4 MiB     | 7.4 MiB     | 11.8 MiB    | 6.3 MiB     |
+| HeapSys      | 21.5 MiB    | 21.5 MiB    | 22.2 MiB    | 26.5 MiB    |
+| StackInuse   | 2.5 MiB     | 2.5 MiB     | 1.8 MiB     | 1.5 MiB     |
+| Sys          | 33.5 MiB    | 33.5 MiB    | 33.8 MiB    | 37.9 MiB    |
+| NumGC        | 209         | 212         | 247         | 259         |
 
-pprof artifacts: /var/folders/qf/9hz3q9b55xb9hjwg0w478_h00000gn/T/TestProfileMatrix332261978/001/postgres-hnsw
+pprof artifacts: /var/folders/qf/9hz3q9b55xb9hjwg0w478_h00000gn/T/TestProfileMatrix3498429446/001/postgres-hnsw
 
 ---
 
@@ -184,8 +184,8 @@ pprof artifacts: /var/folders/qf/9hz3q9b55xb9hjwg0w478_h00000gn/T/TestProfileMat
 | eps                             | 50                        |
 | idle gate                       | PASS                      |
 | stability gate                  | PASS                      |
-| ingest ops (successful)         | 13584                     |
-| retrieve ops (successful)       | 15871                     |
+| ingest ops (successful)         | 10543                     |
+| retrieve ops (successful)       | 12277                     |
 | errors (tolerated)              | 16                        |
 
 **Memory Footprint** *(environment-specific — MiB values vary by machine)*
@@ -193,13 +193,44 @@ pprof artifacts: /var/folders/qf/9hz3q9b55xb9hjwg0w478_h00000gn/T/TestProfileMat
 | Metric       | post-boot   | post-idle   | steady      | post-drain  |
 |--------------|-------------|-------------|-------------|-------------|
 | HeapAlloc    | 4.6 MiB     | 4.6 MiB     | 6.9 MiB     | 3.5 MiB     |
-| HeapInuse    | 7.5 MiB     | 7.5 MiB     | 11.9 MiB    | 6.5 MiB     |
-| HeapSys      | 26.3 MiB    | 26.3 MiB    | 26.7 MiB    | 27.0 MiB    |
-| StackInuse   | 1.7 MiB     | 1.7 MiB     | 1.3 MiB     | 1.0 MiB     |
-| Sys          | 38.1 MiB    | 38.1 MiB    | 38.1 MiB    | 38.1 MiB    |
-| NumGC        | 295         | 298         | 341         | 354         |
+| HeapInuse    | 7.4 MiB     | 7.4 MiB     | 11.9 MiB    | 6.4 MiB     |
+| HeapSys      | 26.4 MiB    | 26.4 MiB    | 26.7 MiB    | 26.9 MiB    |
+| StackInuse   | 1.6 MiB     | 1.6 MiB     | 1.3 MiB     | 1.1 MiB     |
+| Sys          | 37.9 MiB    | 37.9 MiB    | 37.9 MiB    | 37.9 MiB    |
+| NumGC        | 262         | 265         | 299         | 312         |
 
-pprof artifacts: /var/folders/qf/9hz3q9b55xb9hjwg0w478_h00000gn/T/TestProfileMatrix332261978/001/postgres-brute
+pprof artifacts: /var/folders/qf/9hz3q9b55xb9hjwg0w478_h00000gn/T/TestProfileMatrix3498429446/001/postgres-brute
+
+---
+
+## Entrypoint Lifecycle
+
+These results are collected by `TestProfileEntrypointServe` and
+`TestProfileEntrypointMCP`, which spawn the real binary as a subprocess
+and check goroutine stability + clean-shutdown behaviour.
+
+### serve (`stowage serve`)
+
+| Metric                        | Value                     |
+|-------------------------------|---------------------------|
+| g0 (baseline goroutines)      | 35                        |
+| gFinal (after 3 cycles)       | 34                        |
+| climb delta                   | -1                        |
+| eps                           | 50                        |
+| stability gate                | PASS                      |
+| heap_alloc                    | 6.1 MiB                   |
+| clean shutdown                | yes                       |
+| shutdown duration             | 4ms                       |
+
+### mcp (`stowage mcp --stdio`)
+
+No goroutine introspection is available for the MCP stdio entrypoint
+(no pprof surface). This is a drain/hang check only.
+
+| Metric                        | Value                     |
+|-------------------------------|---------------------------|
+| clean shutdown                | yes                       |
+| shutdown duration             | 3ms                       |
 
 ---
 
