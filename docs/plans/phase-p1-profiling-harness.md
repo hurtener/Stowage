@@ -278,9 +278,16 @@ docs/plans/phase-p1-profiling-harness.md      # this file
 6. The idle gate (zero traffic, sweeps running) records the goroutine delta + idle alloc
    per cell; goroutine growth ≤ ε. Captured for all cells in `eval/PROFILE.md`.
 7. The driver/store matrix (`{hnsw,brute}×{sqlite,postgres}`) + the `serve`/`mcp`
-   entrypoints + a **memory footprint** (`HeapAlloc/HeapInuse/HeapSys/StackInuse/Sys`) at
-   each sample point are committed in `eval/PROFILE.md` with a one-command reproduction
-   (`make profile`); Postgres cells skip gracefully without a DSN.
+   entrypoints are committed in `eval/PROFILE.md` with a one-command reproduction
+   (`make profile`; Postgres cells skip gracefully without a DSN), carrying for each cell:
+   the goroutine-stability samples **plus the peak goroutines during load** (a high-water
+   sampler — post-burst `s1` hides peak concurrency); a **memory footprint**
+   (`HeapAlloc/HeapInuse/HeapSys/StackInuse/Sys` + **process RSS** — test-process RSS for
+   the matrix cells, the **real shipped-binary RSS** for `serve` via `ps`, since the
+   Go-runtime heap view is not the OS footprint); **lifecycle timings** (boot/time-to-ready,
+   close/drain); the **shipped binary size** (`CGO_ENABLED=0 -trimpath -s -w`); and the
+   **load concurrency** (`-profile.ingest`+`-profile.retrieve` saturating workers) stated
+   explicitly so the reference numbers are self-describing.
 8. New knobs ship with tuned defaults, placement in every profile, docs, and a smoke
    check (D-034). `make preflight` + `make drift-audit` + `make check-mirror` green.
 
