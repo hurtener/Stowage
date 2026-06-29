@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"os"
 	"path/filepath"
 	"sync"
 	"sync/atomic"
@@ -15,6 +14,7 @@ import (
 	"github.com/hurtener/stowage/internal/auth"
 	"github.com/hurtener/stowage/internal/config"
 	"github.com/hurtener/stowage/internal/identity"
+	"github.com/hurtener/stowage/internal/leakcheck"
 	"github.com/hurtener/stowage/internal/store"
 	"github.com/hurtener/stowage/internal/store/conformance"
 	_ "github.com/hurtener/stowage/internal/store/sqlitestore" // register driver
@@ -561,7 +561,7 @@ func TestMarkProcessedEmpty(t *testing.T) {
 
 // TestMain is the test entrypoint.
 func TestMain(m *testing.M) {
-	os.Exit(m.Run())
+	leakcheck.Run(m, leakcheck.Advisory)
 }
 
 // TestAppliedMigrationsBeforeMigrate covers the bootstrap branch: a store

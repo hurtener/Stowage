@@ -16,13 +16,14 @@ import (
 	"github.com/hurtener/stowage/internal/config"
 	"github.com/hurtener/stowage/internal/gateway"
 	_ "github.com/hurtener/stowage/internal/gateway/openaicompat" // blank-import driver registration
+	"github.com/hurtener/stowage/internal/leakcheck"
 	"github.com/prometheus/client_golang/prometheus"
 )
 
 // TestMain sets the test API-key env var once so parallel tests can use it.
 func TestMain(m *testing.M) {
 	os.Setenv("STOWAGE_TEST_OPENAICOMPAT_KEY", "test-key") //nolint:errcheck
-	os.Exit(m.Run())
+	leakcheck.Run(m, leakcheck.Advisory)
 }
 
 // newDriver builds an openaicompat Gateway pointed at svr.
