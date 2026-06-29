@@ -46,13 +46,16 @@ type entrypointResult struct {
 	climbDelta     int           // gFinal - g0 (serve only)
 	stabilityOK    bool          // climbDelta <= *flEps (serve only)
 	heapAllocBytes float64       // bytes from /metrics (serve only; 0 = unavailable)
+	procRSSBytes   uint64        // REAL resident memory of the serve subprocess under load (serve only; 0 = unavailable)
 	shutdownOK     bool          // process exited cleanly within timeout
 	shutdownDur    time.Duration // elapsed from signal/stdin-close to exit
+	readyDur       time.Duration // time from poll-start to first healthz-200 (serve only; 0 = unavailable)
 }
 
 var (
 	entrypointMu      sync.Mutex
 	entrypointResults = map[string]entrypointResult{}
+	binarySizeBytes   int64
 )
 
 // ---------------------------------------------------------------------------
@@ -65,8 +68,12 @@ func buildStowageBinary(t *testing.T) string {
 	t.Helper()
 	repoRoot := findRepoRoot(t)
 	binPath := filepath.Join(t.TempDir(), "stowage")
-	cmd := exec.Command("go", "build", "-o", binPath, "./cmd/stowage")
+	// Build the SHIPPED artifact (matches the Makefile `build` target) so the
+	// spawned serve/mcp processes — and the serve RSS we measure — reflect the
+	// real stripped, CGo-free binary, not a debug build.
+	cmd := exec.Command("go", "build", "-trimpath", "-ldflags", "-s -w", "-o", binPath, "./cmd/stowage")
 	cmd.Dir = repoRoot
+	cmd.Env = append(os.Environ(), "CGO_ENABLED=0")
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
@@ -146,6 +153,21 @@ func goroutineTotal(pprofAddr, bearer string) int {
 	return -1
 }
 
+// rssForPID returns the resident set size (bytes) of an arbitrary process via
+// `ps -o rss=` (KiB on both Linux and darwin), or 0 if unavailable. Used to read
+// the REAL footprint of the spawned serve subprocess.
+func rssForPID(pid int) uint64 {
+	out, err := exec.Command("ps", "-o", "rss=", "-p", strconv.Itoa(pid)).Output()
+	if err != nil {
+		return 0
+	}
+	kb, err := strconv.ParseUint(strings.TrimSpace(string(out)), 10, 64)
+	if err != nil {
+		return 0
+	}
+	return kb * 1024
+}
+
 // ---------------------------------------------------------------------------
 // TestProfileEntrypointServe
 // ---------------------------------------------------------------------------
@@ -206,10 +228,13 @@ telemetry:
 	healthURL := fmt.Sprintf("http://%s/healthz", mainAddr)
 
 	// Poll /healthz until 200 — up to 15 s (60 × 250 ms).
+	readyStart := time.Now()
+	var readyDur time.Duration
 	ready := false
 	for i := 0; i < 60; i++ {
 		time.Sleep(250 * time.Millisecond)
 		if code, _ := httpGet(t, healthURL, ""); code == http.StatusOK {
+			readyDur = time.Since(readyStart)
 			ready = true
 			break
 		}
@@ -360,6 +385,13 @@ telemetry:
 	}
 	t.Logf("serve: heap_alloc = %.1f MiB", heapAllocBytes/(1024*1024))
 
+	// REAL process footprint: resident memory of the serve subprocess itself
+	// (the actual shipped binary, not the test harness). This is the production
+	// footprint number — it includes the binary's text/data, the sqlite page
+	// cache, and OS overhead that the Go-runtime MemStats view omits.
+	procRSSBytes := rssForPID(cmd.Process.Pid)
+	t.Logf("serve: process RSS (real binary) = %.1f MiB", float64(procRSSBytes)/(1024*1024))
+
 	// Clean shutdown: send SIGTERM then wait up to 20 s.
 	shutdownStart := time.Now()
 	if sigErr := cmd.Process.Signal(syscall.SIGTERM); sigErr != nil {
@@ -391,8 +423,10 @@ telemetry:
 		climbDelta:     climbDelta,
 		stabilityOK:    stabilityOK,
 		heapAllocBytes: heapAllocBytes,
+		procRSSBytes:   procRSSBytes,
 		shutdownOK:     shutdownOK,
 		shutdownDur:    shutdownDur,
+		readyDur:       readyDur,
 	}
 	entrypointMu.Unlock()
 }
@@ -485,4 +519,35 @@ mcp:
 		shutdownDur: shutdownDur,
 	}
 	entrypointMu.Unlock()
+}
+
+// ---------------------------------------------------------------------------
+// TestProfileBinarySize
+// ---------------------------------------------------------------------------
+
+// TestProfileBinarySize builds the shipped artifact with release flags
+// (CGO_ENABLED=0, -trimpath, -s -w) and records the binary size in
+// binarySizeBytes for TestProfileWriteBaseline. It is named TestProfileBinary*
+// so it matches the -run TestProfile* filter and sorts before TestProfileMatrix
+// and TestProfileWriteBaseline.
+func TestProfileBinarySize(t *testing.T) {
+	repoRoot := findRepoRoot(t)
+	binPath := filepath.Join(t.TempDir(), "stowage")
+	cmd := exec.Command("go", "build", "-trimpath",
+		"-ldflags", "-s -w", "-o", binPath, "./cmd/stowage")
+	cmd.Dir = repoRoot
+	cmd.Env = append(os.Environ(), "CGO_ENABLED=0")
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("release build: %v\n%s", err, stderr.String())
+	}
+	fi, err := os.Stat(binPath)
+	if err != nil {
+		t.Fatalf("stat binary: %v", err)
+	}
+	entrypointMu.Lock()
+	binarySizeBytes = fi.Size()
+	entrypointMu.Unlock()
+	t.Logf("shipped binary size: %.1f MiB (%d bytes)", float64(fi.Size())/(1024*1024), fi.Size())
 }

@@ -25,9 +25,11 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"runtime/pprof"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -84,13 +86,55 @@ type memFootprint struct {
 	StackInuseBytes uint64
 	SysBytes        uint64
 	NumGC           uint32
+	RSSBytes        uint64
 }
 
 func sampleFootprint() memFootprint {
 	runtime.GC()
 	var m runtime.MemStats
 	runtime.ReadMemStats(&m)
-	return memFootprint{m.HeapAlloc, m.HeapInuse, m.HeapSys, m.StackInuse, m.Sys, m.NumGC}
+	return memFootprint{
+		HeapAllocBytes:  m.HeapAlloc,
+		HeapInuseBytes:  m.HeapInuse,
+		HeapSysBytes:    m.HeapSys,
+		StackInuseBytes: m.StackInuse,
+		SysBytes:        m.Sys,
+		NumGC:           m.NumGC,
+		RSSBytes:        currentRSSBytes(),
+	}
+}
+
+// currentRSSBytes returns the process resident set size in bytes, or 0 if
+// unavailable. CGo-free: /proc on Linux, ps on darwin.
+func currentRSSBytes() uint64 {
+	switch runtime.GOOS {
+	case "linux":
+		data, err := os.ReadFile("/proc/self/statm")
+		if err != nil {
+			return 0
+		}
+		f := strings.Fields(string(data))
+		if len(f) < 2 {
+			return 0
+		}
+		pages, err := strconv.ParseUint(f[1], 10, 64)
+		if err != nil {
+			return 0
+		}
+		return pages * uint64(os.Getpagesize())
+	case "darwin":
+		out, err := exec.Command("ps", "-o", "rss=", "-p", strconv.Itoa(os.Getpid())).Output()
+		if err != nil {
+			return 0
+		}
+		kb, err := strconv.ParseUint(strings.TrimSpace(string(out)), 10, 64)
+		if err != nil {
+			return 0
+		}
+		return kb * 1024 // ps reports KiB
+	default:
+		return 0
+	}
 }
 
 // mib formats a byte count as a MiB string with one decimal place.
@@ -112,6 +156,9 @@ type cellResult struct {
 	gIdle int // post-idle
 	s1    int // steady-state (end of load)
 	s2    int // post-drain+settle
+	// peak goroutines during the load window
+	sPeak     int // high-water-mark goroutines during load
+	peakDelta int // sPeak - g0
 	// footprints at the same four points
 	fpBoot   memFootprint
 	fpIdle   memFootprint
@@ -122,6 +169,9 @@ type cellResult struct {
 	drainDelta  int  // s2 - g0
 	stabilityOK bool // s2 <= g0+eps
 	idleGateOK  bool // gIdle <= g0+eps
+	// lifecycle timings
+	bootDur  time.Duration // time for NewEmbedded to return (== time-to-ready)
+	closeDur time.Duration // time for closer (drain) to return
 	// load phase counters
 	ingestOps   int64
 	retrieveOps int64
@@ -225,6 +275,7 @@ func runCell(t *testing.T, c cell, outDir string) cellResult {
 
 	ctx := context.Background()
 	tenantID := "rig-" + sanitized(c.name)
+	bootStart := time.Now()
 	client, closer, err := stowage.NewEmbedded(ctx, cfg, stowage.WithTenantID(tenantID))
 	if err != nil {
 		if c.storeDriver == "sqlite" {
@@ -236,6 +287,7 @@ func runCell(t *testing.T, c cell, outDir string) cellResult {
 		res.skipReason = fmt.Sprintf("NewEmbedded error: %v", err)
 		return res
 	}
+	res.bootDur = time.Since(bootStart)
 
 	res.ran = true
 
@@ -300,6 +352,31 @@ func runCell(t *testing.T, c cell, outDir string) cellResult {
 		"stowage embedded client",
 	}
 
+	// Peak goroutine sampler — runs during the entire load window.
+	peakStop := make(chan struct{})
+	var peakMax atomic.Int64
+	var peakWg sync.WaitGroup
+	peakWg.Add(1)
+	go func() {
+		defer peakWg.Done()
+		tk := time.NewTicker(10 * time.Millisecond)
+		defer tk.Stop()
+		for {
+			select {
+			case <-peakStop:
+				return
+			case <-tk.C:
+				n := int64(runtime.NumGoroutine())
+				for {
+					cur := peakMax.Load()
+					if n <= cur || peakMax.CompareAndSwap(cur, n) {
+						break
+					}
+				}
+			}
+		}
+	}()
+
 	for i := range *flIngest {
 		wg.Add(1)
 		go func(gIdx int) {
@@ -358,10 +435,17 @@ func runCell(t *testing.T, c cell, outDir string) cellResult {
 	wg.Wait()
 	cancel()
 
+	// Stop peak sampler and record high-water mark.
+	close(peakStop)
+	peakWg.Wait()
+	sPeak := int(peakMax.Load())
+
 	// Steady-state goroutines immediately after load ends.
 	s1 := sampleGoroutines()
 	fpSteady := sampleFootprint()
 	res.s1 = s1
+	res.sPeak = sPeak
+	res.peakDelta = sPeak - g0
 	res.fpSteady = fpSteady
 
 	// Stop CPU profile and write heap/goroutine/block/mutex profiles.
@@ -392,9 +476,11 @@ func runCell(t *testing.T, c cell, outDir string) cellResult {
 
 	// Drain the stack.
 	drainCtx, drainCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	closeStart := time.Now()
 	if dErr := closer(drainCtx); dErr != nil {
 		t.Logf("cell %s: closer (drain): %v", c.name, dErr)
 	}
+	res.closeDur = time.Since(closeStart)
 	drainCancel()
 
 	// Settle then final goroutine + footprint sample.
@@ -412,10 +498,13 @@ func runCell(t *testing.T, c cell, outDir string) cellResult {
 
 	// Per-cell log summary.
 	t.Logf("--- cell %s summary ---", c.name)
+	t.Logf("boot (==ready)         : %s", res.bootDur.Round(time.Millisecond))
 	t.Logf("g0 (post-boot)         : %d goroutines", g0)
 	t.Logf("gIdle (post-idle)      : %d  delta=%d  idleGateOK=%v  (eps=%d)", gIdle, res.idleDelta, res.idleGateOK, *flEps)
+	t.Logf("sPeak (during load)    : %d  peakDelta=%d", sPeak, res.peakDelta)
 	t.Logf("s1 (end-of-load)       : %d goroutines", s1)
 	t.Logf("s2 (post-drain+settle) : %d  delta=%d  stabilityOK=%v  (eps=%d)", s2, res.drainDelta, res.stabilityOK, *flEps)
+	t.Logf("close (drain)          : %s", res.closeDur.Round(time.Millisecond))
 	t.Logf("ingest ops             : %d", res.ingestOps)
 	t.Logf("retrieve ops           : %d", res.retrieveOps)
 	t.Logf("errors (tolerated)     : %d", res.errorCount)
@@ -459,6 +548,12 @@ func TestProfileWriteBaseline(t *testing.T) {
 	var sb strings.Builder
 	ln := func(format string, args ...any) {
 		fmt.Fprintf(&sb, format+"\n", args...)
+	}
+	mibOrNA := func(b uint64) string {
+		if b == 0 {
+			return "n/a"
+		}
+		return mib(b)
 	}
 
 	ln("# Stowage P1 Resource Baseline (D-126)")
@@ -521,6 +616,19 @@ func TestProfileWriteBaseline(t *testing.T) {
 	ln("| -profile.strict          | false   | Make gates fail the build (default: advisory log)        |")
 	ln("| -profile.write-baseline  | false   | (Re)write this file with measured numbers                |")
 	ln("")
+	ln("**Load concurrency (this run):** `%d` concurrent ingest (`-profile.ingest`) + `%d` concurrent retrieve (`-profile.retrieve`) = **%d** concurrent in-flight requests.",
+		*flIngest, *flRetrieve, *flIngest+*flRetrieve)
+	ln("")
+	ln("---")
+	ln("")
+	ln("## Build")
+	ln("")
+	bsStr := "n/a"
+	if binarySizeBytes > 0 {
+		bsStr = fmt.Sprintf("%.1f MiB", float64(binarySizeBytes)/(1024*1024))
+	}
+	ln("Shipped binary size (`CGO_ENABLED=0`, `-trimpath`, `-s -w`): %s", bsStr)
+	ln("")
 	ln("---")
 	ln("")
 	ln("## Matrix Results")
@@ -562,6 +670,8 @@ func TestProfileWriteBaseline(t *testing.T) {
 		ln("| g0 (post-boot)                  | %-25d |", res.g0)
 		ln("| gIdle (post-idle)               | %-25d |", res.gIdle)
 		ln("| s1 (end-of-load)                | %-25d |", res.s1)
+		ln("| sPeak (peak during load)        | %-25d |", res.sPeak)
+		ln("| peak delta (sPeak-g0)           | %-25d |", res.peakDelta)
 		ln("| s2 (post-drain+settle)          | %-25d |", res.s2)
 		ln("| idle delta (gIdle-g0)           | %-25d |", res.idleDelta)
 		ln("| post-drain delta (s2-g0)        | %-25d |", res.drainDelta)
@@ -595,6 +705,14 @@ func TestProfileWriteBaseline(t *testing.T) {
 			mib(res.fpSteady.SysBytes), mib(res.fpDrain.SysBytes))
 		ln("| NumGC        | %-11d | %-11d | %-11d | %-11d |",
 			res.fpBoot.NumGC, res.fpIdle.NumGC, res.fpSteady.NumGC, res.fpDrain.NumGC)
+		ln("| RSS          | %-11s | %-11s | %-11s | %-11s |",
+			mibOrNA(res.fpBoot.RSSBytes), mibOrNA(res.fpIdle.RSSBytes),
+			mibOrNA(res.fpSteady.RSSBytes), mibOrNA(res.fpDrain.RSSBytes))
+		ln("")
+		ln("*MemStats rows = Go-runtime heap view. RSS here = the **test process** resident memory (the `go test` harness + the embedded stack), so absolute MiB run higher than a standalone server — read it as a relative/delta signal. The **true standalone footprint** is the `process RSS (real binary)` in the serve Entrypoint section below.*")
+		ln("")
+		ln("Boot (==ready): %s; close (drain): %s.",
+			res.bootDur.Round(time.Millisecond), res.closeDur.Round(time.Millisecond))
 		ln("")
 		ln("pprof artifacts: %s", res.artifactDir)
 		ln("")
@@ -646,16 +764,32 @@ func TestProfileWriteBaseline(t *testing.T) {
 		if serveRes.heapAllocBytes == 0 {
 			heapStr = "n/a"
 		}
+		procRSSStr := "n/a"
+		if serveRes.procRSSBytes > 0 {
+			procRSSStr = fmt.Sprintf("%.1f MiB", float64(serveRes.procRSSBytes)/(1024*1024))
+		}
+		readyStr := "n/a"
+		if serveRes.readyDur > 0 {
+			readyStr = serveRes.readyDur.Round(time.Millisecond).String()
+		}
 		ln("| Metric                        | Value                     |")
 		ln("|-------------------------------|---------------------------|")
+		ln("| time to ready                 | %-25s |", readyStr)
 		ln("| g0 (baseline goroutines)      | %-25s |", g0Str)
 		ln("| gFinal (after 3 cycles)       | %-25s |", gFinalStr)
 		ln("| climb delta                   | %-25s |", climbStr)
 		ln("| eps                           | %-25d |", *flEps)
 		ln("| stability gate                | %-25s |", stabilityStr)
-		ln("| heap_alloc                    | %-25s |", heapStr)
+		ln("| heap_alloc (Go heap)          | %-25s |", heapStr)
+		ln("| **process RSS (real binary)** | %-25s |", procRSSStr)
 		ln("| clean shutdown                | %-25s |", shutdownStr)
 		ln("| shutdown duration             | %-25s |", serveRes.shutdownDur.Round(time.Millisecond).String())
+		ln("")
+		ln("> `process RSS` is the **true production footprint** — the resident memory of the spawned")
+		ln("> `stowage serve` binary under load (`ps`), including binary text/data + sqlite page cache.")
+		ln("> The matrix-cell RSS rows above are the *test-process* resident memory (the `go test` harness")
+		ln("> plus the embedded stack), so their absolute MiB run higher than a standalone server; read the")
+		ln("> matrix RSS as a relative/delta signal and this serve RSS as the real footprint.")
 	} else {
 		ln("n/a (TestProfileEntrypointServe not collected — run with `-run TestProfile`)")
 	}
@@ -674,6 +808,7 @@ func TestProfileWriteBaseline(t *testing.T) {
 		}
 		ln("| Metric                        | Value                     |")
 		ln("|-------------------------------|---------------------------|")
+		ln("| time to ready                 | %-25s |", "n/a (no readiness surface)")
 		ln("| clean shutdown                | %-25s |", shutdownStr)
 		ln("| shutdown duration             | %-25s |", mcpRes.shutdownDur.Round(time.Millisecond).String())
 	} else {

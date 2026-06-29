@@ -58,6 +58,14 @@ CGO_ENABLED=1 go test -tags=profile -v -run TestProfile ./internal/bench/profile
 | -profile.strict          | false   | Make gates fail the build (default: advisory log)        |
 | -profile.write-baseline  | false   | (Re)write this file with measured numbers                |
 
+**Load concurrency (this run):** `16` concurrent ingest (`-profile.ingest`) + `16` concurrent retrieve (`-profile.retrieve`) = **32** concurrent in-flight requests.
+
+---
+
+## Build
+
+Shipped binary size (`CGO_ENABLED=0`, `-trimpath`, `-s -w`): 44.9 MiB
+
 ---
 
 ## Matrix Results
@@ -76,14 +84,16 @@ Memory footprint MiB values are environment-specific; the delta pattern matters.
 | g0 (post-boot)                  | 30                        |
 | gIdle (post-idle)               | 30                        |
 | s1 (end-of-load)                | 32                        |
+| sPeak (peak during load)        | 119                       |
+| peak delta (sPeak-g0)           | 89                        |
 | s2 (post-drain+settle)          | 2                         |
 | idle delta (gIdle-g0)           | 0                         |
 | post-drain delta (s2-g0)        | -28                       |
 | eps                             | 50                        |
 | idle gate                       | PASS                      |
 | stability gate                  | PASS                      |
-| ingest ops (successful)         | 27092                     |
-| retrieve ops (successful)       | 15865                     |
+| ingest ops (successful)         | 33274                     |
+| retrieve ops (successful)       | 19304                     |
 | errors (tolerated)              | 16                        |
 
 **Memory Footprint** *(environment-specific — MiB values vary by machine)*
@@ -91,13 +101,18 @@ Memory footprint MiB values are environment-specific; the delta pattern matters.
 | Metric       | post-boot   | post-idle   | steady      | post-drain  |
 |--------------|-------------|-------------|-------------|-------------|
 | HeapAlloc    | 4.3 MiB     | 4.3 MiB     | 6.1 MiB     | 3.4 MiB     |
-| HeapInuse    | 6.6 MiB     | 6.6 MiB     | 9.6 MiB     | 6.0 MiB     |
-| HeapSys      | 14.9 MiB    | 14.9 MiB    | 21.6 MiB    | 21.4 MiB    |
-| StackInuse   | 1.1 MiB     | 1.1 MiB     | 2.4 MiB     | 2.6 MiB     |
-| Sys          | 22.8 MiB    | 22.8 MiB    | 33.0 MiB    | 33.5 MiB    |
-| NumGC        | 14          | 17          | 91          | 109         |
+| HeapInuse    | 6.7 MiB     | 6.7 MiB     | 9.7 MiB     | 6.1 MiB     |
+| HeapSys      | 14.9 MiB    | 14.9 MiB    | 21.8 MiB    | 21.8 MiB    |
+| StackInuse   | 1.1 MiB     | 1.1 MiB     | 2.2 MiB     | 2.2 MiB     |
+| Sys          | 22.3 MiB    | 22.3 MiB    | 33.4 MiB    | 33.6 MiB    |
+| NumGC        | 13          | 16          | 103         | 122         |
+| RSS          | 38.7 MiB    | 36.4 MiB    | 55.4 MiB    | 51.1 MiB    |
 
-pprof artifacts: /var/folders/qf/9hz3q9b55xb9hjwg0w478_h00000gn/T/TestProfileMatrix3498429446/001/sqlite-hnsw
+*MemStats rows = Go-runtime heap view. RSS here = the **test process** resident memory (the `go test` harness + the embedded stack), so absolute MiB run higher than a standalone server — read it as a relative/delta signal. The **true standalone footprint** is the `process RSS (real binary)` in the serve Entrypoint section below.*
+
+Boot (==ready): 9ms; close (drain): 370ms.
+
+pprof artifacts: /var/folders/qf/9hz3q9b55xb9hjwg0w478_h00000gn/T/TestProfileMatrix3056648013/001/sqlite-hnsw
 
 ---
 
@@ -109,15 +124,17 @@ pprof artifacts: /var/folders/qf/9hz3q9b55xb9hjwg0w478_h00000gn/T/TestProfileMat
 |---------------------------------|---------------------------|
 | g0 (post-boot)                  | 30                        |
 | gIdle (post-idle)               | 30                        |
-| s1 (end-of-load)                | 34                        |
+| s1 (end-of-load)                | 33                        |
+| sPeak (peak during load)        | 126                       |
+| peak delta (sPeak-g0)           | 96                        |
 | s2 (post-drain+settle)          | 2                         |
 | idle delta (gIdle-g0)           | 0                         |
 | post-drain delta (s2-g0)        | -28                       |
 | eps                             | 50                        |
 | idle gate                       | PASS                      |
 | stability gate                  | PASS                      |
-| ingest ops (successful)         | 25352                     |
-| retrieve ops (successful)       | 14718                     |
+| ingest ops (successful)         | 31918                     |
+| retrieve ops (successful)       | 18400                     |
 | errors (tolerated)              | 16                        |
 
 **Memory Footprint** *(environment-specific — MiB values vary by machine)*
@@ -125,13 +142,18 @@ pprof artifacts: /var/folders/qf/9hz3q9b55xb9hjwg0w478_h00000gn/T/TestProfileMat
 | Metric       | post-boot   | post-idle   | steady      | post-drain  |
 |--------------|-------------|-------------|-------------|-------------|
 | HeapAlloc    | 4.5 MiB     | 4.5 MiB     | 6.2 MiB     | 3.4 MiB     |
-| HeapInuse    | 7.1 MiB     | 7.1 MiB     | 9.5 MiB     | 6.1 MiB     |
-| HeapSys      | 21.5 MiB    | 21.5 MiB    | 21.5 MiB    | 21.5 MiB    |
-| StackInuse   | 2.5 MiB     | 2.5 MiB     | 2.5 MiB     | 2.5 MiB     |
-| Sys          | 33.5 MiB    | 33.5 MiB    | 33.5 MiB    | 33.5 MiB    |
-| NumGC        | 112         | 115         | 189         | 206         |
+| HeapInuse    | 7.2 MiB     | 7.2 MiB     | 9.6 MiB     | 6.1 MiB     |
+| HeapSys      | 21.7 MiB    | 21.7 MiB    | 21.4 MiB    | 21.3 MiB    |
+| StackInuse   | 2.3 MiB     | 2.3 MiB     | 2.6 MiB     | 2.7 MiB     |
+| Sys          | 33.6 MiB    | 33.6 MiB    | 34.1 MiB    | 34.4 MiB    |
+| NumGC        | 125         | 128         | 219         | 237         |
+| RSS          | 52.5 MiB    | 52.5 MiB    | 58.3 MiB    | 52.3 MiB    |
 
-pprof artifacts: /var/folders/qf/9hz3q9b55xb9hjwg0w478_h00000gn/T/TestProfileMatrix3498429446/001/sqlite-brute
+*MemStats rows = Go-runtime heap view. RSS here = the **test process** resident memory (the `go test` harness + the embedded stack), so absolute MiB run higher than a standalone server — read it as a relative/delta signal. The **true standalone footprint** is the `process RSS (real binary)` in the serve Entrypoint section below.*
+
+Boot (==ready): 6ms; close (drain): 356ms.
+
+pprof artifacts: /var/folders/qf/9hz3q9b55xb9hjwg0w478_h00000gn/T/TestProfileMatrix3056648013/001/sqlite-brute
 
 ---
 
@@ -144,28 +166,35 @@ pprof artifacts: /var/folders/qf/9hz3q9b55xb9hjwg0w478_h00000gn/T/TestProfileMat
 | g0 (post-boot)                  | 28                        |
 | gIdle (post-idle)               | 28                        |
 | s1 (end-of-load)                | 29                        |
+| sPeak (peak during load)        | 135                       |
+| peak delta (sPeak-g0)           | 107                       |
 | s2 (post-drain+settle)          | 2                         |
 | idle delta (gIdle-g0)           | 0                         |
 | post-drain delta (s2-g0)        | -26                       |
 | eps                             | 50                        |
 | idle gate                       | PASS                      |
 | stability gate                  | PASS                      |
-| ingest ops (successful)         | 11087                     |
-| retrieve ops (successful)       | 13245                     |
+| ingest ops (successful)         | 15109                     |
+| retrieve ops (successful)       | 18053                     |
 | errors (tolerated)              | 16                        |
 
 **Memory Footprint** *(environment-specific — MiB values vary by machine)*
 
 | Metric       | post-boot   | post-idle   | steady      | post-drain  |
 |--------------|-------------|-------------|-------------|-------------|
-| HeapAlloc    | 4.6 MiB     | 4.6 MiB     | 6.9 MiB     | 3.5 MiB     |
-| HeapInuse    | 7.4 MiB     | 7.4 MiB     | 11.8 MiB    | 6.3 MiB     |
-| HeapSys      | 21.5 MiB    | 21.5 MiB    | 22.2 MiB    | 26.5 MiB    |
-| StackInuse   | 2.5 MiB     | 2.5 MiB     | 1.8 MiB     | 1.5 MiB     |
-| Sys          | 33.5 MiB    | 33.5 MiB    | 33.8 MiB    | 37.9 MiB    |
-| NumGC        | 209         | 212         | 247         | 259         |
+| HeapAlloc    | 4.6 MiB     | 4.6 MiB     | 6.8 MiB     | 3.5 MiB     |
+| HeapInuse    | 7.3 MiB     | 7.3 MiB     | 11.4 MiB    | 6.3 MiB     |
+| HeapSys      | 21.4 MiB    | 21.4 MiB    | 26.2 MiB    | 26.4 MiB    |
+| StackInuse   | 2.6 MiB     | 2.6 MiB     | 1.8 MiB     | 1.6 MiB     |
+| Sys          | 34.4 MiB    | 34.4 MiB    | 38.4 MiB    | 38.4 MiB    |
+| NumGC        | 240         | 243         | 289         | 302         |
+| RSS          | 53.8 MiB    | 53.8 MiB    | 57.1 MiB    | 56.9 MiB    |
 
-pprof artifacts: /var/folders/qf/9hz3q9b55xb9hjwg0w478_h00000gn/T/TestProfileMatrix3498429446/001/postgres-hnsw
+*MemStats rows = Go-runtime heap view. RSS here = the **test process** resident memory (the `go test` harness + the embedded stack), so absolute MiB run higher than a standalone server — read it as a relative/delta signal. The **true standalone footprint** is the `process RSS (real binary)` in the serve Entrypoint section below.*
+
+Boot (==ready): 25ms; close (drain): 1.542s.
+
+pprof artifacts: /var/folders/qf/9hz3q9b55xb9hjwg0w478_h00000gn/T/TestProfileMatrix3056648013/001/postgres-hnsw
 
 ---
 
@@ -178,28 +207,35 @@ pprof artifacts: /var/folders/qf/9hz3q9b55xb9hjwg0w478_h00000gn/T/TestProfileMat
 | g0 (post-boot)                  | 28                        |
 | gIdle (post-idle)               | 28                        |
 | s1 (end-of-load)                | 29                        |
+| sPeak (peak during load)        | 126                       |
+| peak delta (sPeak-g0)           | 98                        |
 | s2 (post-drain+settle)          | 2                         |
 | idle delta (gIdle-g0)           | 0                         |
 | post-drain delta (s2-g0)        | -26                       |
 | eps                             | 50                        |
 | idle gate                       | PASS                      |
 | stability gate                  | PASS                      |
-| ingest ops (successful)         | 10543                     |
-| retrieve ops (successful)       | 12277                     |
+| ingest ops (successful)         | 13273                     |
+| retrieve ops (successful)       | 15507                     |
 | errors (tolerated)              | 16                        |
 
 **Memory Footprint** *(environment-specific — MiB values vary by machine)*
 
 | Metric       | post-boot   | post-idle   | steady      | post-drain  |
 |--------------|-------------|-------------|-------------|-------------|
-| HeapAlloc    | 4.6 MiB     | 4.6 MiB     | 6.9 MiB     | 3.5 MiB     |
-| HeapInuse    | 7.4 MiB     | 7.4 MiB     | 11.9 MiB    | 6.4 MiB     |
-| HeapSys      | 26.4 MiB    | 26.4 MiB    | 26.7 MiB    | 26.9 MiB    |
-| StackInuse   | 1.6 MiB     | 1.6 MiB     | 1.3 MiB     | 1.1 MiB     |
-| Sys          | 37.9 MiB    | 37.9 MiB    | 37.9 MiB    | 37.9 MiB    |
-| NumGC        | 262         | 265         | 299         | 312         |
+| HeapAlloc    | 4.6 MiB     | 4.6 MiB     | 6.8 MiB     | 3.5 MiB     |
+| HeapInuse    | 7.4 MiB     | 7.4 MiB     | 11.5 MiB    | 6.4 MiB     |
+| HeapSys      | 26.4 MiB    | 26.4 MiB    | 26.8 MiB    | 26.9 MiB    |
+| StackInuse   | 1.6 MiB     | 1.6 MiB     | 1.2 MiB     | 1.1 MiB     |
+| Sys          | 38.4 MiB    | 38.4 MiB    | 38.4 MiB    | 38.4 MiB    |
+| NumGC        | 305         | 308         | 350         | 363         |
+| RSS          | 56.9 MiB    | 56.9 MiB    | 56.3 MiB    | 56.4 MiB    |
 
-pprof artifacts: /var/folders/qf/9hz3q9b55xb9hjwg0w478_h00000gn/T/TestProfileMatrix3498429446/001/postgres-brute
+*MemStats rows = Go-runtime heap view. RSS here = the **test process** resident memory (the `go test` harness + the embedded stack), so absolute MiB run higher than a standalone server — read it as a relative/delta signal. The **true standalone footprint** is the `process RSS (real binary)` in the serve Entrypoint section below.*
+
+Boot (==ready): 21ms; close (drain): 1.552s.
+
+pprof artifacts: /var/folders/qf/9hz3q9b55xb9hjwg0w478_h00000gn/T/TestProfileMatrix3056648013/001/postgres-brute
 
 ---
 
@@ -213,14 +249,22 @@ and check goroutine stability + clean-shutdown behaviour.
 
 | Metric                        | Value                     |
 |-------------------------------|---------------------------|
+| time to ready                 | 758ms                     |
 | g0 (baseline goroutines)      | 35                        |
 | gFinal (after 3 cycles)       | 34                        |
 | climb delta                   | -1                        |
 | eps                           | 50                        |
 | stability gate                | PASS                      |
-| heap_alloc                    | 6.1 MiB                   |
+| heap_alloc (Go heap)          | 6.9 MiB                   |
+| **process RSS (real binary)** | 54.3 MiB                  |
 | clean shutdown                | yes                       |
-| shutdown duration             | 4ms                       |
+| shutdown duration             | 3ms                       |
+
+> `process RSS` is the **true production footprint** — the resident memory of the spawned
+> `stowage serve` binary under load (`ps`), including binary text/data + sqlite page cache.
+> The matrix-cell RSS rows above are the *test-process* resident memory (the `go test` harness
+> plus the embedded stack), so their absolute MiB run higher than a standalone server; read the
+> matrix RSS as a relative/delta signal and this serve RSS as the real footprint.
 
 ### mcp (`stowage mcp --stdio`)
 
@@ -229,8 +273,9 @@ No goroutine introspection is available for the MCP stdio entrypoint
 
 | Metric                        | Value                     |
 |-------------------------------|---------------------------|
+| time to ready                 | n/a (no readiness surface) |
 | clean shutdown                | yes                       |
-| shutdown duration             | 3ms                       |
+| shutdown duration             | 4ms                       |
 
 ---
 
