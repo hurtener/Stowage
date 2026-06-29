@@ -145,6 +145,15 @@ type GatewayConfig struct {
 	// auto-wired Cohere-shape rerank provider POSTs to, for the rare case rerank
 	// lives on a different host than embed/complete (D-075). Empty → use base_url.
 	RerankBaseURL string `yaml:"rerank_base_url"`
+
+	// Per-learner-stage completion models (D-132). Each optionally overrides Model
+	// for one learner stage; empty (the default) falls back to Model. Lets a cheap
+	// extractor run alongside a stronger reconciler/reflector without a second
+	// gateway. The .env already separates LEARNER_MODEL from EMBEDDED_MODEL — these
+	// expose that split in config.
+	ExtractModel   string `yaml:"extract_model"`
+	ReconcileModel string `yaml:"reconcile_model"`
+	ReflectModel   string `yaml:"reflect_model"`
 }
 
 // TelemetryConfig controls logging and metrics.
@@ -182,6 +191,9 @@ var allKeys = []string{
 	"gateway.embed_dims",
 	"gateway.rerank_model",
 	"gateway.rerank_base_url",
+	"gateway.extract_model",
+	"gateway.reconcile_model",
+	"gateway.reflect_model",
 	"telemetry.log_level",
 	"telemetry.log_format",
 	"telemetry.metrics_listen",
@@ -234,6 +246,9 @@ var envKeys = []struct {
 	{"STOWAGE_GATEWAY_EMBED_DIMS", "gateway.embed_dims"},
 	{"STOWAGE_GATEWAY_RERANK_MODEL", "gateway.rerank_model"},
 	{"STOWAGE_GATEWAY_RERANK_BASE_URL", "gateway.rerank_base_url"},
+	{"STOWAGE_GATEWAY_EXTRACT_MODEL", "gateway.extract_model"},
+	{"STOWAGE_GATEWAY_RECONCILE_MODEL", "gateway.reconcile_model"},
+	{"STOWAGE_GATEWAY_REFLECT_MODEL", "gateway.reflect_model"},
 	{"STOWAGE_TELEMETRY_LOG_LEVEL", "telemetry.log_level"},
 	{"STOWAGE_TELEMETRY_LOG_FORMAT", "telemetry.log_format"},
 	{"STOWAGE_TELEMETRY_METRICS_LISTEN", "telemetry.metrics_listen"},
@@ -710,6 +725,12 @@ func (c *Config) getByPath(path string) string {
 		return c.Gateway.RerankModel
 	case "gateway.rerank_base_url":
 		return c.Gateway.RerankBaseURL
+	case "gateway.extract_model":
+		return c.Gateway.ExtractModel
+	case "gateway.reconcile_model":
+		return c.Gateway.ReconcileModel
+	case "gateway.reflect_model":
+		return c.Gateway.ReflectModel
 	case "telemetry.log_level":
 		return c.Telemetry.LogLevel
 	case "telemetry.log_format":
@@ -810,6 +831,12 @@ func (c *Config) setByPath(path, value string) error {
 		c.Gateway.RerankModel = value
 	case "gateway.rerank_base_url":
 		c.Gateway.RerankBaseURL = value
+	case "gateway.extract_model":
+		c.Gateway.ExtractModel = value
+	case "gateway.reconcile_model":
+		c.Gateway.ReconcileModel = value
+	case "gateway.reflect_model":
+		c.Gateway.ReflectModel = value
 	case "telemetry.log_level":
 		c.Telemetry.LogLevel = value
 	case "telemetry.log_format":

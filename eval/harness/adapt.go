@@ -65,7 +65,7 @@ func playbookContext(pb *playbook.Playbook) []string {
 
 // reflectAndCommit reflects one trajectory and commits its candidates to the store.
 func reflectAndCommit(ctx context.Context, st store.Store, gw gateway.Gateway, scope identity.Scope, traj reflect.Trajectory) (int, error) {
-	cands, err := reflect.Reflect(ctx, gw, scope, traj)
+	cands, err := reflect.Reflect(ctx, gw, scope, traj, "") // "" → the harness-configured gateway.model (D-132)
 	if err != nil {
 		return 0, err
 	}

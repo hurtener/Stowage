@@ -62,6 +62,12 @@ type ExtractStage struct {
 	// whose "low" floor cuts extraction latency markedly). Set once before Start.
 	reasoningEffort string
 
+	// model optionally overrides the gateway's configured completion model for the
+	// extraction Complete call ("" = use gateway.model). Set from gateway.extract_model
+	// (D-132) so a cheap/fast extractor can differ from the reconcile/reflect model.
+	// Set once before Start.
+	model string
+
 	in  <-chan FlushedBuffer
 	out chan CandidateBatch
 
@@ -93,6 +99,11 @@ func NewExtractStage(
 // Complete call (see the reasoningEffort field). Empty disables the parameter. Must be
 // called before Start.
 func (e *ExtractStage) SetReasoningEffort(effort string) { e.reasoningEffort = effort }
+
+// SetModel sets the optional per-stage completion model for the extraction Complete
+// call (see the model field). Empty uses the gateway's configured model. Must be
+// called before Start (D-132).
+func (e *ExtractStage) SetModel(model string) { e.model = model }
 
 // Downstream returns the read-end of the CandidateBatch channel.
 // Phase 08 replaces the no-op consumer with reconciliation dispatch.
@@ -193,6 +204,7 @@ func (e *ExtractStage) processFlush(ctx context.Context, fb FlushedBuffer) {
 		Schema:          CandidateSchema,
 		MaxTokens:       extractMaxTokens,
 		Temperature:     0.0,
+		Model:           e.model,           // "" → gateway.model (D-132)
 		ReasoningEffort: e.reasoningEffort, // "" → no reasoning param (D-128)
 	}
 	// Scope the ctx so the extraction gateway call is attributed in the usage event

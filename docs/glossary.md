@@ -480,3 +480,9 @@ naming the var (RFC §9.4).
 **`mock` escape hatch** — `STOWAGE_GATEWAY_DRIVER=mock` boots a keyless, no-provider gateway
 for hermetic tests and offline runs. `mock` is a first-class driver, no longer the default
 (D-131).
+
+**Per-learner-stage model** — an optional completion model pinned to one learner stage
+(`gateway.extract_model` / `reconcile_model` / `reflect_model`), each falling back to
+`gateway.model` when empty. Lets a cheap extractor run alongside a stronger
+reconciler/reflector through one gateway (D-132). Distinct from per-concern provider
+keys (a1b), which split the provider/credential rather than the model.

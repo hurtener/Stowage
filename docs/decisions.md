@@ -3554,3 +3554,34 @@ still repoint the single provider/key/base_url today. Tracked, not dropped.
 embedded SQLite; the explain golden, the rerank-base-url default test, and every serve smoke
 were updated/verified green. The README quickstart prose (MCP opt-in honesty + the real
 minimum-var block) lands in a3.
+
+## D-132 — Per-learner-stage completion model (extract / reconcile / reflect)
+
+2026-06-29. Phase a2 (Adoption & ergonomics track, D-131). One shared `gateway.model`
+drove every learner LLM call. The eval `.env` already separates `LEARNER_MODEL` from
+`EMBEDDED_MODEL`, and operators want a cheap/fast extractor alongside a stronger
+reconciler/reflector without standing up a second gateway.
+
+**Decision.** Add three optional config keys — `gateway.extract_model`,
+`gateway.reconcile_model`, `gateway.reflect_model` — each overriding the completion
+model for ONE learner stage. Empty (the default) falls back to `gateway.model`, so
+existing behavior is unchanged and zero-config start is untouched. The mechanism reuses
+the per-call model seam (`CompleteRequest.Model`, D-100, already honored by both real
+drivers) and mirrors the per-stage effort precedent (D-128): the extract and reconcile
+stages gain a `model` field + `SetModel` setter alongside `SetReasoningEffort`; the
+`reflect.Reflect` free function gains a trailing `model` argument, threaded from a new
+`lifecycle.Manager.reflectModel` (`SetReflectModel`). `boot.StartPipeline` wires the
+configured per-stage models into the production stages — previously only the eval
+harness set stage-level knobs.
+
+**Coverage.** Stage-level tests prove the configured model reaches the `Complete` call
+at each stage (`TestExtract_ModelWiring`, `TestStageModelWiring`,
+`TestReflect_ModelWiring`) and that empty leaves `CompleteRequest.Model` blank
+(→ gateway.model). The boot path's wiring is the visible `SetModel(cfg.Gateway.*)` /
+`SetReflectModel` calls; the smoke (`scripts/smoke/phase-a2.sh`) asserts the three keys
+surface in `config explain` and the env override resolves.
+
+**Consequences.** Three new knobs, all default-empty (inherit), so the knob guardrail
+(D-034) cost is paid only by operators who want the split — justified by a real need a
+profile can't absorb (a model choice, not a tuned constant). Per-concern provider keys
+(a1b) remain the orthogonal follow-up for splitting providers/keys, not models.
