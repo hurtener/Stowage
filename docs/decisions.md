@@ -3473,3 +3473,35 @@ goroutine-stability gate (`post-drain NumGoroutine ≤ post-boot + ε`) is the P
 drain-on-shutdown contract made measurable; the idle gate (zero-traffic CPU/alloc
 ceiling) is the direct rebuttal to the brief-01 polling-worker-pool tax P2 was designed
 to remove. No prior decision is reversed; §11 observability is extended, not contradicted.
+
+**Implementation notes (P1 as built, 2026-06-29).** P1 shipped across six commits on
+`feat/phase-p1-implementation`. Deviations from the plan text, all recorded in
+`docs/plans/phase-p1-profiling-harness.md` (§4.3):
+
+- **pprof is admin-role-gated**, not merely key-gated: heap/goroutine dumps are
+  process-global (not tenant-scoped), so the listener reuses
+  `(*api.Server).authMiddleware(_, requireAdmin=true)` (401/403/200). The dedicated
+  listener sets **no `WriteTimeout`** — a streaming `/debug/pprof/profile?seconds=N`
+  capture must not be truncated (the reason it is a separate listener, mirroring D-074).
+- **The runtime sampler logs; it does not register custom gauges or emit an event.**
+  `collectors.NewGoCollector()` (already in `telemetry.New`) covers the Prometheus path;
+  the sampler's value is the pull-independent `runtime.sample` log line. The typed event
+  was dropped (no events package; events are tenant-scoped, samples are process-global).
+- **goleak is wired via a shared `internal/leakcheck.Run(m, Advisory)` helper**, not raw
+  `goleak.VerifyTestMain` (which hard-exits on a leak). Advisory-then-promote is a
+  one-line `Advisory`→`Strict` flip per package. The plan's target list over-counted —
+  `proactive`/`scoring`/`traces`/`mcpserver` launch no goroutines; **`vindex` did and had
+  no coverage** (added with the matrix).
+- **The rig profiles two matrices** (owner request, "measure all drivers"): the
+  driver/store grid `{hnsw,brute}×{sqlite,postgres}` and the entrypoint shapes
+  `{embedded,serve,mcp}`, each capturing a **memory footprint** at every sample point, not
+  just goroutine counts. `serve`/`mcp` are profiled by spawning the real binary (serve via
+  the pprof endpoint — dogfooding; mcp as a clean-shutdown check).
+- **Only `hnsw`+`brute` vindex drivers exist**; the `pgvector`-native ANN driver named in
+  §3 is unbuilt — a principal-Postgres parity gap filed as **issue #87**, deferred to
+  after this wave (out of P1 scope).
+- **First baseline is all-green** (`eval/PROFILE.md`): every driver/store cell and both
+  measurable entrypoints PASS goroutine-stability with no leak (post-drain deltas −26..−28;
+  serve climb −1; all shapes drain cleanly ≤ ~5 ms). The harness found the system healthy
+  on its first run — exactly the "build + baseline, don't fix" outcome the track intends.
+  The rig stays behind `-tags=profile` (`make profile`), out of the per-PR matrix.

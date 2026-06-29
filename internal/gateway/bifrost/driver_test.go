@@ -15,6 +15,7 @@ import (
 	"github.com/hurtener/stowage/internal/config"
 	"github.com/hurtener/stowage/internal/gateway"
 	. "github.com/hurtener/stowage/internal/gateway/bifrost"
+	"github.com/hurtener/stowage/internal/leakcheck"
 )
 
 // ─── fake client ─────────────────────────────────────────────────────────────
@@ -109,7 +110,7 @@ func okChatResponse(content string) *bfschemas.BifrostChatResponse {
 
 func TestMain(m *testing.M) {
 	os.Setenv("STOWAGE_TEST_BIFROST_SDK_KEY", "test-key") //nolint:errcheck
-	os.Exit(m.Run())
+	leakcheck.Run(m, leakcheck.Advisory)
 }
 
 // ─── Embed: translate both directions ────────────────────────────────────────

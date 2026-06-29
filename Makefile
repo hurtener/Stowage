@@ -4,7 +4,7 @@ PKG   := ./...
 VERSION ?= dev
 LDFLAGS := -s -w -X github.com/hurtener/stowage/internal/version.Version=$(VERSION)
 
-.PHONY: build test coverage bench slo eval-ci vet lint drift-audit check-mirror preflight install-hooks clean
+.PHONY: build test coverage bench slo profile eval-ci vet lint drift-audit check-mirror preflight install-hooks clean
 
 build:
 	CGO_ENABLED=0 go build -trimpath -ldflags '$(LDFLAGS)' -o $(BIN) ./cmd/stowage
@@ -33,6 +33,13 @@ eval-ci:
 slo:
 	CGO_ENABLED=1 go test -tags=slo -v -run TestSLO ./internal/bench/slo/ \
 	  $(if $(STOWAGE_TEST_PG_DSN),-slo.dsn "$(STOWAGE_TEST_PG_DSN)",)
+
+# profile runs the P1 load+profile rig (D-126). SQLite cut, no external deps.
+# Captures CPU/heap/goroutine/block/mutex profiles and the goroutine-stability
+# + idle gates (advisory by default; -profile.strict makes them bite). Write
+# the baseline to eval/PROFILE.md with -profile.write-baseline.
+profile:
+	CGO_ENABLED=1 go test -tags=profile -v -run 'TestProfile' ./internal/bench/profile/ $(PROFILE_ARGS)
 
 vet:
 	go vet $(PKG)

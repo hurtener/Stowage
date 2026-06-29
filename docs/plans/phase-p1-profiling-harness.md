@@ -72,25 +72,41 @@ transport protections are set explicitly, never inherited).
   the reasoning that justified the MCP listener's own server. The listener wiring
   therefore lives in `cmd/stowage/main.go` next to `mcpHTTP`, not on the API mux; it sets
   `ReadHeaderTimeout` but no `WriteTimeout`.
-- The listener is **auth-gated** by the same constant-time API-key check as the admin
-  API (reuse `internal/auth`) via a small handler wrapper around the pprof mux; a request
-  without a valid admin key gets 401. It binds loopback by default in every profile;
-  binding a non-loopback address requires the operator to set it explicitly (documented
-  as a deliberate exposure).
+- The listener is **admin-gated** by reusing the API's existing
+  `(*Server).authMiddleware(_, requireAdmin=true)` — the same constant-time `auth.Verify`
+  used by the admin API. **Admin role is required, not merely a valid key:** pprof exposes
+  **process-global** profile data (heap/goroutine dumps are not tenant-scoped), so a
+  non-admin tenant key must not reach it. No Authorization → 401; valid non-admin key →
+  403; admin key → 200. It binds loopback by default in every profile; binding a
+  non-loopback address requires the operator to set it explicitly (documented as a
+  deliberate exposure).
 - Knob-guardrail treatment (D-034): tuned default (empty), placement in every profile
   (`assistant`/`coding-agent`/`fleet` all default it empty), docs in the example config
   and this plan, and a smoke check.
 
 ### Workstream B — runtime sampling through the telemetry seam
 
-A small `telemetry` sampler (ticker-driven, jittered, opt-in via a knob) reads
-`runtime.NumGoroutine()` and `runtime.ReadMemStats` and emits them as Prometheus gauges
-(`stowage_goroutines`, `stowage_heap_alloc_bytes`, `stowage_heap_objects`,
-`stowage_gc_pause_seconds`) and a typed `events/v1` resource-sample event. It is
-non-blocking and off the hot path. This gives the "is the platform healthy" feed
-(RFC §11 usage-analytics framing) a resource dimension. Default sample interval is a
-profile-defaulted knob; default OFF for `assistant`, ON at a coarse interval for
-`fleet`.
+A small `telemetry.RuntimeSampler` (ticker-driven, opt-in via a knob) reads
+`runtime.NumGoroutine()` and `runtime.ReadMemStats` and emits them as a single
+structured **slog line** (`runtime.sample` with `goroutines`, `heap_alloc_bytes`,
+`heap_objects`, `heap_sys_bytes`, `num_gc`, `gc_pause_total_ns`) at the configured
+interval. Default interval is profile-defaulted; OFF for `assistant`/`coding-agent`,
+60 s for `fleet`.
+
+**Rescoped during implementation (deviation, §4.3).** The plan originally called for
+custom `stowage_*` Prometheus gauges and a typed `events/v1` resource-sample event;
+both were dropped as built:
+
+- **No custom gauges.** `telemetry.New` already registers `collectors.NewGoCollector()`,
+  which exposes `go_goroutines`, `go_memstats_heap_alloc_bytes`, `go_memstats_heap_objects`,
+  and `go_gc_duration_seconds` on `/metrics` (pull path). Custom `stowage_*` gauges would
+  duplicate it. The sampler's unique value is the **pull-independent log signal** — visible
+  without a scraper (embedded SDK mode, transient debugging), which is the regime the idle
+  observation cares about.
+- **No typed event.** There is no `internal/events/` package (the §3 layout lists it
+  aspirationally); events flow through `store.Events().Emit(ctx, scope, …)` and are
+  **tenant-scoped** (P3), while resource samples are **process-global** — no natural scope.
+  A new event type is also a versioned `events/v1` contract change (§8). Deferred.
 
 The sampler is itself a ticker goroutine, so it is **wired into the `boot.Stack`
 lifecycle**: started under the Stack, stopped and drained on `Stack.Close`, and it must
@@ -99,17 +115,24 @@ sampler that outlives `Close` would itself fail the goroutine-stability gate.
 
 ### Workstream C — goleak in the test suite (advisory → gate)
 
-Each package that launches goroutines gets a `TestMain` that runs
-`goleak.VerifyTestMain(m)` with documented, narrowly-scoped ignore-rules for known
-framework goroutines (e.g. the sqlite writer, the pgx pool reaper). Target packages
-(from the goroutine-launch inventory): `pipeline`, `lifecycle`, `boot`, `reconcile`,
-`retrieval`, `trust`, `causal`, `episodes`, `proactive`, `scoring`, `traces`,
-`mcpserver`, `gateway` (+ `bifrost`/`openaicompat`), `store/sqlitestore`, `vindex`.
-**Advisory first** (D-126): a leak prints a diagnostic but does not fail CI until the
-package's baseline is clean; promotion to a hard failure is a one-line flip per package
-in a follow-up, tracked in `eval/PROFILE.md`. `go.uber.org/goleak` is already in
-`go.sum` (transitive) — no new direct dependency surface beyond promoting it to a
-direct require.
+Each package that launches goroutines gets a `TestMain` routed through a shared
+`internal/leakcheck.Run(m, leakcheck.Advisory)` helper — **not** the raw
+`goleak.VerifyTestMain`, which hard-`os.Exit(1)`s on a leak and would violate the
+advisory-then-promote posture. `leakcheck.Run` runs the tests, then `goleak.Find()` only
+when they passed (a failing test leaves goroutines mid-flight → false positives), and in
+`Advisory` mode logs the leak to stderr without changing the exit code. **Promotion to a
+hard gate is a one-line flip per package** (`leakcheck.Advisory` → `leakcheck.Strict`).
+
+**Actual target set (corrected during implementation, §4.3).** The originally-listed set
+included `proactive`, `scoring`, `traces`, `mcpserver` — but a careful grep shows those
+packages launch **no** goroutines in production code (the original inventory's loose
+`go [a-z]` pattern false-matched). The real goroutine-launching packages, all wired:
+`boot`, `pipeline`, `lifecycle`, `reconcile`, `retrieval`, `trust`, `causal`, `episodes`,
+`gateway` (+ `bifrost`/`openaicompat`), `store/sqlitestore`, and **`vindex`** (the sidecar
+suspect — it was missing from Unit 4's narrower grep and added in the matrix unit). The
+three packages with a pre-existing `TestMain` (`sqlitestore`, `bifrost`, `openaicompat`)
+route their existing `TestMain` through `leakcheck.Run`, preserving setup. `go.uber.org/goleak`
+(transitive in `go.sum`) was promoted to a direct require.
 
 ### Workstream D — the load+profile rig (`internal/bench/profile/`)
 
@@ -163,6 +186,32 @@ All gate ceilings are **advisory** in this phase: the rig records measured numbe
 committed (advisory-then-promote, D-126). The always-on CI cut (sqlite) is fast and
 deterministic; the Postgres + long-duration cuts are on-demand like `make slo`.
 
+**As-built scope (expanded on owner request, §4.3 — "measure all drivers; we might have
+leaks in any version").** The rig profiles two matrices instead of a single config, and
+captures a memory footprint at every sample point (not just goroutine counts):
+
+- **Driver/store matrix** (`TestProfileMatrix`): every cell of `{vindex: hnsw, brute} ×
+  {store: sqlite, postgres}` is booted as a full embedded stack and run through idle +
+  load + drain. Postgres cells are gated on `-profile.dsn`/`STOWAGE_TEST_PG_DSN` (skip,
+  not fail, when absent — SLO-rig parity). **Note:** the seam ships only `hnsw` + `brute`
+  today; the `pgvector`-native ANN driver named in §3 is unbuilt — a principal-Postgres
+  parity gap tracked in **issue #87**, to be tackled after this wave. So the matrix is
+  `{hnsw,brute}` over both stores, which is the leak surface that actually exists.
+- **Entrypoint matrix** (`TestProfileEntrypoint{Serve,MCP}`): the embedded shape is
+  profiled in-process by `TestProfileMatrix`; the `serve` and `mcp` shapes are profiled by
+  spawning the **real binary** as a subprocess. `serve` drives 3 HTTP load cycles and
+  samples the goroutine total via the admin-gated pprof endpoint (climb-across-cycles
+  detection — dogfooding Workstream A) plus a SIGTERM clean-shutdown/hang check; `mcp`
+  (stdio, no pprof surface) is a stdin-EOF clean-shutdown/hang check only.
+- **Memory footprint:** `HeapAlloc/HeapInuse/HeapSys/StackInuse/Sys/NumGC` captured at
+  post-boot / post-idle / steady-state / post-drain for every matrix cell, plus heap for
+  the `serve` entrypoint — so each cut carries both the goroutine-stability and the memory
+  baseline. Goroutine deltas are environment-independent; absolute MiB are local.
+
+**First baseline result (all green).** Every driver/store cell and both entrypoints PASS
+goroutine-stability with **no leak** (post-drain deltas −26..−28; serve climb −1; all
+shapes drain cleanly in ≤ ~5 ms). The harness found the system healthy on its first run.
+
 ### Targets the rig probes first (from the decision log)
 
 The harness is generic, but the first investigations target the known suspects so the
@@ -178,18 +227,21 @@ follow-up fix-phases have somewhere to start:
 ## Files added or changed
 
 ```text
-internal/bench/profile/profile_test.go      # the load+profile rig (-tags=profile)
-internal/bench/profile/workload.go          # mixed ingest/retrieve/sweep driver
-internal/telemetry/runtime_sampler.go       # MemStats/NumGoroutine sampler + gauges
+internal/bench/profile/profile_test.go       # the load+profile rig + driver/store matrix (-tags=profile)
+internal/bench/profile/entrypoint_test.go    # serve + mcp entrypoint lifecycle (-tags=profile)
+internal/telemetry/runtime_sampler.go        # MemStats/NumGoroutine LOGGING sampler (no custom gauges)
 internal/telemetry/runtime_sampler_test.go
-internal/api/pprof.go                        # auth wrapper around the pprof mux (reuses internal/auth)
-cmd/stowage/main.go                          # start/Shutdown pprof listener next to mcpHTTP (D-074 pattern)
-internal/config/config.go                    # server.pprof_listen + sampler knobs
-internal/config/profiles.go                  # profile placements (all default safe)
-internal/<goroutine-pkgs>/main_test.go       # goleak.VerifyTestMain per package
-eval/PROFILE.md                              # committed reference baselines
-scripts/smoke/phase-p1.sh                    # smoke checks
-docs/plans/phase-p1-profiling-harness.md     # this file
+internal/telemetry/leak_test.go              # sampler goroutine leak check
+internal/api/pprof.go                         # pprofMux + (*Server).PprofAdminHandler (requireAdmin)
+cmd/stowage/main.go                           # start/Shutdown pprof listener next to mcpHTTP (D-074 pattern)
+internal/config/config.go                     # server.pprof_listen + telemetry.runtime_sample_interval
+internal/config/profiles.go                   # profile placements (fleet sampler 60s; pprof empty everywhere)
+internal/leakcheck/leakcheck.go               # shared advisory/strict goleak helper
+internal/<goroutine-pkg>/leak_test.go         # leakcheck.Run(Advisory) per goroutine-launching package
+eval/PROFILE.md                               # committed reference baselines (matrix + footprint + entrypoints)
+Makefile                                      # `make profile` target
+scripts/smoke/phase-p1.sh                     # smoke checks
+docs/plans/phase-p1-profiling-harness.md      # this file
 ```
 
 ## Config keys added
@@ -202,27 +254,40 @@ docs/plans/phase-p1-profiling-harness.md     # this file
 ## Acceptance criteria (binding)
 
 1. `server.pprof_listen` empty ⇒ `serve` starts no pprof listener and zero-config boot
-   is unchanged (smoke); set ⇒ `/debug/pprof/` reachable **only** with a valid admin
-   key, 401 otherwise (constant-time check); never mounted on the public API mux.
-2. The runtime sampler emits `stowage_goroutines` + heap gauges and a typed resource
-   event when enabled; is non-blocking; default-off for `assistant`.
-3. `goleak.VerifyTestMain` is wired into every goroutine-launching package listed in
-   Workstream C, advisory, with documented ignore-rules; `make test` stays green under
-   `-race`.
+   is unchanged (smoke); set ⇒ `/debug/pprof/` reachable **only** with an **admin** key
+   (no auth → 401, valid non-admin key → 403, admin → 200; constant-time `auth.Verify`);
+   never mounted on the public API mux; the dedicated listener sets no `WriteTimeout`
+   (streaming profile captures must not be truncated).
+2. The runtime sampler logs a `runtime.sample` line (`NumGoroutine` + `MemStats`) at the
+   configured interval; is non-blocking; drains on `Stack.Close`; default-off for
+   `assistant`/`coding-agent`, 60 s for `fleet`. (Prometheus resource gauges come from the
+   pre-existing GoCollector; no custom gauges/event — see Workstream B.)
+3. `leakcheck.Run(m, Advisory)` is wired into every goroutine-launching package
+   (the corrected set, incl. `vindex`); advisory so a pre-existing leak logs without
+   failing the build; `go test -race ./...` stays green.
 4. The `-tags=profile` rig boots a full stack (sqlite cut), drives the concurrent
    workload, and writes CPU/heap/goroutine/block/mutex profile artifacts — with block and
    mutex sampling explicitly enabled (`SetBlockProfileRate`/`SetMutexProfileFraction`) so
    those two are non-empty, and reset afterward.
-5. The goroutine-stability gate computes S0/S1/S2 (S2 after `Stack.Close(ctx)` + settle)
-   and records them; **post-drain S2 ≤ S0 + ε** holds for the sqlite cut (if it does not,
-   that is a leak finding filed for a P-series follow-up, and the baseline records it as a
-   known gap rather than silently passing).
-6. The idle gate's deterministic signals (idle alloc + goroutine delta) are asserted in
-   the always-on CI cut; the noisy idle CPU-time ceiling is recorded under `make profile`
-   only. Both are written to `eval/PROFILE.md`.
-7. Reference baselines (idle heap, idle goroutines, goroutines @ N sessions, alloc/op on
-   the ingest and retrieve hot paths) are committed in `eval/PROFILE.md` with a
-   one-command reproduction.
+5. The goroutine-stability gate computes the post-boot / steady / post-drain goroutine
+   samples per cell (post-drain after `closer` = `Stack.Close` + pipeline `Drain` + settle)
+   and records them; **post-drain ≤ post-boot + ε** holds for **every** driver/store cell
+   and the `serve` entrypoint. If a cell does not, it is a leak finding filed for a
+   P-series follow-up and recorded as a known gap rather than silently passing (advisory
+   unless `-profile.strict`).
+6. The idle gate (zero traffic, sweeps running) records the goroutine delta + idle alloc
+   per cell; goroutine growth ≤ ε. Captured for all cells in `eval/PROFILE.md`.
+7. The driver/store matrix (`{hnsw,brute}×{sqlite,postgres}`) + the `serve`/`mcp`
+   entrypoints are committed in `eval/PROFILE.md` with a one-command reproduction
+   (`make profile`; Postgres cells skip gracefully without a DSN), carrying for each cell:
+   the goroutine-stability samples **plus the peak goroutines during load** (a high-water
+   sampler — post-burst `s1` hides peak concurrency); a **memory footprint**
+   (`HeapAlloc/HeapInuse/HeapSys/StackInuse/Sys` + **process RSS** — test-process RSS for
+   the matrix cells, the **real shipped-binary RSS** for `serve` via `ps`, since the
+   Go-runtime heap view is not the OS footprint); **lifecycle timings** (boot/time-to-ready,
+   close/drain); the **shipped binary size** (`CGO_ENABLED=0 -trimpath -s -w`); and the
+   **load concurrency** (`-profile.ingest`+`-profile.retrieve` saturating workers) stated
+   explicitly so the reference numbers are self-describing.
 8. New knobs ship with tuned defaults, placement in every profile, docs, and a smoke
    check (D-034). `make preflight` + `make drift-audit` + `make check-mirror` green.
 

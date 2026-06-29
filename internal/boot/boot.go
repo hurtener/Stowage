@@ -107,6 +107,16 @@ func Open(ctx context.Context, cfg *config.Config) (*Stack, error) {
 		return nil, fmt.Errorf("boot: telemetry: %w", err)
 	}
 
+	// 1b. Runtime resource sampler — periodic NumGoroutine/MemStats logging
+	// (D-126, P1). Off unless telemetry.runtime_sample_interval > 0. Prometheus
+	// resource gauges come from the GoCollector registered in telemetry.New; this
+	// adds the pull-independent log signal. Drained on Stack.Close.
+	if cfg.Telemetry.RuntimeSampleInterval > 0 {
+		sampler := telemetry.NewRuntimeSampler(s.Log, time.Duration(cfg.Telemetry.RuntimeSampleInterval)*time.Second)
+		sampler.Start(ctx)
+		s.closers = append(s.closers, sampler.Close)
+	}
+
 	// 2. Store — open driver + apply pending migrations (idempotent).
 	s.Store, err = store.Open(ctx, cfg.Store)
 	if err != nil {

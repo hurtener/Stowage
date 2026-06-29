@@ -341,6 +341,8 @@ func clearStowageEnv(t *testing.T) {
 	vars := []string{
 		"STOWAGE_PROFILE",
 		"STOWAGE_SERVER_LISTEN",
+		"STOWAGE_SERVER_MCP_LISTEN",
+		"STOWAGE_SERVER_PPROF_LISTEN",
 		"STOWAGE_SERVER_READ_TIMEOUT",
 		"STOWAGE_SERVER_WRITE_TIMEOUT",
 		"STOWAGE_SERVER_IDLE_TIMEOUT",
@@ -358,6 +360,7 @@ func clearStowageEnv(t *testing.T) {
 		"STOWAGE_TELEMETRY_LOG_LEVEL",
 		"STOWAGE_TELEMETRY_LOG_FORMAT",
 		"STOWAGE_TELEMETRY_METRICS_LISTEN",
+		"STOWAGE_TELEMETRY_RUNTIME_SAMPLE_INTERVAL",
 	}
 	for _, v := range vars {
 		prev, had := os.LookupEnv(v)
@@ -699,6 +702,168 @@ func TestRerankBaseURLEnvOverride(t *testing.T) {
 	}
 	if cfg.Gateway.RerankBaseURL != "https://rerank.example.com/v1" {
 		t.Errorf("Gateway.RerankBaseURL = %q, want %q", cfg.Gateway.RerankBaseURL, "https://rerank.example.com/v1")
+	}
+}
+
+// TestPprofListenDefaultEmpty verifies server.pprof_listen defaults to empty
+// (opt-in, disabled by default) and the default config validates.
+func TestPprofListenDefaultEmpty(t *testing.T) {
+	clearStowageEnv(t)
+	cfg := config.Defaults()
+	if cfg.Server.PprofListen != "" {
+		t.Errorf("Server.PprofListen = %q, want empty (opt-in default)", cfg.Server.PprofListen)
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Errorf("Defaults().Validate() with empty pprof_listen: %v", err)
+	}
+}
+
+// TestPprofListenValidation table-tests server.pprof_listen validation:
+// empty ok, a valid host:port ok, malformed/colliding addresses fail.
+func TestPprofListenValidation(t *testing.T) {
+	clearStowageEnv(t)
+	tests := []struct {
+		name      string
+		listen    string // server.listen; default :7160 when empty
+		mcpListen string // server.mcp_listen; "" when empty
+		pprof     string
+		wantErr   bool
+	}{
+		{name: "empty is ok", pprof: "", wantErr: false},
+		{name: "loopback host:port ok", pprof: "127.0.0.1:6060", wantErr: false},
+		{name: "port-only ok", pprof: ":6060", wantErr: false},
+		{name: "no port fails", pprof: "notaport", wantErr: true},
+		{name: "non-numeric port fails", pprof: ":abc", wantErr: true},
+		{name: "port out of range fails", pprof: ":99999", wantErr: true},
+		{name: "collision with server.listen fails", listen: ":6060", pprof: ":6060", wantErr: true},
+		{name: "collision with mcp_listen fails", mcpListen: ":8081", pprof: ":8081", wantErr: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := config.Defaults()
+			if tt.listen != "" {
+				cfg.Server.Listen = tt.listen
+			}
+			if tt.mcpListen != "" {
+				cfg.Server.MCPListen = tt.mcpListen
+			}
+			cfg.Server.PprofListen = tt.pprof
+			err := cfg.Validate()
+			if tt.wantErr && err == nil {
+				t.Fatalf("Validate() = nil, want error for pprof_listen=%q", tt.pprof)
+			}
+			if !tt.wantErr && err != nil {
+				t.Fatalf("Validate() = %v, want nil for pprof_listen=%q", err, tt.pprof)
+			}
+			if tt.wantErr && err != nil && !strings.Contains(err.Error(), "config.server.pprof_listen") {
+				t.Errorf("error %q does not contain key path config.server.pprof_listen", err.Error())
+			}
+		})
+	}
+}
+
+// TestPprofListenEnvOverride verifies STOWAGE_SERVER_PPROF_LISTEN overrides config.
+func TestPprofListenEnvOverride(t *testing.T) {
+	clearStowageEnv(t)
+	t.Setenv("STOWAGE_SERVER_PPROF_LISTEN", "127.0.0.1:6060")
+	cfg, err := config.Load(context.Background(), "")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Server.PprofListen != "127.0.0.1:6060" {
+		t.Errorf("Server.PprofListen = %q, want %q", cfg.Server.PprofListen, "127.0.0.1:6060")
+	}
+}
+
+// TestRuntimeSampleIntervalDefault verifies telemetry.runtime_sample_interval
+// defaults to 0 (sampler off) and the default config validates.
+func TestRuntimeSampleIntervalDefault(t *testing.T) {
+	clearStowageEnv(t)
+	cfg := config.Defaults()
+	if cfg.Telemetry.RuntimeSampleInterval != 0 {
+		t.Errorf("Telemetry.RuntimeSampleInterval = %d, want 0 (off by default)", cfg.Telemetry.RuntimeSampleInterval)
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Errorf("Defaults().Validate() with interval=0: %v", err)
+	}
+}
+
+// TestRuntimeSampleIntervalValidation verifies negative values fail, non-negative pass.
+func TestRuntimeSampleIntervalValidation(t *testing.T) {
+	clearStowageEnv(t)
+	tests := []struct {
+		name     string
+		interval int
+		wantErr  bool
+	}{
+		{name: "zero is ok (off)", interval: 0, wantErr: false},
+		{name: "positive is ok", interval: 60, wantErr: false},
+		{name: "negative fails", interval: -1, wantErr: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := config.Defaults()
+			cfg.Telemetry.RuntimeSampleInterval = tt.interval
+			err := cfg.Validate()
+			if tt.wantErr && err == nil {
+				t.Fatalf("Validate() = nil, want error for interval=%d", tt.interval)
+			}
+			if !tt.wantErr && err != nil {
+				t.Fatalf("Validate() = %v, want nil for interval=%d", err, tt.interval)
+			}
+			if tt.wantErr && err != nil && !strings.Contains(err.Error(), "config.telemetry.runtime_sample_interval") {
+				t.Errorf("error %q does not contain key path config.telemetry.runtime_sample_interval", err.Error())
+			}
+		})
+	}
+}
+
+// TestRuntimeSampleIntervalFleetProfile verifies the fleet profile sets
+// telemetry.runtime_sample_interval to 60 (coarse sampling).
+func TestRuntimeSampleIntervalFleetProfile(t *testing.T) {
+	clearStowageEnv(t)
+	yaml := []byte("profile: fleet\n")
+	tmp := writeTmpFile(t, yaml)
+	cfg, err := config.Load(context.Background(), tmp)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Telemetry.RuntimeSampleInterval != 60 {
+		t.Errorf("fleet profile RuntimeSampleInterval = %d, want 60", cfg.Telemetry.RuntimeSampleInterval)
+	}
+}
+
+// TestRuntimeSampleIntervalAssistantProfile verifies the assistant and
+// coding-agent profiles inherit the default 0 (sampler off).
+func TestRuntimeSampleIntervalNonFleetProfiles(t *testing.T) {
+	for _, profile := range []string{"assistant", "coding-agent"} {
+		profile := profile
+		t.Run(profile, func(t *testing.T) {
+			clearStowageEnv(t)
+			yaml := []byte("profile: " + profile + "\n")
+			tmp := writeTmpFile(t, yaml)
+			cfg, err := config.Load(context.Background(), tmp)
+			if err != nil {
+				t.Fatalf("Load: %v", err)
+			}
+			if cfg.Telemetry.RuntimeSampleInterval != 0 {
+				t.Errorf("%s profile RuntimeSampleInterval = %d, want 0 (off)", profile, cfg.Telemetry.RuntimeSampleInterval)
+			}
+		})
+	}
+}
+
+// TestRuntimeSampleIntervalEnvOverride verifies
+// STOWAGE_TELEMETRY_RUNTIME_SAMPLE_INTERVAL overrides config.
+func TestRuntimeSampleIntervalEnvOverride(t *testing.T) {
+	clearStowageEnv(t)
+	t.Setenv("STOWAGE_TELEMETRY_RUNTIME_SAMPLE_INTERVAL", "30")
+	cfg, err := config.Load(context.Background(), "")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Telemetry.RuntimeSampleInterval != 30 {
+		t.Errorf("Telemetry.RuntimeSampleInterval = %d, want 30", cfg.Telemetry.RuntimeSampleInterval)
 	}
 }
 

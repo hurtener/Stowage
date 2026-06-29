@@ -8,6 +8,9 @@ import "time"
 //
 // Profile knobs:
 //   - telemetry.log_format: text (assistant/coding-agent), json (fleet)
+//   - telemetry.runtime_sample_interval: 0/off (assistant/coding-agent), 60s (fleet)
+//   - server.pprof_listen: "" (disabled) in every profile for security; enable
+//     per-deployment via STOWAGE_SERVER_PPROF_LISTEN or a config file override
 //   - vindex.driver: "hnsw" in all profiles (D-048 owner directive; brute is the
 //     exact-recall oracle and debug driver, selectable via STOWAGE_VINDEX_DRIVER
 //     or config file override)
@@ -16,7 +19,8 @@ func Profiles() map[string]map[string]string {
 		"assistant":    {},
 		"coding-agent": {},
 		"fleet": {
-			"telemetry.log_format": "json",
+			"telemetry.log_format":              "json",
+			"telemetry.runtime_sample_interval": "60",
 		},
 	}
 }

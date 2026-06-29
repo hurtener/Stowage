@@ -8,10 +8,12 @@ require (
 	github.com/hurtener/dockyard v1.7.3
 	github.com/jackc/pgx/v5 v5.10.0
 	github.com/maximhq/bifrost/core v1.5.15
+	github.com/modelcontextprotocol/go-sdk v1.6.0
 	github.com/oklog/ulid/v2 v2.1.1
 	github.com/prometheus/client_golang v1.23.2
 	github.com/prometheus/client_model v0.6.2
 	github.com/santhosh-tekuri/jsonschema/v6 v6.0.2
+	go.uber.org/goleak v1.3.0
 	golang.org/x/sync v0.20.0
 	modernc.org/sqlite v1.52.0
 )
@@ -70,7 +72,6 @@ require (
 	github.com/mark3labs/mcp-go v0.43.2 // indirect
 	github.com/mattn/go-colorable v0.1.14 // indirect
 	github.com/mattn/go-isatty v0.0.20 // indirect
-	github.com/modelcontextprotocol/go-sdk v1.6.0 // indirect
 	github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 // indirect
 	github.com/ncruces/go-strftime v1.0.0 // indirect
 	github.com/pkg/browser v0.0.0-20240102092130-5ac0b6a4141c // indirect
