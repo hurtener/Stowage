@@ -105,7 +105,12 @@ type ServerConfig struct {
 	// port — the zero-config shape is unchanged. Two listeners (not a
 	// path-prefixed single port) because MCP streams and must not inherit the
 	// REST WriteTimeout/middleware.
-	MCPListen    string `yaml:"mcp_listen"`     // default "" (opt-in)
+	MCPListen string `yaml:"mcp_listen"` // default "" (opt-in)
+	// PprofListen, when non-empty (e.g. "127.0.0.1:6060"), enables the opt-in
+	// loopback address for the auth-gated pprof admin listener. Empty (the
+	// default) disables the listener entirely. Must differ from server.listen
+	// and server.mcp_listen — each listener binds a distinct port.
+	PprofListen  string `yaml:"pprof_listen"`   // default "" (opt-in)
 	ReadTimeout  int    `yaml:"read_timeout"`   // seconds; default 10
 	WriteTimeout int    `yaml:"write_timeout"`  // seconds; default 20
 	IdleTimeout  int    `yaml:"idle_timeout"`   // seconds; default 60
@@ -147,6 +152,11 @@ type TelemetryConfig struct {
 	LogLevel      string `yaml:"log_level"`
 	LogFormat     string `yaml:"log_format"`
 	MetricsListen string `yaml:"metrics_listen"`
+	// RuntimeSampleInterval is the interval in seconds at which a background
+	// goroutine samples runtime.MemStats and runtime.NumGoroutine and emits
+	// them as telemetry events. 0 (the default) disables the sampler entirely.
+	// Profile-defaulted: off for assistant/coding-agent, coarse (60s) for fleet.
+	RuntimeSampleInterval int `yaml:"runtime_sample_interval"`
 }
 
 // allKeys is the canonical ordered list of config key paths used by Explain
@@ -155,6 +165,7 @@ var allKeys = []string{
 	"profile",
 	"server.listen",
 	"server.mcp_listen",
+	"server.pprof_listen",
 	"server.read_timeout",
 	"server.write_timeout",
 	"server.idle_timeout",
@@ -174,6 +185,7 @@ var allKeys = []string{
 	"telemetry.log_level",
 	"telemetry.log_format",
 	"telemetry.metrics_listen",
+	"telemetry.runtime_sample_interval",
 	"mcp.stdio_tenant",
 	"trace.signing_key",
 	"retrieval.precise.lane_k",
@@ -206,6 +218,7 @@ var envKeys = []struct {
 	{"STOWAGE_PROFILE", "profile"},
 	{"STOWAGE_SERVER_LISTEN", "server.listen"},
 	{"STOWAGE_SERVER_MCP_LISTEN", "server.mcp_listen"},
+	{"STOWAGE_SERVER_PPROF_LISTEN", "server.pprof_listen"},
 	{"STOWAGE_SERVER_READ_TIMEOUT", "server.read_timeout"},
 	{"STOWAGE_SERVER_WRITE_TIMEOUT", "server.write_timeout"},
 	{"STOWAGE_SERVER_IDLE_TIMEOUT", "server.idle_timeout"},
@@ -224,6 +237,7 @@ var envKeys = []struct {
 	{"STOWAGE_TELEMETRY_LOG_LEVEL", "telemetry.log_level"},
 	{"STOWAGE_TELEMETRY_LOG_FORMAT", "telemetry.log_format"},
 	{"STOWAGE_TELEMETRY_METRICS_LISTEN", "telemetry.metrics_listen"},
+	{"STOWAGE_TELEMETRY_RUNTIME_SAMPLE_INTERVAL", "telemetry.runtime_sample_interval"},
 	{"STOWAGE_MCP_TENANT", "mcp.stdio_tenant"},
 }
 
@@ -234,6 +248,7 @@ func Defaults() *Config {
 		Server: ServerConfig{
 			Listen:       ":7160",
 			MCPListen:    "", // opt-in: empty keeps `stowage serve` single-surface (D-074)
+			PprofListen:  "", // opt-in
 			ReadTimeout:  10,
 			WriteTimeout: 20,
 			IdleTimeout:  60,
@@ -257,9 +272,10 @@ func Defaults() *Config {
 			RerankBaseURL: "", // empty → reuse base_url for the auto-wired rerank provider (D-075)
 		},
 		Telemetry: TelemetryConfig{
-			LogLevel:      "info",
-			LogFormat:     "text",
-			MetricsListen: ":7161",
+			LogLevel:              "info",
+			LogFormat:             "text",
+			MetricsListen:         ":7161",
+			RuntimeSampleInterval: 0,
 		},
 		MCP: MCPConfig{
 			StdioTenant: "default",
@@ -439,6 +455,22 @@ func (c *Config) Validate() error {
 		}
 	}
 
+	// server.pprof_listen is opt-in (default ""). When set it must be a valid
+	// host:port, and must not collide with either the HTTP API or MCP listeners.
+	if c.Server.PprofListen != "" {
+		if _, port, err := net.SplitHostPort(c.Server.PprofListen); err != nil {
+			errs = append(errs, fmt.Errorf("config.server.pprof_listen: invalid host:port %q: %w", c.Server.PprofListen, err))
+		} else if p, perr := strconv.Atoi(port); perr != nil || p < 1 || p > 65535 {
+			errs = append(errs, fmt.Errorf("config.server.pprof_listen: invalid port %q (want 1-65535)", port))
+		}
+		if c.Server.PprofListen == c.Server.Listen {
+			errs = append(errs, fmt.Errorf("config.server.pprof_listen: must differ from server.listen %q", c.Server.Listen))
+		}
+		if c.Server.MCPListen != "" && c.Server.PprofListen == c.Server.MCPListen {
+			errs = append(errs, fmt.Errorf("config.server.pprof_listen: must differ from server.mcp_listen %q", c.Server.MCPListen))
+		}
+	}
+
 	validStoreDrivers := map[string]bool{"sqlite": true, "postgres": true}
 	if !validStoreDrivers[c.Store.Driver] {
 		errs = append(errs, fmt.Errorf("config.store.driver: unknown driver %q", c.Store.Driver))
@@ -508,6 +540,10 @@ func (c *Config) Validate() error {
 		if pt.t.ScoringK > 0 && pt.t.LaneK > 0 && pt.t.ScoringK > pt.t.LaneK {
 			errs = append(errs, fmt.Errorf("config.retrieval.%s: scoring_k (%d) must not exceed lane_k (%d)", pt.name, pt.t.ScoringK, pt.t.LaneK))
 		}
+	}
+
+	if c.Telemetry.RuntimeSampleInterval < 0 {
+		errs = append(errs, errors.New("config.telemetry.runtime_sample_interval: must be >= 0"))
 	}
 
 	return errors.Join(errs...)
@@ -618,6 +654,8 @@ func (c *Config) getByPath(path string) string {
 		return c.Server.Listen
 	case "server.mcp_listen":
 		return c.Server.MCPListen
+	case "server.pprof_listen":
+		return c.Server.PprofListen
 	case "server.read_timeout":
 		return strconv.Itoa(c.Server.ReadTimeout)
 	case "server.write_timeout":
@@ -656,6 +694,8 @@ func (c *Config) getByPath(path string) string {
 		return c.Telemetry.LogFormat
 	case "telemetry.metrics_listen":
 		return c.Telemetry.MetricsListen
+	case "telemetry.runtime_sample_interval":
+		return strconv.Itoa(c.Telemetry.RuntimeSampleInterval)
 	case "mcp.stdio_tenant":
 		return c.MCP.StdioTenant
 	case "trace.signing_key":
@@ -694,6 +734,8 @@ func (c *Config) setByPath(path, value string) error {
 		c.Server.Listen = value
 	case "server.mcp_listen":
 		c.Server.MCPListen = value
+	case "server.pprof_listen":
+		c.Server.PprofListen = value
 	case "server.read_timeout":
 		n, err := strconv.Atoi(value)
 		if err != nil {
@@ -752,6 +794,12 @@ func (c *Config) setByPath(path, value string) error {
 		c.Telemetry.LogFormat = value
 	case "telemetry.metrics_listen":
 		c.Telemetry.MetricsListen = value
+	case "telemetry.runtime_sample_interval":
+		n, err := strconv.Atoi(value)
+		if err != nil {
+			return fmt.Errorf("config.%s: %w", path, err)
+		}
+		c.Telemetry.RuntimeSampleInterval = n
 	case "mcp.stdio_tenant":
 		c.MCP.StdioTenant = value
 	case "trace.signing_key":
