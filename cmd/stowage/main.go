@@ -697,6 +697,26 @@ func runServe(args []string) {
 		}
 	}
 
+	// Optional dedicated pprof listener (server.pprof_listen). Off by default;
+	// NEVER mounted on the public API mux. Admin-gated: process-global profile
+	// data is not tenant-scoped (D-126, CLAUDE.md §7).
+	var pprofHTTP *http.Server
+	if cfg.Server.PprofListen != "" {
+		pprofHTTP = &http.Server{
+			Addr:              cfg.Server.PprofListen,
+			Handler:           srv.PprofAdminHandler(),
+			ReadHeaderTimeout: 10 * time.Second,
+			// Deliberately NO WriteTimeout: a CPU profile or execution trace
+			// capture streams for an operator-chosen duration
+			// (/debug/pprof/profile?seconds=N, /debug/pprof/trace?seconds=N) that
+			// routinely exceeds any fixed bound; a WriteTimeout would truncate the
+			// capture mid-stream. Escaping the REST WriteTimeout is the whole
+			// reason this is a separate listener (D-126; same rationale as the MCP
+			// listener, D-074). Admin-gated + opt-in + loopback-default keeps the
+			// relaxed timeout safe.
+		}
+	}
+
 	// Start HTTP server in a goroutine.
 	servErr := make(chan error, 1)
 	go func() {
@@ -714,6 +734,16 @@ func runServe(args []string) {
 			}
 		}()
 		stk.Log.Info("stowage serve: mcp co-mounted", "addr", cfg.Server.MCPListen)
+	}
+
+	// Start the pprof listener in a goroutine (admin-gated, opt-in — D-126).
+	if pprofHTTP != nil {
+		go func() {
+			if listenErr := pprofHTTP.ListenAndServe(); listenErr != nil && !errors.Is(listenErr, http.ErrServerClosed) {
+				servErr <- listenErr
+			}
+		}()
+		stk.Log.Info("stowage serve: pprof listening", "addr", cfg.Server.PprofListen)
 	}
 
 	stk.Log.Info("stowage serve: ready", "addr", cfg.Server.Listen)
@@ -749,6 +779,11 @@ func runServe(args []string) {
 	if mcpHTTP != nil {
 		if err := mcpHTTP.Shutdown(shutdownCtx); err != nil {
 			stk.Log.Error("stowage serve: mcp shutdown", "err", err)
+		}
+	}
+	if pprofHTTP != nil {
+		if err := pprofHTTP.Shutdown(shutdownCtx); err != nil {
+			stk.Log.Error("stowage serve: pprof shutdown", "err", err)
 		}
 	}
 	if err := p.Drain(shutdownCtx); err != nil {
