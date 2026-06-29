@@ -647,12 +647,14 @@ func TestMCPListenEnvOverride(t *testing.T) {
 }
 
 // TestRerankBaseURLDefaultEmpty verifies gateway.rerank_base_url defaults empty
-// (→ reuse base_url) and the default config validates (D-075/D-034).
+// (→ the bifrost driver supplies OpenRouter's …/api/v1 when provider=openrouter,
+// while any other provider keeps "reuse base_url", D-131) and that the default
+// config validates (D-075/D-034).
 func TestRerankBaseURLDefaultEmpty(t *testing.T) {
 	clearStowageEnv(t)
 	cfg := config.Defaults()
 	if cfg.Gateway.RerankBaseURL != "" {
-		t.Errorf("Gateway.RerankBaseURL = %q, want empty (opt-in default)", cfg.Gateway.RerankBaseURL)
+		t.Errorf("Gateway.RerankBaseURL = %q, want empty (driver supplies OpenRouter's)", cfg.Gateway.RerankBaseURL)
 	}
 	if err := cfg.Validate(); err != nil {
 		t.Errorf("Defaults().Validate() with empty rerank_base_url: %v", err)

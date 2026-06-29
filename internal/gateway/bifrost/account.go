@@ -37,6 +37,31 @@ const customRerankProvider bfschemas.ModelProvider = "stowage-rerank"
 // OpenRouter's working `…/api/v1/rerank` (verified live 2026-06-17).
 const customRerankPath = "/rerank"
 
+// OpenRouter base URLs. The bifrost SDK has no built-in base for OpenRouter, so
+// the driver supplies them when the operator left them empty (D-131): embed +
+// complete go to `…/api` (the SDK appends `/v1/…`), while the auto-wired
+// Cohere-shape rerank provider POSTs to `…/api/v1/rerank` (D-075). Keeping these
+// in the driver — not config Defaults — preserves "empty base_url → native
+// endpoint" for every other provider (P5: the driver owns provider wire details).
+const (
+	openRouterBaseURL       = "https://openrouter.ai/api"
+	openRouterRerankBaseURL = "https://openrouter.ai/api/v1"
+)
+
+// applyProviderBaseDefaults fills provider-specific base URLs the SDK does not
+// know, only when the operator left them empty. Mutates a by-value copy.
+func applyProviderBaseDefaults(cfg config.GatewayConfig) config.GatewayConfig {
+	if bfschemas.ModelProvider(cfg.Provider) == bfschemas.OpenRouter {
+		if cfg.BaseURL == "" {
+			cfg.BaseURL = openRouterBaseURL
+		}
+		if cfg.RerankBaseURL == "" {
+			cfg.RerankBaseURL = openRouterRerankBaseURL
+		}
+	}
+	return cfg
+}
+
 // isNativeRerankProvider reports whether p implements rerank natively in
 // bifrost (so no custom provider is needed). The set is {cohere, vllm,
 // bedrock, vertex} (D-075). Any other primary provider with a configured
@@ -105,6 +130,10 @@ func newAccount(cfg config.GatewayConfig) (*Account, error) {
 		return nil, fmt.Errorf("%w: %q is not a known Bifrost provider (valid: %s)",
 			ErrInvalidProvider, cfg.Provider, knownProvidersHuman())
 	}
+
+	// Supply provider-specific base URLs the SDK lacks (OpenRouter) when empty,
+	// before buildProviderConfig / rerank wiring read them (D-131).
+	cfg = applyProviderBaseDefaults(cfg)
 
 	apiKey, err := resolveAPIKey(cfg.APIKey)
 	if err != nil {

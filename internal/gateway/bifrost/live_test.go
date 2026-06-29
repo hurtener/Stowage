@@ -22,6 +22,7 @@ package bifrost_test
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"strconv"
 	"testing"
@@ -161,4 +162,66 @@ func TestLiveBifrost_Rerank(t *testing.T) {
 		}
 	}
 	t.Logf("live rerank: model=%s results=%+v search_units=%d", cfg.RerankModel, resp.Results, resp.Usage.SearchUnits)
+}
+
+// TestLiveBifrost_DefaultConfig validates the SHIPPED defaults (D-131) end to end
+// against real OpenRouter: EMPTY base URLs (driver-supplied …/api and …/api/v1), the
+// baseline learner openai/gpt-5.4-nano, pplx embed, cohere rerank — one key, all
+// three lanes. This is the exact config a fresh `stowage serve` boots.
+func TestLiveBifrost_DefaultConfig(t *testing.T) {
+	key := os.Getenv("OPENROUTER_API_KEY")
+	if key == "" {
+		t.Skip("OPENROUTER_API_KEY not set — live bifrost tests are operator-triggered")
+	}
+	// The default api_key ref is env.STOWAGE_GATEWAY_API_KEY; point it at the key.
+	t.Setenv("STOWAGE_GATEWAY_API_KEY", key)
+
+	cfg := config.Defaults().Gateway // bifrost/openrouter, EMPTY base URLs, gpt-5.4-nano, pplx, cohere
+	if cfg.BaseURL != "" || cfg.RerankBaseURL != "" {
+		t.Fatalf("default base URLs should be empty (driver-supplied); got base=%q rerank=%q", cfg.BaseURL, cfg.RerankBaseURL)
+	}
+	gw, err := gateway.Open(context.Background(), cfg, discardLog(), prometheus.NewRegistry())
+	if err != nil {
+		t.Fatalf("open default config: %v", err)
+	}
+	defer gw.Close(context.Background()) //nolint:errcheck
+
+	// Embed lane (empty base_url → driver supplies …/api).
+	er, err := gw.Embed(context.Background(), gateway.EmbedRequest{Inputs: []string{"Go is a statically typed language."}})
+	if err != nil {
+		t.Fatalf("Embed: %v", err)
+	}
+	if len(er.Vectors) != 1 || len(er.Vectors[0]) != cfg.EmbedDims {
+		t.Fatalf("embed dims = %d, want %d", len(er.Vectors[0]), cfg.EmbedDims)
+	}
+
+	// Completion lane (baseline learner openai/gpt-5.4-nano, schema-constrained §10).
+	schema := json.RawMessage(`{"type":"object","properties":{"answer":{"type":"string"}},"required":["answer"],"additionalProperties":false}`)
+	cr, err := gw.Complete(context.Background(), gateway.CompleteRequest{
+		System:    `Reply with a JSON object {"answer":"<one word>"}.`,
+		Messages:  []gateway.Message{{Role: "user", Content: "Say hello in one word."}},
+		Schema:    schema,
+		MaxTokens: 64,
+	})
+	if err != nil {
+		t.Fatalf("Complete (%s): %v", cfg.Model, err)
+	}
+	if len(cr.JSON) == 0 {
+		t.Fatal("Complete returned empty JSON")
+	}
+
+	// Rerank lane (empty rerank_base_url → driver supplies …/api/v1).
+	rr, err := gw.Rerank(context.Background(), gateway.RerankRequest{
+		Query:     "what is the Go programming language",
+		Documents: []string{"Go is an open source programming language.", "Cats are mammals."},
+		TopN:      2,
+	})
+	if err != nil {
+		t.Fatalf("Rerank: %v", err)
+	}
+	if len(rr.Results) == 0 {
+		t.Fatal("expected at least one rerank result")
+	}
+	t.Logf("live DEFAULT stack OK: model=%s embed_dims=%d complete_json=%s rerank_results=%d",
+		cfg.Model, len(er.Vectors[0]), string(cr.JSON), len(rr.Results))
 }

@@ -444,3 +444,24 @@ D-035), not one open-ended mega-phase.
 Plan: `phase-p1-profiling-harness.md`. Posture: **build + baseline, don't fix** — fixes
 are scoped `pN` follow-ups. Gating is **advisory-then-promote**; scope covers in-process
 Go concurrency **and** backends under load (pgx pool, sqlite writer goroutine).
+## Adoption & ergonomics track (D-131)
+
+An orthogonal, post-launch track that sharpens Stowage's first-five-minutes story and
+loosens the gateway's single-model / single-key assumptions. Three gaps between what the
+README promises and what the binary does: the default gateway driver was `mock` (so one
+secret wired a *synthetic* gateway); one shared completion model drove every learner stage;
+and the quickstart implied MCP was co-mounted by default and that one env var pointed at a
+real provider. Numbered `phase-aN-*` so it does not collide with the launch (01–27),
+post-launch (22–27), productionization (`h*`), or performance (`p*`) slots; smoke scripts
+still match the `scripts/smoke/phase-*.sh` gate.
+
+| # | Phase | Owns | RFC | Deps | Decision |
+|---|-------|------|-----|------|----------|
+| a1 | Gateway defaults → the real Bifrost/OpenRouter stack (one-secret five-minute start, fail-loud minimums, `mock` escape hatch) | `internal/config`, `internal/boot`, `internal/gateway/bifrost` | §9.4, §10 | 04, 09c, h7 | D-131 |
+| a2 | Per-learner-stage model selection (`extract`/`reconcile`/`reflect` models, fallback to `gateway.model`) | `internal/config`, `internal/pipeline`, `internal/reconcile`, `internal/reflect`, `internal/boot`, `internal/lifecycle` | §9.4, §10 | a1, 19 | D-132 |
+| a3 | Quickstart honesty & MCP opt-in clarity (README/getting-started/glossary + serve startup hint; MCP stays opt-in) | `README.md`, `docs/`, `cmd/stowage` | §9.2, §9.4, §9.5 | a1 | D-133 |
+| a1b | _(follow-up)_ Per-concern provider/key/base_url overrides (embed, rerank) with inherit-on-empty | `internal/config`, `internal/gateway/bifrost` | §10 | a1 | D-131 |
+
+Plans: `phase-a1-gateway-defaults.md` (shipped), `phase-a2-learner-models.md`,
+`phase-a3-quickstart-honesty.md`. Per-concern keys (a1b) were folded out of a1 once OpenRouter
+proved it serves all three lanes on one key (D-131 deviation note).

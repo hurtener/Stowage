@@ -471,3 +471,12 @@ New terms land here in the same PR that introduces them (CLAUDE.md §14).
 **scope-authoritative write** — the records `Append` rule (D-124): a declared scope dimension
 (project/user/session) wins; the per-record value only fills a dimension the scope left empty, so a
 write can never escape its authorized scope (P3).
+
+**Five-minute minimum** — the single secret (`STOWAGE_GATEWAY_API_KEY`) a real-driver
+`stowage serve` needs to boot. With the gateway defaulting to the Bifrost/OpenRouter stack
+(D-131), one key reaches completion, embedding, and rerank; a missing key fails loud at boot
+naming the var (RFC §9.4).
+
+**`mock` escape hatch** — `STOWAGE_GATEWAY_DRIVER=mock` boots a keyless, no-provider gateway
+for hermetic tests and offline runs. `mock` is a first-class driver, no longer the default
+(D-131).

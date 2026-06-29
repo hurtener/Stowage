@@ -261,15 +261,26 @@ func Defaults() *Config {
 		VIndex: VIndexConfig{
 			Driver: "hnsw", // default: HNSW (D-048; owner directive — 100k brute ceiling too low)
 		},
+		// Default to the real Bifrost driver on OpenRouter so `stowage serve` with one
+		// secret (STOWAGE_GATEWAY_API_KEY) is a working server — the five-minute rule
+		// (RFC §9.4, D-131). The embed/rerank ids are the live-validated full stack
+		// (internal/gateway/bifrost/live_test.go); the completion model is the
+		// owner-chosen baseline learner. base_url/rerank_base_url stay EMPTY on
+		// purpose: empty keeps the seam's "native endpoint / reuse base_url" meaning
+		// for every provider, and the bifrost driver supplies OpenRouter's own URLs
+		// (…/api and …/api/v1) when provider=openrouter (P5 — the driver owns wire
+		// details). `mock` remains a valid driver for hermetic tests —
+		// set STOWAGE_GATEWAY_DRIVER=mock.
 		Gateway: GatewayConfig{ //nolint:gosec // G101: api_key holds an env-var *name* (reference), not a credential
-			Driver:        "mock",
+			Driver:        "bifrost",
+			Provider:      "openrouter",
 			BaseURL:       "",
 			APIKey:        "env.STOWAGE_GATEWAY_API_KEY",
-			Model:         "claude-3-5-haiku-20241022",
-			EmbedModel:    "voyage-3-lite",
-			EmbedDims:     512,
+			Model:         "openai/gpt-5.4-nano",
+			EmbedModel:    "perplexity/pplx-embed-v1-0.6b",
+			EmbedDims:     1024,
 			RerankModel:   "cohere/rerank-4-fast",
-			RerankBaseURL: "", // empty → reuse base_url for the auto-wired rerank provider (D-075)
+			RerankBaseURL: "",
 		},
 		Telemetry: TelemetryConfig{
 			LogLevel:              "info",
@@ -337,6 +348,17 @@ func (c *Config) FillZeroDefaults() {
 	if c.Gateway.Driver == "" {
 		c.Gateway.Driver = d.Gateway.Driver
 	}
+	// Provider is filled so the all-defaults embedded stack (driver=bifrost) validates
+	// the D-049 "provider required" rule. Trade-off: an embedded caller that sets
+	// driver=bifrost + a custom base_url but omits provider inherits openrouter rather
+	// than hitting the loud "provider required" error — set provider explicitly.
+	if c.Gateway.Provider == "" {
+		c.Gateway.Provider = d.Gateway.Provider
+	}
+	// base_url / rerank_base_url are intentionally NOT filled: empty must keep its
+	// "native endpoint / reuse base_url" meaning (the driver supplies OpenRouter's
+	// URLs when provider=openrouter). Filling them would silently misroute a
+	// non-OpenRouter bifrost caller to openrouter.ai (D-131 review).
 	if c.Gateway.APIKey == "" {
 		c.Gateway.APIKey = d.Gateway.APIKey
 	}

@@ -93,8 +93,10 @@ func trySend(ch chan<- pipeline.Item, item pipeline.Item) bool {
 //
 // cfg must have at minimum:
 //   - Store.Driver + Store.DSN (use "sqlite" with a temp path or ":memory:")
-//   - Gateway.Driver (use "mock" for offline/testing; omit to accept the
-//     default "mock" — embedded callers rarely need a real provider)
+//   - Gateway.Driver — set "mock" for offline/testing. Omitting it accepts the
+//     default real driver (bifrost on OpenRouter, D-131), which then REQUIRES
+//     STOWAGE_GATEWAY_API_KEY at construction or NewEmbedded fails loud. An
+//     embedded host that wants a keyless boot must set Gateway.Driver = "mock".
 //
 // WithTenantID is required; all SDK operations run in that tenant's scope.
 func NewEmbedded(parentCtx context.Context, cfg config.Config, opts ...Option) (Client, func(context.Context) error, error) {

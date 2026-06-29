@@ -3505,3 +3505,52 @@ to remove. No prior decision is reversed; §11 observability is extended, not co
   serve climb −1; all shapes drain cleanly ≤ ~5 ms). The harness found the system healthy
   on its first run — exactly the "build + baseline, don't fix" outcome the track intends.
   The rig stays behind `-tags=profile` (`make profile`), out of the per-PR matrix.
+
+## D-131 — Adoption & ergonomics track; gateway defaults to the real Bifrost/OpenRouter stack
+
+2026-06-29. Owner-initiated. Opens the **Adoption & ergonomics track** (`phase-aN-*`,
+numbered so it does not collide with the launch `01–27`, productionization `h*`, or
+performance `p*` slots) and lands its lead phase a1. Three first-five-minutes gaps drove
+it; this entry settles the gateway-default half.
+
+**Context.** The shipped `gateway.driver` default was `mock` — so `stowage serve` + one
+secret wired a *synthetic* gateway, contradicting RFC §9.4 ("`stowage serve` with exactly
+one secret … runs a working server") and `docs/getting-started.md` (which already
+documented Bifrost as the default). The code was the drift, not the docs.
+
+**Decision.**
+1. **Flip the default gateway to the real driver.** `Defaults()` now ships
+   `driver=bifrost`, `provider=openrouter`, the **live-validated** embed/rerank ids
+   (`embed_model=perplexity/pplx-embed-v1-0.6b`, `embed_dims=1024`,
+   `rerank_model=cohere/rerank-4-fast` — the proven full stack in
+   `internal/gateway/bifrost/live_test.go`), and the owner-chosen baseline learner
+   `model=openai/gpt-5.4-nano`. `base_url`/`rerank_base_url` ship **empty**: the bifrost
+   driver supplies OpenRouter's `…/api` and `…/api/v1` when provider=openrouter
+   (`applyProviderBaseDefaults`, P5 — the driver owns wire details), so empty keeps its
+   "native endpoint / reuse base_url" meaning for every other provider and a
+   non-OpenRouter bifrost config is never silently misrouted to openrouter.ai. One
+   OpenRouter key reaches all three lanes (completion + embedding + the auto-wired
+   Cohere-shape rerank, D-075), so the five-minute start is genuinely one secret.
+   Reaffirms D-034's "one secret"; aligns the code with RFC §9.4. Amends D-049 (provider
+   is now defaulted, not unset).
+2. **`mock` stays a first-class driver**, no longer the default — `STOWAGE_GATEWAY_DRIVER=mock`
+   is the keyless, hermetic/offline escape hatch (used by every serve-booting smoke and the
+   eval harness). `FillZeroDefaults` also fills `provider` (so the all-defaults embedded
+   bifrost stack validates the D-049 rule) but deliberately NOT `base_url`/`rerank_base_url`
+   (empty must keep its native-endpoint meaning; the driver supplies OpenRouter's).
+3. **Fail loud on the minimum.** A real driver with an unresolved `STOWAGE_GATEWAY_API_KEY`
+   aborts boot (the bifrost driver already failed closed naming the exact env var); boot now
+   appends the five-minute-minimum hint and the `mock` escape hatch. Probe failure stays a
+   degraded warning (D-036), not a boot error.
+
+**Deviation from the a1 plan (CLAUDE.md §4.3).** Per-concern provider/key/base_url overrides
+(embed/rerank) were planned inside a1 to avoid forcing one provider when OpenRouter could not
+serve embeddings. OpenRouter **does** serve embeddings (`perplexity/pplx-embed-v1-0.6b`, eval-
+proven), so per-concern keys are now *optionality*, not a requirement for the one-key start.
+They are deferred to a follow-up (a1b) so a1 ships as a clean default-flip unit; an operator can
+still repoint the single provider/key/base_url today. Tracked, not dropped.
+
+**Consequences.** `stowage serve` + `STOWAGE_GATEWAY_API_KEY` is a working real server on
+embedded SQLite; the explain golden, the rerank-base-url default test, and every serve smoke
+were updated/verified green. The README quickstart prose (MCP opt-in honesty + the real
+minimum-var block) lands in a3.
