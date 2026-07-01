@@ -262,7 +262,17 @@ func TestLiveWave1_ThreeSurface(t *testing.T) {
 	t.Logf("flushed buffer %s — waiting for the real learner LLM to extract + embed…", sessID)
 
 	mems := waitForLiveMemories(t, ctx, stk.Store, scope, 2, 4*time.Minute)
-	t.Logf("real extraction produced %d active memories", len(mems))
+	// The learner may still be committing/topic-tagging additional memories after
+	// the >=2 threshold trips. Wait for the extraction pipeline to DRAIN (no
+	// unprocessed records) so topic assignment is complete before we snapshot
+	// topics — otherwise a topic that lands after the snapshot but before the
+	// retrieve makes our snapshot disagree with the store the filter actually
+	// queries (a harness race, not a filter bug). Then re-snapshot the settled set.
+	waitForExtractionDrained(t, ctx, stk.Store, 90*time.Second)
+	if settled, _, lerr := stk.Store.Memories().ListByStatus(ctx, scope, "active", 200, ""); lerr == nil && len(settled) >= len(mems) {
+		mems = settled
+	}
+	t.Logf("real extraction produced %d active memories (settled)", len(mems))
 	memIDs := make([]string, len(mems))
 	idToContent := make(map[string]string, len(mems))
 	for i, m := range mems {
@@ -445,6 +455,43 @@ func TestLiveWave1_ThreeSurface(t *testing.T) {
 		{"http", httpUnfilteredIDs, httpFilteredIDs, httpUnboundIDs, httpFiltered.DegradedAgentFilter},
 		{"sdk", sdkUnfilteredIDs, sdkFilteredIDs, sdkUnboundIDs, sdkFiltered.DegradedAgentFilter},
 	}
+	// Recompute the allow-topic membership from a FRESH MemoriesTopics over every
+	// id any surface returned — this is the exact ground truth the retrieval filter
+	// queried, so the invariant "every filtered id is tagged T" is checked against
+	// the same store state (immune to the snapshot-vs-retrieve race that an early
+	// tTagged snapshot would suffer). tTagged (the pre-retrieve snapshot) still
+	// drives topicKey selection above; freshTagged authoritatively validates the filter.
+	returnedIDs := map[string]bool{}
+	for _, s := range []surfaceResult{
+		{"mcp", mcpUnfilteredIDs, mcpFilteredIDs, mcpUnboundIDs, false},
+		{"http", httpUnfilteredIDs, httpFilteredIDs, httpUnboundIDs, false},
+		{"sdk", sdkUnfilteredIDs, sdkFilteredIDs, sdkUnboundIDs, false},
+	} {
+		for id := range s.unfilteredIDs {
+			returnedIDs[id] = true
+		}
+		for id := range s.filteredIDs {
+			returnedIDs[id] = true
+		}
+	}
+	returnedIDList := make([]string, 0, len(returnedIDs))
+	for id := range returnedIDs {
+		returnedIDList = append(returnedIDList, id)
+	}
+	freshTopics, err := stk.Store.Memories().MemoriesTopics(ctx, scope, returnedIDList)
+	if err != nil {
+		t.Fatalf("fresh MemoriesTopics for returned ids: %v", err)
+	}
+	freshTagged := map[string]bool{}
+	for id, keys := range freshTopics {
+		for _, k := range keys {
+			if k == topicKey {
+				freshTagged[id] = true
+				break
+			}
+		}
+	}
+
 	for _, s := range surfaces {
 		t.Logf("ae1 %s: unfiltered=%v filtered=%v unbound=%v", s.label, setKeys(s.unfilteredIDs), setKeys(s.filteredIDs), setKeys(s.unboundIDs))
 
@@ -453,10 +500,11 @@ func TestLiveWave1_ThreeSurface(t *testing.T) {
 			t.Errorf("%s: degraded_agent_filter unexpectedly true on a clean bound-agent read", s.label)
 		}
 
-		// Every filtered id must carry the allow-topic (narrowing, not leakage).
+		// Every filtered id must carry the allow-topic (narrowing, not leakage) —
+		// validated against the fresh, retrieve-time topic membership.
 		for id := range s.filteredIDs {
-			if !tTagged[id] {
-				t.Errorf("%s: agent-filtered retrieve returned a non-allow-topic memory %s", s.label, id)
+			if !freshTagged[id] {
+				t.Errorf("%s: agent-filtered retrieve returned a non-allow-topic memory %s (fresh topics=%v)", s.label, id, freshTopics[id])
 			}
 		}
 
@@ -533,4 +581,30 @@ func TestLiveWave1_ThreeSurface(t *testing.T) {
 	t.Logf("ae2 PASS: _meta.user narrows, no-_meta stays tenant-wide, _meta.tenant mismatch fails closed")
 
 	t.Logf("TestLiveWave1_ThreeSurface: PASS — ae1 agent narrowing (SDK/HTTP/MCP, parity) and ae2 _meta intake (MCP) verified over the real gateway")
+}
+
+// waitForExtractionDrained polls until the extraction pipeline has drained (no
+// unprocessed records), so topic assignment is complete before the harness
+// snapshots topic membership. Records are marked processed_at once their memories
+// (and topic tags) are committed, so an empty unprocessed set is a sound
+// "topics assigned" signal. Best-effort: on timeout it logs and returns (the
+// fresh-topics-at-assertion recomputation is the authoritative guard regardless).
+func waitForExtractionDrained(t *testing.T, ctx context.Context, st store.Store, timeout time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for {
+		recs, err := st.Records().ListUnprocessed(ctx, time.Now().UnixMilli(), 1)
+		if err == nil && len(recs) == 0 {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Logf("waitForExtractionDrained: still %d unprocessed after %s (proceeding; assertion uses fresh topics)", len(recs), timeout)
+			return
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatalf("waitForExtractionDrained: context done: %v", ctx.Err())
+		case <-time.After(2 * time.Second):
+		}
+	}
 }

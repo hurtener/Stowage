@@ -728,6 +728,7 @@ func TestPatch_Confirm(t *testing.T) {
 	}
 	if supersededEvent == nil {
 		t.Fatal("no memory.superseded event found for target after confirm")
+		return // unreachable; makes non-nil provable to staticcheck (SA5011)
 	}
 	var payload map[string]interface{}
 	if err := json.Unmarshal([]byte(supersededEvent.Payload), &payload); err != nil {
@@ -927,6 +928,7 @@ func TestRollback_RolledBackEventPayload(t *testing.T) {
 	}
 	if rolledBackEvent == nil {
 		t.Fatal("no memory.rolled_back event found after rollback")
+		return // unreachable; makes non-nil provable to staticcheck (SA5011)
 	}
 	var payload map[string]interface{}
 	if err := json.Unmarshal([]byte(rolledBackEvent.Payload), &payload); err != nil {

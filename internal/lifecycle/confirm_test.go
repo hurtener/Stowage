@@ -326,6 +326,7 @@ func TestConfirm_SupersededPayload(t *testing.T) {
 	}
 	if supersededEvent == nil {
 		t.Fatal("no memory.superseded event found for target")
+		return // unreachable; makes non-nil provable to staticcheck (SA5011)
 	}
 	// The payload must be parseable as a prior-state JSON with an id field.
 	var payload map[string]interface{}
