@@ -4119,7 +4119,7 @@ The charter says ae1 "introduces" the binding table and ae9 "generalizes" it. Be
 - **Client-supplied view subject.** Rejected — would let a caller read another agent's/key's lens; the subject is identity-derived only.
 - **`on_policy_error=closed` as the default.** Rejected — `open` is the D-139-aligned default that keeps a view a curation lens; `closed` remains an operator override (documented as re-tiering toward isolation) but never changes the P3 boundary.
 
-## D-150 — Session is a read-time relevance signal, never a hard read scope predicate (cross-session recall preserved)
+## D-150 — Session never scopes OR ranks a read; cross-session recall preserved (not a filter, not a relevance signal)
 
 2026-06-30. Agent-identity & read-time scoping track (D-135). Cross-plan checkpoint decision
 resolving a contradiction the ae* wave-authoring audit surfaced (§17) between ae2 and ae7/ae8.
@@ -4135,12 +4135,22 @@ set `Scope.Session` from claim/`_meta`/arg — which, fed to a retrieval read, w
 results to a single session and drop cross-session recall (CONFIRMED against `scope.go` on both
 drivers). This contradicted ae8's own "byte-identical default" claim.
 
-**Decision.** **Session is a read-time relevance signal, never a hard read-scope predicate — under
-every auth mode (keyring, JWT, strict).**
-- The effective session VALUE is still resolved (claim > `_meta` > arg, D-137 precedence) and still
-  drives write-echo cooldown / project-affinity relevance via `Request.SessionID`.
-- On the **retrieval/browse read path** the resolver's session is routed to the relevance sink and
-  **`Scope.Session` is left empty**, so `buildScopeWhere` never narrows a read to one session.
+**Decision (sharpened per owner sign-off, 2026-06-30).** **Session plays no role in a
+retrieval/browse read — it neither scopes (filters) nor ranks (boosts) results — under every auth
+mode (keyring, JWT, strict).** Reads are user-scoped; cross-session recall is the value, because in
+agentic systems the *current* session's content is already under the caller's own context
+management, so a same-session preference would only re-surface what the agent already holds — the
+useful learning is from *other* sessions.
+- The effective session VALUE is still resolved (claim > `_meta` > arg, D-137 precedence) for
+  provenance / write-stamping and audit, but on the read path it is **not** placed on
+  `Scope.Session` (no filter) **and** is **not** used as a same-session relevance/affinity boost (no
+  ranking preference — there is no "prefer memories from this session" term).
+- The only session-related read behaviour is **write-echo suppression** — *not* re-surfacing
+  memories just written in the live session (they are already in context). That is a *suppression*,
+  fully consistent with this decision (it removes redundant same-session echoes rather than boosting
+  them), and is retained and orthogonal.
+- On the **retrieval/browse read path** `Scope.Session` is left empty, so `buildScopeWhere` never
+  narrows a read to one session.
 - **Writes remain session-stamped** (memories carry their originating session) — this decision is
   read-path only.
 - ae7's token-derived `Scope` is an *identity representation*; it is ae8's read-scope resolver (and
