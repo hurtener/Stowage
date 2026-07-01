@@ -516,3 +516,71 @@ agent filter) and ae9 (topic views).
 **`DegradedTopicFilter`** — a retrieve-response marker that the own-scope topic filter could not be
 applied (topic-store error) and unfiltered own-scope results were returned instead (D-036 fail-open
 transparency; ae6).
+
+- **Browse** — `retrieval.Browse` (ae5, D-143): the LLM-free, gateway-free scoped walk over a scope's memories, on {SDK, HTTP, MCP}. Two modes: `recent` (`created_at DESC`, via the new `Store.ListByScopeRecent`) and `superseded` (via the existing `Store.ListByStatus(scope,"superseded",…)` — `created_at ASC`, reused per H4). Distinct from **retrieve** (relevance-ranked, gateway-embedded): browse is deterministic, ordered by time, and needs no query text. Scope-required (P3); serves in the D-036 degraded path.
+
+- **Inverted keyset** — the `created_at DESC, id DESC` pagination scheme (ae5, D-143) whose opaque `"<millis>:<id>"` cursor selects rows **strictly before** the last returned row (`(created_at,id) < cursor`), the descending mirror of the ascending `(created_at,id) > cursor` keyset used by `ListByStatus`/`ListActiveInScope`. Stable and gap-free under concurrent inserts, unlike `LIMIT/OFFSET`.
+
+- **Lean MCP read (rendered read body)** — the model-facing markdown body
+  `retrieval.RenderReadBody` produces for a retrieval response, carried in the MCP
+  `memory_retrieve` `Text` block and mirrored on the HTTP/SDK `rendered` field. It
+  shrinks the *model's context*, not the wire payload: the body travels alongside
+  the full structured result, so the total payload grows (M4, D-142).
+
+- **Episode hook** — the `[episode:<id>]` marker the `RenderMCP` body appends to a
+  retrieval item when `store.Memory.EpisodeID != ""`. Sourced from data already
+  loaded on the retrieval response, so it costs no new store query (D-142).
+
+- **Drill handle** — the per-item `[cite:<ULID>]` marker in the `RenderMCP` read
+  body; equal to the item's existing citation ULID (`MemoryItem.Citation`), so
+  `memory_drilldown` reuses the existing citation→verbatim path with no new store
+  code (D-142). The positional short handle is deferred to ae4b.
+
+- **Read-time agent identity** — `identity.Scope.Agent`: the calling-agent dimension set **only on the read path** (from `_meta.agent_id` on MCP; an explicit `agent_id` field on HTTP/SDK). Never persisted, never a column on any of the 12 scope tables, never in a scope-`WHERE` builder or an `INSERT`; it drives only the read-time agent→topic filter, which can only subtract from the caller's own-scope results (D-135, ae1).
+
+- **Agent→topic policy binding** — a `(tenant_id, agent_id) → {allow_topics, deny_topics}` row set in the non-scope `agent_topic_policies` table (`store.AgentPolicy`, D-146), resolved at read time and fed to ae6's `filterByTopicOwnScope` to curate (not isolate — D-139) an agent's own-scope retrieval. Carries no memory rows and no `user_id`; excluded from the DSAR cascade; generalized to named views by ae9. **Fails open** on a policy-store error (D-139/D-036).
+
+- **`_meta` seam** — Dockyard `v1.8.0`'s inbound per-call host metadata, read verbatim via `server.RequestMeta(ctx) map[string]any` (`nil` when unsent; setter `server.WithRequestMeta`). Dockyard surfaces the host map verbatim and never inspects keys — the key contract (e.g. `agent_id`) is owned by Stowage + Harbor. ae1 is its first consumer (agent identity); ae2 generalizes intake to `user`/`session`. (Corrects the charter's `MetaFromContext` placeholder name — the real symbol is `server.RequestMeta`, M5/D-135.)
+
+- **`_meta` identity intake** — the ae2 mechanism by which the MCP handlers read the non-authorizing identity dimensions (`user`, `session`, `agent_id`) from the host-injected inbound `_meta` (dockyard v1.8 `server.RequestMeta`) **alongside** the existing `project_id`/`user_id`/`session_id` arguments. Additive: no `_meta` ⇒ behaviour identical to arg-only. Centralized in the single helper `mcpserver.readMetaIdentity` (no per-handler copy-paste). Tenant is never read from `_meta` (D-138).
+
+- **Tenant guard (D-138)** — the fail-closed check that a present `_meta.tenant` equals the credential-verified tenant; a mismatch (or a non-string value) rejects the request with a redacted reason via the `identity.ErrTenantMismatch` sentinel. `_meta` may supply non-authorizing dimensions (user/session/agent/project) but never the authorization boundary. Runs on every MCP handler, read and write.
+
+- **Session-REPLACE** — the D-137 session semantics ae2 implements on the MCP surface: the effective session for a call is the `session_id` argument when set, else `_meta.session`, fed to the handler's **existing** session sink (`retrieval.Request.SessionID`, `playbook.Options.SessionID`, etc.) — never added as a `Scope.Session` store predicate (which would change results for existing callers). The HTTP counterpart (`X-Harbor-Session`) is deferred to the HTTP/JWT identity work (ae7).
+
+- **`_meta`-else-arg precedence** — the documented, single resolution rule for a non-authorizing identity dimension: a host-injected `_meta` value wins over the model-filled in-band argument, which is only the fallback (helper `mcpserver.metaElseArg`) — matching D-137's precedence (verified JWT claim > `_meta` > arg) and ae8's resolver. The in-band arg is model-discretionary and untrusted for identity; `_meta` is the trusted host channel. Equal to today's behaviour whenever no `_meta` is injected (additive).
+
+- **Verify-never-mint** — Stowage's auth posture (phase-ae7): it *verifies* JWTs it did not issue (Harbor mints them), reimplementing Harbor's `Validator`/`KeySet`/JWKS shape in `internal/auth` on `golang-jwt/jwt/v5`. Stowage never ports the signer; the test signer that mints golden fixtures lives only in `*_test.go` (L1).
+
+- **JWKS KeySet** — `auth.JWKSKeySet`: the asymmetric-only, stdlib-parsed, TTL-cached, single-flight, max-stale-bounded `KeySet` that resolves a JWT `kid` against a published (`auth.jwks.url`) or local (`auth.jwks.file`) JWK Set. Rejects symmetric (`oct`) keys and sub-2048-bit RSA moduli; fails loud on first load, fails closed past the max-stale ceiling.
+
+- **Max-stale ceiling** — `auth.jwks.max_stale`: the age past which a cached JWKS snapshot is no longer vouched for and `KeyByID` fails **closed** (`ErrJWKSStale`). Bounds — but does not make instantaneous — key revocation (D-147).
+
+- **Audience containment** — the `aud` verification rule (D-136): a verifier passes iff its configured audience id is *contained* in the token's `aud` claim (a `string` or `[]string` per RFC 7519); an empty configured audience disables the check, so one Harbor token verifies at both Harbor and Stowage.
+
+- **Test signer** — the test-only RSA/EC JWT minter (with an injectable clock via `WithClock`) that produces ae7's golden fixtures. It exists solely in `internal/auth/*_test.go`; the shipped binary never signs (verify-never-mint, L1).
+
+- **`X-Harbor-Session`** — the per-request session header ported from Harbor: in `jwt` mode a non-empty value replaces the token's `session` claim on the resolved `Scope` while `Tenant`/`User` stay token-verified, so one connection drives many isolated sessions (session is always per-call, D-137).
+
+**Effective read scope** — the single `identity.Scope` produced by `identity.ResolveReadScope` from all active identity sources (credential tenant, verified JWT claims, host `_meta`, and the legacy D-125 args) under the D-137 precedence (JWT > `_meta` > args) and resolution rule. It is the one scope every single-user read surface (SDK/HTTP/MCP) hands the store; the store's existing scope predicates filter on it unchanged (ae8/D-148).
+
+**Read posture** — the `retrieval.read_posture` config knob (`compatible`|`strict`, default `compatible`): whether an omitted `user`/agent resolves to a tenant-wide read (`compatible`, today's behaviour) or is refused with `ErrIdentityRequired` (`strict`). A resolve-time *presence* gate applied before any store call — not a store predicate (ae8/D-148/D-137).
+
+**Identity multiplexing** — the `identity.multiplexing` config knob (default `false`) plus, post-ae7, the per-credential `memory:assert-user` capability: whether a connection may assert a `user` that **disagrees** with the credential-pinned `user`. When off, a disagreeing user assertion is rejected (`ErrUserConflict`); session is always assertable regardless. The global flag is the pre-ae7 interim for the per-credential capability (ae8/D-148/D-137).
+
+**Credential pin vs assert** — the D-137 rule `identity.ResolveReadScope` enforces: a dimension the credential *pins* (tenant always; `user` under the non-multiplexing default) rejects a disagreeing `_meta`/arg/claim value; a dimension it lets the connection *assert* (session always; `user` under multiplexing / `CanAssertUser`) accepts it. `_meta`/a claim may never widen or override the pinned tenant authorization boundary (fail closed, D-138).
+
+- **Topic view (agent view)** — a named, per-subject read-time curation lens `(tenant_id, subject_kind, subject_id, view_name) → {allow_topics, deny_topics}` stored in the `topic_views` table (not a scope table, no memory rows). Applied at read time it narrows the caller's **own-scope** topic-tagged results via ae6's fail-open `filterByTopicOwnScope`. A curation lens, **not** a P3 isolation boundary (D-139); it can only subtract. Generalizes ae1's single binding — ae1's row is the `("agent", …, "default")` view. (Phase ae9, D-149.)
+
+- **View subject** — the `(subject_kind, subject_id)` a topic view is bound to: an `agent_id` (`"agent"`, from `_meta` via ae1) or the **verified credential's key id** (`"key"`). Always identity-derived and server-resolved, never a wire argument — a caller can apply only its own subject's views. (Phase ae9, D-149.)
+
+- **Subject precedence** — the `retrieval.agent_views.subject_precedence` order (default `agent,key`) that decides which view subject resolves when both an agent id and a verified key id are present; `agent,key` ⇒ the agent view wins. (Phase ae9, D-149.)
+
+- **Causal hook** — a per-item retrieve marker indicating a memory participates in a typed-link/causal chain, sourced from a single scope-required batch `Store.LinksExist(ctx, scope, ids)` read (one round-trip, never per-item `ListLinks`). Fail-open (D-036) and knob-gated (`retrieval.causal_hook`, default off). Deferred to phase ae4b (D-145); the render slot is stood up inert by ae4a.
+
+- **`LinksExist`** — the scope-required batch `Store` method `LinksExist(ctx, scope, ids) → map[string]bool` that answers, in one round-trip, which of a retrieval result page's memories have typed-link/causal edges — the N+1-free source of the causal hook. Both drivers + conformance; adds no column to the 12 scope tables (D-145, phase ae4b, deferred).
+
+- **Deprecation window** — the period, on the MCP surface, during which a soon-to-be-removed argument (`project_id`/`user_id`) is still accepted and still resolves scope exactly as before, while its use is telemetered (a versioned warning event) and optionally made rejectable (`mcp.deprecated_args_mode=reject`) as a dry-run of the eventual breaking removal (ae2b, D-140). Distinct from simply "ignoring" the argument, which would reproduce the tenant-wide regression the window exists to prevent.
+- **Versioned warning event** — a `store.Event` (the existing D-024 audit-trail mechanism, `internal/store.EventStore.Emit`) whose `Payload` JSON carries an explicit `schema_version` field, used to signal a deprecated-but-still-functioning code path without requiring the not-yet-built `internal/events` SSE stream (ae2b). The `Type` string follows the existing dot-namespaced convention (e.g. `mcp.legacy_scope_arg_used`).
+- **Legacy scope arg** — a `project_id`/`user_id` MCP tool argument once it has an `_meta`/JWT-borne replacement source (ae2/ae7/ae8); "still load-bearing" means the argument is, for a given call, the only source supplying that scope dimension (no higher-precedence `_meta`/JWT value exists for it) (ae2b, D-140).
+- **Deprecation mode** — the `mcp.deprecated_args_mode` knob (`warn`|`reject`) governing what happens when a legacy scope arg is detected as still load-bearing: proceed-and-telemeter, or refuse-and-telemeter. Retired in the same PR that removes the underlying arguments (ae2b, D-140).

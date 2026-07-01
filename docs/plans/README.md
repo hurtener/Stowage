@@ -495,8 +495,12 @@ multiplexing-vs-strict default is **STRICT** with two orthogonal opt-in knobs (D
 | ae2b | Breaking removal of `project_id`/`user_id` from MCP contracts | `internal/mcpserver`, `sdk/stowage`, `docs/` | D-125, §9.5 | ae7, ae8 | D-140 |
 | ae10 | *(deferred)* `layer`/`intent` read-shaping argument | `internal/retrieval`, surfaces | §6 | ae2, ae3 | — |
 
-Plans: `phase-ae3-shared-render-core.md`, `phase-ae6-topic-filter.md` (draft);
-`phase-ae4a-lean-mcp-render.md`, `phase-ae5-browse.md`, `phase-ae1-read-time-agent.md`,
-`phase-ae2-meta-intake.md`, `phase-ae7-jwt-verifier.md`, `phase-ae8-effective-scope.md`,
-`phase-ae9-topic-views.md`, `phase-ae2b-contract-removal.md` (to author);
-`phase-ae4b-causal-hook.md`, `phase-ae10-read-shaping.md` (deferred).
+Plans (all **draft** unless noted): `phase-ae3-shared-render-core.md`,
+`phase-ae4a-lean-mcp-render.md`, `phase-ae5-browse.md`, `phase-ae6-topic-filter.md`,
+`phase-ae1-read-time-agent.md`, `phase-ae2-meta-intake.md`, `phase-ae7-jwt-verifier.md`,
+`phase-ae8-effective-scope.md`, `phase-ae9-topic-views.md`,
+`phase-ae2b-contract-removal.md`; `phase-ae4b-causal-hook.md`,
+`phase-ae10-read-shaping.md` (**deferred**). Wave-authoring checkpoint reconciliations
+are recorded as D-150 (session is a read-time relevance signal, not a hard read
+predicate) and D-151 (ae1↔ae9 converge on one `topic_views` table / `TopicViewStore`
+seam / `retrieval.agent_views.enabled` knob).
