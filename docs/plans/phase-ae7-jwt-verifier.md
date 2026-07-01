@@ -218,8 +218,8 @@ cmd/stowage/main.go                     # CHANGED — build one *auth.Authentica
 go.mod                                  # CHANGED — golang-jwt/jwt/v5 v5.3.1 indirect → direct
 scripts/smoke/phase-ae7.sh              # NEW
 test/integration/auth_jwt_test.go       # NEW — real JWKS (httptest) + test signer, keyring↔jwt, ≥1 failure mode, -race (§17)
-docs/decisions.md                       # CHANGED — D-136, D-147
-docs/glossary.md                        # CHANGED — verify-never-mint, JWKS KeySet, max-stale ceiling, audience containment, test signer, X-Harbor-Session
+docs/decisions.md                       # (unchanged — D-136/D-147 pre-filed in the Wave-0 ledger, 89b54e1)
+docs/glossary.md                        # (unchanged — the six terms pre-filed in the Wave-0 ledger, 89b54e1)
 docs/plans/README.md                    # CHANGED — ae* track registration line (if not already added by an earlier ae phase)
 ```
 
@@ -431,3 +431,36 @@ here so they are explicit, not silent:
    (`ErrJWKSStale`). This satisfies the plan's "`staticKeySet` … backs the
    `jwks.file` path" framing while keeping one fetch/parse/cache
    implementation instead of two.
+
+## Dual-review resolutions (post-implementation)
+
+Two independent adversarial reviews (security/crypto + tests/config/parity) found
+no auth-bypass or fail-open bug; the algorithm-confusion, JWKS fail-closed, and
+mandatory-triple guarantees hold under adversarial tracing. The confirmed
+should-fix/nit findings are resolved in this PR:
+
+1. **JWKS negative-`kid` refresh amplification (both reviewers, should-fix).** A
+   kid-miss unconditionally forced a synchronous JWKS fetch, so an *unauthenticated*
+   caller could force one outbound fetch per request with a valid-format token
+   carrying a fresh random `kid` (golang-jwt resolves the key before verifying the
+   signature) — a self-DoS + JWKS-source amplification vector, and the min-refresh
+   interval the plan's Design named was not implemented. **Fixed** in
+   `internal/auth/jwks.go`: a package-internal `jwksMinRefreshInterval` (10s) gates
+   the kid-miss refresh path (tracked via `lastAttemptAt`, injectable clock), so a
+   flood of forged kids forces at most one outbound fetch per window; the TTL-elapsed
+   path is unchanged. `TestJWKS_KidMissBoundedRefresh` rewritten to a clock-driven
+   test asserting an in-window burst refetches zero times and an out-of-window miss
+   refetches once.
+2. **`parseRSAJWK` exponent bound (Rev1, nit).** `big.Int.Int64()` is undefined past
+   int64; an oversized/malformed `e` in a JWKS document produced a garbage exponent.
+   **Fixed**: reject an `e` that is not an odd public exponent ≥3 and ≤32 bits.
+3. **AC-7 parity scope (Rev2, low).** MCP does not consume `Role` (it has no
+   role-gated routes; pre-existing), so the parity test proves **Scope** parity
+   API↔MCP and Role parity holds **by construction** (one shared `Authenticate` call,
+   D-067). The keyring-credential cross-surface path is exercised by the pre-existing
+   comount tests (shared authenticator). Recorded here rather than adding a redundant
+   keyring integration test — an accepted, documented completeness footnote, not a
+   defect.
+4. **Stale file list (Rev2, nit).** D-136/D-147 and the six glossary terms were
+   pre-filed in the Wave-0 ledger (89b54e1); the Files list above is corrected to
+   show them unchanged by ae7.

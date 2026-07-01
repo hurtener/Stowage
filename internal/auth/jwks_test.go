@@ -272,28 +272,47 @@ func TestJWKS_KidMissBoundedRefresh(t *testing.T) {
 	}))
 	defer ts.Close()
 
-	ks, err := NewJWKSKeySet(context.Background(), JWKSSource{URL: ts.URL}, time.Hour, WithJWKSTTL(time.Hour))
+	clockVal := &atomicTime{}
+	clockVal.set(time.Unix(1_700_000_000, 0))
+	ks, err := NewJWKSKeySet(context.Background(), JWKSSource{URL: ts.URL}, time.Hour,
+		WithJWKSTTL(time.Hour), WithJWKSClock(clockVal.now))
 	if err != nil {
 		t.Fatalf("NewJWKSKeySet: %v", err)
 	}
-	if hits := atomic.LoadInt32(&hits); hits != 1 {
-		t.Fatalf("hits after construction = %d, want 1", hits)
+	if h := atomic.LoadInt32(&hits); h != 1 {
+		t.Fatalf("hits after construction = %d, want 1", h)
 	}
 
-	// B is unknown yet — this triggers a bounded (single) refresh, still a miss.
+	// A kid-miss WITHIN the min-refresh window (same instant as the load attempt)
+	// serves the snapshot without refetching — the amplification guard: a flood
+	// of forged/unknown kids can't force one outbound fetch per request.
+	for i := 0; i < 5; i++ {
+		if _, _, err := ks.KeyByID(signerB.kid); err == nil {
+			t.Fatal("KeyByID(B) within window = nil error, want unknown-kid rejection")
+		}
+	}
+	if h := atomic.LoadInt32(&hits); h != 1 {
+		t.Fatalf("hits after a burst of in-window kid-misses = %d, want 1 (no refetch inside the window)", h)
+	}
+
+	// Advance past the min-refresh window: now a kid-miss is allowed to refresh
+	// (still a miss — B unpublished — but the refresh happens once).
+	clockVal.set(clockVal.now().Add(jwksMinRefreshInterval + time.Second))
 	if _, _, err := ks.KeyByID(signerB.kid); err == nil {
-		t.Fatal("KeyByID(B) before publish = nil error, want unknown-kid rejection")
+		t.Fatal("KeyByID(B) after window = nil error, want unknown-kid rejection")
 	}
-	if hits := atomic.LoadInt32(&hits); hits != 2 {
-		t.Fatalf("hits after kid-miss = %d, want 2 (one bounded refresh)", hits)
+	if h := atomic.LoadInt32(&hits); h != 2 {
+		t.Fatalf("hits after out-of-window kid-miss = %d, want 2 (one refresh)", h)
 	}
 
-	// Rotate: publish both keys, then B resolves after another on-demand refresh
-	// (well within max_stale, but past nothing — the previous miss already
-	// consumed this TTL window, so KeyByID must refresh again on the next miss).
+	// Publish B and advance past the window again — B now resolves on the refresh.
 	docs.Store([]jwkDoc{jwkDocFromSigner(t, signerA), jwkDocFromSigner(t, signerB)})
+	clockVal.set(clockVal.now().Add(jwksMinRefreshInterval + time.Second))
 	if _, _, err := ks.KeyByID(signerB.kid); err != nil {
-		t.Fatalf("KeyByID(B) after publish: %v", err)
+		t.Fatalf("KeyByID(B) after publish + window: %v", err)
+	}
+	if h := atomic.LoadInt32(&hits); h != 3 {
+		t.Fatalf("hits after publish resolve = %d, want 3", h)
 	}
 }
 

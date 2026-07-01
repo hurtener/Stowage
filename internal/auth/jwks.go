@@ -47,6 +47,15 @@ const (
 	// BufferTriggers) — not an operator knob (D-034 guardrail; only
 	// auth.jwks.max_stale is operator-tunable).
 	jwksDefaultTTL = 5 * time.Minute
+	// jwksMinRefreshInterval floors how often a kid-MISS may trigger an outbound
+	// JWKS fetch. Without it, an unauthenticated caller can force one synchronous
+	// fetch per request by presenting a syntactically valid RS/ES token with a
+	// fresh random `kid` (golang-jwt resolves the key BEFORE verifying the
+	// signature), amplifying against the JWKS source and piling up outbound calls
+	// (self-DoS). Within this window a kid-miss serves the current snapshot
+	// (→ ErrUnknownKey) instead of refetching. Package-internal (06 / D-034); the
+	// plan's Design names this the min-refresh interval.
+	jwksMinRefreshInterval = 10 * time.Second
 )
 
 // JWKSSource identifies where a JWK Set is fetched from — exactly one of URL
@@ -70,9 +79,10 @@ type JWKSKeySet struct {
 	client   *http.Client
 	sf       singleflight.Group
 
-	mu         sync.Mutex
-	snapshot   *staticKeySet
-	lastGoodAt time.Time
+	mu            sync.Mutex
+	snapshot      *staticKeySet
+	lastGoodAt    time.Time
+	lastAttemptAt time.Time // last refresh ATTEMPT (success or fail) — bounds kid-miss refreshes
 }
 
 // JWKSOption configures a JWKSKeySet built by NewJWKSKeySet.
@@ -132,13 +142,20 @@ func (ks *JWKSKeySet) KeyByID(kid string) (crypto.PublicKey, string, error) {
 	ks.mu.Lock()
 	snap := ks.snapshot
 	lastGood := ks.lastGoodAt
+	lastAttempt := ks.lastAttemptAt
 	ks.mu.Unlock()
 
 	now := ks.clock()
+	// TTL-elapsed (or never-loaded) always refreshes — naturally bounded by the TTL.
 	needsRefresh := snap == nil || now.Sub(lastGood) >= ks.ttl
 	if !needsRefresh {
 		if _, _, err := snap.KeyByID(kid); err != nil {
-			needsRefresh = true // bounded kid-miss refresh, single-flighted below
+			// A kid-miss refreshes ONLY outside the min-refresh window, so a
+			// flood of forged tokens with random `kid`s forces at most one
+			// outbound fetch per jwksMinRefreshInterval (amplification guard).
+			if now.Sub(lastAttempt) >= jwksMinRefreshInterval {
+				needsRefresh = true
+			}
 		}
 	}
 
@@ -175,6 +192,13 @@ func (ks *JWKSKeySet) refreshSingleflight(ctx context.Context) error {
 // (serve last-known-good up to max_stale — the caller's KeyByID enforces the
 // ceiling).
 func (ks *JWKSKeySet) doRefresh(ctx context.Context) error {
+	// Record the attempt time up front (before the outbound call) so the
+	// kid-miss min-refresh window applies even when the fetch fails — a flood of
+	// forged kids against an unreachable JWKS endpoint can't queue an outbound
+	// call per request.
+	ks.mu.Lock()
+	ks.lastAttemptAt = ks.clock()
+	ks.mu.Unlock()
 	data, err := ks.fetch(ctx)
 	if err != nil {
 		return err
@@ -306,6 +330,14 @@ func parseRSAJWK(k jwkDoc) (*rsa.PublicKey, string, error) {
 	e := new(big.Int).SetBytes(eBytes)
 	if n.BitLen() < jwksMinRSABits {
 		return nil, "", fmt.Errorf("rsa modulus (%d bits) below the %d-bit floor", n.BitLen(), jwksMinRSABits)
+	}
+	// Bound the exponent: big.Int.Int64() is undefined past int64, and int()
+	// narrows further on 32-bit — a malformed/oversized `e` in a JWKS document
+	// would otherwise yield a garbage RSA exponent instead of a parse error. A
+	// real public exponent is small (commonly 65537), fits well within 32 bits,
+	// and must be odd and >= 3.
+	if e.BitLen() > 32 || e.Cmp(big.NewInt(3)) < 0 || e.Bit(0) == 0 {
+		return nil, "", fmt.Errorf("rsa exponent out of range or not a valid public exponent (must be odd and >= 3, <= 32 bits)")
 	}
 	return &rsa.PublicKey{N: n, E: int(e.Int64())}, k.Alg, nil
 }
