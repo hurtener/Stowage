@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/hurtener/dockyard/runtime/server"
 	"github.com/hurtener/dockyard/runtime/tool"
 
 	"github.com/hurtener/stowage/internal/causal"
@@ -33,6 +32,11 @@ func makeIngestHandler(svc *Services) tool.Handler[IngestInput, IngestOutput] {
 		scope, err := svc.ScopeFn(ctx)
 		if err != nil {
 			return tool.Result[IngestOutput]{}, fmt.Errorf("memory_ingest: resolve scope: %w", err)
+		}
+		// D-138 tenant guard (write path; identity discarded — ingest's scope is a
+		// per-record/explicit-target write, deliberately not _meta-narrowed, ae2).
+		if _, err := readMetaIdentity(ctx, scope.Tenant); err != nil {
+			return tool.Result[IngestOutput]{}, fmt.Errorf("memory_ingest: %w", err)
 		}
 
 		if len(in.Records) == 0 {
@@ -173,18 +177,24 @@ func makeRetrieveHandler(svc *Services) tool.Handler[RetrieveInput, RetrieveOutp
 		if err != nil {
 			return tool.Result[RetrieveOutput]{}, fmt.Errorf("memory_retrieve: resolve scope: %w", err)
 		}
-		// Tenant is the auth boundary (ScopeFn); project/user are caller-supplied read sub-scopes
-		// (P3, D-125). Empty = tenant-wide (back-compat). The store hard-isolates to this scope.
-		scope = identity.Scope{Tenant: scope.Tenant, Project: in.ProjectID, User: in.UserID}
-		// Agent identity arrives via the host-injected _meta seam (dockyard v1.8.0,
-		// D-135) — NEVER a model-fillable tool argument — and is stamped on the READ
-		// scope only: it is never persisted (identity.Scope.Agent, C1). RequestMeta
-		// returns nil when the host sent no _meta; the agent_id value is
-		// type-asserted to string (nil-safe on a missing key or wrong type).
-		if m := server.RequestMeta(ctx); m != nil {
-			if a, ok := m["agent_id"].(string); ok {
-				scope.Agent = a
-			}
+		// The D-138 tenant guard + non-authorizing _meta identity (user/session/
+		// agent_id) — the ONE readMetaIdentity call site in this package (ae2, AC-9).
+		mi, err := readMetaIdentity(ctx, scope.Tenant)
+		if err != nil {
+			return tool.Result[RetrieveOutput]{}, fmt.Errorf("memory_retrieve: %w", err)
+		}
+		// Tenant is the auth boundary (ScopeFn); project/user are caller-supplied read
+		// sub-scopes (P3, D-125), with _meta winning over the arg when the host injects
+		// it (ae2, metaElseArg). Empty = tenant-wide (back-compat). The store
+		// hard-isolates to this scope.
+		scope = identity.Scope{
+			Tenant:  scope.Tenant,
+			Project: in.ProjectID,
+			User:    metaElseArg(mi.User, in.UserID),
+			// Agent identity arrives via the host-injected _meta seam (dockyard v1.8.0,
+			// D-135) — NEVER a model-fillable tool argument — and is stamped on the READ
+			// scope only: it is never persisted (identity.Scope.Agent, C1).
+			Agent: mi.Agent,
 		}
 
 		if in.Query == "" {
@@ -196,12 +206,15 @@ func makeRetrieveHandler(svc *Services) tool.Handler[RetrieveInput, RetrieveOutp
 		}
 
 		resp, err := svc.Retriever.Retrieve(ctx, scope, retrieval.Request{
-			Query:         in.Query,
-			Limit:         in.Limit,
-			Window:        store.Window{From: in.From, Until: in.Until},
-			Kinds:         in.Kinds,
-			IncludeLanes:  in.IncludeLanes,
-			SessionID:     in.SessionID,
+			Query:        in.Query,
+			Limit:        in.Limit,
+			Window:       store.Window{From: in.From, Until: in.Until},
+			Kinds:        in.Kinds,
+			IncludeLanes: in.IncludeLanes,
+			// Session-REPLACE (D-137/D-150): the effective session is _meta.session
+			// when set, else the arg, fed to this EXISTING relevance sink — never onto
+			// Scope.Session (that would add a new store predicate; ae2 departure).
+			SessionID:     metaElseArg(mi.Session, in.SessionID),
 			Debug:         in.Debug,
 			ResponseID:    in.ResponseID,
 			Profile:       in.Profile,
@@ -278,12 +291,17 @@ func makePlaybookHandler(svc *Services) tool.Handler[PlaybookInput, PlaybookOutp
 		if err != nil {
 			return tool.Result[PlaybookOutput]{}, fmt.Errorf("memory_playbook: resolve scope: %w", err)
 		}
-		scope = identity.Scope{Tenant: scope.Tenant, Project: in.ProjectID, User: in.UserID}
+		mi, err := readMetaIdentity(ctx, scope.Tenant)
+		if err != nil {
+			return tool.Result[PlaybookOutput]{}, fmt.Errorf("memory_playbook: %w", err)
+		}
+		scope = identity.Scope{Tenant: scope.Tenant, Project: in.ProjectID, User: metaElseArg(mi.User, in.UserID), Agent: mi.Agent}
 
 		// LLM-free assembly core (D-072) — identical to GET /v1/playbook + the
 		// embedded SDK Playbook. The token budget is profile-internal (D-042).
+		// Session-REPLACE (D-137/D-150): existing sink, never Scope.Session.
 		pb, err := playbook.Assemble(ctx, svc.Store, scope, playbook.Options{
-			SessionID:   in.SessionID,
+			SessionID:   metaElseArg(mi.Session, in.SessionID),
 			TokenBudget: config.PlaybookBudgetForProfile(svc.Profile),
 		})
 		if err != nil {
@@ -334,7 +352,11 @@ func makeDrilldownHandler(svc *Services) tool.Handler[DrilldownInput, DrilldownO
 		if err != nil {
 			return tool.Result[DrilldownOutput]{}, fmt.Errorf("memory_drilldown: resolve scope: %w", err)
 		}
-		scope = identity.Scope{Tenant: scope.Tenant, Project: in.ProjectID, User: in.UserID}
+		mi, err := readMetaIdentity(ctx, scope.Tenant)
+		if err != nil {
+			return tool.Result[DrilldownOutput]{}, fmt.Errorf("memory_drilldown: %w", err)
+		}
+		scope = identity.Scope{Tenant: scope.Tenant, Project: in.ProjectID, User: metaElseArg(mi.User, in.UserID), Agent: mi.Agent}
 
 		if in.MemoryID == "" && in.Citation == "" {
 			return tool.Result[DrilldownOutput]{}, fmt.Errorf("memory_drilldown: one of memory_id or citation must be set")
@@ -419,7 +441,11 @@ func makeFeedbackHandler(svc *Services) tool.Handler[FeedbackInput, FeedbackOutp
 		if err != nil {
 			return tool.Result[FeedbackOutput]{}, fmt.Errorf("memory_feedback: resolve scope: %w", err)
 		}
-		scope = identity.Scope{Tenant: scope.Tenant, Project: in.ProjectID, User: in.UserID}
+		mi, err := readMetaIdentity(ctx, scope.Tenant)
+		if err != nil {
+			return tool.Result[FeedbackOutput]{}, fmt.Errorf("memory_feedback: %w", err)
+		}
+		scope = identity.Scope{Tenant: scope.Tenant, Project: in.ProjectID, User: metaElseArg(mi.User, in.UserID)}
 
 		if in.Signal == "" {
 			return tool.Result[FeedbackOutput]{}, fmt.Errorf("memory_feedback: signal must be set")
@@ -514,6 +540,11 @@ func makeAssertHandler(svc *Services) tool.Handler[AssertInput, AssertOutput] {
 		if err != nil {
 			return tool.Result[AssertOutput]{}, fmt.Errorf("memory_assert: resolve scope: %w", err)
 		}
+		// D-138 tenant guard (write path; identity discarded — assert has no
+		// sub-scope arg to narrow, ae2).
+		if _, err := readMetaIdentity(ctx, scope.Tenant); err != nil {
+			return tool.Result[AssertOutput]{}, fmt.Errorf("memory_assert: %w", err)
+		}
 
 		// Shared assert core (D-071) — identical logic to the embedded SDK Assert.
 		res, err := reconcile.Assert(ctx, svc.Store, scope, reconcile.AssertParams{
@@ -574,7 +605,11 @@ func makeGetHandler(svc *Services) tool.Handler[GetInput, GetOutput] {
 		if err != nil {
 			return tool.Result[GetOutput]{}, fmt.Errorf("memory_get: resolve scope: %w", err)
 		}
-		scope = identity.Scope{Tenant: scope.Tenant, Project: in.ProjectID, User: in.UserID}
+		mi, err := readMetaIdentity(ctx, scope.Tenant)
+		if err != nil {
+			return tool.Result[GetOutput]{}, fmt.Errorf("memory_get: %w", err)
+		}
+		scope = identity.Scope{Tenant: scope.Tenant, Project: in.ProjectID, User: metaElseArg(mi.User, in.UserID), Agent: mi.Agent}
 		if in.MemoryID == "" {
 			return tool.Result[GetOutput]{}, fmt.Errorf("memory_get: memory_id must not be empty")
 		}
@@ -607,7 +642,11 @@ func makeRollbackHandler(svc *Services) tool.Handler[RollbackInput, RollbackOutp
 		if err != nil {
 			return tool.Result[RollbackOutput]{}, fmt.Errorf("memory_rollback: resolve scope: %w", err)
 		}
-		scope = identity.Scope{Tenant: scope.Tenant, Project: in.ProjectID, User: in.UserID}
+		mi, err := readMetaIdentity(ctx, scope.Tenant)
+		if err != nil {
+			return tool.Result[RollbackOutput]{}, fmt.Errorf("memory_rollback: %w", err)
+		}
+		scope = identity.Scope{Tenant: scope.Tenant, Project: in.ProjectID, User: metaElseArg(mi.User, in.UserID)}
 		if in.MemoryID == "" {
 			return tool.Result[RollbackOutput]{}, fmt.Errorf("memory_rollback: memory_id must not be empty")
 		}
@@ -635,7 +674,11 @@ func makeResolveHandler(svc *Services) tool.Handler[ResolveInput, ResolveOutput]
 		if err != nil {
 			return tool.Result[ResolveOutput]{}, fmt.Errorf("memory_resolve: resolve scope: %w", err)
 		}
-		scope = identity.Scope{Tenant: scope.Tenant, Project: in.ProjectID, User: in.UserID}
+		mi, err := readMetaIdentity(ctx, scope.Tenant)
+		if err != nil {
+			return tool.Result[ResolveOutput]{}, fmt.Errorf("memory_resolve: %w", err)
+		}
+		scope = identity.Scope{Tenant: scope.Tenant, Project: in.ProjectID, User: metaElseArg(mi.User, in.UserID)}
 		if in.MemoryID == "" {
 			return tool.Result[ResolveOutput]{}, fmt.Errorf("memory_resolve: memory_id must not be empty")
 		}
@@ -661,6 +704,11 @@ func makeTopicsHandler(svc *Services) tool.Handler[TopicsInput, TopicsOutput] {
 		scope, err := svc.ScopeFn(ctx)
 		if err != nil {
 			return tool.Result[TopicsOutput]{}, fmt.Errorf("memory_topics: resolve scope: %w", err)
+		}
+		// D-138 tenant guard (tenant-scoped management verb; no sub-tenant read to
+		// narrow, ae2).
+		if _, err := readMetaIdentity(ctx, scope.Tenant); err != nil {
+			return tool.Result[TopicsOutput]{}, fmt.Errorf("memory_topics: %w", err)
 		}
 
 		switch in.Action {
@@ -743,6 +791,10 @@ func makeFlushHandler(svc *Services) tool.Handler[FlushInput, FlushOutput] {
 		if err != nil {
 			return tool.Result[FlushOutput]{}, fmt.Errorf("memory_flush: resolve scope: %w", err)
 		}
+		// D-138 tenant guard (control verb; no sub-tenant read to narrow, ae2).
+		if _, err := readMetaIdentity(ctx, scope.Tenant); err != nil {
+			return tool.Result[FlushOutput]{}, fmt.Errorf("memory_flush: %w", err)
+		}
 		if in.Key == "" {
 			return tool.Result[FlushOutput]{}, fmt.Errorf("memory_flush: key must not be empty")
 		}
@@ -778,12 +830,17 @@ func makeBranchHandler(svc *Services) tool.Handler[BranchInput, BranchOutput] {
 		if err != nil {
 			return tool.Result[BranchOutput]{}, fmt.Errorf("memory_branch: resolve scope: %w", err)
 		}
-		scope = identity.Scope{Tenant: scope.Tenant, Project: in.ProjectID, User: in.UserID}
+		mi, err := readMetaIdentity(ctx, scope.Tenant)
+		if err != nil {
+			return tool.Result[BranchOutput]{}, fmt.Errorf("memory_branch: %w", err)
+		}
+		scope = identity.Scope{Tenant: scope.Tenant, Project: in.ProjectID, User: metaElseArg(mi.User, in.UserID)}
 
 		var out BranchOutput
 		switch in.Action {
 		case "fork":
-			id, err := pipeline.ForkBranch(ctx, svc.Store, scope, in.SessionID, in.ParentBranchID)
+			// Session-REPLACE (D-137/D-150): existing fork sink, never Scope.Session.
+			id, err := pipeline.ForkBranch(ctx, svc.Store, scope, metaElseArg(mi.Session, in.SessionID), in.ParentBranchID)
 			if err != nil {
 				return tool.Result[BranchOutput]{}, fmt.Errorf("memory_branch: %w", err)
 			}
@@ -833,6 +890,10 @@ func makeGrantsHandler(svc *Services) tool.Handler[GrantsInput, GrantsOutput] {
 		scope, err := svc.ScopeFn(ctx)
 		if err != nil {
 			return tool.Result[GrantsOutput]{}, fmt.Errorf("memory_grants: resolve scope: %w", err)
+		}
+		// D-138 tenant guard (admin verb; owner scope built from args, ae2).
+		if _, err := readMetaIdentity(ctx, scope.Tenant); err != nil {
+			return tool.Result[GrantsOutput]{}, fmt.Errorf("memory_grants: %w", err)
 		}
 		if svc.GrantsSvc == nil {
 			return tool.Result[GrantsOutput]{}, fmt.Errorf("memory_grants: grants service not available")
@@ -978,6 +1039,13 @@ func makeAgentPolicyHandler(svc *Services) tool.Handler[AgentPolicyInput, AgentP
 		if err != nil {
 			return tool.Result[AgentPolicyOutput]{}, fmt.Errorf("memory_agent_policy: resolve scope: %w", err)
 		}
+		// D-138 tenant guard (admin verb, tenant-scoped like memory_grants; not
+		// enumerated in the ae2 plan's handler table because it landed with ae1
+		// after the table was authored — added here so the guard covers every
+		// handler per AC-3, an ae2 as-built deviation).
+		if _, err := readMetaIdentity(ctx, scope.Tenant); err != nil {
+			return tool.Result[AgentPolicyOutput]{}, fmt.Errorf("memory_agent_policy: %w", err)
+		}
 		if svc.Retriever == nil {
 			return tool.Result[AgentPolicyOutput]{}, fmt.Errorf("memory_agent_policy: retriever not available")
 		}
@@ -1050,7 +1118,11 @@ func makeEpisodesHandler(svc *Services) tool.Handler[EpisodesInput, EpisodesOutp
 		if err != nil {
 			return tool.Result[EpisodesOutput]{}, fmt.Errorf("memory_episodes: resolve scope: %w", err)
 		}
-		scope = identity.Scope{Tenant: scope.Tenant, Project: in.ProjectID, User: in.UserID}
+		mi, err := readMetaIdentity(ctx, scope.Tenant)
+		if err != nil {
+			return tool.Result[EpisodesOutput]{}, fmt.Errorf("memory_episodes: %w", err)
+		}
+		scope = identity.Scope{Tenant: scope.Tenant, Project: in.ProjectID, User: metaElseArg(mi.User, in.UserID), Agent: mi.Agent}
 		var out EpisodesOutput
 		switch {
 		case in.ID != "":
@@ -1090,8 +1162,10 @@ func makeEpisodesHandler(svc *Services) tool.Handler[EpisodesInput, EpisodesOutp
 				out.Episodes = append(out.Episodes, episodeToItem(v))
 			}
 		default:
+			// Session-REPLACE (D-137/D-150): existing window/session arg sink, never
+			// Scope.Session.
 			res, lerr := episodes.List(ctx, svc.Store, scope, episodes.ListOptions{
-				Limit: in.Limit, Cursor: in.Cursor, SessionID: in.SessionID, From: in.From, Until: in.Until,
+				Limit: in.Limit, Cursor: in.Cursor, SessionID: metaElseArg(mi.Session, in.SessionID), From: in.From, Until: in.Until,
 			})
 			if lerr != nil {
 				return tool.Result[EpisodesOutput]{}, fmt.Errorf("memory_episodes: %w", lerr)
@@ -1128,7 +1202,15 @@ func makeBrowseHandler(svc *Services) tool.Handler[BrowseInput, BrowseOutput] {
 		if err != nil {
 			return tool.Result[BrowseOutput]{}, fmt.Errorf("memory_browse: resolve scope: %w", err)
 		}
-		scope = identity.Scope{Tenant: scope.Tenant, Project: in.ProjectID, User: in.UserID}
+		// Not enumerated in the ae2 plan's handler table (memory_browse landed with
+		// ae5 after the table was authored); intake follows the same read-handler
+		// rule as memory_get (guard + user + agent, no session — BrowseOptions has
+		// no session dimension), an ae2 as-built deviation.
+		mi, err := readMetaIdentity(ctx, scope.Tenant)
+		if err != nil {
+			return tool.Result[BrowseOutput]{}, fmt.Errorf("memory_browse: %w", err)
+		}
+		scope = identity.Scope{Tenant: scope.Tenant, Project: in.ProjectID, User: metaElseArg(mi.User, in.UserID), Agent: mi.Agent}
 
 		mode, perr := retrieval.ParseBrowseMode(in.Mode)
 		if perr != nil {
@@ -1176,7 +1258,11 @@ func makeCausalHandler(svc *Services) tool.Handler[CausalInput, CausalOutput] {
 		if err != nil {
 			return tool.Result[CausalOutput]{}, fmt.Errorf("memory_causal: resolve scope: %w", err)
 		}
-		scope = identity.Scope{Tenant: scope.Tenant, Project: in.ProjectID, User: in.UserID}
+		mi, err := readMetaIdentity(ctx, scope.Tenant)
+		if err != nil {
+			return tool.Result[CausalOutput]{}, fmt.Errorf("memory_causal: %w", err)
+		}
+		scope = identity.Scope{Tenant: scope.Tenant, Project: in.ProjectID, User: metaElseArg(mi.User, in.UserID), Agent: mi.Agent}
 		if in.MemoryID == "" {
 			return tool.Result[CausalOutput]{}, fmt.Errorf("memory_causal: memory_id is required")
 		}
@@ -1219,7 +1305,11 @@ func makeVerifyHandler(svc *Services) tool.Handler[VerifyInput, VerifyOutput] {
 		if err != nil {
 			return tool.Result[VerifyOutput]{}, fmt.Errorf("memory_verify: resolve scope: %w", err)
 		}
-		scope = identity.Scope{Tenant: scope.Tenant, Project: in.ProjectID, User: in.UserID}
+		mi, err := readMetaIdentity(ctx, scope.Tenant)
+		if err != nil {
+			return tool.Result[VerifyOutput]{}, fmt.Errorf("memory_verify: %w", err)
+		}
+		scope = identity.Scope{Tenant: scope.Tenant, Project: in.ProjectID, User: metaElseArg(mi.User, in.UserID), Agent: mi.Agent}
 		if in.Claim == "" {
 			return tool.Result[VerifyOutput]{}, fmt.Errorf("memory_verify: claim is required")
 		}
@@ -1243,7 +1333,11 @@ func makeReviewHandler(svc *Services) tool.Handler[ReviewInput, ReviewOutput] {
 		if err != nil {
 			return tool.Result[ReviewOutput]{}, fmt.Errorf("memory_review: resolve scope: %w", err)
 		}
-		scope = identity.Scope{Tenant: scope.Tenant, Project: in.ProjectID, User: in.UserID}
+		mi, err := readMetaIdentity(ctx, scope.Tenant)
+		if err != nil {
+			return tool.Result[ReviewOutput]{}, fmt.Errorf("memory_review: %w", err)
+		}
+		scope = identity.Scope{Tenant: scope.Tenant, Project: in.ProjectID, User: metaElseArg(mi.User, in.UserID), Agent: mi.Agent}
 		switch in.Action {
 		case "list":
 			mems, next, lerr := trust.ListPending(ctx, svc.Store, scope, in.Limit, in.Cursor)
@@ -1284,7 +1378,11 @@ func makeTraceHandler(svc *Services) tool.Handler[TraceInput, traces.Bundle] {
 		if err != nil {
 			return tool.Result[traces.Bundle]{}, fmt.Errorf("memory_trace: resolve scope: %w", err)
 		}
-		scope = identity.Scope{Tenant: scope.Tenant, Project: in.ProjectID, User: in.UserID}
+		mi, err := readMetaIdentity(ctx, scope.Tenant)
+		if err != nil {
+			return tool.Result[traces.Bundle]{}, fmt.Errorf("memory_trace: %w", err)
+		}
+		scope = identity.Scope{Tenant: scope.Tenant, Project: in.ProjectID, User: metaElseArg(mi.User, in.UserID), Agent: mi.Agent}
 		if in.ResponseID == "" {
 			return tool.Result[traces.Bundle]{}, fmt.Errorf("memory_trace: response_id is required")
 		}
@@ -1315,6 +1413,13 @@ func makeSuggestionsHandler(svc *Services) tool.Handler[SuggestionsInput, Sugges
 		if err != nil {
 			return tool.Result[SuggestionsOutput]{}, fmt.Errorf("memory_suggestions: resolve scope: %w", err)
 		}
+		mi, err := readMetaIdentity(ctx, scope.Tenant)
+		if err != nil {
+			return tool.Result[SuggestionsOutput]{}, fmt.Errorf("memory_suggestions: %w", err)
+		}
+		// SuggestionsInput has no user_id/project_id arg — the effective user is
+		// mi.User alone (ae2 table caveat).
+		scope = identity.Scope{Tenant: scope.Tenant, User: mi.User, Agent: mi.Agent}
 		action := in.Action
 		if action == "" {
 			action = "list"
@@ -1325,7 +1430,8 @@ func makeSuggestionsHandler(svc *Services) tool.Handler[SuggestionsInput, Sugges
 			if rerr != nil {
 				return tool.Result[SuggestionsOutput]{}, fmt.Errorf("memory_suggestions: %w", rerr)
 			}
-			offers, degraded, eerr := proactive.Evaluate(ctx, svc.Store, svc.Retriever, scope, in.SessionID, in.Query, cfg, time.Now().UnixMilli())
+			// Session-REPLACE (D-137/D-150): existing Evaluate sink, never Scope.Session.
+			offers, degraded, eerr := proactive.Evaluate(ctx, svc.Store, svc.Retriever, scope, metaElseArg(mi.Session, in.SessionID), in.Query, cfg, time.Now().UnixMilli())
 			if eerr != nil {
 				return tool.Result[SuggestionsOutput]{}, fmt.Errorf("memory_suggestions: %w", eerr)
 			}
@@ -1370,6 +1476,14 @@ func makeProactiveConfigHandler(svc *Services) tool.Handler[ProactiveConfigInput
 		if err != nil {
 			return tool.Result[ProactiveConfigOutput]{}, fmt.Errorf("memory_proactive_config: resolve scope: %w", err)
 		}
+		mi, err := readMetaIdentity(ctx, base.Tenant)
+		if err != nil {
+			return tool.Result[ProactiveConfigOutput]{}, fmt.Errorf("memory_proactive_config: %w", err)
+		}
+		// The shared scope stays arg-only (in.User) so the guard above runs on BOTH
+		// actions, but action=set (a persist) is never _meta-narrowed — see the ae2
+		// plan's memory_proactive_config caveat. _meta.user intake is applied only
+		// inside the "get" arm below, just before proactive.Resolve.
 		scope := identity.Scope{Tenant: base.Tenant, User: in.User, Project: in.Project}
 		action := in.Action
 		if action == "" {
@@ -1384,7 +1498,8 @@ func makeProactiveConfigHandler(svc *Services) tool.Handler[ProactiveConfigInput
 			patch := proactive.ConfigPatch{Enabled: in.Enabled, Threshold: in.Threshold, Budget: in.Budget, Classes: in.Classes}
 			cfg, rerr = proactive.WriteGovernance(ctx, svc.Store.ScopeSettings(), scope, proactiveProfileDefault(svc.Profile), patch, time.Now().UnixMilli())
 		case "get":
-			cfg, rerr = proactive.Resolve(ctx, svc.Store.ScopeSettings(), scope, proactiveProfileDefault(svc.Profile))
+			readScope := identity.Scope{Tenant: scope.Tenant, User: metaElseArg(mi.User, scope.User), Project: scope.Project}
+			cfg, rerr = proactive.Resolve(ctx, svc.Store.ScopeSettings(), readScope, proactiveProfileDefault(svc.Profile))
 		default:
 			return tool.Result[ProactiveConfigOutput]{}, fmt.Errorf("memory_proactive_config: action must be get or set")
 		}

@@ -1,6 +1,6 @@
 # Phase ae2 — additive `_meta` identity intake
 
-- **Status:** draft
+- **Status:** implemented (see "As-built deviations" below)
 - **Owning subsystem(s):** `internal/mcpserver` (the per-handler scope-construction sites + a shared `_meta` intake helper); `internal/identity` (a `ErrTenantMismatch` sentinel for the D-138 fail-closed guard)
 - **RFC sections:** §5 (identity & scopes), §9.5 (one logic core, D-067/D-073), and D-125 (sub-tenant targeting)
 - **Depends on phases:** **ae1 only** — reuses the `dockyard v1.7.3 → v1.8.0` bump (so `server.RequestMeta(ctx)` exists), the read-only `identity.Scope.Agent` field, and the first `RequestMeta(ctx)["agent_id"]` call site ae1 planted in the retrieve handler. **Not ae7** (C3): intake reads host-injected `_meta` directly; there is no verified token `sub`/`user` to fall back to until the JWT verifier lands, so this phase is strictly additive.
@@ -414,6 +414,29 @@ docs/glossary.md                        # CHANGED — _meta identity intake, ten
 - **`_meta`-else-arg precedence** — the documented resolution rule for a
   non-authorizing dimension: the host-injected `_meta` value wins over an in-band
   argument when both are present; the arg is only the fallback (`metaElseArg`).
+
+## As-built deviations
+
+- **Two handlers not enumerated in the Design's handler table are also
+  guarded/intake'd.** `memory_agent_policy` and `memory_browse` landed with ae1/ae5
+  respectively, after this plan's handler table was authored against the
+  then-current code map. AC-3 ("the guard runs on **every** handler, read and
+  write") is binding regardless of the table's enumeration, so both were folded
+  in for correctness rather than left as a tenant-guard gap:
+  - `memory_agent_policy` — guard-only (tenant-scoped admin verb, no sub-tenant
+    read to narrow — matches the `memory_grants` rationale exactly).
+  - `memory_browse` — guard + user (`metaElseArg(mi.User, in.UserID)`) + agent
+    (`mi.Agent`), no session (`BrowseOptions` has no session dimension) — matches
+    the `memory_get` pattern exactly.
+  Both are exercised by the existing `TestAgentPolicyHandler_*` / browse-handler
+  test suites plus the package's `-run MetaIntake` regression tests; no plan
+  Design text needed to change, only the table's completeness.
+- **`ae1`'s `dockyard v1.8.0` bump and `Scope.Agent` field were already landed**
+  (commit `d72d535`) by the time ae2 was implemented, so the "ae1 not yet in the
+  code" contingency in "Findings I'm departing from" did not need to be exercised
+  — `go.mod`/`identity.Scope.Agent` were reused as-is.
+- No other deviations from the Design; all 11 acceptance criteria are met as
+  specified (see the smoke script and the verification tails in the PR).
 
 ## Decisions filed
 

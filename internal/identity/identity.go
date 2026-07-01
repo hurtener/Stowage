@@ -16,6 +16,14 @@ var ErrScopeMissing = errors.New("identity: scope missing from context")
 // ErrInvalidScope is returned when Validate fails.
 var ErrInvalidScope = errors.New("identity: invalid scope")
 
+// ErrTenantMismatch is returned when an inbound _meta (or, later, an HTTP header)
+// supplies a tenant that disagrees with the authenticated credential. _meta may
+// supply non-authorizing dimensions (user/session/agent/project) but NEVER the
+// authorization boundary — a mismatch fails closed (D-138). The message is
+// value-free by construction: neither the injected nor the real tenant is
+// ever formatted into it.
+var ErrTenantMismatch = errors.New("identity: _meta tenant does not match authenticated credential")
+
 // Scope identifies the tenant, project, user, and session for an operation.
 //
 // Constraints (enforced by Validate):

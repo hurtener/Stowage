@@ -3,6 +3,8 @@ package identity_test
 import (
 	"context"
 	"errors"
+	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/hurtener/stowage/internal/identity"
@@ -96,6 +98,36 @@ func TestContextIsolation(t *testing.T) {
 	}
 	if _, err := identity.FromContext(child); err != nil {
 		t.Errorf("child context FromContext error: %v", err)
+	}
+}
+
+// TestTenantMismatchSentinel verifies ErrTenantMismatch (ae2, D-138) is a
+// distinct, value-free sentinel: its message contains no tenant value (a
+// literal-free assertion) and it is errors.Is-matchable through a %w wrap, the
+// exact pattern mcpserver's readMetaIdentity uses.
+func TestTenantMismatchSentinel(t *testing.T) {
+	if identity.ErrTenantMismatch == nil {
+		t.Fatal("ErrTenantMismatch must not be nil")
+	}
+	if errors.Is(identity.ErrTenantMismatch, identity.ErrInvalidScope) {
+		t.Error("ErrTenantMismatch must be distinct from ErrInvalidScope")
+	}
+	if errors.Is(identity.ErrTenantMismatch, identity.ErrScopeMissing) {
+		t.Error("ErrTenantMismatch must be distinct from ErrScopeMissing")
+	}
+
+	wrapped := fmt.Errorf("mcpserver: %w", identity.ErrTenantMismatch)
+	if !errors.Is(wrapped, identity.ErrTenantMismatch) {
+		t.Error("a %w-wrapped ErrTenantMismatch must remain errors.Is-matchable")
+	}
+
+	// Literal-free: neither a would-be injected nor a would-be real tenant value
+	// appears anywhere in the sentinel's message.
+	msg := identity.ErrTenantMismatch.Error()
+	for _, leak := range []string{"acme", "credTenant", "tenant-a", "tenant-b"} {
+		if strings.Contains(msg, leak) {
+			t.Errorf("ErrTenantMismatch message %q must not contain a tenant value %q", msg, leak)
+		}
 	}
 }
 
