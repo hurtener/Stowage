@@ -3,7 +3,6 @@ package api
 import (
 	"context"
 	"net/http"
-	"strings"
 
 	"github.com/hurtener/stowage/internal/auth"
 	"github.com/hurtener/stowage/internal/identity"
@@ -12,41 +11,36 @@ import (
 // authKeyCtxKey is the context key for the authenticated *auth.Key.
 type authKeyCtxKey struct{}
 
-// authMiddleware extracts the Bearer token from the Authorization header,
-// verifies it against the store keyring (constant-time; CLAUDE.md §7), and
-// stores the resolved key and tenant scope on the request context.
+// authMiddleware authenticates the request via the server's *auth.Authenticator
+// (ae7, D-067) — keyring or JWT depending on how it was built — and stores
+// the resolved key and scope on the request context.
 //
-// If requireAdmin is true, the key must have RoleAdmin; otherwise any valid
-// key (agent or admin) is accepted.
+// If requireAdmin is true, the resolved Role must be RoleAdmin; otherwise any
+// valid credential (agent or admin) is accepted.
 //
-// Never logs key material (CLAUDE.md §7).
+// Never logs credential material (CLAUDE.md §7).
 func (s *Server) authMiddleware(next http.HandlerFunc, requireAdmin bool) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		hdr := r.Header.Get("Authorization")
-		if hdr == "" {
-			respondJSON(w, http.StatusUnauthorized, errBody("missing Authorization header"))
-			return
-		}
-		plaintext, ok := strings.CutPrefix(hdr, "Bearer ")
-		if !ok {
-			respondJSON(w, http.StatusUnauthorized, errBody("Authorization must be Bearer sk_..."))
-			return
-		}
-
-		key, err := auth.Verify(s.st.Keys(), plaintext)
+		scope, role, err := s.authn.Authenticate(r.Context(), hdr, r.Header.Get(auth.SessionHeader))
 		if err != nil {
-			respondJSON(w, http.StatusUnauthorized, errBody("invalid or revoked key"))
+			respondJSON(w, http.StatusUnauthorized, errBody("authentication failed: "+auth.ReasonForWire(err)))
 			return
 		}
 
-		if requireAdmin && key.Role != auth.RoleAdmin {
+		if requireAdmin && role != auth.RoleAdmin {
 			respondJSON(w, http.StatusForbidden, errBody("admin role required"))
 			return
 		}
 
-		// Store authenticated key and tenant scope on context (P3).
+		// Back-compat: synthesize a *auth.Key so keyFromContext/scopeFromRequest
+		// keep compiling and behaving on BOTH modes. In ModeJWT this is a
+		// synthetic view over the verified Scope, not a real stored key.
+		key := &auth.Key{TenantID: scope.Tenant, Role: role}
 		ctx := context.WithValue(r.Context(), authKeyCtxKey{}, key)
-		scope := identity.Scope{Tenant: key.TenantID}
+		// The FULL verified Scope (Tenant/User/Session in ModeJWT) is set
+		// alongside (P3) — ae7's core deliverable; ae8 wires read handlers to
+		// consume Scope.User/Session directly.
 		ctx = identity.WithScope(ctx, scope)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	}

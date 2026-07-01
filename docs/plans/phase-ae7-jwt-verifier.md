@@ -1,6 +1,6 @@
 # Phase ae7 — Harbor-aligned JWT verifier (second mode)
 
-- **Status:** draft
+- **Status:** implemented (feat/ae-wave-2)
 - **Owning subsystem(s):** `internal/auth` (a new verify-never-mint `Validator` + `KeySet`/`JWKSKeySet` + a mode-aware `Authenticator` resolver); `internal/config` (an `auth` section); `internal/api` + `internal/mcpserver` (the two bearer seams become thin callers of the resolver); `cmd/stowage` (boot-time wiring)
 - **RFC sections:** §5.5 (identity & auth — "JWT, asymmetric algorithms only; the triple (tenant, user, session) is in the JWT claims"), §9.5 (one logic core, D-067/D-073); D-030 (runtime key store)
 - **Depends on phases:** the existing keyring auth seam (`internal/auth.Verify`, `store.Keys() auth.Keyring`, D-030); `repos/Harbor` in the session (PREREQ-2 — the port source). **Independent of ae1/ae2** (`agent_id` never travels in the JWT). This phase makes a verified `user`/`session` claim **exist** on the request scope and is the C4 gate that unblocks ae2b.
@@ -378,3 +378,56 @@ surface bounded (06).
   (`ErrJWKSStale`); the keyring stays the default *mode* but is never an implicit
   fallback for a mis/unconfigured JWT mode. D-036's gateway-free-degradation rule
   scopes retrieval, not identity verification.
+
+## As-built deviations (§4.3)
+
+`repos/Harbor` was not in the implementation session, so the plan itself (not
+Harbor's source) was the binding spec, per the orchestrator's brief. Five
+reasonable, small deviations from the plan's illustrative snippets, recorded
+here so they are explicit, not silent:
+
+1. **`api.New`/`mcpserver.KeyringMiddleware` keep their existing signatures;
+   `Server.SetAuthenticator` is the injection point.** The plan's Design
+   section says "`Server` carries `*auth.Authenticator` (injected from
+   main)". `internal/api.New` is called at ~20 existing call sites across
+   tests and `eval/harness` with no authenticator parameter. Rather than
+   break every call site, `api.New` now builds a default
+   `auth.NewKeyringAuthenticator(st.Keys())` internally — byte-identical to
+   pre-ae7 behavior — and a new `Server.SetAuthenticator` (mirroring the
+   existing `SetGateway`/`SetRetriever` setter pattern) lets
+   `cmd/stowage/main.go` override it in `jwt` mode. `mcpserver.KeyringMiddleware`
+   is unchanged as specified (a thin wrapper over the new `AuthMiddleware`).
+2. **`auth.WithAlgorithms([]string) Option`** was added as a fifth
+   `Validator` option (the plan's Design snippet enumerated
+   `WithIssuer/WithAudience/WithClock/WithLogger`). The `auth.algorithms`
+   config knob (§Config keys) has no effect without a way to narrow the
+   parser's accepted method set below the full `AllowedAlgorithms`, so this
+   option is necessary, not optional; `cmd/stowage/main.go`'s
+   `buildAuthenticator` wires it from `cfg.Auth.AlgorithmList()`.
+3. **`mapParserError` recovers `ErrAlgNotAllowed` vs `ErrSignatureInvalid` via
+   a pre-parse header-only `alg` peek (`peekAlg`), not from golang-jwt's error
+   alone.** golang-jwt v5's `Parser.ParseWithClaims` returns the SAME
+   `jwt.ErrTokenSignatureInvalid` for both a `WithValidMethods` rejection and
+   an actual bad signature (a deliberate library choice — it does not leak
+   which failure occurred at the wire level). `jwt.WithValidMethods` remains
+   the sole *enforcement* point (AC-1 unweakened); `peekAlg` decodes only the
+   header segment, never influences whether the token is accepted, and exists
+   purely so the two failure modes map to distinct audit-log/wire-safe
+   reasons and distinct golden-test assertions.
+4. **The smoke script checks `stowage config explain`, not `stowage config
+   get`.** The plan's Smoke section illustratively wrote `stowage config get
+   auth.mode`; the CLI has no `config get` subcommand (only `explain` —
+   `cmd/stowage/main.go`'s `configUsage`), matching the ae5/ae6 smoke
+   precedent. The script also captures `config explain` output once and greps
+   the captured string repeatedly, rather than piping directly from the
+   binary per check, to avoid a SIGPIPE-under-`pipefail` flake on a
+   short-circuiting `grep -q`.
+5. **`JWKSKeySet` is a TTL/max-stale wrapper around an atomically-swapped
+   `*staticKeySet` snapshot**, not two structurally separate url/file code
+   paths. Both `jwks.url` and `jwks.file` sources produce a fresh
+   `staticKeySet` after each successful parse (`doRefresh`); `KeyByID`
+   refreshes on demand (kid-miss or TTL elapsed, single-flighted) and serves
+   the current snapshot if it is within `max_stale`, else fails closed
+   (`ErrJWKSStale`). This satisfies the plan's "`staticKeySet` … backs the
+   `jwks.file` path" framing while keeping one fetch/parse/cache
+   implementation instead of two.

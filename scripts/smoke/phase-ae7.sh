@@ -43,29 +43,46 @@ else
 fi
 
 # ── AC-2: test signer is TEST-ONLY — Stowage never signs ─────────────────────────
-if grep -Rl --include='*.go' -E 'SignedString|PrivateKey' internal/auth 2>/dev/null \
-   | grep -v '_test.go' | grep -q .; then
-  failc "AC-2: signing code found outside _test.go (Stowage must never sign)"
+mint_leak=0
+for f in internal/auth/*.go; do
+  case "$f" in *_test.go) continue ;; esac
+  if grep -Eq 'rsa\.PrivateKey|ecdsa\.PrivateKey|\.SignedString\(' "$f" 2>/dev/null; then
+    mint_leak=1
+    failc "AC-2: $f references minting material outside _test.go (Stowage must never sign)"
+  fi
+done
+[ "$mint_leak" -eq 0 ] && ok "AC-2: no signing in the shipped binary (test signer is test-only, L1)"
+
+# ── AC-4/AC-9: keyring is the zero-config default; all seven knobs explainable ──
+# NOTE: there is no `stowage config get` subcommand (only `config explain`
+# exists, per cmd/stowage/main.go's configUsage) — this deviates from the
+# plan's illustrative "stowage config get auth.mode" wording, matching ae5/
+# ae6's established real pattern instead. Output is captured ONCE then grepped
+# repeatedly (not piped directly from the binary per grep call) to avoid the
+# SIGPIPE-under-pipefail flake a short-circuiting `grep -q` can trigger on a
+# live pipe.
+if grep -q '"auth.mode"' internal/config/config.go; then
+  ok "knob: auth.mode registered in config"
 else
-  ok "AC-2: no signing in the shipped binary (test signer is test-only, L1)"
+  failc "knob: auth.mode absent from config"
 fi
 
-# ── AC-4: keyring is the zero-config default mode ────────────────────────────────
-if grep -q 'auth.mode' internal/config/config.go; then
-  ok "AC-4: auth.mode present in config"
-else
-  failc "AC-4: auth.mode absent from config"
-fi
-if go build -o /tmp/stowage-ae7 ./cmd/stowage 2>/dev/null; then
-  if /tmp/stowage-ae7 config get auth.mode 2>/dev/null | grep -q 'keyring'; then
-    ok "AC-4: auth.mode defaults to keyring (zero-config start)"
+BIN=/tmp/stowage-smoke-ae7
+trap 'rm -f "$BIN"' EXIT
+if CGO_ENABLED=0 go build -o "$BIN" ./cmd/stowage 2>/dev/null; then
+  out=$("$BIN" config explain 2>&1)
+  if echo "$out" | grep -Eq 'auth\.mode[[:space:]]+=[[:space:]]+keyring[[:space:]]+\[default\]'; then
+    ok "AC-4: auth.mode defaults to keyring (zero-config start, config explain)"
   else
-    failc "AC-4: auth.mode default is not keyring"
+    failc "AC-4: auth.mode default is not keyring per config explain"
   fi
-  # ── AC-9: all seven auth.* knobs explainable ──────────────────────────────────
+
   miss=0
   for k in auth.mode auth.issuer auth.audience auth.algorithms auth.jwks.url auth.jwks.file auth.jwks.max_stale; do
-    /tmp/stowage-ae7 config explain 2>/dev/null | grep -q "$k" || { miss=1; failc "AC-9: knob $k not explainable"; }
+    if ! echo "$out" | grep -q "$k"; then
+      miss=1
+      failc "AC-9: knob $k not explainable"
+    fi
   done
   [ "$miss" -eq 0 ] && ok "AC-9: all seven auth.* knobs registered + explainable"
 else
@@ -78,8 +95,8 @@ if [ -f "$A" ] && grep -q 'Authenticator' internal/api/auth.go && grep -q 'Authe
 else
   failc "AC-7: a surface does not route through auth.Authenticator"
 fi
-if grep -q 'validator.Validate\|\.Validate(ctx' internal/api/auth.go internal/mcpserver/server.go 2>/dev/null; then
-  failc "AC-7: a surface calls Validate directly (should go through Authenticator)"
+if grep -q 'validator\.Validate\|jwt\.Parse' internal/api/auth.go internal/mcpserver/server.go 2>/dev/null; then
+  failc "AC-7: a surface calls Validate/Parse directly (should go through Authenticator)"
 else
   ok "AC-7: no surface parses/validates a JWT directly"
 fi
@@ -102,7 +119,7 @@ fi
 if go test ./test/integration/ -run 'AuthJWT|JWTVerifier' -count=1 >/dev/null 2>&1; then
   ok "AC-11: JWT verifier integration test passes"
 else
-  skip "AC-11: integration JWT test not present/passing yet"
+  failc "AC-11: JWT verifier integration test fails"
 fi
 
 exit "$fails"

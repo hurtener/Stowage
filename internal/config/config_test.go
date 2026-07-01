@@ -361,6 +361,13 @@ func clearStowageEnv(t *testing.T) {
 		"STOWAGE_TELEMETRY_LOG_FORMAT",
 		"STOWAGE_TELEMETRY_METRICS_LISTEN",
 		"STOWAGE_TELEMETRY_RUNTIME_SAMPLE_INTERVAL",
+		"STOWAGE_AUTH_MODE",
+		"STOWAGE_AUTH_ISSUER",
+		"STOWAGE_AUTH_AUDIENCE",
+		"STOWAGE_AUTH_ALGORITHMS",
+		"STOWAGE_AUTH_JWKS_URL",
+		"STOWAGE_AUTH_JWKS_FILE",
+		"STOWAGE_AUTH_JWKS_MAX_STALE",
 	}
 	for _, v := range vars {
 		prev, had := os.LookupEnv(v)
@@ -935,5 +942,195 @@ func TestGatewayPerConcernSecretRedacted(t *testing.T) {
 	}
 	if !strings.Contains(out, "STOWAGE_TEST_EMBED_SECRET (set)") {
 		t.Error("Explain should show the embed_api_key env-ref as (set)")
+	}
+}
+
+// ---- ae7: auth.* (D-136/D-147) ---------------------------------------------
+
+// TestAuthModeDefaultKeyring verifies AC-4: auth.mode defaults to keyring and
+// the default config validates (zero-config start unchanged).
+func TestAuthModeDefaultKeyring(t *testing.T) {
+	clearStowageEnv(t)
+	cfg := config.Defaults()
+	if cfg.Auth.Mode != "keyring" {
+		t.Errorf("Auth.Mode = %q, want keyring", cfg.Auth.Mode)
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Errorf("Defaults().Validate(): %v", err)
+	}
+}
+
+// TestAuthModeUnknownFails verifies an unrecognized auth.mode fails validation.
+func TestAuthModeUnknownFails(t *testing.T) {
+	clearStowageEnv(t)
+	cfg := config.Defaults()
+	cfg.Auth.Mode = "oauth2"
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("Validate() = nil, want error for unknown auth.mode")
+	}
+	if !strings.Contains(err.Error(), "config.auth.mode") {
+		t.Errorf("error %q does not contain key path config.auth.mode", err.Error())
+	}
+}
+
+// TestAuthModeJWT_RequiresExactlyOneJWKSSource verifies AC-4/AC-9: jwt mode
+// with neither (or both) of jwks.url/jwks.file fails validation — never a
+// silent keyring fallback (D-147).
+func TestAuthModeJWT_RequiresExactlyOneJWKSSource(t *testing.T) {
+	clearStowageEnv(t)
+
+	cfg := config.Defaults()
+	cfg.Auth.Mode = "jwt"
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("Validate() = nil, want error: jwt mode with neither jwks.url nor jwks.file")
+	}
+
+	cfg = config.Defaults()
+	cfg.Auth.Mode = "jwt"
+	cfg.Auth.JWKS.URL = "https://harbor.example.com/.well-known/jwks.json"
+	cfg.Auth.JWKS.File = "/etc/stowage/jwks.json"
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("Validate() = nil, want error: jwt mode with BOTH jwks.url and jwks.file")
+	}
+
+	cfg = config.Defaults()
+	cfg.Auth.Mode = "jwt"
+	cfg.Auth.JWKS.URL = "https://harbor.example.com/.well-known/jwks.json"
+	if err := cfg.Validate(); err != nil {
+		t.Errorf("Validate() with exactly jwks.url set: unexpected error: %v", err)
+	}
+}
+
+// TestAuthModeJWT_MaxStaleMustBePositive verifies auth.jwks.max_stale > 0.
+func TestAuthModeJWT_MaxStaleMustBePositive(t *testing.T) {
+	clearStowageEnv(t)
+	cfg := config.Defaults()
+	cfg.Auth.Mode = "jwt"
+	cfg.Auth.JWKS.URL = "https://harbor.example.com/.well-known/jwks.json"
+	cfg.Auth.JWKS.MaxStale = 0
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("Validate() = nil, want error for max_stale=0")
+	}
+}
+
+// TestAuthAlgorithms_ValidSubset verifies a comma-separated asymmetric subset
+// validates and parses via AlgorithmList.
+func TestAuthAlgorithms_ValidSubset(t *testing.T) {
+	clearStowageEnv(t)
+	cfg := config.Defaults()
+	cfg.Auth.Mode = "jwt"
+	cfg.Auth.JWKS.URL = "https://harbor.example.com/.well-known/jwks.json"
+	cfg.Auth.Algorithms = "RS256, ES256"
+	if err := cfg.Validate(); err != nil {
+		t.Errorf("Validate() with RS256,ES256: unexpected error: %v", err)
+	}
+	got := cfg.Auth.AlgorithmList()
+	want := []string{"RS256", "ES256"}
+	if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+		t.Errorf("AlgorithmList() = %v, want %v", got, want)
+	}
+}
+
+// TestAuthAlgorithms_RejectsNonAsymmetric verifies HS*/none entries fail
+// validation at config load (AC-1's config-side guardrail).
+func TestAuthAlgorithms_RejectsNonAsymmetric(t *testing.T) {
+	clearStowageEnv(t)
+	cfg := config.Defaults()
+	cfg.Auth.Mode = "jwt"
+	cfg.Auth.JWKS.URL = "https://harbor.example.com/.well-known/jwks.json"
+	for _, bad := range []string{"HS256", "none", "HS512"} {
+		cfg.Auth.Algorithms = bad
+		if err := cfg.Validate(); err == nil {
+			t.Errorf("Validate() with auth.algorithms=%q = nil, want rejection (non-asymmetric)", bad)
+		}
+	}
+}
+
+// TestAuthAlgorithms_EmptyMeansAllSix verifies the empty default parses to nil
+// (the validator then defaults to the full six-algorithm allowlist).
+func TestAuthAlgorithms_EmptyMeansAllSix(t *testing.T) {
+	cfg := config.Defaults()
+	if got := cfg.Auth.AlgorithmList(); got != nil {
+		t.Errorf("AlgorithmList() on empty auth.algorithms = %v, want nil", got)
+	}
+}
+
+// TestAuthConfig_EnvOverride verifies the STOWAGE_AUTH_* env vars override
+// config (D-034 completeness).
+func TestAuthConfig_EnvOverride(t *testing.T) {
+	clearStowageEnv(t)
+	t.Setenv("STOWAGE_AUTH_MODE", "jwt")
+	t.Setenv("STOWAGE_AUTH_ISSUER", "harbor")
+	t.Setenv("STOWAGE_AUTH_AUDIENCE", "stowage")
+	t.Setenv("STOWAGE_AUTH_ALGORITHMS", "RS256")
+	t.Setenv("STOWAGE_AUTH_JWKS_URL", "https://harbor.example.com/.well-known/jwks.json")
+	t.Setenv("STOWAGE_AUTH_JWKS_MAX_STALE", "120")
+
+	cfg, err := config.Load(context.Background(), "")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Auth.Mode != "jwt" {
+		t.Errorf("Auth.Mode = %q, want jwt", cfg.Auth.Mode)
+	}
+	if cfg.Auth.Issuer != "harbor" {
+		t.Errorf("Auth.Issuer = %q, want harbor", cfg.Auth.Issuer)
+	}
+	if cfg.Auth.Audience != "stowage" {
+		t.Errorf("Auth.Audience = %q, want stowage", cfg.Auth.Audience)
+	}
+	if cfg.Auth.Algorithms != "RS256" {
+		t.Errorf("Auth.Algorithms = %q, want RS256", cfg.Auth.Algorithms)
+	}
+	if cfg.Auth.JWKS.URL != "https://harbor.example.com/.well-known/jwks.json" {
+		t.Errorf("Auth.JWKS.URL = %q, want the configured URL", cfg.Auth.JWKS.URL)
+	}
+	if cfg.Auth.JWKS.MaxStale != 120 {
+		t.Errorf("Auth.JWKS.MaxStale = %d, want 120", cfg.Auth.JWKS.MaxStale)
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Errorf("Validate() with full jwt-mode env override: %v", err)
+	}
+}
+
+// TestAuthConfig_PresentInEveryProfile verifies D-034: the auth.* defaults
+// hold across all three profiles (none overrides them), matching the
+// vindex.driver precedent.
+func TestAuthConfig_PresentInEveryProfile(t *testing.T) {
+	clearStowageEnv(t)
+	for _, profile := range []string{"assistant", "coding-agent", "fleet"} {
+		yaml := []byte("profile: " + profile + "\n")
+		tmp := writeTmpFile(t, yaml)
+		cfg, err := config.Load(context.Background(), tmp)
+		if err != nil {
+			t.Fatalf("Load(%s): %v", profile, err)
+		}
+		if cfg.Auth.Mode != "keyring" {
+			t.Errorf("profile %s: Auth.Mode = %q, want keyring", profile, cfg.Auth.Mode)
+		}
+		if cfg.Auth.JWKS.MaxStale != 3600 {
+			t.Errorf("profile %s: Auth.JWKS.MaxStale = %d, want 3600", profile, cfg.Auth.JWKS.MaxStale)
+		}
+	}
+}
+
+// TestAuthConfig_ExplainShowsAllSevenKeys verifies the seven auth.* keys
+// appear in Explain output (AC-9 / the smoke script's grep contract).
+func TestAuthConfig_ExplainShowsAllSevenKeys(t *testing.T) {
+	clearStowageEnv(t)
+	cfg := config.Defaults()
+	var buf bytes.Buffer
+	if err := cfg.Explain(&buf); err != nil {
+		t.Fatalf("explain: %v", err)
+	}
+	out := buf.String()
+	for _, key := range []string{
+		"auth.mode", "auth.issuer", "auth.audience", "auth.algorithms",
+		"auth.jwks.url", "auth.jwks.file", "auth.jwks.max_stale",
+	} {
+		if !strings.Contains(out, key) {
+			t.Errorf("Explain output missing key %q", key)
+		}
 	}
 }
