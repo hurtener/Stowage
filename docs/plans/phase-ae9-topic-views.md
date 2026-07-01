@@ -61,17 +61,18 @@ it reuses ae1's `topic_views` junction table.
   therefore authored against ae1/ae6's **specified seams**, and ae9 cannot merge
   until both have landed. Recorded in **D-149**.
 - **Superseded by D-151.** This plan originally proposed that ae9 own a new,
-  generalized `topic_views` table (with ae1 forward-copying its narrower
-  `agent_topic_policies` rows into it at merge time) to avoid a cross-driver
-  column rename/reshape on SQLite. The checkpoint decision **D-151** resolved
-  this the other way: ae1 creates `topic_views` directly in its general
-  **junction** shape (`subject_kind` defaulting `'agent'`, `subject_id`,
-  `view_name` defaulting `'default'`, `topic_key`, `effect` — one row per key)
-  at migration `0013`, so there is no narrower ae1 table to reshape or copy
-  from. ae9 therefore adds **no** table, **no** migration, and **no**
-  forward-copy — it adds only named-view semantics, the key-id subject, and the
-  admin surface on top of ae1's table. The table-ownership question this bullet
-  originally raised is closed by D-151, not by ae9's migration.
+  generalized `topic_views` table, with ae1's narrower binding rows carried
+  over into it by a one-time, one-way data-migration step at merge time, to
+  avoid a cross-driver column rename/reshape on SQLite. The checkpoint
+  decision **D-151** resolved this the other way: ae1 creates `topic_views`
+  directly in its general **junction** shape (`subject_kind` defaulting
+  `'agent'`, `subject_id`, `view_name` defaulting `'default'`, `topic_key`,
+  `effect` — one row per key) at migration `0013`, so there is no narrower ae1
+  table to reshape or carry rows over from. ae9 therefore adds **no** table,
+  **no** migration, and **no** data-carry-over step — it adds only named-view
+  semantics, the key-id subject, and the admin surface on top of ae1's table.
+  The table-ownership question this bullet originally raised is closed by
+  D-151, not by ae9's migration.
 - **The charter's "key a view on the verified key id" is free on HTTP but
   requires new MCP plumbing it does not call out.** On HTTP the full `*auth.Key`
   (with `ID`) is on the request context (`internal/api/auth.go:48`,
@@ -432,9 +433,9 @@ then:
 - `internal/store/store.go` declares `TopicViewStore` + `TopicViews()`, with
   ae9's admin methods (`CreateView`/`UpdateView`/`DeleteView`/`ListViews`)
   present; ae1's `topic_views` migration (`0013`) exists in **both** dialect
-  dirs and **no** `0014_topic_views.sql` exists in either (grep guard: ae9 adds
-  no migration); no agent column appears in the 12 scope-table migrations
-  (grep guard).
+  dirs and is the **only** `topic_views`-creating migration in either dir
+  (grep guard: ae9 adds no migration of its own); no agent column appears in
+  the 12 scope-table migrations (grep guard).
 - `view_name` present on all three retrieve contracts; `degraded_view` on the
   three outputs; the MCP retrieve + views schema goldens carry them.
 - `retrieval.agent_views.enabled` / `.on_policy_error` / `.subject_precedence`
@@ -499,9 +500,9 @@ then:
 - **MCP key-id plumbing gap.** `KeyringMiddleware` discards `key.ID` today; ae9
   adds the stash + `KeyIDFromContext` accessor in the same PR (AC-3) so the key
   subject reaches parity on MCP, not only HTTP.
-- **Table generalization / forward-copy risk — resolved by D-151.** This plan
-  originally carried a risk (and mitigation) around ae9 owning a new
-  generalized table and forward-copying ae1's narrower rows into it to avoid an
+- **Table generalization / data-carry-over risk — resolved by D-151.** This
+  plan originally carried a risk (and mitigation) around ae9 owning a new
+  generalized table and carrying ae1's narrower rows over into it, to avoid an
   in-place cross-driver column rename. The checkpoint decision **D-151** closed
   this: ae1 creates `topic_views` directly in its general junction shape at
   migration `0013`, so there is no narrower table to reshape or copy from, and
@@ -540,7 +541,7 @@ then:
   plumbing); apply-a-view on `{SDK,HTTP,MCP}`, view admin on `{HTTP,MCP}`.
   Implements D-139. **Superseded in part by D-151** (checkpoint decision,
   2026-06-30): D-149's original table-ownership framing — ae9 owning a new
-  generalized table and a forward-copy from ae1's narrower rows — is replaced
-  by ae1 creating `topic_views` directly in its general junction shape at
-  migration `0013`; ae9 adds no table, seam, migration, or enable knob. (Charter
-  D-139.)
+  generalized table and carrying ae1's narrower rows over into it — is
+  replaced by ae1 creating `topic_views` directly in its general junction
+  shape at migration `0013`; ae9 adds no table, seam, migration, or enable
+  knob. (Charter D-139.)
