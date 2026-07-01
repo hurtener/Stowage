@@ -501,6 +501,12 @@ Plans (all **draft** unless noted): `phase-ae3-shared-render-core.md`,
 `phase-ae8-effective-scope.md`, `phase-ae9-topic-views.md`,
 `phase-ae2b-contract-removal.md`; `phase-ae4b-causal-hook.md`,
 `phase-ae10-read-shaping.md` (**deferred**). Wave-authoring checkpoint reconciliations
-are recorded as D-150 (session is a read-time relevance signal, not a hard read
-predicate) and D-151 (ae1↔ae9 converge on one `topic_views` table / `TopicViewStore`
-seam / `retrieval.agent_views.enabled` knob).
+are recorded as D-150 (session never filters and never ranks a read — cross-session
+recall preserved) and D-151 (ae1↔ae9 converge on one `topic_views` table /
+`TopicViewStore` seam / `retrieval.agent_views.enabled` knob).
+
+**Implementation tracking:** `phase-ae*` is built autonomously, one PR per wave,
+under the protocol and live wave-board in `docs/plans/ae-implementation-roadmap.md`
+(workers = Sonnet; dual adversarial review; orchestrator fixes same-wave; mandatory
+live 3-surface SDK/HTTP/MCP validation; merge on web-CI green; roadmap marked per
+wave). The orchestrator keeps that file's checkboxes current.
