@@ -5,7 +5,7 @@ go 1.26.3
 require (
 	github.com/coder/hnsw v0.6.1
 	github.com/goccy/go-yaml v1.19.2
-	github.com/hurtener/dockyard v1.7.3
+	github.com/hurtener/dockyard v1.8.0
 	github.com/jackc/pgx/v5 v5.10.0
 	github.com/maximhq/bifrost/core v1.5.15
 	github.com/modelcontextprotocol/go-sdk v1.6.0

@@ -116,6 +116,20 @@ type Topic struct {
 	UpdatedAt   int64
 }
 
+// AgentPolicy is a read-time (tenant_id, agent_id) → {allow, deny} topic-key
+// binding (Phase ae1, D-135/D-146), stored as (subject_kind='agent',
+// view_name='default') rows in the general topic_views table (D-151). It curates
+// (never isolates — D-139) the caller's own-scope retrieval by the calling agent.
+// NOT a scope table: no memory rows, no user_id, no agent column on any scope table.
+type AgentPolicy struct {
+	TenantID    string
+	AgentID     string
+	AllowTopics []string // keep only own-scope memories tagged with ≥1 of these (empty = no include constraint)
+	DenyTopics  []string // drop any own-scope memory tagged with one of these
+	CreatedAt   int64    // unix millis
+	UpdatedAt   int64    // unix millis
+}
+
 // BufferItem is an item in a multi-agent accumulation buffer (RFC §4.1, D-007).
 type BufferItem struct {
 	ID            string

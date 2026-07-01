@@ -455,6 +455,7 @@ func (s *sqliteStore) Close(ctx context.Context) error {
 func (s *sqliteStore) Records() store.RecordStore       { return &recordStore{s} }
 func (s *sqliteStore) Memories() store.MemoryStore      { return &memoryStore{s} }
 func (s *sqliteStore) Topics() store.TopicStore         { return &topicStore{s} }
+func (s *sqliteStore) TopicViews() store.TopicViewStore { return &topicViewStore{s} }
 func (s *sqliteStore) Buffers() store.BufferStore       { return &bufferStore{s} }
 func (s *sqliteStore) Keys() auth.Keyring               { return &keyStore{s} }
 func (s *sqliteStore) Events() store.EventStore         { return &eventStore{s} }

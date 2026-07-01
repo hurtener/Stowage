@@ -59,6 +59,11 @@ type RetrieveRequest struct {
 	// (D-139, see RetrieveResponse.DegradedTopicFilter). Empty = no constraint.
 	IncludeTopics []string `json:"include_topics,omitempty"`
 	ExcludeTopics []string `json:"exclude_topics,omitempty"`
+	// AgentID is the D-140-sanctioned SDK/HTTP intake for the calling agent
+	// identity (MCP sources the same dimension from _meta.agent_id instead).
+	// Read-time only: stamped onto Scope.Agent in-process (embedded) or ridden by
+	// the JSON tag (HTTP), never persisted. Empty = no agent filtering.
+	AgentID string `json:"agent_id,omitempty"`
 }
 
 // RetrieveBreakdown is the per-item scoring breakdown (present when Debug:true).
@@ -121,7 +126,11 @@ type RetrieveResponse struct {
 	// DegradedTopicFilter is true when IncludeTopics/ExcludeTopics were requested but
 	// the topic store failed, so the caller's own UNFILTERED results were returned
 	// instead (fail-open, D-139, ae6).
-	DegradedTopicFilter bool   `json:"degraded_topic_filter,omitempty"`
+	DegradedTopicFilter bool `json:"degraded_topic_filter,omitempty"`
+	// DegradedAgentFilter is true when AgentID was bound to a policy but the
+	// agent-policy store failed, so the caller's own UNFILTERED results were
+	// returned instead (fail-open, D-139/D-036, ae1).
+	DegradedAgentFilter bool   `json:"degraded_agent_filter,omitempty"`
 	CacheHit            bool   `json:"cache_hit,omitempty"`
 	API                 string `json:"api"`
 	// Rendered is the identical lean markdown reader body the MCP Text block and

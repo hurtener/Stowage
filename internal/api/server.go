@@ -199,6 +199,15 @@ func New(cfg *config.Config, st store.Store, log *slog.Logger, reg *prometheus.R
 	mux.HandleFunc("PUT /v1/scopes/grants", srv.authMiddleware(srv.handleCreateGrant, false))
 	mux.HandleFunc("POST /v1/grants/{id}/revoke", srv.authMiddleware(srv.handleRevokeGrant, false))
 
+	// ae1: read-time agent-policy admin (agent or admin key) — D-135/D-146/D-151.
+	// Registered before the {agent_id} paths so the more-specific pattern still
+	// wins (matches the ae5 /v1/memories precedent — net/http picks the longest
+	// match; ordering here is documentation, not a correctness requirement).
+	mux.HandleFunc("GET /v1/scopes/agent-policies", srv.authMiddleware(srv.handleListAgentPolicies, false))
+	mux.HandleFunc("PUT /v1/scopes/agent-policies", srv.authMiddleware(srv.handlePutAgentPolicy, false))
+	mux.HandleFunc("GET /v1/scopes/agent-policies/{agent_id}", srv.authMiddleware(srv.handleGetAgentPolicy, false))
+	mux.HandleFunc("DELETE /v1/scopes/agent-policies/{agent_id}", srv.authMiddleware(srv.handleDeleteAgentPolicy, false))
+
 	// ae5: deterministic, gateway-free scoped browse (D-143). Registered before
 	// the {id} path so ServeMux's more-specific pattern still wins for
 	// /v1/memories/{id}; net/http's mux picks the longest match, so ordering

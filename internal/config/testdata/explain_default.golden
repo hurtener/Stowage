@@ -44,3 +44,4 @@ retrieval.broad.default_limit      = 0                                    [defau
 retrieval.include_superseded       = true                                 [default]
 retrieval.browse_default_limit     = 30                                   [default]
 retrieval.topic_filter_scoring_k   = 100                                  [default]
+retrieval.agent_views.enabled      = false                                [default]

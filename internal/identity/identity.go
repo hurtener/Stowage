@@ -16,6 +16,14 @@ var ErrScopeMissing = errors.New("identity: scope missing from context")
 // ErrInvalidScope is returned when Validate fails.
 var ErrInvalidScope = errors.New("identity: invalid scope")
 
+// ErrTenantMismatch is returned when an inbound _meta (or, later, an HTTP header)
+// supplies a tenant that disagrees with the authenticated credential. _meta may
+// supply non-authorizing dimensions (user/session/agent/project) but NEVER the
+// authorization boundary — a mismatch fails closed (D-138). The message is
+// value-free by construction: neither the injected nor the real tenant is
+// ever formatted into it.
+var ErrTenantMismatch = errors.New("identity: _meta tenant does not match authenticated credential")
+
 // Scope identifies the tenant, project, user, and session for an operation.
 //
 // Constraints (enforced by Validate):
@@ -31,6 +39,19 @@ type Scope struct {
 	Project string
 	User    string
 	Session string
+	// Agent is the calling agent identity, set ONLY on the read path (from
+	// _meta.agent_id on MCP, or an explicit agent_id field on HTTP/SDK). It is a
+	// READ-TIME identity/filter dimension (D-135): it is NEVER persisted, NEVER a
+	// column on any of the 12 scope tables, and NEVER referenced by a scope-WHERE
+	// builder or an INSERT. It drives only the read-time agent→topic filter
+	// (internal/retrieval), which can only SUBTRACT from the caller's own-scope
+	// results (P3 preserved, fails open per D-139).
+	//
+	// json:"-" enforces the never-persisted guarantee at the serialization
+	// boundary: Agent must never leak into any persisted/golden JSON (e.g. the
+	// pipeline buffer item), only into the in-memory read-result cache key
+	// (which is built by manual concatenation in retrieval, not JSON).
+	Agent string `json:"-"`
 }
 
 // String returns the canonical slash-separated form, omitting empty trailing

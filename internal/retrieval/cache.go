@@ -55,11 +55,19 @@ type cacheEntry struct {
 }
 
 // scopeCacheKey is the NON-LOSSY scope identity used for cache keying and the per-scope
-// generation map. It encodes all four dimensions with a NUL delimiter — NOT scope.String(),
+// generation map. It encodes all five dimensions with a NUL delimiter — NOT scope.String(),
 // which omits User when Project is empty and would collapse {Tenant,User:alice} and
 // {Tenant,User:bob} to the same key, serving one user another's cached items (Phase 30 B2).
+//
+// Agent (ae1, D-135, §6 blocking #1) is a fifth NUL-delimited dimension so a bound
+// agent's read is keyed separately from an unbound/other-agent read for the same
+// tenant/project/user/session — the post-fusion agent filter (agentfilter.go) runs
+// INSIDE the cached result path, so an un-keyed cache would silently skip the filter
+// on a HIT. Agent stays ABSENT from scope.String() and every scope-WHERE builder
+// (identity.Scope.Agent is read-time-only, never persisted, D-135/C1) — this is the
+// in-memory read-cache key only.
 func scopeCacheKey(s identity.Scope) string {
-	return s.Tenant + "\x00" + s.Project + "\x00" + s.User + "\x00" + s.Session
+	return s.Tenant + "\x00" + s.Project + "\x00" + s.User + "\x00" + s.Session + "\x00" + s.Agent
 }
 
 // scopeGen returns the effective generation for a read scope: the SUM of the generation

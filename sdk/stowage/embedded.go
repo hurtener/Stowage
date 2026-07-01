@@ -276,6 +276,9 @@ func (c *embeddedClient) Retrieve(ctx context.Context, req RetrieveRequest) (Ret
 	// over the construction default (WithProject/WithUser). Empty = inherit default, then
 	// tenant-wide (back-compat). The store hard-isolates to this scope.
 	scope := c.callScope(req.ProjectID, req.UserID)
+	// AgentID is the D-140-sanctioned SDK intake for the calling agent identity —
+	// stamped onto the read scope only, never persisted (D-135).
+	scope.Agent = req.AgentID
 	resp, err := c.stack.Retriever.Retrieve(ctx, scope, retrieval.Request{
 		Query:         req.Query,
 		Limit:         req.Limit,
@@ -344,6 +347,7 @@ func (c *embeddedClient) Retrieve(ctx context.Context, req RetrieveRequest) (Ret
 		Degraded:            resp.Degraded,
 		DegradedRerank:      resp.DegradedRerank,
 		DegradedTopicFilter: resp.DegradedTopicFilter,
+		DegradedAgentFilter: resp.DegradedAgentFilter,
 		CacheHit:            resp.CacheHit,
 		API:                 resp.API,
 		Rendered:            retrieval.RenderReadBody(resp.Items),

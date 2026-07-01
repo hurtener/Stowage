@@ -64,13 +64,14 @@ func StdioScopeFn(tenant string) ScopeFn {
 	}
 }
 
-// New creates a Dockyard *server.Server with all 21 Stowage MCP tools registered:
+// New creates a Dockyard *server.Server with all 22 Stowage MCP tools registered:
 // the original seven, the D-070 reversibility trio (memory_get, memory_rollback,
 // memory_resolve), the D-071 Tier control verbs (memory_flush, memory_branch, and the
 // Tier-B memory_grants), the episodic reads (memory_episodes, memory_causal), the
 // deterministic scope walk (memory_browse, ae5/D-143), the
 // §6c trust verbs (memory_verify, memory_review), the §6c trace export (memory_trace),
-// and the §6d proactive verbs (memory_suggestions, memory_proactive_config).
+// the §6d proactive verbs (memory_suggestions, memory_proactive_config), and the
+// read-time agent-policy admin (memory_agent_policy, ae1, D-135/D-146/D-151).
 // It returns an error when any tool fails to register (type mismatch, missing
 // handler) — the caller must handle the error and exit non-zero (AGENTS.md §5).
 func New(info server.Info, svc *Services) (*server.Server, error) {
@@ -232,6 +233,16 @@ func New(info server.Info, svc *Services) (*server.Server, error) {
 	if err := tool.New[GrantsInput, GrantsOutput]("memory_grants").
 		Describe("Manage team-sharing groups and grants: create_group, list_groups, add_member, remove_member, list_members, create_grant, list_grants, revoke_grant (mirrors the HTTP /v1/admin/groups + /v1/scopes/grants routes; D-016).").
 		Handler(makeGrantsHandler(svc)).
+		Register(srv); err != nil {
+		return nil, err
+	}
+
+	// Phase ae1: read-time agent-policy admin (D-135/D-146/D-151) — policy-admin
+	// tier; deliberately ABSENT from the single-user SDK (D-067), matching
+	// memory_grants' tiering.
+	if err := tool.New[AgentPolicyInput, AgentPolicyOutput]("memory_agent_policy").
+		Describe("Manage the read-time agent->topic policy binding: action=create|get|list|delete a (agent_id) -> {allow_topics, deny_topics} binding that curates (never isolates, D-139) the agent's own-scope memory_retrieve results (mirrors HTTP /v1/scopes/agent-policies; ae1, D-135/D-146/D-151).").
+		Handler(makeAgentPolicyHandler(svc)).
 		Register(srv); err != nil {
 		return nil, err
 	}

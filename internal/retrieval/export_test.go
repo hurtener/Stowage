@@ -77,3 +77,11 @@ func (r *Retriever) ExportTopicFilterScoringK() int {
 	}
 	return r.topicFilterScoringK
 }
+
+// ExportResolveAgentTopics exposes resolveAgentTopics (ae1, D-135/D-139/D-146) for
+// testing the fail-open agent->topic resolver directly.
+func (r *Retriever) ExportResolveAgentTopics(
+	ctx context.Context, scope identity.Scope,
+) (allow, deny []string, active, degraded bool) {
+	return r.resolveAgentTopics(ctx, scope)
+}

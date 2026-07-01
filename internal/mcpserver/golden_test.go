@@ -232,6 +232,17 @@ func buildSchemas(name string) (inJSON, outJSON []byte, err error) {
 		}
 		outJSON, err = marshal(out)
 
+	case "memory_agent_policy":
+		b := tool.New[mcpserver.AgentPolicyInput, mcpserver.AgentPolicyOutput](name)
+		in, out, e := b.Schemas()
+		if e != nil {
+			return nil, nil, e
+		}
+		if inJSON, err = marshal(in); err != nil {
+			return nil, nil, err
+		}
+		outJSON, err = marshal(out)
+
 	case "memory_suggestions":
 		b := tool.New[mcpserver.SuggestionsInput, mcpserver.SuggestionsOutput](name)
 		in, out, e := b.Schemas()
@@ -285,6 +296,7 @@ func TestSchemaGoldens(t *testing.T) {
 		"memory_flush",
 		"memory_branch",
 		"memory_grants",
+		"memory_agent_policy",
 		"memory_suggestions",
 		"memory_proactive_config",
 	}
