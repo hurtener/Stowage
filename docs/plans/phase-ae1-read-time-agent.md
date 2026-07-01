@@ -1,22 +1,17 @@
 # Phase ae1 — read-time agent identity dimension (+ Dockyard bump)
 
 - **Status:** draft
-- **Owning subsystem(s):** `internal/identity` (optional read-only `Scope.Agent`); `internal/store` (a new `AgentPolicyStore` seam + `agent_topic_policies` table on **both** drivers + conformance — **not** a scope table); `internal/retrieval` (the agent→topic-keys resolver that feeds ae6's `filterByTopicOwnScope`); `internal/mcpserver` (the `dockyard v1.8.0` bump + the `server.RequestMeta(ctx)["agent_id"]` read; a `memory_agent_policy` admin tool); `internal/api` (agent-filter intake + policy-admin routes); `sdk/stowage` (agent-filter intake); `internal/config` (one enable knob)
+- **Owning subsystem(s):** `internal/identity` (optional read-only `Scope.Agent`); `internal/store` (a new `TopicViewStore` seam + `topic_views` table on **both** drivers + conformance — **not** a scope table); `internal/retrieval` (the agent→topic-keys resolver that feeds ae6's `filterByTopicOwnScope`); `internal/mcpserver` (the `dockyard v1.8.0` bump + the `server.RequestMeta(ctx)["agent_id"]` read; a `memory_agent_policy` admin tool); `internal/api` (agent-filter intake + policy-admin routes); `sdk/stowage` (agent-filter intake); `internal/config` (one enable knob)
 - **RFC sections:** §5 (identity & scopes), §5.3 (`memory_topics`/topic-keyed slicing reuse), §9.5 (one logic core, D-067/D-073)
 - **Depends on phases:** **ae6** (reuses its own-scope fail-open `filterByTopicOwnScope` + the H3 lane/`scoringK` remedy — the generic filter is built **once**, in ae6). **Does *not* depend on ae7** — `agent_id` arrives via `_meta` (MCP) or an explicit field (HTTP/SDK), never the JWT. This phase performs the mechanical Dockyard bump the rest of the track builds on (W1).
 - **Informing briefs:** 03 (Engram — topics as extraction magnets; the memory→topic association the agent binding curates over), 02 (CC-memory predecessor — surface-sprawl cautionary tale → the agent filter is *one* core reused across surfaces, not a per-surface fork), 06 (mempalace — gateway-free retrieval, D-036; the agent filter is a store read, never a gateway call).
 
-> **Checkpoint reconciliation (D-151).** This plan as drafted names the binding table
-> `agent_topic_policies`, the seam `AgentPolicyStore`, and the enable knob
-> `retrieval.agent_filter_enabled`. Per **D-151** the track converges on **one** durable
-> surface: ae1 creates the general **`topic_views`** table (`subject_kind` default
-> `'agent'`, `subject_id`, `view_name` default `'default'`, `topic_key`, `effect`) behind
-> the **`TopicViewStore`** seam (`Store.TopicViews()`) at migration **0013**, writing its
-> rows as `(subject_kind='agent', view_name='default')`, gated by
-> **`retrieval.agent_views.enabled`**. ae9 then adds named views + the key-id subject +
-> admin on this same table/seam/knob (no new table, migration, or enable knob). Read the
-> `agent_topic_policies` / `AgentPolicyStore` / `agent_filter_enabled` names below as the
-> D-151 names.
+> **Checkpoint reconciliation (D-151).** Per **D-151**, ae1 creates the **general**
+> `topic_views` table / `TopicViewStore` seam / `retrieval.agent_views.enabled` knob at
+> migration **0013** (below), writing its own rows as `(subject_kind='agent',
+> view_name='default')`; ae9 later generalizes the *semantics* (named views, key-id
+> subject, view admin) on this same table/seam/knob — **no new table, migration, or
+> enable knob**.
 
 ## Goal
 
@@ -24,8 +19,9 @@ When this phase is done a host can narrow a tenant's **own** retrieval results b
 the calling agent, using only (a) an agent identity carried outside the model's
 arguments — `_meta.agent_id` on MCP (via the newly-bumped `dockyard v1.8.0`
 `server.RequestMeta`), an explicit `agent_id` field on HTTP/SDK — (b) a small
-`(tenant_id, agent_id) → {allow_topics, deny_topics}` policy binding in a new,
-**non-scope** `agent_topic_policies` table, and (c) ae6's existing own-scope
+`(tenant_id, agent_id) → {allow_topics, deny_topics}` policy binding stored as
+`(subject_kind='agent', view_name='default')` rows in a new, **non-scope**,
+**general** `topic_views` table, and (c) ae6's existing own-scope
 `filterByTopicOwnScope`. The agent filter **subtracts** from the caller's own-scope
 candidates and never widens scope; it **fails open** (D-139/D-036). There is **zero
 schema change to the 12 denormalized scope tables, zero agent column anywhere, and
@@ -123,21 +119,28 @@ type Scope struct {
   is no `agent` column to bind. A grep-gated test asserts `Agent`/`agent_id` appears
   in **neither** `scope.go` nor any `INSERT` column list on either driver.
 
-### 2. `AgentPolicyStore` + `agent_topic_policies` — the non-scope policy binding (D-146, C2)
+### 2. `TopicViewStore` + `topic_views` — the non-scope policy binding (D-135/D-146, generalized by D-151, C2)
 
 A new sub-store on the `Store` seam (`internal/store/store.go`) and a new table
 (migration `0013`), **both drivers**, proven by the shared conformance suite. This is
 **not** one of the 12 scope tables: it carries **no memory rows** and **no** agent
 column ever lands on a scope table. It is tenant-scoped config keyed by
-`(tenant_id, agent_id)`.
+`(tenant_id, subject_kind, subject_id, view_name, topic_key)`.
+
+Per **D-151** the table is created in its **general** shape from the start — a
+`(subject_kind, subject_id, view_name)`-keyed junction, not an agent-only table — so
+ae9 can later generalize the *semantics* (named views, a key-id subject) without a
+second table or migration. ae1 is the table's only writer/reader for this phase and
+always writes/reads with `subject_kind='agent'` and `view_name='default'`.
 
 New type (`internal/store/types.go`):
 
 ```go
 // AgentPolicy is a read-time (tenant_id, agent_id) → {allow, deny} topic-key
-// binding (Phase ae1, D-146). It curates (never isolates — D-139) the caller's
-// own-scope retrieval by the calling agent. NOT a scope table: no memory rows, no
-// user_id, no agent column on any scope table.
+// binding (Phase ae1, D-135/D-146), stored as (subject_kind='agent',
+// view_name='default') rows in the general topic_views table (D-151). It curates
+// (never isolates — D-139) the caller's own-scope retrieval by the calling agent.
+// NOT a scope table: no memory rows, no user_id, no agent column on any scope table.
 type AgentPolicy struct {
     TenantID    string
     AgentID     string
@@ -148,23 +151,28 @@ type AgentPolicy struct {
 }
 ```
 
-New seam (`internal/store/store.go`) + `AgentPolicies() AgentPolicyStore` on the
+New seam (`internal/store/store.go`) + `TopicViews() TopicViewStore` on the
 top-level `Store`:
 
 ```go
-// AgentPolicyStore manages read-time agent→topic policy bindings (Phase ae1,
-// D-146). NOT a scope table — carries no memory rows. All methods are tenant-scoped
-// (P3, scope.Tenant required — ErrScopeRequired on empty); there is NO unscoped
-// variant. Generalized to named views by ae9 (add subject_kind + view_name).
-type AgentPolicyStore interface {
-    // PutAgentPolicy upserts the binding for (scope.Tenant, agentID). Replaces any
-    // existing allow/deny sets for that agent atomically. Rejects an empty agentID.
+// TopicViewStore manages the general (subject_kind, subject_id, view_name) →
+// {allow, deny} topic-key junction (D-151). NOT a scope table — carries no memory
+// rows. All methods are tenant-scoped (P3, scope.Tenant required — ErrScopeRequired
+// on empty); there is NO unscoped variant. ae1 is the first consumer and only ever
+// operates on (subject_kind='agent', view_name='default') rows via the
+// agent-shaped methods below; ae9 extends this same seam with named-view + key-id
+// subject admin (create/update/delete/list) — no new table, migration, or seam.
+type TopicViewStore interface {
+    // PutAgentPolicy upserts the (subject_kind='agent', view_name='default') binding
+    // for (scope.Tenant, agentID). Replaces any existing allow/deny sets for that
+    // agent atomically. Rejects an empty agentID.
     PutAgentPolicy(ctx context.Context, scope identity.Scope, p AgentPolicy) error
     // GetAgentPolicy returns the binding for (scope.Tenant, agentID). Returns
     // ErrNotFound when no binding exists (an UNBOUND agent — the filter then leaves
     // the caller's own-scope results unfiltered, NOT degraded).
     GetAgentPolicy(ctx context.Context, scope identity.Scope, agentID string) (*AgentPolicy, error)
-    // ListAgentPolicies returns all bindings for the tenant, ordered by agent_id asc.
+    // ListAgentPolicies returns all agent bindings for the tenant, ordered by
+    // agent_id asc.
     ListAgentPolicies(ctx context.Context, scope identity.Scope) ([]AgentPolicy, error)
     // DeleteAgentPolicy removes the binding for (scope.Tenant, agentID).
     // Returns ErrNotFound when absent.
@@ -172,29 +180,39 @@ type AgentPolicyStore interface {
 }
 ```
 
-Table (migration `internal/store/migrations/{sqlite,postgres}/0013_agent_topic_policies.sql`,
+Table (migration `internal/store/migrations/{sqlite,postgres}/0013_topic_views.sql`,
 forward-only). Allow/deny are stored as a small junction (one row per topic key +
 effect) rather than CSV, matching the `memory_topics` junction idiom and avoiding
 comma-in-key fragility:
 
 ```sql
-CREATE TABLE IF NOT EXISTS agent_topic_policies (
-    id         TEXT    NOT NULL PRIMARY KEY,
-    tenant_id  TEXT    NOT NULL,
-    agent_id   TEXT    NOT NULL,
-    topic_key  TEXT    NOT NULL,
-    effect     TEXT    NOT NULL CHECK(effect IN ('allow','deny')),
-    created_at INTEGER NOT NULL,
-    updated_at INTEGER NOT NULL
+CREATE TABLE IF NOT EXISTS topic_views (
+    id           TEXT    NOT NULL PRIMARY KEY,
+    tenant_id    TEXT    NOT NULL,
+    subject_kind TEXT    NOT NULL DEFAULT 'agent',
+    subject_id   TEXT    NOT NULL,
+    view_name    TEXT    NOT NULL DEFAULT 'default',
+    topic_key    TEXT    NOT NULL,
+    effect       TEXT    NOT NULL CHECK(effect IN ('allow','deny')),
+    created_at   INTEGER NOT NULL,
+    updated_at   INTEGER NOT NULL
 );
-CREATE INDEX IF NOT EXISTS idx_agent_topic_policies_agent
-    ON agent_topic_policies(tenant_id, agent_id);
-CREATE UNIQUE INDEX IF NOT EXISTS uq_agent_topic_policies
-    ON agent_topic_policies(tenant_id, agent_id, topic_key, effect);
+CREATE INDEX IF NOT EXISTS idx_topic_views_subject
+    ON topic_views(tenant_id, subject_kind, subject_id);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_topic_views
+    ON topic_views(tenant_id, subject_kind, subject_id, view_name, topic_key);
 ```
 
-- `PutAgentPolicy` = delete-then-insert the `(tenant, agent)` rows in one tx (atomic
-  replace). `GetAgentPolicy` aggregates rows into `AllowTopics`/`DenyTopics`.
+ae1 writes/reads exclusively with `subject_kind='agent'` and `view_name='default'`
+(`agentID` maps onto `subject_id`); ae9's named-view + key-id-subject admin operates
+on the same rows with other `subject_kind`/`view_name` values, disjoint by
+construction (the unique index is keyed on the full `(subject_kind, subject_id,
+view_name, topic_key)` tuple, so an agent's `default` view never collides with a
+named view).
+
+- `PutAgentPolicy` = delete-then-insert the `(tenant, 'agent', agentID, 'default')`
+  rows in one tx (atomic replace). `GetAgentPolicy` aggregates rows into
+  `AllowTopics`/`DenyTopics`.
 - **P3:** every method requires `scope.Tenant` and filters on `tenant_id` — no
   unscoped variant. Cross-tenant reads are unconstructible (the `WHERE tenant_id`
   is mandatory; conformance proves isolation).
@@ -212,10 +230,10 @@ not concurrent with `Retrieve`):
 
 ```go
 // on *Retriever
-agentPolSt        store.AgentPolicyStore // nil ⇒ agent filter disabled
-agentFilterOn     bool                   // from retrieval.agent_filter_enabled
+agentPolSt        store.TopicViewStore // nil ⇒ agent filter disabled
+agentFilterOn     bool                 // from retrieval.agent_views.enabled
 
-func (r *Retriever) WithAgentPolicy(st store.AgentPolicyStore, enabled bool) *Retriever
+func (r *Retriever) WithAgentPolicy(st store.TopicViewStore, enabled bool) *Retriever
 ```
 
 New file `internal/retrieval/agentfilter.go`:
@@ -294,7 +312,7 @@ key must include `Scope.Agent`, and a policy mutation must invalidate affected r
 
 ### 5. Agent policy admin — `{HTTP, MCP}` (policy-admin tier)
 
-CRUD is thin: the **core** is the `AgentPolicyStore` seam itself (validation —
+CRUD is thin: the **core** is the `TopicViewStore` seam itself (validation —
 `agent_id` required, `effect` constrained — lives in the drivers, proven identically
 by conformance, so no surface can diverge). Matches the grants-admin tier
 (`{HTTP, MCP}`, not SDK).
@@ -318,7 +336,7 @@ agent-filter stage entirely. Two fixes, both required:
 - **Key the cache on `Scope.Agent` (blocking #1).** Today `scopeCacheKey` encodes
   `Tenant\x00Project\x00User\x00Session` (`cache.go:61-63`) and `cacheKey`
   (`cache.go:88-98`) folds that in — **Agent is absent**. With
-  `agent_filter_enabled=true`, two callers differing *only* in `Scope.Agent` (same
+  `agent_views.enabled=true`, two callers differing *only* in `Scope.Agent` (same
   tenant/project/user/session/query/profile/window/kinds/lanes/limit) collide on one
   key: agent B receives agent A's filtered items, and a prior unbound/no-agent read
   caches *unfiltered* items that a later bound agent then receives with its filter
@@ -352,18 +370,18 @@ agent-filter stage entirely. Two fixes, both required:
 go.mod                                                           # CHANGED — dockyard v1.7.3 → v1.8.0
 internal/identity/identity.go                                    # CHANGED — Scope.Agent (read-only, inert)
 internal/store/types.go                                          # CHANGED — AgentPolicy type
-internal/store/store.go                                          # CHANGED — AgentPolicyStore seam + Store.AgentPolicies()
-internal/store/migrations/sqlite/0013_agent_topic_policies.sql   # NEW — non-scope policy table
-internal/store/migrations/postgres/0013_agent_topic_policies.sql # NEW — same, pg dialect
-internal/store/sqlitestore/agentpolicy.go                        # NEW — driver impl (delete+insert replace)
-internal/store/pgstore/agentpolicy.go                            # NEW — driver impl
+internal/store/store.go                                          # CHANGED — TopicViewStore seam + Store.TopicViews()
+internal/store/migrations/sqlite/0013_topic_views.sql            # NEW — non-scope policy table (general shape, D-151)
+internal/store/migrations/postgres/0013_topic_views.sql          # NEW — same, pg dialect
+internal/store/sqlitestore/topicviews.go                         # NEW — driver impl (delete+insert replace)
+internal/store/pgstore/topicviews.go                             # NEW — driver impl
 internal/store/conformance/phase-ae1.go                          # NEW — RunAgentPolicy (CRUD, scope-isolation, scope-required, not-found)
 internal/retrieval/agentfilter.go                               # NEW — resolveAgentTopics (fail-open); feeds ae6's filterByTopicOwnScope
 internal/retrieval/agentfilter_test.go                          # NEW — unit: disabled/no-agent/unbound/bound/fail-open
 internal/retrieval/cache.go                                     # CHANGED — key scopeCacheKey/cacheKey/scopeGen on Scope.Agent (§6, blocking #1); policy-mutation invalidation hook
 internal/retrieval/cache_test.go                                # CHANGED — two distinct bound agents don't share a cached result; bound read never returns an unbound/other-agent cached set
 internal/retrieval/retrieval.go                                 # CHANGED — WithAgentPolicy; Response.DegradedAgentFilter; composed agent pass
-internal/config/config.go                                       # CHANGED — retrieval.agent_filter_enabled (field, allKeys, get/set, validate)
+internal/config/config.go                                       # CHANGED — retrieval.agent_views.enabled (field, allKeys, get/set, validate)
 internal/mcpserver/server.go                                    # CHANGED — register memory_agent_policy
 internal/mcpserver/handlers.go                                  # CHANGED — RequestMeta(ctx)["agent_id"] → Scope.Agent; makeAgentPolicyHandler; DegradedAgentFilter
 internal/mcpserver/contracts.go                                 # CHANGED — RetrieveOutput.DegradedAgentFilter; AgentPolicy{Input,Output}
@@ -376,7 +394,7 @@ sdk/stowage/embedded.go                                         # CHANGED — th
 scripts/smoke/phase-ae1.sh                                      # NEW
 test/integration/agentfilter_test.go                           # NEW — real-driver agent-narrow + fail-open + cross-tenant (§17)
 docs/plans/README.md                                           # CHANGED — register the ae* track / update Plans line
-docs/decisions.md                                              # CHANGED — D-146 (D-135 is filed by the first-landing W0 phase, not ae1)
+docs/decisions.md                                              # CHANGED — D-135 + D-146 (both filed by ae1)
 docs/glossary.md                                               # CHANGED — read-time agent identity, agent→topic policy binding, _meta seam
 ```
 
@@ -384,7 +402,7 @@ docs/glossary.md                                               # CHANGED — rea
 
 | Key | Default | Notes |
 |-----|---------|-------|
-| `retrieval.agent_filter_enabled` | `false` | Master switch for the read-time agent→topic filter. Default **off** ⇒ zero-config start is byte-identical (even a host that injects `_meta.agent_id` gets no filtering until an operator enables it). Flat bool on `RetrievalConfig` (sibling to `include_superseded`). **D-034-complete:** tuned default, present in every profile's effective config (added to `Defaults()`; no per-profile override needed — off everywhere), docs, `allKeys`/get/set/explain, validation (bool parse), and a smoke check. Fail-open behaviour on a policy-store error is **hardwired** per D-139 (not a knob); ae9 introduces the configurable `retrieval.agent_views.*` group when it generalizes bindings to named views. |
+| `retrieval.agent_views.enabled` | `false` | Master switch for the read-time agent→topic filter (D-151: the one shared enable knob for the `topic_views` table, introduced by ae1, reused by ae9). Default **off** ⇒ zero-config start is byte-identical (even a host that injects `_meta.agent_id` gets no filtering until an operator enables it). Flat bool on `RetrievalConfig` (sibling to `include_superseded`). **D-034-complete:** tuned default, present in every profile's effective config (added to `Defaults()`; no per-profile override needed — off everywhere), docs, `allKeys`/get/set/explain, validation (bool parse), and a smoke check. Fail-open behaviour on a policy-store error is **hardwired** per D-139 (not a knob); ae9 adds only `retrieval.agent_views.on_policy_error` (default `open`) and `retrieval.agent_views.subject_precedence` (default `agent,key`) alongside this same knob — no new table, migration, or master switch. |
 
 ## Acceptance criteria (binding)
 
@@ -396,7 +414,7 @@ docs/glossary.md                                               # CHANGED — rea
 2. **No schema change to the 12 scope tables; no agent column (C2).** No migration
    touches a scope table; no `agent` column is added anywhere; `source_agent` stays a
    records-only label; no dedupe-index / `UNIQUE` / DSAR-cascade / buffer→flush
-   change. `agent_topic_policies` carries no memory rows and no `user_id` (asserted by
+   change. `topic_views` carries no memory rows and no `user_id` (asserted by
    inspecting the migration + a store test that a policy row is never returned by any
    memory read).
 3. **Dockyard bump + real symbol (M5).** `go.mod` pins `github.com/hurtener/dockyard
@@ -404,12 +422,12 @@ docs/glossary.md                                               # CHANGED — rea
    (type-asserted to string, nil-safe) onto the **read** scope only. There is **no**
    `MetaFromContext` symbol (it never existed); the build compiles against the real
    `v1.8.0` `RequestMeta`.
-4. **Policy store on both drivers, conformance, scope-required (D-146, P3).**
-   `AgentPolicyStore` (Put/Get/List/Delete) is implemented by sqlite **and** postgres
-   and passes a shared conformance suite covering CRUD round-trip, `ErrScopeRequired`
-   on empty tenant (no unscoped variant), cross-tenant isolation (a policy in tenant A
-   is invisible to tenant B), and `ErrNotFound`.
-5. **Agent narrowing works, own-scope only (P3).** With `agent_filter_enabled=true`,
+4. **Policy store on both drivers, conformance, scope-required (D-146/D-151, P3).**
+   `TopicViewStore` (agent-shaped Put/Get/List/Delete) is implemented by sqlite **and**
+   postgres and passes a shared conformance suite covering CRUD round-trip,
+   `ErrScopeRequired` on empty tenant (no unscoped variant), cross-tenant isolation (a
+   policy in tenant A is invisible to tenant B), and `ErrNotFound`.
+5. **Agent narrowing works, own-scope only (P3).** With `agent_views.enabled=true`,
    a bound agent's retrieval returns only the caller's own-scope memories whose
    `memory_topics` membership satisfies the binding's allow/deny (via ae6's
    `filterByTopicOwnScope`); no cross-scope row ever appears (the store scope query is
@@ -428,15 +446,15 @@ docs/glossary.md                                               # CHANGED — rea
    `agent_id`) is the D-140-sanctioned split, documented and not treated as a parity
    break.
 9. **Policy admin parity `{HTTP, MCP}`.** create/get/list/delete a binding is available
-   on HTTP and MCP (not SDK), each a thin caller of the `AgentPolicyStore` core, with
+   on HTTP and MCP (not SDK), each a thin caller of the `TopicViewStore` core, with
    validation living in the drivers (identical via conformance).
-10. **Knob D-034-complete.** `retrieval.agent_filter_enabled` ships with default
+10. **Knob D-034-complete.** `retrieval.agent_views.enabled` ships with default
     `false`, every-profile placement, docs, `allKeys`/get/set/explain, validation, and
     a smoke check; zero-config (flag off) behaviour is byte-identical to today.
 11. **Gateway-free (D-036).** The resolver and filter perform no gateway call; agent
     narrowing serves in the degraded retrieval path.
 12. **Read-result cache is keyed on `Scope.Agent` (§6, blocking #1).** With
-    `agent_filter_enabled=true`, `scopeCacheKey`/`cacheKey`/`scopeGen` include
+    `agent_views.enabled=true`, `scopeCacheKey`/`cacheKey`/`scopeGen` include
     `Scope.Agent`. A test asserts two distinct **bound** agents with identical
     tenant/project/user/session/query/profile/window/kinds/lanes/limit do **not**
     share a cached result, and that a bound-agent read never returns an earlier
@@ -458,11 +476,11 @@ docs/glossary.md                                               # CHANGED — rea
   `MetaFromContext` is **absent** from the tree.
 - `identity.Scope` has an `Agent` field; `Agent`/`agent_id` is **absent** from both
   drivers' `scope.go` and no scope-table migration adds an `agent` column.
-- migrations `0013_agent_topic_policies.sql` exist for both drivers; `AgentPolicyStore`
-  + `Store.AgentPolicies()` are declared.
+- migrations `0013_topic_views.sql` exist for both drivers; `TopicViewStore`
+  + `Store.TopicViews()` are declared.
 - `internal/retrieval/agentfilter.go` defines `resolveAgentTopics` and does **not**
   redefine a topic-filter function (ae6 reuse).
-- `retrieval.agent_filter_enabled` is a registered, explainable knob defaulting `false`.
+- `retrieval.agent_views.enabled` is a registered, explainable knob defaulting `false`.
 - `agent_id` present on the HTTP + SDK retrieve contracts; `memory_agent_policy` tool +
   HTTP agent-policy routes registered.
 - `internal/retrieval/cache.go` `scopeCacheKey` includes `Scope.Agent` (§6, blocking #1);
@@ -482,7 +500,7 @@ docs/glossary.md                                               # CHANGED — rea
   Put/Get/List/Delete round-trip; atomic replace on re-Put; `ErrScopeRequired` on
   empty tenant; cross-tenant isolation; `ErrNotFound`.
 - **Integration (`test/integration/agentfilter_test.go`, real drivers, §17 — ae1
-  consumes ae6's filter seam + `memory_topics`/D-089 and adds the `AgentPolicyStore`
+  consumes ae6's filter seam + `memory_topics`/D-089 and adds the `TopicViewStore`
   public interface):** on **both** sqlite + postgres — bind agent→allow topics,
   retrieve with `Scope.Agent` set ⇒ only allowed-topic own-scope memories; unbound
   agent ⇒ unfiltered; **fail-open** with a forced policy-store error ⇒ unfiltered +
@@ -538,10 +556,12 @@ docs/glossary.md                                               # CHANGED — rea
   never in a scope-`WHERE` builder or an `INSERT`; it drives only the read-time
   agent→topic filter, which can only subtract from own-scope results (D-135).
 - **Agent→topic policy binding** — a `(tenant_id, agent_id) → {allow_topics,
-  deny_topics}` row set in the non-scope `agent_topic_policies` table
-  (`store.AgentPolicy`), resolved at read time and fed to ae6's `filterByTopicOwnScope`
-  to curate (not isolate — D-139) an agent's own-scope retrieval. Generalized to named
-  views by ae9. **Fails open** on a policy-store error (D-139/D-036).
+  deny_topics}` row set, stored as `(subject_kind='agent', view_name='default')` rows
+  in the non-scope, general `topic_views` table (`store.AgentPolicy`, behind the
+  `TopicViewStore` seam, D-151), resolved at read time and fed to ae6's
+  `filterByTopicOwnScope` to curate (not isolate — D-139) an agent's own-scope
+  retrieval. Generalized to named views by ae9 on the same table/seam/knob. **Fails
+  open** on a policy-store error (D-139/D-036).
 - **`_meta` seam** — Dockyard `v1.8.0`'s inbound per-call host metadata, read verbatim
   via `server.RequestMeta(ctx) map[string]any` (nil when unsent); the key contract
   (e.g. `agent_id`) is owned by Stowage + Harbor, not Dockyard. ae1 is its first
@@ -556,12 +576,11 @@ docs/glossary.md                                               # CHANGED — rea
   (the audit confirmed no earlier W0 plan claims it), plus its M5 correction (no
   `MetaFromContext` placeholder existed — the real symbol is `server.RequestMeta`) and
   the C1/C2 inertness guarantees ae1 implements.
-- **D-146 (filed by ae1, superseded on shape by D-151).** The `(tenant_id, agent_id) →
+- **D-146 (filed by ae1, shape amended by D-151).** The `(tenant_id, agent_id) →
   {allow, deny}` topic-key policy binding: **not** a scope table, carries no memory
   rows and no `user_id`; on both drivers with a scope-required (no unscoped) seam,
   forward-only migration, conformance-proven; excluded from the DSAR cascade;
-  generalized to named views by ae9. **Per the checkpoint decision D-151** the table is
-  **`topic_views`** (general shape), the seam is **`TopicViewStore`** (`Store.TopicViews()`),
-  and the enable knob is **`retrieval.agent_views.enabled`** — read the
-  `agent_topic_policies`/`AgentPolicyStore`/`agent_filter_enabled` names in the Design
-  below as those D-151 names.
+  generalized to named views by ae9. **Per the checkpoint decision D-151** — folded
+  directly into this plan's Design (§2) — the table is **`topic_views`** (general
+  shape from the start), the seam is **`TopicViewStore`** (`Store.TopicViews()`), and
+  the enable knob is **`retrieval.agent_views.enabled`**.

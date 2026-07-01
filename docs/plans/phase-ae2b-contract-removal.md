@@ -276,12 +276,10 @@ dependency and a scheduled config flip disproportionate to the problem, and
 would still require an operator decision about when it's safe — a mode
 switch gives the operator that same decision without inventing a scheduler.
 
-### D-140 filing (not edited into `docs/decisions.md` by this agent — see the
-task's return-value contract)
+### D-140 filing
 
-The MCP-vs-HTTP identity divergence this phase completes is filed as **D-140**
-(full text returned at the end of this task, per instruction, for the human/
-maintainer to append). HTTP's `scopeFromRequest` (`internal/api/auth.go:72-80`)
+The MCP-vs-HTTP identity divergence this phase completes is filed as **D-140** in
+`docs/decisions.md`. HTTP's `scopeFromRequest` (`internal/api/auth.go:72-80`)
 and every POST handler's `project_id`/`user_id` body fields are **unchanged**
 by this phase — HTTP keeps its query-param/body projection permanently. This
 is the same class of sanctioned per-surface difference as `assert`'s
@@ -323,9 +321,9 @@ internal/config/testdata/explain_default.golden  # CHANGED (step 1) — one new 
 test/integration/legacy_arg_removal_test.go # NEW (step 2, §17 — closes a seam opened by ae7/ae8) — real-driver: pre-removal fixture calls that used to rely on project_id/user_id now resolve identically via _meta/JWT; a genuinely unmigrated caller (no _meta, no JWT claim) is proven to fall back exactly to ae8's compatible/strict posture (never a silent extra-wide read beyond what ae8 already defines) under -race
 test/integration/http_mcp_scope_parity_test.go # NEW (step 1, §17) — the same identity, asserted via MCP _meta and via HTTP query/body params, resolves to the same effective scope and the same store rows, for each of the 13 affected tools' HTTP mirror
 scripts/smoke/phase-ae2b.sh                # NEW
-docs/plans/README.md                       # CHANGED — ae-track table, ae2b row flipped to shipped (delta returned, not edited here)
-docs/decisions.md                          # CHANGED — D-140 (full text returned at the end of this task, not edited here)
-docs/glossary.md                           # CHANGED — deprecation window, versioned warning event, legacy scope arg, deprecation mode (delta returned, not edited here)
+docs/plans/README.md                       # CHANGED — ae-track table / Plans line (ae2b row, draft)
+docs/decisions.md                          # CHANGED — D-140 (filed)
+docs/glossary.md                           # CHANGED — deprecation window, versioned warning event, legacy scope arg, deprecation mode
 ```
 
 ## Config keys added
@@ -520,6 +518,5 @@ Once Step 2 lands (superseding the Step-1-only checks above):
 ## Decisions filed
 
 - **D-140** — MCP-vs-HTTP identity divergence is a sanctioned contract
-  divergence (full text returned at the end of this task for the maintainer
-  to append to `docs/decisions.md`; not edited by this agent per the task's
-  instructions).
+  divergence (filed in `docs/decisions.md`). Removal of the args is hard-gated
+  on ae7 (verified claim) + ae8 (effective-scope resolver).

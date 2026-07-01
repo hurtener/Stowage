@@ -1,19 +1,20 @@
 # Phase ae9 — per-agent / per-key topic views (read-time curation)
 
 - **Status:** draft
-- **Owning subsystem(s):** `internal/retrieval` (view resolution + apply, reusing ae6's `filterByTopicOwnScope`); `internal/store` (a new `TopicViewStore` sub-store + both drivers + conformance + one forward-only migration — **not** a scope table, no memory rows); `internal/identity` (subject resolution helper); the three retrieve surfaces (`internal/mcpserver`, `internal/api`, `sdk/stowage`) for apply-a-view; a new **`internal/views` core service** (`views.Service`, mirroring `grants.Service`) that owns admin CRUD + governance-event emission once, with `internal/mcpserver` + `internal/api` as thin callers for view admin; `internal/config` (the `agent_views` knob group).
+- **Owning subsystem(s):** `internal/retrieval` (view resolution + apply, reusing ae6's `filterByTopicOwnScope`); `internal/store` (extends ae1's `TopicViewStore` seam + both drivers with admin CRUD + conformance — **no** new table, **no** new migration; ae9 reads/writes ae1's `topic_views` junction table); `internal/identity` (subject resolution helper); the three retrieve surfaces (`internal/mcpserver`, `internal/api`, `sdk/stowage`) for apply-a-view; a new **`internal/views` core service** (`views.Service`, mirroring `grants.Service`) that owns admin CRUD + governance-event emission once, with `internal/mcpserver` + `internal/api` as thin callers for view admin; `internal/config` (the `agent_views` knob group).
 - **RFC sections:** §5.3 (topic-keyed slicing, `memory_topics` reuse), §6 (retrieval, curation), §9.5 (one logic core, D-067/D-073)
 - **Depends on phases:** **ae1** (the read-time optional `identity.Scope.Agent` field populated from `_meta`, the Dockyard v1.8 `server.RequestMeta(ctx)` plumbing, and the `(tenant_id, agent_id) → allow/deny topic-key` policy-binding store+table that ae9 generalizes) and **ae6** (the own-scope, fail-**open**, lane-aware `filterByTopicOwnScope` + its `topic_filter_scoring_k` candidate-window remedy — the single filter ae9 reuses). Both are prerequisites; ae9 builds no filter and no `_meta` plumbing of its own.
 - **Informing briefs:** 03 (Engram — topics as extraction magnets; the `memory→topic` association ae9 slices on, D-089), 06 (mempalace — gateway-free retrieval; the view filter is a store membership read, never a gateway call, so it works in the D-036 degraded path and **fails open**), 02 (CC-memory predecessor — surface-sprawl cautionary tale → one view-resolution core, thin `{SDK,HTTP,MCP}` callers, not one lens per surface).
 
-> **Checkpoint reconciliation (D-151).** ae9 adds **no** new table, migration, seam, or
-> enable knob. Per **D-151** it generalizes ae1's **`topic_views`** table + **`TopicViewStore`**
-> seam (`Store.TopicViews()`) + **`retrieval.agent_views.enabled`** knob with named-view
-> semantics, the key-id subject, and the admin surface, adding only
-> `retrieval.agent_views.on_policy_error` and `retrieval.agent_views.subject_precedence`.
-> Ignore any wording below implying a *separate* `topic_views` creation distinct from ae1's,
-> a forward-copy from `agent_topic_policies`, or a column-add migration — D-151 pins one
-> shared table created by ae1 at migration 0013.
+> **Checkpoint reconciliation (D-151).** Per **D-151**, ae9 generalizes ae1's
+> **`topic_views`** junction table (`topic_key`, `effect CHECK(effect IN ('allow',
+> 'deny'))` — one row per key, created by ae1 at migration **0013**) with
+> named-view semantics, the key-id subject, and the admin surface. ae9 adds
+> **no** new table, **no** new migration, **no** new seam, and **no** new enable
+> knob — it reuses ae1's **`TopicViewStore`** seam (`Store.TopicViews()`) and
+> **`retrieval.agent_views.enabled`** knob, adding only
+> `retrieval.agent_views.on_policy_error` and
+> `retrieval.agent_views.subject_precedence`.
 
 ## Goal
 
@@ -30,8 +31,8 @@ from the caller's own scope — it is a curation lens, **not** an isolation
 boundary (D-139); the tenant from the verified credential/JWT remains the *only*
 P3 boundary. The whole path **fails open** (a views-store error returns the
 caller's full own-scope results, flagged degraded) and touches **no** scope
-table and **no** agent column — ae9 adds exactly one forward-only table that
-generalizes ae1's binding.
+table and **no** agent column — ae9 adds **no** new table or migration (D-151);
+it reuses ae1's `topic_views` junction table.
 
 ## Brief findings incorporated
 
@@ -59,19 +60,18 @@ generalizes ae1's binding.
   and no policy-binding table exists (highest migration is `0012`). This plan is
   therefore authored against ae1/ae6's **specified seams**, and ae9 cannot merge
   until both have landed. Recorded in **D-149**.
-- **The charter says ae1 "introduces" the table and ae9 "generalizes" it — but a
-  cross-driver column rename/reshape is not a clean forward-only migration on
-  SQLite.** Rather than `ALTER`-rename ae1's `agent_id`→`subject_id` and split a
-  single allow/deny pair into sets, **ae9 owns one new generalized table
-  `topic_views`** whose columns are the *superset* the charter's gotcha asks for
-  (`subject_kind` defaulting `'agent'`, `subject_id`, `view_name` defaulting
-  `'default'`, set-valued `allow_topics`/`deny_topics`), and the *coordination
-  contract* is that **ae1 stores its binding in this same table** as
-  `(subject_kind='agent', view_name='default')` with single-element allow/deny —
-  i.e. ae1's row is literally ae9's default view. If ae1 ships a narrower table
-  first, ae9's migration copies its rows forward into `topic_views` (a forward-only
-  data migration, both drivers). Filed in **D-149** so the ae1↔ae9 table
-  ownership is explicit, not discovered at merge.
+- **Superseded by D-151.** This plan originally proposed that ae9 own a new,
+  generalized `topic_views` table (with ae1 forward-copying its narrower
+  `agent_topic_policies` rows into it at merge time) to avoid a cross-driver
+  column rename/reshape on SQLite. The checkpoint decision **D-151** resolved
+  this the other way: ae1 creates `topic_views` directly in its general
+  **junction** shape (`subject_kind` defaulting `'agent'`, `subject_id`,
+  `view_name` defaulting `'default'`, `topic_key`, `effect` — one row per key)
+  at migration `0013`, so there is no narrower ae1 table to reshape or copy
+  from. ae9 therefore adds **no** table, **no** migration, and **no**
+  forward-copy — it adds only named-view semantics, the key-id subject, and the
+  admin surface on top of ae1's table. The table-ownership question this bullet
+  originally raised is closed by D-151, not by ae9's migration.
 - **The charter's "key a view on the verified key id" is free on HTTP but
   requires new MCP plumbing it does not call out.** On HTTP the full `*auth.Key`
   (with `ID`) is on the request context (`internal/api/auth.go:48`,
@@ -81,38 +81,49 @@ generalizes ae1's binding.
   subject works out-of-the-box only on HTTP — **MCP needs ae9 to stash `key.ID`
   into the request context and expose it to the retrieve handler.** This concrete
   same-PR parity cost is called out here and in **D-149**.
-- **Allow/deny are stored as JSON-encoded `TEXT` arrays, not a child table.** A
-  view's topic-key sets are small and are *stored configuration*, never model
-  output — so stdlib `encoding/json` in a `TEXT` column keeps the table single-row
-  and both drivers identical. This is **not** the forbidden "free-text JSON parse
-  of model output" (§10); it is internal serialization of operator-supplied keys.
+- **Superseded by D-151.** This plan originally proposed storing `allow_topics`/
+  `deny_topics` as JSON-encoded `TEXT` array columns on a single-row-per-subject
+  table. **D-151** instead pins ae1's `topic_views` as a **junction** table — one
+  row per `(subject, view, topic_key)` with an `effect CHECK(effect IN ('allow',
+  'deny'))` column, mirroring the `memory_topics` junction idiom (D-089). ae9's
+  `TopicView` domain struct still exposes `AllowTopics []string`/`DenyTopics
+  []string`, but the store driver **aggregates** them from `effect='allow'`/
+  `'deny'` rows at read time and **writes** them as one row per key on
+  create/update — never as a JSON blob. This keeps ae9 clear of the forbidden
+  "free-text JSON parse of model output" (§10) question entirely: there is no
+  JSON column to reason about.
 
 ## Design
 
-### The durable surface: `topic_views` (one new table, not a scope table)
+### The durable surface: `topic_views` (ae1's junction table — no new table, D-151)
 
-A new sub-store on the `Store` seam (`internal/store/store.go:16`), mirroring the
-`Grants()`/`Topics()` accessor pattern:
+ae1's sub-store on the `Store` seam (`internal/store/store.go:16`), mirroring the
+`Grants()`/`Topics()` accessor pattern; ae9 extends its interface with admin CRUD
+(`CreateView`/`UpdateView`/`DeleteView`/`ListViews`) but adds no new accessor and
+no new table:
 
 ```go
-// TopicViews returns the read-time topic-view sub-store (Phase ae9, D-149).
-// A topic view is a named, per-subject curation lens — NOT a scope table and it
-// carries no memory rows. Scope-enforced (P3): every method requires scope.Tenant.
+// TopicViews returns the read-time topic-view sub-store (Phase ae1, generalized
+// by ae9 — D-151). A topic view is a named, per-subject curation lens — NOT a
+// scope table and it carries no memory rows. Scope-enforced (P3): every method
+// requires scope.Tenant.
 TopicViews() TopicViewStore
 ```
 
 ```go
-// TopicView is a named read-time curation lens bound to a subject. It generalizes
+// TopicView is a named read-time curation lens bound to a subject, resolved
+// (aggregated) from ae1's topic_views junction table — one row per topic key —
+// never stored as a JSON blob (D-151). It generalizes
 // ae1's (tenant_id, agent_id)→allow/deny binding: ae1's row is exactly
-// (SubjectKind="agent", ViewName="default") with single-element sets.
+// (SubjectKind="agent", ViewName="default") with a single-key row.
 type TopicView struct {
-    ID          string   // ULID
+    ID          string   // ULID (domain-level view identity; not a single junction row)
     TenantID    string   // == scope.Tenant (the only P3 boundary)
     SubjectKind string   // "agent" | "key"
     SubjectID   string   // agent_id (ae1, from _meta) OR auth.Key.ID
     ViewName    string   // "default" when unnamed (== ae1's binding)
-    AllowTopics []string // keep only memories tagged with ≥1 of these (empty = no include constraint)
-    DenyTopics  []string // drop any memory tagged with one of these
+    AllowTopics []string // aggregated from junction rows with effect='allow' (empty = no include constraint)
+    DenyTopics  []string // aggregated from junction rows with effect='deny'
     CreatedAt   int64
     UpdatedAt   int64
 }
@@ -142,31 +153,41 @@ normalizes the natural key (`subject_kind ∈ {agent,key}`, non-empty `subject_i
 `view_name` defaults `"default"`) and is called by both drivers' `CreateView`/
 `UpdateView` — validation lives in the core so no surface can bypass it (D-067).
 
-**Migration** `internal/store/migrations/{postgres,sqlite}/00NN_topic_views.sql`
-(`NN` = next free after ae1's binding migration — ae1 takes `0013`, ae9 takes
-`0014`; forward-only, both dialects), shape mirroring the `grants` precedent
-(`0001_init.sql:236`) minus the scope columns (a view is not scoped to a
-sub-tenant — it is keyed by subject):
+**No migration.** Per **D-151**, ae9 adds **no** new migration — it reads and
+writes ae1's existing `topic_views` junction table, created once at migration
+`0013` (both dialects). ae1's shape (reproduced here for reference; owned and
+migrated by ae1, not ae9), mirroring the `memory_topics` junction idiom
+(D-089):
 
 ```sql
 CREATE TABLE IF NOT EXISTS topic_views (
     id           TEXT NOT NULL PRIMARY KEY,
     tenant_id    TEXT NOT NULL,
-    subject_kind TEXT NOT NULL,           -- 'agent' | 'key'
+    subject_kind TEXT NOT NULL DEFAULT 'agent',   -- 'agent' | 'key'
     subject_id   TEXT NOT NULL,
-    view_name    TEXT NOT NULL,           -- 'default' == ae1's binding
-    allow_topics TEXT NOT NULL,           -- JSON array of topic keys (operator-supplied, not model output)
-    deny_topics  TEXT NOT NULL,           -- JSON array of topic keys
+    view_name    TEXT NOT NULL DEFAULT 'default', -- 'default' == ae1's binding
+    topic_key    TEXT NOT NULL,
+    effect       TEXT NOT NULL CHECK(effect IN ('allow','deny')),
     created_at   BIGINT NOT NULL,         -- INTEGER in sqlite
     updated_at   BIGINT NOT NULL,
-    UNIQUE (tenant_id, subject_kind, subject_id, view_name)
+    UNIQUE (tenant_id, subject_kind, subject_id, view_name, topic_key)
 );
 CREATE INDEX IF NOT EXISTS idx_topic_views_subject
-    ON topic_views(tenant_id, subject_kind, subject_id);
+    ON topic_views(tenant_id, subject_kind, subject_id, view_name);
 ```
 
+One row per `(subject, view, topic_key)` — a view's `AllowTopics`/`DenyTopics`
+are the set of `topic_key`s whose row has `effect='allow'` / `'deny'` for that
+`(tenant_id, subject_kind, subject_id, view_name)`. ae9's driver methods
+read/write these rows directly: `GetView`/`ListViews` aggregate rows into
+`TopicView.AllowTopics`/`DenyTopics`; `CreateView`/`UpdateView` write one row
+per key (inserting new keys and deleting rows for keys no longer present, so a
+view's row set always matches its current allow/deny lists); `DeleteView`
+deletes all rows for the natural key. No JSON-encoded column anywhere on this
+table.
+
 No FK to any memory row (a view references topic *keys*, not memories), no agent
-column on any of the 12 scope tables, no dedupe-index / UNIQUE / DSAR cascade /
+column on any of the 12 scope tables, no dedupe-index / DSAR cascade /
 buffer→flush threading — the day-one-signal disciplines that bind persisted
 dimensions do **not** apply, because a view persists no memory data.
 
@@ -303,10 +324,8 @@ sub-store.
 ```text
 internal/store/store.go                       # CHANGED — TopicViewStore interface + TopicViews() accessor
 internal/store/types.go                       # CHANGED — TopicView struct + (TopicView).Validate()
-internal/store/pgstore/topicviews.go          # NEW — pg driver impl (scope-required)
-internal/store/sqlitestore/topicviews.go      # NEW — sqlite driver impl (mirror)
-internal/store/migrations/postgres/0014_topic_views.sql   # NEW — forward-only (NN after ae1's 0013)
-internal/store/migrations/sqlite/0014_topic_views.sql     # NEW — mirror
+internal/store/pgstore/topicviews.go          # CHANGED (ae1 NEW) — adds admin CRUD over the existing junction rows (scope-required)
+internal/store/sqlitestore/topicviews.go      # CHANGED (ae1 NEW) — mirror
 internal/store/conformance/conformance.go     # CHANGED — view round-trip + scope-required + cross-tenant leak guard
 internal/boot/boot.go                          # CHANGED — construct views.New(Store.TopicViews(), Store.Events(), Log) → stk.ViewsSvc (beside GrantsSvc, boot.go:218)
 cmd/stowage/main.go                            # CHANGED — inject stk.ViewsSvc into the MCP Services + srv.SetViewsService (beside GrantsSvc wiring)
@@ -391,9 +410,11 @@ All three are flat scalars under an `agent_views` sub-struct on `RetrievalConfig
    subject_precedence}` ship with tuned defaults, placement in every profile's
    effective config, docs, `allKeys`/get/set/explain, validation, and smoke
    checks; `enabled=false` (zero-config) leaves retrieval byte-identical.
-9. **No scope-table change.** No agent column on any of the 12 scope tables; the
-   only new durable surface is `topic_views` (forward-only, both drivers,
-   conformance-proven); `source_agent` stays a records-only label.
+9. **No scope-table change.** No agent column on any of the 12 scope tables; ae9
+   adds **no** new durable surface (D-151) — it extends ae1's existing
+   `topic_views` junction table with admin CRUD, proven by the same
+   conformance suite on both drivers; `source_agent` stays a records-only
+   label.
 10. **Gateway-free (D-036).** View resolution and application perform no gateway
     call; the feature serves in the degraded retrieval path.
 
@@ -408,9 +429,12 @@ then:
   `internal/api/views_handler.go` nor the MCP `makeViewsHandler` emits an event
   directly (grep: no `Events().Emit` in the view handlers — the audit event lives
   only in the core, D-067/D-073).
-- `internal/store/store.go` declares `TopicViewStore` + `TopicViews()`; the
-  `0014_topic_views.sql` migration exists in **both** dialect dirs; no agent
-  column appears in the 12 scope-table migrations (grep guard).
+- `internal/store/store.go` declares `TopicViewStore` + `TopicViews()`, with
+  ae9's admin methods (`CreateView`/`UpdateView`/`DeleteView`/`ListViews`)
+  present; ae1's `topic_views` migration (`0013`) exists in **both** dialect
+  dirs and **no** `0014_topic_views.sql` exists in either (grep guard: ae9 adds
+  no migration); no agent column appears in the 12 scope-table migrations
+  (grep guard).
 - `view_name` present on all three retrieve contracts; `degraded_view` on the
   three outputs; the MCP retrieve + views schema goldens carry them.
 - `retrieval.agent_views.enabled` / `.on_policy_error` / `.subject_precedence`
@@ -469,15 +493,19 @@ then:
   posture override, **not** a new boundary.
 - **ae1/ae6 unbuilt ⇒ ae9 blocks on their seams.** ae9 cannot merge until
   `Scope.Agent`, the `_meta` `agent_id` plumbing, and `filterByTopicOwnScope`
-  exist. The smoke SKIPs until the files appear; D-149 records the dependency and
-  the ae1↔ae9 table-ownership contract.
+  exist. The smoke SKIPs until the files appear; D-149 records the dependency
+  (its table-ownership framing is superseded by **D-151** — see the checkpoint
+  note at the top of this plan).
 - **MCP key-id plumbing gap.** `KeyringMiddleware` discards `key.ID` today; ae9
   adds the stash + `KeyIDFromContext` accessor in the same PR (AC-3) so the key
   subject reaches parity on MCP, not only HTTP.
-- **Table generalization not clean forward-only across SQLite.** Mitigated by ae9
-  owning one generalized `topic_views` table (superset columns with defaults) and,
-  if ae1 shipped a narrow table, a forward-only data copy — never an in-place
-  cross-driver column rename (D-149).
+- **Table generalization / forward-copy risk — resolved by D-151.** This plan
+  originally carried a risk (and mitigation) around ae9 owning a new
+  generalized table and forward-copying ae1's narrower rows into it to avoid an
+  in-place cross-driver column rename. The checkpoint decision **D-151** closed
+  this: ae1 creates `topic_views` directly in its general junction shape at
+  migration `0013`, so there is no narrower table to reshape or copy from, and
+  ae9 adds neither a table nor a migration.
 - **Knob sprawl / accidental default-on.** `enabled=false` default keeps
   zero-config byte-identical; three scalars only, all D-034-complete and
   smoke-checked.
@@ -502,13 +530,17 @@ then:
 ## Decisions filed
 
 - **D-149** — Named per-agent/per-key topic **views** generalizing ae1's single
-  agent→topic binding: a `topic_views` table keyed by
-  `(tenant_id, subject_kind, subject_id, view_name)` with set-valued allow/deny
-  (ae1's row == the `agent`/`default` view); a read-time **curation lens, not
-  isolation** that only subtracts from own-scope and **fails open** (reusing ae6's
-  `filterByTopicOwnScope`, deliberately opposite grants' fail-closed
-  `filterByTopic`); the subject is identity-derived (agent from `_meta`, else the
-  verified key id — which required new MCP `key.ID` context plumbing);
-  apply-a-view on `{SDK,HTTP,MCP}`, view admin on `{HTTP,MCP}`. Implements D-139.
-  Also records the ae1↔ae9 table-ownership contract and the ae1/ae6-unbuilt
-  dependency. (Charter D-139.)
+  agent→topic binding: a read-time **curation lens, not isolation** over the
+  shared `topic_views` table, keyed by
+  `(tenant_id, subject_kind, subject_id, view_name)` (ae1's row == the
+  `agent`/`default` view), that only subtracts from own-scope and **fails
+  open** (reusing ae6's `filterByTopicOwnScope`, deliberately opposite grants'
+  fail-closed `filterByTopic`); the subject is identity-derived (agent from
+  `_meta`, else the verified key id — which required new MCP `key.ID` context
+  plumbing); apply-a-view on `{SDK,HTTP,MCP}`, view admin on `{HTTP,MCP}`.
+  Implements D-139. **Superseded in part by D-151** (checkpoint decision,
+  2026-06-30): D-149's original table-ownership framing — ae9 owning a new
+  generalized table and a forward-copy from ae1's narrower rows — is replaced
+  by ae1 creating `topic_views` directly in its general junction shape at
+  migration `0013`; ae9 adds no table, seam, migration, or enable knob. (Charter
+  D-139.)

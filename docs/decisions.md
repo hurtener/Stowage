@@ -4000,6 +4000,12 @@ tokens now, vs deferring the trim until ae4b can add the positional map safely.
 
 ## D-146 — `agent_topic_policies`: the read-time (tenant_id, agent_id) → {allow, deny} policy-binding table
 
+> **Shape superseded by D-151.** The binding lives in the general **`topic_views`** table
+> (`subject_kind`/`subject_id`/`view_name`/`topic_key`/`effect`, one row per key) created by ae1 at
+> migration **0013** behind the **`TopicViewStore`** seam and gated by **`retrieval.agent_views.enabled`**;
+> ae9 adds no columns. Read `agent_topic_policies` / `AgentPolicyStore` / `agent_filter_enabled` and the
+> "ae9 adds subject_kind + view_name columns" note below as the D-151 names/model.
+
 2026-06-30. Phase ae1 (ae* track, D-135). The read-time agent filter needs to know *which topic keys* an agent may see. That binding is durable state, but it must not become a persisted agent partition (D-135).
 
 **Decision.** Add a new sub-store `AgentPolicyStore` on the `Store` seam (`Store.AgentPolicies()`) and a new table `agent_topic_policies` (migration `0013`, forward-only, **both** drivers, shared-conformance-proven), mapping `(tenant_id, agent_id) → {allow_topics, deny_topics}`.

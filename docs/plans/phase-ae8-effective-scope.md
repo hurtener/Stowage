@@ -6,16 +6,9 @@
 - **Depends on phases:** **ae2** (the `_meta` intake source — `user`/`session`/`agent`/`project` from the inbound `_meta` map) and **ae7** (the verified-JWT-claim source). **Transitively ae1** (its read-only `identity.Scope.Agent` field and the `agent_id` `_meta` read the resolver routes) — see *Findings I'm departing from*. Wave 3.
 - **Informing briefs:** 02 (CC-memory predecessor — surface-sprawl cautionary tale → one resolver, not per-surface scope-building), 04 (CL-Bench — the failure modes the strict posture defends: a silent tenant-wide read is a recall-precision failure the gain metric punishes), 06 (mempalace — gateway-free retrieval; the resolver is a pure function with no gateway/store I/O, so it works in the D-036 degraded path).
 
-> **Checkpoint reconciliation (D-150).** The resolver step that sets `Scope.Session` from
-> `ClaimSession`/`MetaSession`/`ArgSession` is amended: on the **retrieval/browse read
-> path** the resolver routes the effective session to the relevance sink
-> (`Request.SessionID`) and leaves **`Scope.Session` empty**, so `buildScopeWhere` never
-> narrows a read to one session (cross-session recall preserved, **D-150**). The resolver
-> still resolves the session value under the D-137 precedence; it just does not place it on
-> the read `Scope`. Add a golden/regression row proving a session-bearing token (and
-> `strict` posture) still returns cross-session results; the "byte-identical default" claim
-> holds only because `compatible`+keyring is unchanged — the session correction applies to
-> the JWT/`strict` path too. Writes remain session-stamped.
+> **Checkpoint reconciliation (D-150).** The session step below (step 2) and the step-7
+> return are written to reflect D-150 directly: the resolver's session value is routed to
+> the relevance sink, never onto the read `Scope`. See the inline `(D-150)` tags.
 
 ## Goal
 
@@ -24,9 +17,9 @@ When this phase is done there is **exactly one** function —
 (the credential tenant, verified JWT claims, host-injected `_meta`, and the
 legacy D-125 args) into the effective **read** `identity.Scope`, applying the
 precedence **verified JWT claims > `_meta` > args** (the JWT-claim-over-lower-
-assertion tiering is D-137; the `_meta`-over-arg sub-order is the charter
-identity-model table, lines 97-98 — **which deliberately reverses ae2's interim
-`argElseMeta` arg-wins rule**, see *Findings I'm departing from*) and the D-137
+assertion tiering is D-137; the `_meta`-over-arg sub-order matches the charter
+identity-model table, lines 97-98, and is the same sub-order ae2 already ships
+via `metaElseArg` — see *Findings I'm departing from*) and the D-137
 resolution rule
 (the credential *pins* a dimension ⇒ a disagreeing assertion is **rejected**; it
 lets the connection *assert* a dimension ⇒ **accepted**). Every single-user read
@@ -96,34 +89,28 @@ tenant-wide fallback* rather than write a new `WHERE`.
   `:83-103`). So ae8 adds **no `WHERE`** and **no store method**. It states this in
   the plan and pins it with a P3 test (below) so a future reader does not "add the
   missing predicate" that already exists in **three** independent code paths.
-- **ae8 deliberately supersedes ae2's interim `argElseMeta` (arg-wins)
-  precedence.** ae2 (`phase-ae2-meta-intake.md`) ships and tests the *opposite*
-  arg-vs-`_meta` rule — its `argElseMeta` helper and AC-2 ("Precedence: arg wins",
-  lines 284-287) resolve an in-band arg **over** a `_meta` value ("an in-band arg
-  is the caller's chosen value and WINS; a `_meta` value is the host-injected
-  default/fallback"). ae8 is the consolidation phase that replaces the ~18
-  hand-rolled scope literals — **including ae2's intake helper** — with the single
-  resolver, and it aligns with the **charter identity-model table**
+- **ae8 realizes the full resolver precedence; ae2 already ships the `_meta`-over-arg
+  sub-order it depends on.** ae2 (`phase-ae2-meta-intake.md`) ships and tests
+  `metaElseArg` — a host-injected `_meta` value **wins** over an in-band arg
+  (`_meta` is the caller's chosen value; the arg is only the fallback when no
+  `_meta` has been sent) — matching the **charter identity-model table**
   (`docs/plans/track-adoption-ergonomics.md` lines 97-98: `Harbor JWT user claim →
-  _meta.user → MCP user_id arg`), i.e. **`_meta` > arg**. This is a deliberate,
-  documented reversal of ae2's *interim* rule, not a silent drift: a `_meta` value
-  is host-injected identity while an arg is a model-discretionary omittable value,
-  so the host default should win over a model-supplied arg. Both candidates are
-  **always within the same tenant** (tenant is pinned first, resolution step 1), so
-  this is a within-tenant read-scoping choice, never a P3 boundary change. In any
-  pre-ae7 deployment where a caller sends both `user_id=A` (arg) and `_meta.user=B`,
-  ae2-as-shipped resolves to `A` and ae8's resolver resolves to `B`; the
-  reconciliation below makes that intentional and tested rather than a silent flip.
-  Consequences, all discharged in this plan: (a) a golden/regression **and** parity
-  row for the arg-and-`_meta`-both-present conflict (AC-1 / AC-9 and the test plan);
-  (b) a **follow-up to correct ae2** — its `argElseMeta` helper, AC-2, and the
-  arg-vs-`_meta` risk/glossary bullets must be updated to `_meta`-wins so ae2's
-  shipped W1 behaviour matches the resolver once ae2's intake routes through
-  `ResolveReadScope` (tracked as an ae8 follow-up; ae2's file is not edited in
-  ae8's PR). **Attribution note:** the `_meta` > arg *sub-order* comes from the
-  charter table, **not** from D-137 — D-137 ranks *credential vs assertion*
-  (pin/assert) and supplies only the JWT-claim-over-lower-assertion tiering. Both
-  recorded in D-148.
+  _meta.user → MCP user_id arg`), i.e. **`_meta` > arg**. ae8 does not change this
+  sub-order; it is the consolidation phase that replaces the ~18 hand-rolled scope
+  literals — **including ae2's intake helper** — with the single resolver and adds
+  the dimension ae2 does not have a source for: **verified JWT claims**, giving the
+  full precedence **verified JWT claim > `_meta` > arg** (the JWT-over-assertion
+  tiering is D-137; the `_meta`-over-arg sub-order is ae2's, carried forward
+  unchanged). Both candidates are **always within the same tenant** (tenant is
+  pinned first, resolution step 1), so this is a within-tenant read-scoping
+  concern, never a P3 boundary change. There is no behavioral conflict between the
+  two phases to reconcile — both land on `_meta`-wins — so ae8 need only pin the
+  full three-way precedence, including the arg-and-`_meta`-both-present row and the
+  new claim-over-`_meta` row, in its own golden matrix and parity test (AC-1 / AC-9
+  and the test plan). **Attribution note:** the `_meta` > arg sub-order comes from
+  ae2/the charter table, **not** from D-137 — D-137 ranks *credential vs assertion*
+  (pin/assert) and supplies only the JWT-claim-over-lower-assertion tiering.
+  Recorded in D-148.
 
 ## Design
 
@@ -148,8 +135,8 @@ const (
 // IdentitySources is the raw, per-source identity gathered at a read entry point,
 // BEFORE precedence is applied. The resolver applies the precedence
 // (verified JWT claims > _meta > D-125 args — JWT-over-assertion tiering per D-137,
-// _meta-over-arg per the charter identity-model table, which supersedes ae2's
-// interim arg-wins argElseMeta rule) and the D-137 resolution rule internally, so
+// _meta-over-arg per the charter identity-model table, the same sub-order ae2
+// already ships via metaElseArg) and the D-137 resolution rule internally, so
 // every surface resolves identity identically (D-067 one logic core). A surface
 // adapter fills only the fields its transport carries (D-140: MCP fills the Meta*
 // fields, HTTP fills the Claim*/Arg* fields) and leaves the rest zero.
@@ -186,7 +173,11 @@ type ResolveOptions struct {
 // ResolveReadScope merges every active identity source into the effective READ
 // Scope, honoring the D-137 resolution rule and read posture. It does NO I/O
 // (pure, gateway-free, store-free) and is safe for concurrent reuse. It NEVER
-// returns a Scope with an empty Tenant on a nil error (P3). Errors are sentinels:
+// returns a Scope with an empty Tenant on a nil error (P3). The returned Scope's
+// Session field is ALWAYS empty on the read path (D-150) — session is a
+// relevance signal, never a read-scope predicate; see resolution step 2 for how
+// the effective session value is still resolved and routed to the relevance
+// sink instead. Errors are sentinels:
 //   - ErrTenantMismatch  — a claim/_meta tenant disagrees with the credential (D-138)
 //   - ErrUserConflict    — the credential pins `user` and a disagreeing assertion is not authorized
 //   - ErrIdentityRequired — strict posture and neither user nor agent resolved
@@ -213,10 +204,18 @@ Applied in this exact order; every branch is a golden-test row.
    widen or override the authorization boundary, D-138). An empty `src.Tenant` ⇒
    the resolved scope fails `Validate()` and the resolver returns that error (no
    tenant, no read — P3).
-2. **session — ALWAYS assertable (Harbor parity; never gated by the flag).**
-   `Scope.Session =` first non-empty of `ClaimSession`, `MetaSession`, `ArgSession`.
-   (The HTTP adapter folds `X-Harbor-Session` into `ClaimSession` before calling;
-   the resolver never sees the header.)
+2. **session — ALWAYS assertable (Harbor parity; never gated by the flag), but
+   NEVER placed on the read `Scope` (D-150).** The resolver still resolves the
+   effective session value as first non-empty of `ClaimSession`, `MetaSession`,
+   `ArgSession` (D-137 precedence), and returns it out-of-band for the caller to
+   route to the existing relevance sink (`retrieval.Request.SessionID` /
+   `playbook.Options.SessionID`). It is **not** written to `Scope.Session` on the
+   read path — `Scope.Session` stays empty — so `buildScopeWhere` never narrows a
+   read to one session and cross-session recall is preserved under every posture,
+   including `strict` (D-150). (The HTTP adapter folds `X-Harbor-Session` into
+   `ClaimSession` before calling; the resolver never sees the header.) The write
+   path remains session-stamped (memories carry their originating session); that
+   stamping is unrelated to this read resolver and out of scope here.
 3. **project — assertable, no JWT claim (project is host-routing, not an auth
    claim).** `Scope.Project =` first non-empty of `MetaProject`, `ArgProject`.
 4. **agent — `_meta` only, read-time.** `Scope.Agent = src.MetaAgent` (requires
@@ -238,7 +237,10 @@ Applied in this exact order; every branch is a golden-test row.
    (Note the two knobs are independent: `multiplexing` decides whether a *disagreeing*
    user assertion is accepted; `read_posture` decides what happens when *no*
    user/agent resolves at all.)
-7. Return `Scope{Tenant, Project, User, Session, Agent}` after `Validate()`.
+7. Return `Scope{Tenant, Project, User, Agent}` after `Validate()` — **`Session` is
+   deliberately left empty on this read `Scope`** (D-150); the effective session
+   value resolved in step 2 is routed by the caller to the relevance sink
+   (`Request.SessionID`), never assigned to the returned `Scope.Session`.
 
 ### One resolver, thin per-surface adapters (D-067/D-073, D-140)
 
@@ -338,15 +340,16 @@ docs/glossary.md                          # CHANGED — effective read scope, re
    deterministic outcome, applying the order **JWT > `_meta` > args**
    (JWT-over-assertion per D-137; `_meta`-over-arg per the charter table). It
    **must** include the **arg-and-`_meta`-both-present** row (e.g. `ArgUser="A"`,
-   `MetaUser="B"` ⇒ `Scope.User="B"`), which pins ae8's deliberate reversal of
-   ae2's interim `argElseMeta` arg-wins rule (see *Findings I'm departing from*);
-   this row is not covered by AC-6 (args-only).
+   `MetaUser="B"` ⇒ `Scope.User="B"`), which pins the `_meta`-over-arg sub-order
+   ae2 already ships (`metaElseArg`, see *Findings I'm departing from*); this row
+   is not covered by AC-6 (args-only).
 2. **D-137 resolution rule holds.** *Pins:* a `_meta`/claim tenant disagreeing
    with the credential ⇒ `ErrTenantMismatch` (D-138); a disagreeing user assertion
    with `identity.multiplexing=false` and `CanAssertUser=false` ⇒ `ErrUserConflict`.
    *Asserts:* `_meta.user` under multiplexing (or `CanAssertUser`) is accepted;
-   `session` is **always** accepted (replace), independent of both knobs. Each is a
-   test row.
+   `session` is **always** accepted (replace) as the effective session value,
+   independent of both knobs — routed to the relevance sink, never onto
+   `Scope.Session` (D-150). Each is a test row.
 3. **Strict posture refuses the tenant-wide fallback.** With
    `retrieval.read_posture=strict` and neither a resolved `user` nor a resolved
    agent, `ResolveReadScope` returns `ErrIdentityRequired` — it **populates/requires
@@ -383,7 +386,7 @@ docs/glossary.md                          # CHANGED — effective read scope, re
    parity test drives the same source set through each surface's adapter and gets
    the same effective scope and the same strict/mux outcomes — **including the
    arg-and-`_meta`-both-present conflict** (`_meta` wins on every surface, matching
-   AC-1's reversal of ae2's interim arg-wins rule).
+   AC-1 and the `_meta`-over-arg sub-order ae2 already ships).
 10. **Knobs D-034-complete.** Both keys ship with a tuned default, placement in
     every profile's effective config, docs, `allKeys`/get/set/explain, validation,
     and smoke checks; zero-config start (`compatible` + `multiplexing=false` +
@@ -409,13 +412,15 @@ docs/glossary.md                          # CHANGED — effective read scope, re
 - **Golden/unit (`resolve_test.go`):** the full source matrix (JWT-only,
   `_meta`-only, args-only, mixed, conflicting) × posture × multiplexing ×
   `CanAssertUser`, **including the arg-and-`_meta`-both-present row that asserts
-  `_meta` wins over the arg** (the deliberate reversal of ae2's interim
-  `argElseMeta` arg-wins rule); the three sentinel error branches
+  `_meta` wins over the arg** (the `_meta`-over-arg sub-order ae2 already ships
+  via `metaElseArg`, now pinned as part of ae8's full resolver precedence); the
+  three sentinel error branches
   (`ErrTenantMismatch`,
   `ErrUserConflict`, `ErrIdentityRequired`); the tenant-never-empty **property**
   (fuzz-style table over random source combos asserting `Tenant != ""` on every
   nil-error return); the `compatible`-args-only byte-identical regression;
-  session-always-assertable independent of both knobs.
+  session-always-assertable-but-never-on-Scope (D-150) independent of both
+  knobs.
 - **Concurrency (§5):** `ResolveReadScope` invoked from N goroutines on shared
   input under `-race` (proves the pure-function claim).
 - **Integration (`test/integration/effective_scope_test.go`, real drivers, §17 —
@@ -448,13 +453,19 @@ docs/glossary.md                          # CHANGED — effective read scope, re
   stated so the checkpoint audit expects it.
 - **Confusing strict with the agent filter's fail-open.** Mitigated by AC-8 + the
   glossary + the resolver godoc pinning the layer separation.
-- **Precedence divergence from dependency ae2 (arg-vs-`_meta`).** ae2 ships an
-  interim arg-wins `argElseMeta`; ae8's resolver is `_meta`-wins (per the charter
-  table). Mitigated by making the reversal explicit and tested (AC-1 conflict row +
-  AC-9 parity) and by a tracked **ae2 follow-up** to flip ae2's
-  `argElseMeta`/AC-2/risk/glossary to `_meta`-wins so the shipped W1 behaviour
-  converges once ae2 routes its intake through `ResolveReadScope`. The divergence is
-  within-tenant only (tenant pinned first), so it is never a P3 breach.
+- **Staying consistent with dependency ae2's `_meta`-over-arg sub-order.** ae2
+  already ships `_meta`-wins (`metaElseArg`); ae8's resolver must reproduce the
+  same sub-order rather than silently drifting from it when it subsumes ae2's
+  intake helper. Mitigated by the AC-1 conflict row + AC-9 parity test, both
+  keyed to the same `_meta`-over-arg outcome ae2 already tests.
+- **A read-scope resolver silently narrowing retrieval to one session.**
+  ae7's token-derived `Scope{Tenant,User,Session}` and a naive claim/`_meta`/arg
+  merge would otherwise place the resolved session onto `Scope.Session`, which
+  `buildScopeWhere` narrows on — dropping cross-session recall (D-150). Mitigated
+  by resolution step 2 routing the session value to the relevance sink instead
+  and leaving `Scope.Session` empty, plus a golden/regression row proving a
+  session-bearing token under `strict` posture still returns cross-session
+  results.
 
 ## Glossary additions
 
@@ -485,6 +496,8 @@ docs/glossary.md                          # CHANGED — effective read scope, re
   knobs; the read-side gap closed **upstream** by populating/requiring `Scope.User`,
   not by adding a store `WHERE` (the store already filters). Implements D-137;
   records the code-truth corrections (deps ae1/ae2/ae7 unbuilt; multiplexing ships
-  as the global interim; no store predicate added) and the deliberate reversal of
-  ae2's interim `argElseMeta` arg-wins precedence to `_meta`-wins (with the ae2
-  follow-up correction tracked).
+  as the global interim; no store predicate added) and that ae8's `_meta`-over-arg
+  sub-order matches the `_meta`-wins precedence ae2 already ships
+  (`metaElseArg`) — no reversal, no follow-up needed. Amended by **D-150**: the
+  resolver's read `Scope.Session` stays empty; the resolved session value routes
+  to the relevance sink instead (cross-session recall preserved).
