@@ -99,11 +99,11 @@ Internal order: **ae3 → ae4a**; ae5 and ae6 independent (ae6 is the filter key
 - [x] Dual adversarial review complete · [x] live 3-surface validation · [x] CI green · [x] merged · [x] roadmap updated
 
 ### Wave 1 — additive read-time identity (+ Dockyard v1.8 bump) · one PR
-**Status:** IN PROGRESS (ae1 implemented on `feat/ae-wave-1`; ae2 pending)
+**Status:** MERGED (PR #94, 2dfa7ec)
 Depends on **W0** (ae1 reuses ae6's filter).
 - [x] **ae1** — read-time `Scope.Agent` (read-path only, inert on writes); `dockyard v1.7.3→v1.8.0` + `server.RequestMeta`; creates the `topic_views` junction + `TopicViewStore` at migration 0013; `agent_id` field on SDK+HTTP, `_meta.agent_id` on MCP · D‑135/D‑146(shape per D‑151)
-- [ ] **ae2** — additive `_meta` intake (`user`/`session`/`agent`); `metaElseArg` (`_meta` wins); tenant credential-only, `_meta.tenant` mismatch fails closed; session → relevance sink not `Scope.Session` · D‑138 (impl D‑137)
-- [ ] Dual adversarial review · [ ] live 3-surface validation · [ ] CI green · [ ] merged · [ ] roadmap updated
+- [x] **ae2** — additive `_meta` intake (`user`/`session`/`agent`); `metaElseArg` (`_meta` wins); tenant credential-only, `_meta.tenant` mismatch fails closed; session → relevance sink not `Scope.Session` · D‑138 (impl D‑137)
+- [x] Dual adversarial review · [x] live 3-surface validation · [x] CI green · [x] merged · [x] roadmap updated
 
 ### Wave 2 — auth foundation · one PR
 **Status:** NOT STARTED
@@ -133,3 +133,4 @@ Depends on **W2 + W3**. Pre-launch ⇒ **direct removal, no deprecation window**
 ## Progress log (orchestrator appends one line per wave merge)
 
 - Wave 0 merged as PR #92 (1a10f57), 2026-07-01; live 3-surface validation: pass (real OpenRouter/Bifrost — ae4a lean read/drill, ae5 browse, ae6 topic filter verified on SDK+HTTP+MCP). Dual adversarial review + fixes: mcpserver browse coverage (78.7→81.0%), judged-path CURRENT/SUPERSEDED partitioning restored, harbor-adapter fakeClient.Browse, phase-29/29c smoke fix-forward.
+- Wave 1 merged as PR #94 (2dfa7ec), 2026-07-01; live 3-surface validation: pass (real gateway — ae1 agent→topic narrowing 4→2 with SDK/HTTP/MCP parity; ae2 `_meta.user` narrow + `_meta.tenant` fail-closed). Dual adversarial review + fixes: `PutAgentPolicy` empty-allow/deny footgun rejected at store layer, `json:"-"` on `Scope.Agent` (pipeline golden), RFC §8.1 amended for `topic_views`, `memory_proactive_config` get-arm `Scope.Agent`, SA5011 lint fix-forward, live-harness topic-snapshot race hardened.
