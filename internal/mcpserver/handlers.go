@@ -1016,6 +1016,56 @@ func episodeToItem(v episodes.EpisodeView) EpisodeItem {
 	}
 }
 
+// makeBrowseHandler implements memory_browse (ae5, D-143): the deterministic,
+// gateway-free scoped walk over a scope's memories (mirrors GET /v1/memories +
+// the embedded SDK Browse). Thin caller over retrieval.Browse — the one core
+// (D-067/D-073). Scope resolved via svc.ScopeFn, narrowed by ProjectID/UserID
+// (D-125).
+func makeBrowseHandler(svc *Services) tool.Handler[BrowseInput, BrowseOutput] {
+	return func(ctx context.Context, in BrowseInput) (tool.Result[BrowseOutput], error) {
+		scope, err := svc.ScopeFn(ctx)
+		if err != nil {
+			return tool.Result[BrowseOutput]{}, fmt.Errorf("memory_browse: resolve scope: %w", err)
+		}
+		scope = identity.Scope{Tenant: scope.Tenant, Project: in.ProjectID, User: in.UserID}
+
+		mode, perr := retrieval.ParseBrowseMode(in.Mode)
+		if perr != nil {
+			return tool.Result[BrowseOutput]{}, fmt.Errorf("memory_browse: %w", perr)
+		}
+
+		res, berr := retrieval.Browse(ctx, svc.Store, scope, retrieval.BrowseOptions{
+			Mode: mode, Limit: in.Limit, Cursor: in.Cursor, DefaultLimit: svc.BrowseDefaultLimit,
+		})
+		if berr != nil {
+			return tool.Result[BrowseOutput]{}, fmt.Errorf("memory_browse: %w", berr)
+		}
+
+		out := BrowseOutput{Memories: make([]BrowseMemoryItem, 0, len(res.Memories)), NextCursor: res.NextCursor}
+		for i := range res.Memories {
+			out.Memories = append(out.Memories, memoryToBrowseItem(&res.Memories[i]))
+		}
+		return tool.Result[BrowseOutput]{
+			Text:       fmt.Sprintf("Browse: %d memories returned", len(out.Memories)),
+			Structured: out,
+		}, nil
+	}
+}
+
+// memoryToBrowseItem converts a *store.Memory to the memory_browse wire item.
+func memoryToBrowseItem(m *store.Memory) BrowseMemoryItem {
+	return BrowseMemoryItem{
+		ID: m.ID, Kind: m.Kind, Content: m.Content, Context: m.Context, Status: m.Status,
+		Importance: m.Importance, Confidence: m.Confidence, TrustSource: m.TrustSource,
+		MatchCount: m.MatchCount, InjectCount: m.InjectCount, UseCount: m.UseCount,
+		SaveCount: m.SaveCount, FailCount: m.FailCount, NoiseCount: m.NoiseCount,
+		Stability: m.Stability, ValidFrom: m.ValidFrom, ValidUntil: m.ValidUntil,
+		EpisodeID: m.EpisodeID, SupersedesID: m.SupersedesID, SupersededByID: m.SupersededByID,
+		PrivacyZone: m.PrivacyZone, ContentHash: m.ContentHash,
+		CreatedAt: m.CreatedAt, UpdatedAt: m.UpdatedAt,
+	}
+}
+
 // makeCausalHandler implements memory_causal (RFC §5.6/§6b, D-083): the
 // deterministic, gateway-free why-traversal (mirrors GET /v1/causal + the embedded
 // SDK Causal). Scope resolved via svc.ScopeFn.

@@ -1,6 +1,6 @@
 # Phase ae5 — list / browse (most-recent-first, superseded filter)
 
-- **Status:** draft
+- **Status:** implemented (see "As-built deviations" below)
 - **Owning subsystem(s):** `internal/store` (a new scope-required `MemoryStore.ListByScopeRecent` + both drivers + conformance); `internal/retrieval` (a new gateway-free `Browse` core); the three single-user read surfaces (`internal/mcpserver`, `internal/api`, `sdk/stowage`); `internal/config` (one knob).
 - **RFC sections:** §5.2 (memories), §5.3 (scopes — P3), §8.1 (Store seam / schema inventory), §9.1–9.5 (tiered surfaces, one logic core D-067/D-073)
 - **Depends on phases:** the shipped memories store (`MemoryStore.Insert`/`ListByStatus`, Phase 08); the status/supersede lifecycle (the `"superseded"` status this filter reads, Phase 14/§6c). **No in-track dependency** — lands in Wave 0.
@@ -233,18 +233,18 @@ internal/mcpserver/handlers.go                            # CHANGED — makeBrow
 internal/mcpserver/contracts.go                           # CHANGED — BrowseInput/BrowseOutput/BrowseMemoryItem
 internal/mcpserver/testdata/memory_browse.{input,output}.schema.json  # NEW — regen goldens
 internal/api/server.go                                    # CHANGED — GET /v1/memories route
-internal/api/memories_handler.go                          # CHANGED — handleBrowseMemories + wire envelope
+internal/api/browse_handler.go                            # NEW (as-built; plan named memories_handler.go) — handleBrowseMemories + wire envelope
 sdk/stowage/client.go                                     # CHANGED — Client.Browse
 sdk/stowage/types.go                                      # CHANGED — BrowseRequest/BrowseResponse/BrowseMemory
 sdk/stowage/embedded.go                                   # CHANGED — Browse via retrieval.Browse (in-process)
 sdk/stowage/http.go                                       # CHANGED — Browse via GET /v1/memories
 internal/config/config.go                                 # CHANGED — retrieval.browse_default_limit (field, allKeys, defaults, get/set, validate)
 internal/config/testdata/explain_default.golden           # CHANGED — regen (new key)
-scripts/smoke/phase-ae5.sh                                # NEW
+scripts/smoke/phase-ae5.sh                                # CHANGED (as-built; a SKIP-stub already existed) — flipped to OK
 test/integration/browse_test.go                           # NEW — real-driver keyset sweep + scope isolation + parity (§17)
-docs/plans/README.md                                      # CHANGED — ae* track registration (draft line for ae5)
-docs/decisions.md                                         # CHANGED — D-143
-docs/glossary.md                                          # CHANGED — browse, inverted keyset
+docs/plans/README.md                                      # CHANGED — ae* track registration (D-143 proposed → settled)
+docs/decisions.md                                         # UNCHANGED (as-built) — D-143 already landed pre-implementation; verified, not duplicated
+docs/glossary.md                                          # UNCHANGED (as-built) — Browse/Inverted keyset already landed pre-implementation
 ```
 
 ## Config keys added
@@ -358,6 +358,63 @@ docs/glossary.md                                          # CHANGED — browse, 
   selects rows **strictly before** the last row (`(created_at,id) < cursor`), the
   descending mirror of the ascending `(created_at,id) > cursor` keyset used by
   `ListByStatus`. Stable under concurrent inserts (unlike `LIMIT/OFFSET`).
+
+## As-built deviations
+
+- **The knob threading is a plain field, not a re-derived config read.** The
+  plan's Design §4 says the surfaces "pass `cfg.Retrieval.BrowseDefaultLimit`",
+  but none of the three surfaces hold a `*config.Config` at call time (HTTP's
+  `Server` keeps only `cfg.Server` + `cfg.Profile`; MCP's `Services` keeps only
+  `Profile`; the embedded SDK's client keeps only `profile`). Each surface gained
+  one new resolved-value field instead — `api.Server.browseDefaultLimit`,
+  `mcpserver.Services.BrowseDefaultLimit`, `embeddedClient.browseDefaultLimit` —
+  populated once at construction from `cfg.Retrieval.BrowseDefaultLimit` (both
+  `mcpserver.Services{}` call sites in `cmd/stowage/main.go`; `api.New`;
+  `sdk/stowage.NewEmbedded`). This mirrors the existing `profile string` field
+  pattern on all three types exactly — the same shape the plan's own Design §4
+  code sketch implies ("the knob value arrives via `BrowseOptions.DefaultLimit`")
+  without inventing a config-threading mechanism the surfaces don't already have.
+- **`retrieval.browse_default_limit` was added to `Config.FillZeroDefaults`**
+  (not explicitly listed in the plan's five "canonical places"), so a zero-valued
+  embedded-SDK caller's config resolves to `30` the same way `config.Load` does
+  for the HTTP/MCP entrypoints (D-069 parity lens) — otherwise an embedded host
+  that builds `config.Config{}` by hand (common in this repo's own tests) would
+  silently browse with the hard `browseMaxLimit` (100) clamp instead of the
+  documented default. `ProfileTuning`'s per-profile fields are deliberately NOT
+  filled here (their zero means "inherit the built-in preset", a different
+  contract) — `browse_default_limit` is a flat scalar, so filling it is
+  consistent with how every other flat `ServerConfig`/`GatewayConfig` field in
+  `FillZeroDefaults` already behaves.
+- **The mode-enum parser (`retrieval.ParseBrowseMode`) lives in the core, not
+  duplicated per surface.** The plan states mode is "a closed string enum...
+  mapped to `BrowseMode` in the core-facing layer" without naming the function;
+  `ParseBrowseMode` is exported from `internal/retrieval/browse.go` so HTTP,
+  MCP, and the embedded SDK all call the identical validation (one enum
+  definition, not three copies) — the D-067/D-073 "no private browse logic per
+  surface" bar applied literally to enum parsing too.
+- **The HTTP handler lands in a new `internal/api/browse_handler.go`, not in
+  `internal/api/memories_handler.go`** (the plan's Files table names the latter).
+  Code truth: `memories_handler.go` is Phase 18's rollback/confirm reversibility
+  trio (D-064/D-065) and its own doc comment enumerates exactly those three
+  routes; `GET /v1/episodes` — the closest sibling read (deterministic,
+  gateway-free, its own `ListOptions`/cursor shape) — already lives in its own
+  `episodes_handler.go`, not bolted onto an unrelated handler file. `browse_handler.go`
+  follows that established one-capability-per-file precedent instead of the
+  plan's file list, and is registered in `server.go` next to the other GET routes.
+- **`docs/decisions.md` (D-143) and `docs/glossary.md` (Browse, Inverted keyset)
+  needed no edits** — both landed already, ahead of this implementation PR (the
+  charter-departure discipline the plan itself documents: "D-143 already exists
+  on main... verify grep, don't duplicate"). The plan's Files table lists them as
+  "CHANGED" because it was authored before that prerequisite PR merged; grep
+  confirmed both entries present and accurate, so this PR touches neither file.
+- **HTTP/MCP/SDK wire item types are hand-mirrored structs (`api.memoryJSON`
+  reused, `mcpserver.BrowseMemoryItem`, `sdk/stowage.Memory` reused), not a
+  single shared Go type**, matching the pre-existing pattern for `GET
+  /v1/memories/{id}` (Phase 18) — `sdk/stowage.Memory` and HTTP's `memoryJSON`
+  already existed and are reused verbatim for browse; only
+  `mcpserver.BrowseMemoryItem` is new, field-for-field identical to the other
+  two by construction (parity is enforced by `TestBrowse_SurfaceParity_FixedPage`
+  in `test/integration/browse_test.go`, not by a shared type).
 
 ## Decisions filed
 

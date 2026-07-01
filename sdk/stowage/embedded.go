@@ -43,6 +43,11 @@ type embeddedClient struct {
 	// profile is the active config profile — selects the profile-internal
 	// playbook token budget (D-072/D-042).
 	profile string
+	// browseDefaultLimit is cfg.Retrieval.BrowseDefaultLimit (ae5, D-143) — the
+	// Browse page size used when the caller omits Limit. FillZeroDefaults fills
+	// it to the config default (30) before construction, so this is never a
+	// silent 0 in a normally-constructed embedded client.
+	browseDefaultLimit int
 	// pl is the live derivation system started by boot.StartPipeline. Ingest
 	// enqueues onto pl.In; pl.Stage is retained for the flush/branch control
 	// verbs Wave B surfaces on the SDK. Safe for concurrent use after construction.
@@ -163,10 +168,11 @@ func NewEmbedded(parentCtx context.Context, cfg config.Config, opts ...Option) (
 	}
 
 	client := &embeddedClient{
-		stack:   stk,
-		scope:   identity.Scope{Tenant: o.tenantID, Project: o.projectID, User: o.userID},
-		profile: cfg.Profile,
-		pl:      p,
+		stack:              stk,
+		scope:              identity.Scope{Tenant: o.tenantID, Project: o.projectID, User: o.userID},
+		profile:            cfg.Profile,
+		browseDefaultLimit: cfg.Retrieval.BrowseDefaultLimit,
+		pl:                 p,
 	}
 
 	closer := func(ctx context.Context) error {
@@ -580,6 +586,27 @@ func (c *embeddedClient) Playbook(ctx context.Context, req PlaybookRequest) (Pla
 		return PlaybookResponse{}, fmt.Errorf("sdk: playbook: %w", err)
 	}
 	return playbookToSDK(pb), nil
+}
+
+// Browse implements Client via the deterministic, gateway-free retrieval.Browse
+// core (ae5, D-143).
+func (c *embeddedClient) Browse(ctx context.Context, req BrowseRequest) (BrowseResponse, error) {
+	scope := c.callScope(req.ProjectID, req.UserID)
+	mode, err := retrieval.ParseBrowseMode(req.Mode)
+	if err != nil {
+		return BrowseResponse{}, fmt.Errorf("sdk: browse: %w", err)
+	}
+	res, err := retrieval.Browse(ctx, c.stack.Store, scope, retrieval.BrowseOptions{
+		Mode: mode, Limit: req.Limit, Cursor: req.Cursor, DefaultLimit: c.browseDefaultLimit,
+	})
+	if err != nil {
+		return BrowseResponse{}, fmt.Errorf("sdk: browse: %w", err)
+	}
+	out := BrowseResponse{Memories: make([]Memory, 0, len(res.Memories)), NextCursor: res.NextCursor}
+	for _, m := range res.Memories {
+		out.Memories = append(out.Memories, memoryToSDK(m))
+	}
+	return out, nil
 }
 
 // Episodes implements Client via the LLM-free episodic-retrieval core (D-080).

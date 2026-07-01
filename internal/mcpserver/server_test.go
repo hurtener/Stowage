@@ -50,8 +50,8 @@ func TestNew_SevenToolsRegistered(t *testing.T) {
 	}
 
 	tools := srv.Tools()
-	if len(tools) != 20 {
-		t.Fatalf("expected 20 tools registered, got %d: %v", len(tools), tools)
+	if len(tools) != 21 {
+		t.Fatalf("expected 21 tools registered, got %d: %v", len(tools), tools)
 	}
 
 	want := map[string]bool{
@@ -59,6 +59,7 @@ func TestNew_SevenToolsRegistered(t *testing.T) {
 		"memory_retrieve":         true,
 		"memory_playbook":         true,
 		"memory_episodes":         true,
+		"memory_browse":           true,
 		"memory_causal":           true,
 		"memory_verify":           true,
 		"memory_review":           true,
@@ -119,8 +120,8 @@ func TestNew_ConcurrentCreation(t *testing.T) {
 			t.Errorf("goroutine %d: nil server", i)
 			continue
 		}
-		if n := len(srv.Tools()); n != 20 {
-			t.Errorf("goroutine %d: expected 20 tools, got %d", i, n)
+		if n := len(srv.Tools()); n != 21 {
+			t.Errorf("goroutine %d: expected 21 tools, got %d", i, n)
 		}
 	}
 }

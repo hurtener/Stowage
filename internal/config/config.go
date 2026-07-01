@@ -70,6 +70,13 @@ type RetrievalConfig struct {
 	// Default true. Bounded per response; superseded items are demoted, never ranked
 	// above their current successor.
 	IncludeSuperseded bool `yaml:"include_superseded"`
+	// BrowseDefaultLimit is the page size retrieval.Browse (ae5, D-143) uses when
+	// a caller omits limit. Default 30. A flat scalar (not per-profile — a
+	// cross-cutting behaviour value, unlike the per-profile candidate windows
+	// above), so its tuned default is present in every profile's effective config
+	// via Defaults(). Bounded 1..100 (Validate); inert when the caller passes an
+	// explicit limit, so zero-config start is unchanged.
+	BrowseDefaultLimit int `yaml:"browse_default_limit"`
 }
 
 // ProfileTuning overrides one retrieval profile's candidate windows. A zero field
@@ -226,6 +233,7 @@ var allKeys = []string{
 	"retrieval.broad.scoring_k",
 	"retrieval.broad.default_limit",
 	"retrieval.include_superseded",
+	"retrieval.browse_default_limit",
 }
 
 // secretKeyPaths is the set of keys that hold env.VAR_NAME references.
@@ -328,7 +336,8 @@ func Defaults() *Config {
 			StdioTenant: "default",
 		},
 		Retrieval: RetrievalConfig{
-			IncludeSuperseded: true, // dual-visibility default (§6c, D-105)
+			IncludeSuperseded:  true, // dual-visibility default (§6c, D-105)
+			BrowseDefaultLimit: 30,   // ae5 browse page size (D-143)
 		},
 		prov: make(Provenance),
 	}
@@ -432,6 +441,15 @@ func (c *Config) FillZeroDefaults() {
 
 	if c.MCP.StdioTenant == "" {
 		c.MCP.StdioTenant = d.MCP.StdioTenant
+	}
+
+	// retrieval.browse_default_limit (ae5, D-143) is a flat scalar, not a
+	// per-profile candidate window — unlike ProfileTuning's zero-inherits-preset
+	// fields, its tuned default belongs in every effective config, embedded
+	// included, so the SDK's default-limit browse matches the server (D-069
+	// parity lens).
+	if c.Retrieval.BrowseDefaultLimit == 0 {
+		c.Retrieval.BrowseDefaultLimit = d.Retrieval.BrowseDefaultLimit
 	}
 }
 
@@ -609,6 +627,14 @@ func (c *Config) Validate() error {
 
 	if c.Telemetry.RuntimeSampleInterval < 0 {
 		errs = append(errs, errors.New("config.telemetry.runtime_sample_interval: must be >= 0"))
+	}
+
+	// retrieval.browse_default_limit (ae5, D-143): must be a positive page size,
+	// bounded by the hard browse page cap (100, mirrors retrieval.browseMaxLimit).
+	if c.Retrieval.BrowseDefaultLimit <= 0 {
+		errs = append(errs, fmt.Errorf("config.retrieval.browse_default_limit: %d must be > 0", c.Retrieval.BrowseDefaultLimit))
+	} else if c.Retrieval.BrowseDefaultLimit > 100 {
+		errs = append(errs, fmt.Errorf("config.retrieval.browse_default_limit: %d exceeds the hard browse page cap (100)", c.Retrieval.BrowseDefaultLimit))
 	}
 
 	return errors.Join(errs...)
@@ -801,6 +827,8 @@ func (c *Config) getByPath(path string) string {
 		return strconv.Itoa(c.Retrieval.Broad.DefaultLimit)
 	case "retrieval.include_superseded":
 		return strconv.FormatBool(c.Retrieval.IncludeSuperseded)
+	case "retrieval.browse_default_limit":
+		return strconv.Itoa(c.Retrieval.BrowseDefaultLimit)
 	default:
 		return ""
 	}
@@ -934,6 +962,12 @@ func (c *Config) setByPath(path, value string) error {
 			return fmt.Errorf("config.%s: %w", path, err)
 		}
 		c.Retrieval.IncludeSuperseded = b
+	case "retrieval.browse_default_limit":
+		n, err := strconv.Atoi(value)
+		if err != nil {
+			return fmt.Errorf("config.%s: %w", path, err)
+		}
+		c.Retrieval.BrowseDefaultLimit = n
 	default:
 		return fmt.Errorf("config: unknown key path %q", path)
 	}

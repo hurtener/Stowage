@@ -1,0 +1,21 @@
+{
+  "type": "object",
+  "properties": {
+    "mode": {
+      "type": "string"
+    },
+    "limit": {
+      "type": "integer"
+    },
+    "cursor": {
+      "type": "string"
+    },
+    "project_id": {
+      "type": "string"
+    },
+    "user_id": {
+      "type": "string"
+    }
+  },
+  "additionalProperties": false
+}

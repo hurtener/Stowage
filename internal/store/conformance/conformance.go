@@ -54,6 +54,12 @@ func Run(t *testing.T, factory Factory) {
 	t.Run("MemoryListByKinds", func(t *testing.T) { testMemoryListByKinds(t, factory) })
 	t.Run("MemoryListByKindsScopeIsolation", func(t *testing.T) { testMemoryListByKindsScopeIsolation(t, factory) })
 	t.Run("MemoryListByStatusCursor", func(t *testing.T) { testMemoryListByStatusCursor(t, factory) })
+	// ae5 (D-143) — DESC inverted-keyset browse (Store.ListByScopeRecent)
+	t.Run("MemoryListByScopeRecent", func(t *testing.T) { testMemoryListByScopeRecent(t, factory) })
+	t.Run("MemoryListByScopeRecentCursor", func(t *testing.T) { testMemoryListByScopeRecentCursor(t, factory) })
+	t.Run("MemoryListByScopeRecentTie", func(t *testing.T) { testMemoryListByScopeRecentTie(t, factory) })
+	t.Run("MemoryListByScopeRecentScopeIsolation", func(t *testing.T) { testMemoryListByScopeRecentScopeIsolation(t, factory) })
+	t.Run("MemoryListByScopeRecentBadCursor", func(t *testing.T) { testMemoryListByScopeRecentBadCursor(t, factory) })
 	t.Run("MemoryLinks", func(t *testing.T) { testMemoryLinks(t, factory) })
 	t.Run("MemoryLinksEmpty", func(t *testing.T) { testMemoryLinksEmpty(t, factory) })
 	t.Run("MemoryProvenance", func(t *testing.T) { testMemoryProvenance(t, factory) })
@@ -1396,6 +1402,237 @@ func testMemoryListByStatusCursor(t *testing.T, factory Factory) {
 	}
 	if len(page2) != 3 {
 		t.Errorf("page2 len: got %d want 3 (cursor is last of page1, no rows dropped)", len(page2))
+	}
+}
+
+// =============================================================================
+// ae5 (D-143) — ListByScopeRecent: the DESC inverted-keyset browse
+// =============================================================================
+
+// testMemoryListByScopeRecent proves the most-recent-first (created_at DESC,
+// id DESC) ordering of ListByScopeRecent — mirrors ListEpisodes' DESC keyset
+// applied to the memories table.
+func testMemoryListByScopeRecent(t *testing.T, factory Factory) {
+	t.Helper()
+	s, cleanup := factory()
+	defer cleanup()
+	ctx := context.Background()
+	scope := tenantScope("t-" + newID())
+
+	base := nowMs()
+	var ids []string
+	for i := 0; i < 3; i++ {
+		mem := store.Memory{
+			ID: newID(), Kind: "fact", Content: fmt.Sprintf("fact%d", i),
+			Status: "active", Confidence: 0.5,
+			TrustSource: "llm_extracted", Stability: 1.0,
+			CreatedAt: base + int64(i), UpdatedAt: base + int64(i),
+		}
+		if err := s.Memories().Insert(ctx, scope, mem); err != nil {
+			t.Fatalf("Insert %d: %v", i, err)
+		}
+		ids = append(ids, mem.ID)
+	}
+
+	got, next, err := s.Memories().ListByScopeRecent(ctx, scope, 10, "")
+	if err != nil {
+		t.Fatalf("ListByScopeRecent: %v", err)
+	}
+	if len(got) != 3 {
+		t.Fatalf("got %d want 3", len(got))
+	}
+	if next != "" {
+		t.Errorf("expected empty cursor for a single page, got %q", next)
+	}
+	// Most-recent-first: reverse insertion order (created_at DESC).
+	if got[0].ID != ids[2] || got[1].ID != ids[1] || got[2].ID != ids[0] {
+		t.Errorf("DESC order wrong: got [%s,%s,%s] want reverse of %v", got[0].ID, got[1].ID, got[2].ID, ids)
+	}
+
+	// Empty scope (no rows) returns an empty page, not an error.
+	empty, emptyNext, err := s.Memories().ListByScopeRecent(ctx, tenantScope("t-empty-"+newID()), 10, "")
+	if err != nil {
+		t.Fatalf("ListByScopeRecent empty scope: %v", err)
+	}
+	if len(empty) != 0 || emptyNext != "" {
+		t.Errorf("expected empty page for a scope with no rows, got %d rows cursor=%q", len(empty), emptyNext)
+	}
+}
+
+// testMemoryListByScopeRecentCursor proves the Q1 full-sweep keyset property:
+// cursor="" → next → … visits every row exactly once with no gap and no
+// duplicate.
+func testMemoryListByScopeRecentCursor(t *testing.T, factory Factory) {
+	t.Helper()
+	s, cleanup := factory()
+	defer cleanup()
+	ctx := context.Background()
+	scope := tenantScope("t-" + newID())
+
+	const n = 7
+	const limit = 3
+	base := nowMs()
+	want := make(map[string]bool, n)
+	for i := 0; i < n; i++ {
+		mem := store.Memory{
+			ID: newID(), Kind: "fact", Content: fmt.Sprintf("fact%d", i),
+			Status: "active", Confidence: 0.5,
+			TrustSource: "llm_extracted", Stability: 1.0,
+			CreatedAt: base + int64(i), UpdatedAt: base + int64(i),
+		}
+		if err := s.Memories().Insert(ctx, scope, mem); err != nil {
+			t.Fatalf("Insert %d: %v", i, err)
+		}
+		want[mem.ID] = true
+	}
+
+	seen := make(map[string]int)
+	cursor := ""
+	for pages := 0; ; pages++ {
+		if pages > 10 { // resource guard against a non-terminating sweep on a bug
+			t.Fatalf("ListByScopeRecent: cursor sweep did not terminate")
+		}
+		page, next, err := s.Memories().ListByScopeRecent(ctx, scope, limit, cursor)
+		if err != nil {
+			t.Fatalf("ListByScopeRecent: %v", err)
+		}
+		for _, m := range page {
+			seen[m.ID]++
+		}
+		cursor = next
+		if cursor == "" {
+			break
+		}
+	}
+	if len(seen) != n {
+		t.Errorf("full sweep: got %d distinct rows want %d", len(seen), n)
+	}
+	for id := range want {
+		if seen[id] != 1 {
+			t.Errorf("full sweep: row %q seen %d times want 1", id, seen[id])
+		}
+	}
+}
+
+// testMemoryListByScopeRecentTie is the DESC tie test (mirrors
+// testCursorTimestampTieMemories): rows sharing one created_at millis must all
+// survive a cursor sweep with a page size that straddles the tie — the classic
+// off-by-one bug a DESC keyset inversion can reintroduce.
+func testMemoryListByScopeRecentTie(t *testing.T, factory Factory) {
+	t.Helper()
+	s, cleanup := factory()
+	defer cleanup()
+	ctx := context.Background()
+	scope := tenantScope("t-" + newID())
+
+	const n = 6
+	const limit = 3
+	ts := nowMs()
+
+	for i := 0; i < n; i++ {
+		mem := store.Memory{
+			ID: newID(), Kind: "fact", Content: fmt.Sprintf("tie%d", i),
+			Status: "active", TrustSource: "llm_extracted", Stability: 1.0,
+			CreatedAt: ts, // all share the same timestamp
+			UpdatedAt: ts,
+		}
+		if err := s.Memories().Insert(ctx, scope, mem); err != nil {
+			t.Fatalf("Insert %d: %v", i, err)
+		}
+	}
+
+	seen := make(map[string]int)
+	cursor := ""
+	for {
+		page, next, err := s.Memories().ListByScopeRecent(ctx, scope, limit, cursor)
+		if err != nil {
+			t.Fatalf("ListByScopeRecent: %v", err)
+		}
+		for _, m := range page {
+			seen[m.ID]++
+		}
+		cursor = next
+		if cursor == "" {
+			break
+		}
+	}
+	if len(seen) != n {
+		t.Errorf("tie cursor (ListByScopeRecent): got %d distinct rows want %d", len(seen), n)
+	}
+	for id, cnt := range seen {
+		if cnt != 1 {
+			t.Errorf("tie cursor (ListByScopeRecent): row %q seen %d times want 1", id, cnt)
+		}
+	}
+}
+
+// testMemoryListByScopeRecentScopeIsolation proves P3: an empty tenant fails
+// closed (ErrScopeRequired), and a cross-tenant / cross-user row never appears
+// in another scope's page.
+func testMemoryListByScopeRecentScopeIsolation(t *testing.T, factory Factory) {
+	t.Helper()
+	s, cleanup := factory()
+	defer cleanup()
+	ctx := context.Background()
+
+	// Empty tenant fails closed.
+	if _, _, err := s.Memories().ListByScopeRecent(ctx, identity.Scope{}, 10, ""); !errors.Is(err, store.ErrScopeRequired) {
+		t.Errorf("ListByScopeRecent empty scope: got %v want ErrScopeRequired", err)
+	}
+
+	// Cross-tenant isolation.
+	tenantA := tenantScope("t-a-" + newID())
+	tenantB := tenantScope("t-b-" + newID())
+	memA := store.Memory{
+		ID: newID(), Kind: "fact", Content: "tenant-A secret",
+		Status: "active", TrustSource: "llm_extracted", Stability: 1.0, CreatedAt: nowMs(), UpdatedAt: nowMs(),
+	}
+	if err := s.Memories().Insert(ctx, tenantA, memA); err != nil {
+		t.Fatalf("insert tenant A: %v", err)
+	}
+	gotB, _, err := s.Memories().ListByScopeRecent(ctx, tenantB, 10, "")
+	if err != nil {
+		t.Fatalf("ListByScopeRecent tenant B: %v", err)
+	}
+	for _, m := range gotB {
+		if m.ID == memA.ID {
+			t.Fatalf("cross-tenant leak: tenant B saw tenant A's memory %s", memA.ID)
+		}
+	}
+
+	// Cross-user isolation within one tenant.
+	tenant := "t-" + newID()
+	userA := identity.Scope{Tenant: tenant, User: "user-A"}
+	userB := identity.Scope{Tenant: tenant, User: "user-B"}
+	memUA := store.Memory{
+		ID: newID(), Kind: "fact", Content: "user-A secret",
+		Status: "active", TrustSource: "llm_extracted", Stability: 1.0, CreatedAt: nowMs(), UpdatedAt: nowMs(),
+	}
+	if err := s.Memories().Insert(ctx, userA, memUA); err != nil {
+		t.Fatalf("insert user A: %v", err)
+	}
+	gotUB, _, err := s.Memories().ListByScopeRecent(ctx, userB, 10, "")
+	if err != nil {
+		t.Fatalf("ListByScopeRecent user B: %v", err)
+	}
+	for _, m := range gotUB {
+		if m.ID == memUA.ID {
+			t.Fatalf("cross-user leak: user B saw user A's memory %s", memUA.ID)
+		}
+	}
+}
+
+// testMemoryListByScopeRecentBadCursor asserts a malformed cursor returns
+// store.ErrBadCursor, not a panic or a silent first page.
+func testMemoryListByScopeRecentBadCursor(t *testing.T, factory Factory) {
+	t.Helper()
+	s, cleanup := factory()
+	defer cleanup()
+	ctx := context.Background()
+	scope := tenantScope("t-" + newID())
+
+	if _, _, err := s.Memories().ListByScopeRecent(ctx, scope, 10, "not-a-valid-cursor"); !errors.Is(err, store.ErrBadCursor) {
+		t.Errorf("ListByScopeRecent bad cursor: got %v want ErrBadCursor", err)
 	}
 }
 

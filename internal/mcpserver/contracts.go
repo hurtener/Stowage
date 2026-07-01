@@ -210,6 +210,59 @@ type EpisodesOutput struct {
 	Degraded   bool          `json:"degraded,omitempty"`
 }
 
+// ─── memory_browse (ae5, D-143) ────────────────────────────────────────────────
+
+// BrowseInput is the memory_browse tool input (ae5, D-143). mode selects the
+// walk axis: "recent" (default; most-recent-first via the new
+// Store.ListByScopeRecent, created_at DESC) or "superseded" (oldest-first — it
+// reuses the EXISTING Store.ListByStatus query, H4). mode is a CLOSED enum;
+// any other value is rejected. limit<=0 uses the configured
+// retrieval.browse_default_limit; any limit is clamped to the hard page cap
+// (100).
+type BrowseInput struct {
+	Mode   string `json:"mode,omitempty"`
+	Limit  int    `json:"limit,omitempty"`
+	Cursor string `json:"cursor,omitempty"`
+	// ProjectID/UserID scope the read to a sub-tenant identity (P3, D-125); empty = tenant-wide.
+	ProjectID string `json:"project_id,omitempty"`
+	UserID    string `json:"user_id,omitempty"`
+}
+
+// BrowseMemoryItem is one memory on a browse page (byte-identical field set to
+// the HTTP/SDK memory shape).
+type BrowseMemoryItem struct {
+	ID             string  `json:"id"`
+	Kind           string  `json:"kind"`
+	Content        string  `json:"content"`
+	Context        string  `json:"context,omitempty"`
+	Status         string  `json:"status"`
+	Importance     int     `json:"importance"`
+	Confidence     float64 `json:"confidence"`
+	TrustSource    string  `json:"trust_source"`
+	MatchCount     int64   `json:"match_count"`
+	InjectCount    int64   `json:"inject_count"`
+	UseCount       int64   `json:"use_count"`
+	SaveCount      int64   `json:"save_count"`
+	FailCount      int64   `json:"fail_count,omitempty"`
+	NoiseCount     int64   `json:"noise_count,omitempty"`
+	Stability      float64 `json:"stability"`
+	ValidFrom      int64   `json:"valid_from,omitempty"`
+	ValidUntil     int64   `json:"valid_until,omitempty"`
+	EpisodeID      string  `json:"episode_id,omitempty"`
+	SupersedesID   string  `json:"supersedes_id,omitempty"`
+	SupersededByID string  `json:"superseded_by_id,omitempty"`
+	PrivacyZone    string  `json:"privacy_zone,omitempty"`
+	ContentHash    string  `json:"content_hash,omitempty"`
+	CreatedAt      int64   `json:"created_at"`
+	UpdatedAt      int64   `json:"updated_at"`
+}
+
+// BrowseOutput is the memory_browse tool output.
+type BrowseOutput struct {
+	Memories   []BrowseMemoryItem `json:"memories"`
+	NextCursor string             `json:"next_cursor,omitempty"`
+}
+
 // ─── memory_causal (D-083) ─────────────────────────────────────────────────────
 
 // CausalInput is the memory_causal tool input (RFC §5.6/§6b). Direction ∈

@@ -42,7 +42,10 @@ type Server struct {
 	log     *slog.Logger
 	cfg     config.ServerConfig
 	profile string // active config profile — selects the profile-internal playbook budget (D-072/D-042)
-	httpSrv *http.Server
+	// browseDefaultLimit is cfg.Retrieval.BrowseDefaultLimit (ae5, D-143) — the
+	// GET /v1/memories page size used when the caller omits limit.
+	browseDefaultLimit int
+	httpSrv            *http.Server
 
 	// pipeline is the bounded channel signalling the buffer stage.
 	// Enqueue is non-blocking: if full the enqueue is dropped and
@@ -102,14 +105,15 @@ func New(cfg *config.Config, st store.Store, log *slog.Logger, reg *prometheus.R
 	reg.MustRegister(ingestTotal, pipelineDrops)
 
 	srv := &Server{
-		st:            st,
-		log:           log,
-		cfg:           cfg.Server,
-		profile:       cfg.Profile,
-		pipeline:      make(chan pipeline.Item, pipelineCap),
-		maxBodyB:      cfg.Server.MaxBodyBytes,
-		ingestTotal:   ingestTotal,
-		pipelineDrops: pipelineDrops,
+		st:                 st,
+		log:                log,
+		cfg:                cfg.Server,
+		profile:            cfg.Profile,
+		browseDefaultLimit: cfg.Retrieval.BrowseDefaultLimit,
+		pipeline:           make(chan pipeline.Item, pipelineCap),
+		maxBodyB:           cfg.Server.MaxBodyBytes,
+		ingestTotal:        ingestTotal,
+		pipelineDrops:      pipelineDrops,
 	}
 	// Default the ingest sink to the server-owned channel; serve overrides it
 	// with the boot.StartPipeline-owned channel via SetPipelineIn.
@@ -194,6 +198,12 @@ func New(cfg *config.Config, st store.Store, log *slog.Logger, reg *prometheus.R
 	mux.HandleFunc("GET /v1/scopes/grants", srv.authMiddleware(srv.handleListGrants, false))
 	mux.HandleFunc("PUT /v1/scopes/grants", srv.authMiddleware(srv.handleCreateGrant, false))
 	mux.HandleFunc("POST /v1/grants/{id}/revoke", srv.authMiddleware(srv.handleRevokeGrant, false))
+
+	// ae5: deterministic, gateway-free scoped browse (D-143). Registered before
+	// the {id} path so ServeMux's more-specific pattern still wins for
+	// /v1/memories/{id}; net/http's mux picks the longest match, so ordering
+	// here is documentation, not a correctness requirement.
+	mux.HandleFunc("GET /v1/memories", srv.authMiddleware(srv.handleBrowseMemories, false))
 
 	// Memory management — Phase 18 (D-064, D-065).
 	mux.HandleFunc("GET /v1/memories/{id}", srv.authMiddleware(srv.handleGetMemory, false))

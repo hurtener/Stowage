@@ -642,6 +642,29 @@ type EpisodesResponse struct {
 	Degraded   bool      `json:"degraded,omitempty"`
 }
 
+// BrowseRequest walks the client's memories deterministically and
+// gateway-free (ae5, D-143). Mode is a CLOSED string enum: "" and "recent"
+// (the default) walk most-recent-first (created_at DESC, via the new
+// Store.ListByScopeRecent); "superseded" walks the superseded set oldest-first
+// (it reuses the EXISTING Store.ListByStatus query — H4, the ordering
+// asymmetry is deliberate). Any other Mode value is rejected — never silently
+// defaulted. Limit<=0 uses the server's configured retrieval.browse_default_limit.
+type BrowseRequest struct {
+	Mode   string
+	Limit  int
+	Cursor string
+	// ProjectID/UserID scope the read to a sub-tenant identity (P3, D-125); empty
+	// inherits the client's construction scope, then tenant-wide. Sent as query params.
+	ProjectID string
+	UserID    string
+}
+
+// BrowseResponse is one page of the scoped browse walk.
+type BrowseResponse struct {
+	Memories   []Memory `json:"memories"`
+	NextCursor string   `json:"next_cursor,omitempty"`
+}
+
 // CausalRequest walks the causal graph from MemoryID (RFC §5.6/§6b, D-083).
 // Direction is "backward" (causes — the default), "forward" (effects), or "both".
 // Depth bounds the hops (default 3, capped server-side).

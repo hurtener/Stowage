@@ -176,6 +176,53 @@ func (m *memoryStore) ListByStatus(ctx context.Context, scope identity.Scope, st
 	return out, nextCursor, nil
 }
 
+// ListByScopeRecent returns the scope's memories ordered by (created_at, id)
+// DESCENDING — most-recent-first — paginated by the opaque "<millis>:<id>"
+// inverted keyset (rows strictly BEFORE the cursor). Mirrors ListEpisodes'
+// DESC keyset exactly, applied to the memories table. Scope is PREFIX
+// (buildScopeWhere), matching ListByStatus (ae5, D-143).
+func (m *memoryStore) ListByScopeRecent(ctx context.Context, scope identity.Scope, limit int, cursor string) ([]store.Memory, string, error) {
+	whereClause, args, err := buildScopeWhere(scope)
+	if err != nil {
+		return nil, "", err
+	}
+
+	if cursor != "" {
+		ts, cid, perr := parseCursor(cursor)
+		if perr != nil {
+			return nil, "", perr
+		}
+		whereClause += " AND (created_at < ? OR (created_at = ? AND id < ?))"
+		args = append(args, ts, ts, cid)
+	}
+	args = append(args, limit+1)
+
+	q := `SELECT ` + memorySelectCols + ` FROM memories WHERE ` + whereClause + ` ORDER BY created_at DESC, id DESC LIMIT ?` //nolint:gosec
+	rows, err := m.s.rdb.QueryContext(ctx, q, args...)
+	if err != nil {
+		return nil, "", fmt.Errorf("sqlitestore: list memories by scope recent: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var out []store.Memory
+	for rows.Next() {
+		mem, err := scanMemory(rows)
+		if err != nil {
+			return nil, "", err
+		}
+		out = append(out, *mem)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, "", err
+	}
+	var nextCursor string
+	if len(out) > limit {
+		nextCursor = encodeCursor(out[limit-1].CreatedAt, out[limit-1].ID)
+		out = out[:limit]
+	}
+	return out, nextCursor, nil
+}
+
 func (m *memoryStore) InsertLinks(ctx context.Context, scope identity.Scope, links []store.Link) error {
 	if scope.Tenant == "" { // S1: fail closed
 		return store.ErrScopeRequired
