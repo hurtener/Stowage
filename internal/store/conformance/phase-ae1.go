@@ -23,6 +23,7 @@ func RunAgentPolicy(t *testing.T, factory Factory) {
 	t.Helper()
 	t.Run("AgentPolicyCRUD", func(t *testing.T) { testAgentPolicyCRUD(t, factory) })
 	t.Run("AgentPolicyAtomicReplace", func(t *testing.T) { testAgentPolicyAtomicReplace(t, factory) })
+	t.Run("AgentPolicyEmptyRejected", func(t *testing.T) { testAgentPolicyEmptyRejected(t, factory) })
 	t.Run("AgentPolicyScopeRequired", func(t *testing.T) { testAgentPolicyScopeRequired(t, factory) })
 	t.Run("AgentPolicyCrossTenantIsolation", func(t *testing.T) { testAgentPolicyCrossTenantIsolation(t, factory) })
 	t.Run("AgentPolicyNotFound", func(t *testing.T) { testAgentPolicyNotFound(t, factory) })
@@ -127,6 +128,36 @@ func testAgentPolicyAtomicReplace(t *testing.T, factory Factory) {
 	}
 	if len(got.DenyTopics) != 0 {
 		t.Errorf("DenyTopics after replace: got %v want empty (fully replaced, not merged)", got.DenyTopics)
+	}
+}
+
+// testAgentPolicyEmptyRejected proves a Put with neither allow nor deny topics
+// is rejected with ErrEmptyPolicy BEFORE the delete-then-insert replace runs, so
+// an existing binding is never silently wiped (ae1, D-146 — the empty-Put footgun).
+func testAgentPolicyEmptyRejected(t *testing.T, factory Factory) {
+	t.Helper()
+	s, cleanup := factory()
+	defer cleanup()
+	ctx := context.Background()
+	scope := tenantScope("t-" + newID())
+
+	// Seed a real binding.
+	if err := s.TopicViews().PutAgentPolicy(ctx, scope, store.AgentPolicy{
+		AgentID: "agent-e", AllowTopics: []string{"keep"},
+	}); err != nil {
+		t.Fatalf("seed Put: %v", err)
+	}
+	// An empty Put must be rejected, not silently applied.
+	if err := s.TopicViews().PutAgentPolicy(ctx, scope, store.AgentPolicy{AgentID: "agent-e"}); !errors.Is(err, store.ErrEmptyPolicy) {
+		t.Errorf("empty Put: got %v want ErrEmptyPolicy", err)
+	}
+	// The prior binding must survive (no destructive delete happened).
+	got, err := s.TopicViews().GetAgentPolicy(ctx, scope, "agent-e")
+	if err != nil {
+		t.Fatalf("GetAgentPolicy after rejected empty Put: %v", err)
+	}
+	if !equalStringSets(got.AllowTopics, []string{"keep"}) {
+		t.Errorf("binding wiped by a rejected empty Put: got AllowTopics=%v want [keep]", got.AllowTopics)
 	}
 }
 

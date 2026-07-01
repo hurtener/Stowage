@@ -1498,7 +1498,7 @@ func makeProactiveConfigHandler(svc *Services) tool.Handler[ProactiveConfigInput
 			patch := proactive.ConfigPatch{Enabled: in.Enabled, Threshold: in.Threshold, Budget: in.Budget, Classes: in.Classes}
 			cfg, rerr = proactive.WriteGovernance(ctx, svc.Store.ScopeSettings(), scope, proactiveProfileDefault(svc.Profile), patch, time.Now().UnixMilli())
 		case "get":
-			readScope := identity.Scope{Tenant: scope.Tenant, User: metaElseArg(mi.User, scope.User), Project: scope.Project}
+			readScope := identity.Scope{Tenant: scope.Tenant, User: metaElseArg(mi.User, scope.User), Project: scope.Project, Agent: mi.Agent}
 			cfg, rerr = proactive.Resolve(ctx, svc.Store.ScopeSettings(), readScope, proactiveProfileDefault(svc.Profile))
 		default:
 			return tool.Result[ProactiveConfigOutput]{}, fmt.Errorf("memory_proactive_config: action must be get or set")

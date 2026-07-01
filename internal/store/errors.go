@@ -37,3 +37,11 @@ var ErrDuplicateContent = errors.New("store: duplicate content hash")
 // the 'pending' state (already accepted/dismissed/expired, or absent) — the
 // compare-and-swap found no pending row (Phase 27, D-087).
 var ErrNotPending = errors.New("store: suggestion is not pending")
+
+// ErrEmptyPolicy is returned by TopicViewStore.PutAgentPolicy when both
+// AllowTopics and DenyTopics are empty. Such a binding carries no constraint and
+// is indistinguishable from an unbound agent, so it is rejected BEFORE the
+// delete-then-insert replace runs — otherwise an empty Put would silently wipe an
+// existing binding and then read back as ErrNotFound (ae1, D-146). To remove a
+// binding, use DeleteAgentPolicy.
+var ErrEmptyPolicy = errors.New("store: agent policy must have at least one allow or deny topic")

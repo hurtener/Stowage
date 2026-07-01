@@ -693,6 +693,7 @@ table earns its place by carrying a signal a later capability cannot backfill
 | `feedback` | like/dislike + citation-level signals | counters, tuning |
 | `suggestions` | proactive offers + their counters (§6d) | trigger tuning |
 | `scope_settings` | per-tenant proactivity/retention/zone config | governance |
+| `topic_views` | per-`(tenant, subject_kind, subject_id, view_name)` allow/deny topic-key bindings — read-time curation config, **not** a scope table (no memory rows, no `user_id`, no agent column on any scope table) | read-time agent→topic filter & per-agent/per-key views (§5.3, ae1/ae9, D-146/D-151) |
 | `api_keys` | runtime tenant/agent key management | auth, onboarding |
 | `events` | the audit trail | everything observable |
 | `dead_letters` / `job_markers` | pipeline recovery + sweep idempotency | lifecycle |

@@ -34,6 +34,11 @@ func (t *topicViewStore) PutAgentPolicy(ctx context.Context, scope identity.Scop
 	if p.AgentID == "" {
 		return fmt.Errorf("pgstore: PutAgentPolicy: agent_id is required")
 	}
+	if len(p.AllowTopics) == 0 && len(p.DenyTopics) == 0 {
+		// Reject BEFORE the delete-then-insert replace, so an empty Put can never
+		// silently wipe an existing binding (ae1, D-146). Use DeleteAgentPolicy to remove.
+		return store.ErrEmptyPolicy
+	}
 	tx, err := t.s.pool.Begin(ctx)
 	if err != nil {
 		return err
