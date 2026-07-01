@@ -23,6 +23,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
+	"github.com/hurtener/stowage/internal/auth"
 	"github.com/hurtener/stowage/internal/config"
 	"github.com/hurtener/stowage/internal/gateway"
 	"github.com/hurtener/stowage/internal/grants"
@@ -85,6 +86,14 @@ type Server struct {
 
 	maxBodyB int64 // max request body bytes
 
+	// authn is the D-067 authentication core authMiddleware calls (ae7). New
+	// defaults it to a keyring-only Authenticator over st.Keys() — byte
+	// identical to the pre-ae7 behavior, so zero-config start and every
+	// existing keyring-mode caller are unaffected. cmd/stowage/main.go
+	// overrides it via SetAuthenticator with the boot-built Authenticator
+	// (jwt mode's JWKS fetch happens there, at boot — never lazily here).
+	authn *auth.Authenticator
+
 	// Prometheus metrics.
 	ingestTotal   prometheus.Counter
 	pipelineDrops prometheus.Counter
@@ -114,6 +123,7 @@ func New(cfg *config.Config, st store.Store, log *slog.Logger, reg *prometheus.R
 		maxBodyB:           cfg.Server.MaxBodyBytes,
 		ingestTotal:        ingestTotal,
 		pipelineDrops:      pipelineDrops,
+		authn:              auth.NewKeyringAuthenticator(st.Keys()), // zero-config default (ae7); SetAuthenticator overrides in jwt mode
 	}
 	// Default the ingest sink to the server-owned channel; serve overrides it
 	// with the boot.StartPipeline-owned channel via SetPipelineIn.
@@ -270,6 +280,15 @@ func (s *Server) SetRetriever(r *retrieval.Retriever) {
 // endpoints (Phase 15). Must be called before ListenAndServe.
 func (s *Server) SetGrantsService(svc *grants.Service) {
 	s.grantsSvc = svc
+}
+
+// SetAuthenticator overrides the default keyring-only Authenticator (ae7,
+// D-067). cmd/stowage/main.go calls this with the boot-built Authenticator —
+// in ModeJWT that means the JWKS/static KeySet + Validator were already
+// constructed at boot (a JWKS-unreachable boot fails loud, D-147, before
+// SetAuthenticator is ever reached). Must be called before ListenAndServe.
+func (s *Server) SetAuthenticator(a *auth.Authenticator) {
+	s.authn = a
 }
 
 // SetPipelineIn redirects the ingest handler's enqueue target to an

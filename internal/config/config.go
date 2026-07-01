@@ -51,8 +51,75 @@ type Config struct {
 	MCP       MCPConfig       `yaml:"mcp"`
 	Trace     TraceConfig     `yaml:"trace"`
 	Retrieval RetrievalConfig `yaml:"retrieval"`
+	Auth      AuthConfig      `yaml:"auth"`
 
 	prov Provenance
+}
+
+// AuthConfig selects and tunes the request-authentication mode (ae7,
+// D-136/D-147). ModeKeyring (default) is the pre-existing static
+// store-backed API keys (D-030); ModeJWT verifies a Harbor-minted JWT against
+// a configured JWKS/static key set (internal/auth.Validator). Zero-config
+// start is unchanged: auth.mode defaults to keyring, so `stowage serve` with
+// no auth config authenticates store keys exactly as before this phase.
+type AuthConfig struct {
+	// Mode is "keyring" (default) | "jwt".
+	Mode string `yaml:"mode"`
+	// Issuer is the expected `iss` claim, EXACT-match. Empty (the default)
+	// disables the check.
+	Issuer string `yaml:"issuer"`
+	// Audience is the expected `aud` claim, CONTAINMENT-match (D-136): the
+	// check passes iff Audience is contained in the token's aud (a string or
+	// []string per RFC 7519). Empty (the default) disables the check, so one
+	// Harbor token verifies at both Harbor and Stowage.
+	Audience string `yaml:"audience"`
+	// Algorithms is a comma-separated subset of the asymmetric allowlist
+	// (e.g. "RS256,ES256"). Empty (the default) means all six. A
+	// non-asymmetric entry (HS*/none) fails validation at load.
+	Algorithms string `yaml:"algorithms"`
+	// JWKS locates and bounds the jwt-mode key set.
+	JWKS JWKSConfig `yaml:"jwks"`
+}
+
+// JWKSConfig locates and bounds the JWT-mode key set (ae7, D-147).
+type JWKSConfig struct {
+	// URL is a remote JWKS endpoint. Exactly one of URL/File must be set
+	// when auth.mode=jwt.
+	URL string `yaml:"url"`
+	// File is a local JWK Set path (air-gapped / out-of-band sync).
+	File string `yaml:"file"`
+	// MaxStale bounds, in seconds, how long a cached JWKS snapshot is
+	// honored without a successful refresh before KeyByID fails CLOSED
+	// (auth.ErrJWKSStale, D-147). Must be > 0.
+	MaxStale int `yaml:"max_stale"`
+}
+
+// validAsymmetricAlgorithms mirrors auth.AllowedAlgorithms — kept as a
+// package-local literal (not an internal/auth import) so internal/config
+// stays a leaf package with no subsystem dependency, matching this file's
+// existing convention of hardcoding driver/mode enums locally (e.g.
+// validStoreDrivers, validVIndexDrivers) rather than importing the owning
+// subsystem.
+var validAsymmetricAlgorithms = map[string]bool{
+	"RS256": true, "RS384": true, "RS512": true,
+	"ES256": true, "ES384": true, "ES512": true,
+}
+
+// AlgorithmList parses the comma-separated auth.algorithms knob into a
+// trimmed, non-empty slice (nil when unset).
+func (c AuthConfig) AlgorithmList() []string {
+	if strings.TrimSpace(c.Algorithms) == "" {
+		return nil
+	}
+	parts := strings.Split(c.Algorithms, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
 // RetrievalConfig tunes the named retrieval profiles (D-103). Each profile's candidate
@@ -262,6 +329,13 @@ var allKeys = []string{
 	"retrieval.browse_default_limit",
 	"retrieval.topic_filter_scoring_k",
 	"retrieval.agent_views.enabled",
+	"auth.mode",
+	"auth.issuer",
+	"auth.audience",
+	"auth.algorithms",
+	"auth.jwks.url",
+	"auth.jwks.file",
+	"auth.jwks.max_stale",
 }
 
 // secretKeyPaths is the set of keys that hold env.VAR_NAME references.
@@ -311,6 +385,13 @@ var envKeys = []struct {
 	{"STOWAGE_TELEMETRY_METRICS_LISTEN", "telemetry.metrics_listen"},
 	{"STOWAGE_TELEMETRY_RUNTIME_SAMPLE_INTERVAL", "telemetry.runtime_sample_interval"},
 	{"STOWAGE_MCP_TENANT", "mcp.stdio_tenant"},
+	{"STOWAGE_AUTH_MODE", "auth.mode"},
+	{"STOWAGE_AUTH_ISSUER", "auth.issuer"},
+	{"STOWAGE_AUTH_AUDIENCE", "auth.audience"},
+	{"STOWAGE_AUTH_ALGORITHMS", "auth.algorithms"},
+	{"STOWAGE_AUTH_JWKS_URL", "auth.jwks.url"},
+	{"STOWAGE_AUTH_JWKS_FILE", "auth.jwks.file"},
+	{"STOWAGE_AUTH_JWKS_MAX_STALE", "auth.jwks.max_stale"},
 }
 
 // Defaults returns a fully working Config with no file or env input. (AC-1)
@@ -368,6 +449,17 @@ func Defaults() *Config {
 			BrowseDefaultLimit:  30,                               // ae5 browse page size (D-143)
 			TopicFilterScoringK: 100,                              // ae6 topic-filter candidate window (D-144)
 			AgentViews:          AgentViewsConfig{Enabled: false}, // ae1 agent filter master switch (D-135/D-146/D-151), off by default
+		},
+		Auth: AuthConfig{
+			Mode:       "keyring", // zero-config default — boot unchanged (D-147)
+			Issuer:     "",
+			Audience:   "",
+			Algorithms: "",
+			JWKS: JWKSConfig{
+				URL:      "",
+				File:     "",
+				MaxStale: 3600, // 1 hour ceiling (D-147)
+			},
 		},
 		prov: make(Provenance),
 	}
@@ -487,6 +579,18 @@ func (c *Config) FillZeroDefaults() {
 	// window the same way the server does (D-069 parity lens).
 	if c.Retrieval.TopicFilterScoringK == 0 {
 		c.Retrieval.TopicFilterScoringK = d.Retrieval.TopicFilterScoringK
+	}
+
+	// auth.mode (ae7): the embedded SDK path performs no HTTP bearer auth at
+	// all (identity is supplied directly via WithTenantID/WithUser/
+	// WithSession), so this fill is a defensive completeness measure — not
+	// load-bearing for the embedded path — matching every other knob's
+	// zero-fills-to-default treatment here.
+	if c.Auth.Mode == "" {
+		c.Auth.Mode = d.Auth.Mode
+	}
+	if c.Auth.JWKS.MaxStale == 0 {
+		c.Auth.JWKS.MaxStale = d.Auth.JWKS.MaxStale
 	}
 }
 
@@ -680,6 +784,29 @@ func (c *Config) Validate() error {
 		errs = append(errs, fmt.Errorf("config.retrieval.topic_filter_scoring_k: %d must be > 0", c.Retrieval.TopicFilterScoringK))
 	} else if c.Retrieval.TopicFilterScoringK > 100 {
 		errs = append(errs, fmt.Errorf("config.retrieval.topic_filter_scoring_k: %d exceeds the hard result cap (100)", c.Retrieval.TopicFilterScoringK))
+	}
+
+	// auth.* (ae7, D-136/D-147): mode is closed-enum; jwt mode requires
+	// exactly one JWKS source, a positive max_stale, and every configured
+	// algorithm to be in the asymmetric allowlist. Fail LOUD here so a
+	// misconfigured jwt mode never boots (D-147) — no silent keyring
+	// fallback.
+	validAuthModes := map[string]bool{"keyring": true, "jwt": true}
+	if !validAuthModes[c.Auth.Mode] {
+		errs = append(errs, fmt.Errorf("config.auth.mode: unknown mode %q (valid: keyring, jwt)", c.Auth.Mode))
+	}
+	if c.Auth.Mode == "jwt" {
+		if (c.Auth.JWKS.URL == "") == (c.Auth.JWKS.File == "") {
+			errs = append(errs, errors.New("config.auth.jwks: exactly one of jwks.url/jwks.file must be set when auth.mode=jwt"))
+		}
+		if c.Auth.JWKS.MaxStale <= 0 {
+			errs = append(errs, fmt.Errorf("config.auth.jwks.max_stale: %d must be > 0", c.Auth.JWKS.MaxStale))
+		}
+		for _, alg := range c.Auth.AlgorithmList() {
+			if !validAsymmetricAlgorithms[alg] {
+				errs = append(errs, fmt.Errorf("config.auth.algorithms: %q is not an asymmetric algorithm (valid: RS256, RS384, RS512, ES256, ES384, ES512)", alg))
+			}
+		}
 	}
 
 	return errors.Join(errs...)
@@ -878,6 +1005,20 @@ func (c *Config) getByPath(path string) string {
 		return strconv.Itoa(c.Retrieval.TopicFilterScoringK)
 	case "retrieval.agent_views.enabled":
 		return strconv.FormatBool(c.Retrieval.AgentViews.Enabled)
+	case "auth.mode":
+		return c.Auth.Mode
+	case "auth.issuer":
+		return c.Auth.Issuer
+	case "auth.audience":
+		return c.Auth.Audience
+	case "auth.algorithms":
+		return c.Auth.Algorithms
+	case "auth.jwks.url":
+		return c.Auth.JWKS.URL
+	case "auth.jwks.file":
+		return c.Auth.JWKS.File
+	case "auth.jwks.max_stale":
+		return strconv.Itoa(c.Auth.JWKS.MaxStale)
 	default:
 		return ""
 	}
@@ -1029,6 +1170,24 @@ func (c *Config) setByPath(path, value string) error {
 			return fmt.Errorf("config.%s: %w", path, err)
 		}
 		c.Retrieval.AgentViews.Enabled = b
+	case "auth.mode":
+		c.Auth.Mode = value
+	case "auth.issuer":
+		c.Auth.Issuer = value
+	case "auth.audience":
+		c.Auth.Audience = value
+	case "auth.algorithms":
+		c.Auth.Algorithms = value
+	case "auth.jwks.url":
+		c.Auth.JWKS.URL = value
+	case "auth.jwks.file":
+		c.Auth.JWKS.File = value
+	case "auth.jwks.max_stale":
+		n, err := strconv.Atoi(value)
+		if err != nil {
+			return fmt.Errorf("config.%s: %w", path, err)
+		}
+		c.Auth.JWKS.MaxStale = n
 	default:
 		return fmt.Errorf("config: unknown key path %q", path)
 	}

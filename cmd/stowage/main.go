@@ -24,6 +24,7 @@ import (
 	_ "github.com/hurtener/stowage/eval/datasets/locomo"      // registers "locomo" (D-096)
 	_ "github.com/hurtener/stowage/eval/datasets/longmemeval" // registers "longmemeval" + "longmemeval_s" (D-096)
 	"github.com/hurtener/stowage/internal/api"
+	"github.com/hurtener/stowage/internal/auth"
 	"github.com/hurtener/stowage/internal/boot"
 	"github.com/hurtener/stowage/internal/config"
 	"github.com/hurtener/stowage/internal/mcpserver"
@@ -418,6 +419,17 @@ func runMCP(args []string) {
 	}()
 	slog.SetDefault(stk.Log)
 
+	// Build the ONE *auth.Authenticator this process's HTTP-mode MCP surface
+	// uses (D-067). ModeJWT's JWKS fetch is SYNCHRONOUS here, at boot — a
+	// JWKS-unreachable jwt-mode config fails LOUD (D-147); there is no silent
+	// keyring fallback. (Unused in stdio mode — StdioScopeFn never calls it —
+	// but built unconditionally to keep the boot sequence uniform with `serve`.)
+	authn, err := buildAuthenticator(context.Background(), cfg.Auth, stk.Store.Keys())
+	if err != nil {
+		stk.Log.Error("stowage mcp: build authenticator", "err", err)
+		os.Exit(1)
+	}
+
 	// Start the live derivation system — the identical buffer/extract/reconcile
 	// pipeline, lifecycle sweeps, and embedding backfill that `stowage serve` and
 	// the SDK run (D-068). Without this, MCP-ingested records durably appended but
@@ -485,7 +497,7 @@ func runMCP(args []string) {
 		}
 		httpSrv := &http.Server{
 			Addr:              httpAddr,
-			Handler:           mcpserver.KeyringMiddleware(stk.Store.Keys(), handler),
+			Handler:           mcpserver.AuthMiddleware(authn, handler),
 			ReadHeaderTimeout: 10 * time.Second,
 		}
 		// shutdownDone is closed only after httpSrv.Shutdown FINISHES draining
@@ -542,6 +554,48 @@ func isCleanMCPExit(err error) bool {
 	// that the SDK produces when the stdio transport hits EOF on stdin.
 	msg := err.Error()
 	return len(msg) >= 3 && msg[len(msg)-3:] == "EOF"
+}
+
+// buildAuthenticator constructs the ONE *auth.Authenticator both HTTP seams
+// (the REST API and the MCP-over-HTTP surface) share (D-067), selected by
+// cfg.Mode. This is the single canonical wiring point `stowage serve` and
+// `stowage mcp --http` both call.
+//
+// ModeKeyring (the default): wraps the store keyring — byte-identical to
+// pre-ae7 behavior (zero-config preserved, D-034).
+//
+// ModeJWT: builds the JWKS/static KeySet with a SYNCHRONOUS fetch, then the
+// Validator. A JWKS-unreachable source (bad URL, unparseable file, zero
+// usable asymmetric keys) makes this call return a non-nil error, which the
+// caller treats as a FATAL boot error — `stowage serve`/`stowage mcp` never
+// boot into a jwt-mode configuration they cannot enforce, and never silently
+// fall back to the keyring (D-147).
+func buildAuthenticator(ctx context.Context, cfg config.AuthConfig, keyring auth.Keyring) (*auth.Authenticator, error) {
+	if cfg.Mode != string(auth.ModeJWT) {
+		return auth.NewKeyringAuthenticator(keyring), nil
+	}
+
+	keys, err := auth.NewJWKSKeySet(ctx, auth.JWKSSource{URL: cfg.JWKS.URL, File: cfg.JWKS.File}, time.Duration(cfg.JWKS.MaxStale)*time.Second)
+	if err != nil {
+		return nil, fmt.Errorf("auth: jwt mode: build JWKS key set: %w", err)
+	}
+
+	var opts []auth.Option
+	if cfg.Issuer != "" {
+		opts = append(opts, auth.WithIssuer(cfg.Issuer))
+	}
+	if cfg.Audience != "" {
+		opts = append(opts, auth.WithAudience(cfg.Audience))
+	}
+	if algs := cfg.AlgorithmList(); len(algs) > 0 {
+		opts = append(opts, auth.WithAlgorithms(algs))
+	}
+
+	v, err := auth.NewValidator(keys, opts...)
+	if err != nil {
+		return nil, fmt.Errorf("auth: jwt mode: build validator: %w", err)
+	}
+	return auth.NewJWTAuthenticator(v), nil
 }
 
 const serveUsage = `stowage serve — run the HTTP memory service
@@ -633,6 +687,17 @@ func runServe(args []string) {
 		os.Exit(1)
 	}
 
+	// Build the ONE *auth.Authenticator both HTTP seams (the REST API and, if
+	// co-mounted below, the MCP-over-HTTP surface) share (D-067). ModeJWT's
+	// JWKS fetch is SYNCHRONOUS here, at boot — a JWKS-unreachable jwt-mode
+	// config fails LOUD (D-147); there is no silent keyring fallback.
+	authn, err := buildAuthenticator(ctx, cfg.Auth, stk.Store.Keys())
+	if err != nil {
+		stk.Log.Error("stowage serve: build authenticator", "err", err)
+		os.Exit(1)
+	}
+	srv.SetAuthenticator(authn)
+
 	// Start the live derivation system — buffer/extract/reconcile stages, the
 	// lifecycle sweeps, and the embedding backfill — via the single canonical
 	// post-boot wiring shared with `stowage mcp` and the SDK (D-068). No stage
@@ -694,8 +759,8 @@ func runServe(args []string) {
 		}
 		mcpHTTP = &http.Server{
 			Addr:              cfg.Server.MCPListen,
-			Handler:           mcpserver.KeyringMiddleware(stk.Store.Keys(), mcpHandler),
-			ReadHeaderTimeout: 10 * time.Second, // no WriteTimeout — MCP streams
+			Handler:           mcpserver.AuthMiddleware(authn, mcpHandler), // SAME Authenticator as the REST API (D-067)
+			ReadHeaderTimeout: 10 * time.Second,                            // no WriteTimeout — MCP streams
 		}
 	} else {
 		// Discoverability hint (a3, D-133): the MCP tool surface is opt-in. Say so on

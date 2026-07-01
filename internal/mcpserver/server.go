@@ -3,10 +3,10 @@ package mcpserver
 import (
 	"context"
 	"crypto/ed25519"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
-	"strings"
 
 	"github.com/hurtener/dockyard/runtime/server"
 	"github.com/hurtener/dockyard/runtime/tool"
@@ -250,29 +250,45 @@ func New(info server.Info, svc *Services) (*server.Server, error) {
 	return srv, nil
 }
 
-// KeyringMiddleware authenticates HTTP MCP requests against the store
-// keyring (auth.Verify — constant-time, runtime-rotatable keys, D-030) and
-// injects the key's tenant scope for CtxScopeFn.
-func KeyringMiddleware(kr auth.Keyring, next http.Handler) http.Handler {
+// AuthMiddleware authenticates HTTP MCP requests via a (D-067)
+// *auth.Authenticator — keyring (Verify) or JWT (Validator), depending on how
+// a was constructed — and injects the resolved Scope for CtxScopeFn. Never
+// logs credentials (CLAUDE.md §7).
+//
+// A missing/malformed Authorization header (auth.ErrTokenMissing) is a 401;
+// any other rejection (bad/revoked/unknown credential, expired token, stale
+// JWKS, etc.) is a 403 — matching the pre-ae7 KeyringMiddleware status-code
+// contract exactly (surfaces keep their own error-body style; only the
+// underlying reason vocabulary is shared, plan §"Error responses stay
+// surface-specific").
+func AuthMiddleware(a *auth.Authenticator, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		hdr := r.Header.Get("Authorization")
-		const prefix = "Bearer "
-		if !strings.HasPrefix(hdr, prefix) {
-			http.Error(w, "authorization required", http.StatusUnauthorized)
-			return
-		}
-		key, err := auth.Verify(kr, strings.TrimPrefix(hdr, prefix))
+		scope, _, err := a.Authenticate(r.Context(), hdr, r.Header.Get(auth.SessionHeader))
 		if err != nil {
-			http.Error(w, "forbidden", http.StatusForbidden)
+			if errors.Is(err, auth.ErrTokenMissing) {
+				http.Error(w, "authorization required", http.StatusUnauthorized)
+			} else {
+				http.Error(w, "forbidden", http.StatusForbidden)
+			}
 			return
 		}
-		// The KEY's tenant is the request tenant (D-030/P3) — never a
+		// The credential's tenant is the request tenant (D-030/P3) — never a
 		// config constant: the original static-list middleware hardcoded
 		// tenant "default" for every caller (multi-tenant hole, found in
-		// gate review) and kept plaintext keys in config.
-		ctx := identity.WithScope(r.Context(), identity.Scope{Tenant: key.TenantID})
+		// gate review) and kept plaintext keys in config. In ModeJWT, scope
+		// also carries the verified User/Session (ae7's core deliverable).
+		ctx := identity.WithScope(r.Context(), scope)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
+}
+
+// KeyringMiddleware authenticates HTTP MCP requests against the store
+// keyring (auth.Verify — constant-time, runtime-rotatable keys, D-030). A
+// thin back-compat wrapper around AuthMiddleware with a keyring-only
+// Authenticator (ae7, D-067) — there is no second verify implementation.
+func KeyringMiddleware(kr auth.Keyring, next http.Handler) http.Handler {
+	return AuthMiddleware(auth.NewKeyringAuthenticator(kr), next)
 }
 
 // CtxScopeFn resolves the request scope injected by KeyringMiddleware.
