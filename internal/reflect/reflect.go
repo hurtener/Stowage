@@ -116,7 +116,9 @@ type reflectionResponse struct {
 // reflection trust source + seed stability. Returns an empty slice (not an error)
 // when the model finds no transferable lesson. The caller emits these as a
 // pipeline.CandidateBatch into the reconcile stage.
-func Reflect(ctx context.Context, gw gateway.Gateway, scope identity.Scope, t Trajectory) ([]pipeline.Candidate, error) {
+// model optionally overrides the gateway's configured completion model ("" =
+// gateway.model); set from gateway.reflect_model (D-132).
+func Reflect(ctx context.Context, gw gateway.Gateway, scope identity.Scope, t Trajectory, model string) ([]pipeline.Candidate, error) {
 	if len(t.Records) == 0 {
 		return nil, nil
 	}
@@ -127,6 +129,7 @@ func Reflect(ctx context.Context, gw gateway.Gateway, scope identity.Scope, t Tr
 		Schema:      reflectionSchema,
 		MaxTokens:   reflectMaxTokens,
 		Temperature: 0.0,
+		Model:       model, // "" → gateway.model (D-132)
 	})
 	if err != nil {
 		return nil, fmt.Errorf("reflect: gateway complete: %w", err)

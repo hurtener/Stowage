@@ -108,6 +108,7 @@ func StartPipeline(ctx context.Context, stk *Stack, cfg config.Config) (*Pipelin
 
 	// 2. Extract stage — extract memory candidates from flushed buffers.
 	extract := pipeline.NewExtractStage(stk.Store, stk.Gateway, stk.TopicSvc, stk.Log, cfg.Profile, buf.Downstream())
+	extract.SetModel(cfg.Gateway.ExtractModel) // "" → gateway.model (D-132)
 	extract.Start(ctx)
 
 	// 3. Reconcile stage — commit candidates, embed, invalidate cache. Its input is
@@ -137,6 +138,7 @@ func StartPipeline(ctx context.Context, stk *Stack, cfg config.Config) (*Pipelin
 	rec.SetVIndex(stk.VIndex)                      // semantic neighbor augmentation (A4)
 	rec.SetScopeInvalidator(stk.Retriever.Cache()) // Phase 12 cache invalidation (D-053)
 	rec.SetRecordStore(stk.Store.Records())        // D-108: conversation context in the supersede decision
+	rec.SetModel(cfg.Gateway.ReconcileModel)       // "" → gateway.model (D-132)
 	rec.Start(ctx)
 
 	p := &Pipeline{
@@ -184,6 +186,7 @@ func StartPipeline(ctx context.Context, stk *Stack, cfg config.Config) (*Pipelin
 		// Wire the reflection sweep: it calls the gateway and emits into the
 		// reconcile fan-in (Phase 19, D-077). Set before RunForce/Start.
 		lc.SetReflection(stk.Gateway, reflectCh)
+		lc.SetReflectModel(cfg.Gateway.ReflectModel) // "" → gateway.model (D-132)
 	}
 	if episodeCfg.Enabled {
 		// Wire the episode detect + narrate sweeps (Phase 22, D-079); the narration

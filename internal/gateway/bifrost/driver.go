@@ -41,8 +41,11 @@ type bifrostClient interface {
 // idempotent Close. Per-call state lives on the call stack / ctx.
 type Driver struct {
 	client bifrostClient
-	// provider is the primary provider for embed + complete (and native rerank).
+	// provider is the primary provider for complete (and embed/native rerank unless overridden).
 	provider bfschemas.ModelProvider
+	// embedProvider is the provider embed requests route to: == provider unless
+	// gateway.embed_provider routes embedding to a distinct provider (a1b, D-134).
+	embedProvider bfschemas.ModelProvider
 	// rerankProvider is the provider rerank requests route to: == provider for a
 	// native-rerank primary (or no rerank model configured), == the auto-wired
 	// customRerankProvider when the Cohere-shape custom provider is wired (D-075).
@@ -90,6 +93,22 @@ func open(
 			slog.String("rerank_model", cfg.RerankModel),
 		)
 	}
+	// Never silent (D-134): a per-concern provider split is an endpoint/credential
+	// change worth surfacing — log provider + base, NEVER the key.
+	if account.distinctEmbed {
+		log.LogAttrs(ctx, slog.LevelInfo, "bifrost: embed lane on a distinct provider",
+			slog.String("embed_provider", string(account.embedProvider)),
+			slog.String("base_url", account.embedCfg.NetworkConfig.BaseURL),
+			slog.String("embed_model", cfg.EmbedModel),
+		)
+	}
+	if account.distinctRerank {
+		log.LogAttrs(ctx, slog.LevelInfo, "bifrost: rerank lane on a distinct native provider",
+			slog.String("rerank_provider", string(account.rerankProvider)),
+			slog.String("base_url", account.rerankCfg.NetworkConfig.BaseURL),
+			slog.String("rerank_model", cfg.RerankModel),
+		)
+	}
 
 	return newDriverWithClient(inner, account.provider, cfg, log, prom), nil //nolint:contextcheck // batcher uses background ctx for long-lived worker goroutines
 }
@@ -106,6 +125,7 @@ func newDriverWithClient(
 	d := &Driver{
 		client:         client,
 		provider:       provider,
+		embedProvider:  embedProviderFor(provider, cfg),
 		rerankProvider: rerankProviderFor(provider, cfg),
 		cfg:            cfg,
 		log:            log,
@@ -175,7 +195,7 @@ func (d *Driver) embedBatch(ctx context.Context, inputs []string) ([][]float32, 
 		return nil, gateway.Usage{}, err
 	}
 
-	bfReq := translateEmbedRequest(d.provider, d.cfg.EmbedModel, inputs)
+	bfReq := translateEmbedRequest(d.embedProvider, d.cfg.EmbedModel, inputs)
 	bctx := bfschemas.NewBifrostContext(ctx, bfschemas.NoDeadline)
 	resp, berr := d.client.EmbeddingRequest(bctx, bfReq)
 	if berr != nil {
@@ -331,7 +351,7 @@ func (d *Driver) Probe(ctx context.Context) error {
 		return fmt.Errorf("%w: driver is closed", gateway.ErrProbeFailed)
 	}
 
-	bfReq := translateEmbedRequest(d.provider, d.cfg.EmbedModel, []string{canaryInput})
+	bfReq := translateEmbedRequest(d.embedProvider, d.cfg.EmbedModel, []string{canaryInput})
 	bctx := bfschemas.NewBifrostContext(ctx, bfschemas.NoDeadline)
 	resp, berr := d.client.EmbeddingRequest(bctx, bfReq)
 	if berr != nil {

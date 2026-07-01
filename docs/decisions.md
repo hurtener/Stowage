@@ -3505,3 +3505,713 @@ to remove. No prior decision is reversed; §11 observability is extended, not co
   serve climb −1; all shapes drain cleanly ≤ ~5 ms). The harness found the system healthy
   on its first run — exactly the "build + baseline, don't fix" outcome the track intends.
   The rig stays behind `-tags=profile` (`make profile`), out of the per-PR matrix.
+
+## D-131 — Adoption & ergonomics track; gateway defaults to the real Bifrost/OpenRouter stack
+
+2026-06-29. Owner-initiated. Opens the **Adoption & ergonomics track** (`phase-aN-*`,
+numbered so it does not collide with the launch `01–27`, productionization `h*`, or
+performance `p*` slots) and lands its lead phase a1. Three first-five-minutes gaps drove
+it; this entry settles the gateway-default half.
+
+**Context.** The shipped `gateway.driver` default was `mock` — so `stowage serve` + one
+secret wired a *synthetic* gateway, contradicting RFC §9.4 ("`stowage serve` with exactly
+one secret … runs a working server") and `docs/getting-started.md` (which already
+documented Bifrost as the default). The code was the drift, not the docs.
+
+**Decision.**
+1. **Flip the default gateway to the real driver.** `Defaults()` now ships
+   `driver=bifrost`, `provider=openrouter`, the **live-validated** embed/rerank ids
+   (`embed_model=perplexity/pplx-embed-v1-0.6b`, `embed_dims=1024`,
+   `rerank_model=cohere/rerank-4-fast` — the proven full stack in
+   `internal/gateway/bifrost/live_test.go`), and the owner-chosen baseline learner
+   `model=openai/gpt-5.4-nano`. `base_url`/`rerank_base_url` ship **empty**: the bifrost
+   driver supplies OpenRouter's `…/api` and `…/api/v1` when provider=openrouter
+   (`applyProviderBaseDefaults`, P5 — the driver owns wire details), so empty keeps its
+   "native endpoint / reuse base_url" meaning for every other provider and a
+   non-OpenRouter bifrost config is never silently misrouted to openrouter.ai. One
+   OpenRouter key reaches all three lanes (completion + embedding + the auto-wired
+   Cohere-shape rerank, D-075), so the five-minute start is genuinely one secret.
+   Reaffirms D-034's "one secret"; aligns the code with RFC §9.4. Amends D-049 (provider
+   is now defaulted, not unset).
+2. **`mock` stays a first-class driver**, no longer the default — `STOWAGE_GATEWAY_DRIVER=mock`
+   is the keyless, hermetic/offline escape hatch (used by every serve-booting smoke and the
+   eval harness). `FillZeroDefaults` also fills `provider` (so the all-defaults embedded
+   bifrost stack validates the D-049 rule) but deliberately NOT `base_url`/`rerank_base_url`
+   (empty must keep its native-endpoint meaning; the driver supplies OpenRouter's).
+3. **Fail loud on the minimum.** A real driver with an unresolved `STOWAGE_GATEWAY_API_KEY`
+   aborts boot (the bifrost driver already failed closed naming the exact env var); boot now
+   appends the five-minute-minimum hint and the `mock` escape hatch. Probe failure stays a
+   degraded warning (D-036), not a boot error.
+
+**Deviation from the a1 plan (CLAUDE.md §4.3).** Per-concern provider/key/base_url overrides
+(embed/rerank) were planned inside a1 to avoid forcing one provider when OpenRouter could not
+serve embeddings. OpenRouter **does** serve embeddings (`perplexity/pplx-embed-v1-0.6b`, eval-
+proven), so per-concern keys are now *optionality*, not a requirement for the one-key start.
+They are deferred to a follow-up (a1b) so a1 ships as a clean default-flip unit; an operator can
+still repoint the single provider/key/base_url today. Tracked, not dropped.
+
+**Consequences.** `stowage serve` + `STOWAGE_GATEWAY_API_KEY` is a working real server on
+embedded SQLite; the explain golden, the rerank-base-url default test, and every serve smoke
+were updated/verified green. The README quickstart prose (MCP opt-in honesty + the real
+minimum-var block) lands in a3.
+
+## D-132 — Per-learner-stage completion model (extract / reconcile / reflect)
+
+2026-06-29. Phase a2 (Adoption & ergonomics track, D-131). One shared `gateway.model`
+drove every learner LLM call. The eval `.env` already separates `LEARNER_MODEL` from
+`EMBEDDED_MODEL`, and operators want a cheap/fast extractor alongside a stronger
+reconciler/reflector without standing up a second gateway.
+
+**Decision.** Add three optional config keys — `gateway.extract_model`,
+`gateway.reconcile_model`, `gateway.reflect_model` — each overriding the completion
+model for ONE learner stage. Empty (the default) falls back to `gateway.model`, so
+existing behavior is unchanged and zero-config start is untouched. The mechanism reuses
+the per-call model seam (`CompleteRequest.Model`, D-100, already honored by both real
+drivers) and mirrors the per-stage effort precedent (D-128): the extract and reconcile
+stages gain a `model` field + `SetModel` setter alongside `SetReasoningEffort`; the
+`reflect.Reflect` free function gains a trailing `model` argument, threaded from a new
+`lifecycle.Manager.reflectModel` (`SetReflectModel`). `boot.StartPipeline` wires the
+configured per-stage models into the production stages — previously only the eval
+harness set stage-level knobs.
+
+**Coverage.** Stage-level tests prove the configured model reaches the `Complete` call
+at each stage (`TestExtract_ModelWiring`, `TestStageModelWiring`,
+`TestReflect_ModelWiring`) and that empty leaves `CompleteRequest.Model` blank
+(→ gateway.model). The boot path's wiring is the visible `SetModel(cfg.Gateway.*)` /
+`SetReflectModel` calls; the smoke (`scripts/smoke/phase-a2.sh`) asserts the three keys
+surface in `config explain` and the env override resolves.
+
+**Consequences.** Three new knobs, all default-empty (inherit), so the knob guardrail
+(D-034) cost is paid only by operators who want the split — justified by a real need a
+profile can't absorb (a model choice, not a tuned constant). Per-concern provider keys
+(a1b) remain the orthogonal follow-up for splitting providers/keys, not models.
+
+## D-133 — Quickstart copy tracks shipped defaults; MCP stays opt-in (reaffirms D-074)
+
+2026-06-29. Phase a3 (Adoption & ergonomics track, D-131). The README quickstart claimed
+`stowage serve` gives "a co-mounted MCP listener" and that one env var points at "any
+OpenAI-compatible / Bifrost provider" — both overstated: MCP is opt-in (D-074,
+`server.mcp_listen` defaults empty) and, before a1, the default driver was `mock`. a1 made
+the one-secret claim true (default Bifrost/OpenRouter); a3 makes the MCP claim true and adds
+discoverability.
+
+**Decision.**
+1. **Quickstart honesty.** README + `docs/getting-started.md` state plainly that the HTTP API
+   is the single default surface and the **MCP tool surface is opt-in** via `server.mcp_listen`
+   (or `stowage mcp`), and that the one secret reaches the default OpenRouter stack (other
+   providers also set `provider`/`base_url`; offline uses `STOWAGE_GATEWAY_DRIVER=mock`).
+2. **Startup hint.** `stowage serve` logs one info line when `server.mcp_listen` is empty
+   ("MCP surface disabled — set server.mcp_listen … or run `stowage mcp`"), so the knob is
+   discoverable without changing the default single-port shape.
+3. **MCP remains opt-in.** D-074 is reaffirmed, not reversed: empty `mcp_listen` binds exactly
+   one port (no surprise second bound port for existing deployments). The principle settled
+   here: quickstart/marketing copy must track the shipped defaults — a claim the binary does
+   not honor is drift.
+
+**Consequences.** No code behavior change beyond the one startup log line; the change is docs +
+discoverability. `scripts/smoke/phase-a3.sh` asserts the README honesty, the startup hint, and
+that `phase-h6` (single-surface default) still passes. No RFC change.
+
+## D-134 — Per-concern provider/key/base_url for the embed + rerank lanes (a1b)
+
+2026-06-29. Phase a1b (Adoption & ergonomics track, D-131). a1 deferred per-concern keys once
+OpenRouter proved one key covers completion + embedding + rerank; they return here as
+optionality. The shared single `gateway.api_key` could not point embed/rerank at a DIFFERENT
+provider+credential than completion — "don't force one provider" (brief 02).
+
+**Decision.** Add five optional `GatewayConfig` keys, each inheriting the primary when empty so
+the one-key default is unchanged: `embed_provider`, `embed_api_key` (secret), `embed_base_url`,
+`rerank_provider`, `rerank_api_key` (secret). The two `*_api_key` are `env.VAR`-ref secrets
+(same rule + redaction as `gateway.api_key`).
+
+Routing lives in the bifrost `Account`/`Driver` (P5):
+- **Embed** routes to a distinct provider (`embed_provider`) with its own key (`embed_api_key`,
+  fallback primary) and base (`embed_base_url`, fallback the provider's default — OpenRouter's
+  `…/api`); `Driver.embedProvider` carries it. Empty → embed uses the primary entry.
+- **Rerank** gains `rerank_api_key` (the active rerank provider's credential, fallback primary)
+  and `rerank_provider`: validated against the known providers (a typo fails loud, like
+  `embed_provider`); a native-rerank provider routes natively to a distinct entry with the
+  operator's LITERAL `rerank_base_url` (empty -> that provider's native endpoint, NOT the
+  primary's OpenRouter host); a non-native one keeps the auto-wired Cohere-shape custom
+  provider (D-075).
+- The `Account` exposes the deduped set {primary, embed?, rerank?}, each with its own key +
+  config via `GetConfiguredProviders/GetKeysForProvider/GetConfigForProvider`.
+
+**Out of scope (enforced).** A distinct embed and a distinct native rerank that name the SAME
+provider with different key/base fail loud at construction (a provider name holds one
+credential). "Same provider name, different key" — bifrost's `Account` is keyed by provider
+name with unrestricted (`["*"]`) keys, so two keys for one provider name can't be disambiguated
+by model. The supported (and requested) shape is a DISTINCT provider name per concern; an
+operator wanting a different key for the same provider uses the primary key.
+
+**Consequences.** Five default-empty knobs (knob-guardrail cost paid only by operators who split
+providers); all-empty wiring is byte-identical to a1 (proven by the fallback test). Covered by
+Account routing tests (fallback, distinct embed provider+key, rerank key override, distinct
+native rerank) + a Driver embed-routing test; `scripts/smoke/phase-a1b.sh` gates keys/validation/
+redaction. The a1 default still live-validates unchanged (`TestLiveBifrost_DefaultConfig`).
+
+## D-137 — Multiplexing-vs-strict identity posture; default STRICT, two orthogonal knobs
+
+2026-06-30. Agent-identity & read-time scoping track (`phase-ae*`, D-135); settles the Wave-0
+posture decision that ae2 (additive `_meta` intake) and ae8 (effective-scope resolution +
+read-side enforcement) inherit. Decided after reading Harbor's verifier source verbatim
+(PREREQ-2). Tenant is always credential-pinned (P3); the finer dimensions narrow within it.
+This entry supersedes the one-line D-137 ledger row in
+`docs/plans/track-adoption-ergonomics.md` (charter expanded to match in the same change).
+
+**The decisive Harbor evidence.** Harbor pins **`(tenant, user, scopes)`** in the connection
+token cryptographically — *"a per-backend credential, like an API key, NOT a single-session
+pin"* (`internal/protocol/auth/middleware.go:20-34`). It multiplexes **only the session axis**:
+`X-Harbor-Session` *replaces* the token's `session` claim per request (the claim is a default),
+*"so one connection drives many isolated sessions"*, and *"a request can never widen its tenant
+or user"* (`middleware.go:134-146`; `docs/notes/session-model-contract.md`, Harbor D-171).
+Harbor mints **one token per user**; it does **not** assert `user` per call over a shared
+connection. Therefore STRICT (user = the verified credential's `user` claim) is the
+**ecosystem-native** default — not a conservative deviation from it. The earlier worry that
+"Harbor's one-token-many-sessions argues multiplexing is the natural default" conflated *safe
+session-multiplexing* (native, can never widen) with *risky user-multiplexing* (asserting many
+end-users over one connection — which Harbor does not do).
+
+**Decision.**
+1. **Default posture = STRICT.** `user` is credential-pinned; **user-multiplexing is opt-in**;
+   **`session` is always per-call** (Harbor parity) and is *not* governed by the multiplexing
+   flag (it can never widen `(tenant, user)`).
+2. **Two orthogonal knobs** (all four combinations are meaningful):
+   - **`identity.multiplexing`** (bool, default **`false`** = pinned) — the *authority*
+     question: may a `_meta.user`/arg value override the credential-pinned `user`? Authority
+     is a **per-credential capability** — gated by a JWT `scope` (`memory:assert-user`) or a
+     keyring flag — once ae7 lands. A **global server flag is the documented pre-ae7 interim**
+     (pre-ae7 there is no verified `user` to pin against, so this knob does not yet bite).
+   - **`retrieval.read_posture`** (`compatible`|`strict`, default **`compatible`**) — the
+     *presence* question (owned by ae8): when resolution yields no `user`/agent, fall back to a
+     tenant-wide read (`compatible`, today's behaviour) or **refuse** it (`strict`).
+   - Default ship (`multiplexing=false` + `read_posture=compatible`) is **byte-identical to
+     today**; zero-config start preserved (D-034/D-036). Each knob ships D-034-complete (tuned
+     default, every profile, docs, smoke) in its owning phase.
+3. **Per-dimension resolution rule (generalizes D-138).** *A dimension the credential **pins**
+   rejects a disagreeing `_meta`/arg value; a dimension the credential lets the connection
+   **assert** accepts it.*
+   - **tenant** — always pinned (verified key / JWT `tenant`); a present-and-mismatched
+     `_meta.tenant`/arg **fails closed** (D-138). The only P3 access gate; never widened.
+   - **user** — pinned under STRICT (`user` = JWT `user` claim, `== sub`; a mismatched
+     `_meta.user`/`user_id` arg is **rejected**, D-138 symmetry); assertable under multiplexing
+     (`_meta.user`/arg overrides the JWT `user` default, **within tenant**). Pre-ae7 (keyring)
+     there is no credential `user`, so `user` comes from `_meta`/arg by necessity — which is why
+     STRICT refusal and any token-`sub` fallback are **C3-gated on ae7**.
+   - **session** — always assertable: `_meta.session` (MCP) / `X-Harbor-Session` (HTTP)
+     *replaces* the JWT `session` claim (a default); never widens `(tenant, user)`.
+   - **agent** — always assertable, **`_meta.agent_id` only, never in the JWT**, never
+     persisted; a read-time curation filter, **fail-open** (D-139).
+   P3 is untouched in every cell: tenant is the sole boundary, credential-pinned, never widened.
+
+**Charter corrections forced by the Harbor source (recorded so the ports are faithful).**
+- Harbor builds **and** parses claims as **`jwt.MapClaims`** (a `map[string]any`) on both the
+  signing and verifying sides — there is **no typed `Claims` struct** in Harbor. ae7 must parse
+  into a map and extract claims by key; copying a non-existent typed struct would be invention.
+- `sub == user` (audited): "user = token `sub`" and "user = token `user` claim" are the same
+  value.
+- **agent placement is CLOSED** (resolves the prior open decision): agent travels via `_meta`
+  only — Harbor's claim set carries no agent field, so there is nothing to inherit on the JWT.
+
+**Consequences.**
+- **ae2 (additive intake).** Implements the D-138 tenant-mismatch reject and the Harbor
+  session-*replace* semantics now (`_meta.session` / `X-Harbor-Session` replaces, defaulting to
+  any claim/arg session); HTTP accepts `X-Harbor-Session`. It does **not** do token-`sub`
+  fallback or STRICT refusal (C3-gated on ae7); it stays additive and `compatible`.
+- **ae7 (verifier).** Ports Harbor's verifier verbatim into `internal/auth`: asymmetric-only
+  allowlist (RS/ES), `WithValidMethods` parser gate + `WithoutClaimsValidation` with its own
+  `exp`/`nbf` checks against an injectable clock, issuer exact-match, `audienceContains`
+  containment (D-136), JWKS `KeySet` (max-stale ceiling, fail-loud first load), bearer
+  middleware incl. Harbor's `effectiveID.SessionID = hdrSession` session-replace, and the
+  mandatory triple `tenant/user/session` + `exp` via an `identity.Validate` equivalent. ae7 is
+  what makes a verified `user` *exist*, enabling STRICT and the `memory:assert-user` capability,
+  and is the C4 gate for ae2b.
+- **ae8 (effective-scope).** Houses both knobs and the precedence resolver; its golden matrix
+  gains the multiplexing dimension (pinned vs assertable `user`) atop the source matrix
+  (JWT / `_meta` / args). STRICT refusal asserts the resolver *requires* a populated
+  `Scope.User`, **not** a new `WHERE` (`buildScopeWhere`/`buildExactScopeWhere` already filter
+  when set). Resolution precedence: verified JWT claim > `_meta` > D-125 arg, per dimension.
+- No code lands in this entry; it is a settled decision shaping the ae2/ae7/ae8 plans. The
+  multiplexing capability and posture flags ship D-034-complete in their owning phases.
+
+## D-141 — Shared retrieval render core parameterized by `RenderMode` (ae3)
+
+2026-06-30. Agent-identity & read-time scoping track (`phase-ae*`, D-135), phase ae3 (Wave 0,
+ships before ae4a). Closes the duplicated/string-coupled rendering of retrieval results.
+
+**Scope correction (recorded so the work is honest).** The charter framed ae3 as "split MCP's
+private renderer out." Code truth: `internal/mcpserver` has **no** renderer — `makeRetrieveHandler`
+already emits a count-only `Text` (`"Retrieved %d item(s); response_id=%s"`) plus the full typed
+`Structured` (`handlers.go:244`); and `internal/retrieval` has **no** render code at all. The real
+coupling is **inside eval**: `scoreQuestion` (`eval/harness/runner.go:315-343`) writes the
+`"[OUTDATED — … ] "` marker and `BuildReaderPrompt` (`eval/harness/judge.go:119-158`) re-parses it
+(`strings.HasPrefix(c,"[OUTDATED")` + `strings.Index(c,"] ")`). ae3 is therefore *build the shared
+core, migrate eval onto it byte-identically, and stand up the inert `RenderMCP` mode* — not a split.
+
+**Decision.**
+1. **One entry point** in `internal/retrieval` — `Render(mode RenderMode, items []RenderItem)
+   RenderResult`, a pure function (no receiver, no package state, no gateway call), plus a
+   `RenderItemsFromMemoryItems` mapper. Both call sites build the `RenderItem` projection (the
+   server from `retrieval.MemoryItem`; eval from its wire-decoded `retrieveItem`), so the renderer
+   depends on neither the store type nor a wire type.
+2. **Typed seam replaces the string round-trip.** The item→prompt seam becomes `[]RenderItem` (the
+   `Stale` bool travels as a bool); the `[OUTDATED…]` string is produced once, inside `Render`, and
+   never re-parsed — removing a fragile parse surface.
+3. **`RenderMode` is a two-value call-site argument, NOT a config knob** (a knob would invite a
+   third surface-specific mode and re-fork the renderer — the sprawl this removes). No new config
+   key; `RenderMode` must not appear in `internal/config`.
+4. **`RenderMCP` is an inert superset in ae3** — its base body equals `RenderEval` (diff-tested);
+   the citation-handle and episode-hook slots are wired but emit nothing. ae4a is the only phase
+   that makes the modes diverge and flips the MCP `Text` to the rendered body. The eval reader
+   prompt is **byte-frozen** (M3): `TestReaderPrompt_Golden` + `TestEvalCI` pass unchanged.
+
+**Consequences.** Pure refactor, no behaviour change this phase (MCP `Text` byte-unchanged). Net
+test-coverage gain (`scoreQuestion`'s item render is untested today). Unblocks ae4a (lean MCP read).
+Smoke `scripts/smoke/phase-ae3.sh`; glossary gains render mode / render item / context block. No
+RFC change. Plan: `docs/plans/phase-ae3-shared-render-core.md`.
+
+## D-139 — Topic-views/filters are curation, not isolation; the read-time topic filter fails OPEN
+
+2026-06-30. Wave-0 decision of the agent-identity track (D-135); first implemented in phase ae6
+(the own-scope topic filter ae1's read-time agent filter and ae9's topic views reuse). Filed here
+because ae6 is the first phase to ship the fail-open behaviour.
+
+**Decision.** The agent→topic and request-level topic filters are a **curation / relevance lens,
+not a security boundary.** They filter *which of the caller's own-scope memories surface*; they
+never cross a scope. Cross-scope isolation remains the store-layer scope query (P3) + grants. The
+read-time topic filter (`retrieval.filterByTopicOwnScope`) therefore **fails OPEN**: on a
+topic-store (`MemoriesTopics`) error it returns the caller's own *unfiltered* results with a
+`DegradedTopicFilter` marker (D-036). This is the **deliberate opposite** of grants'
+`filterByTopic`, which **fails CLOSED** (returns `nil`, dropping the whole granted scope) because
+that filter guards *cross-scope sharing* — over-sharing must never happen, so a membership-read
+failure must drop, not pass. The two are **distinct functions** with intentionally opposite error
+semantics; the divergence is recorded here to prevent a future "make them consistent" refactor.
+
+**Consequences.** ae6 adds `filterByTopicOwnScope` beside grants' `filterByTopic` (never merged);
+ae1/ae9 layer agent-policy / named-view topic sets onto the same fail-open primitive. A topic filter
+can only **subtract** from own-scope, never widen — P3 stays the store-layer scope query. Glossary:
+own-scope topic filter, `DegradedTopicFilter`. No RFC change (RFC §5.3 topic slicing).
+
+## D-144 — Own-scope topic filter: discrete read after fusion, before the scoringK trim (ae6)
+
+2026-06-30. Agent-identity track (D-135), phase ae6 (Wave 0). Settles the charter's open
+lane-integration choice (lane-pushdown vs `scoringK` widening) for the no-underfill remedy.
+
+**Context.** The retrieve pipeline is lanes (laneK each) → RRF fuse → **trim-to-`scoringK`** →
+`GetMany` → score → rerank → **trim-to-`limit`** (`internal/retrieval/retrieval.go`). A topic
+filter applied after the `scoringK` trim drops rows from a capped pool with no backfill →
+underfill. Grants' `filterByTopic` runs post-trim per granted scope and structurally underfills
+(accepted there: fail-closed correctness > completeness).
+
+**Decision.** ae6 filters the **fused candidate IDs** with a discrete `MemoriesTopics` read
+**after `rrf(lanes)` and *before* the `fused = fused[:scoringK]` trim**, so the filter runs over the
+**laneK-wide** pool (≤200), not the trimmed pool (≤50); then the existing trim/`GetMany`/score/limit
+run over the on-topic pool unchanged. A `retrieval.topic_filter_scoring_k` knob (default `100`)
+widens `scoringK` (and `laneK` via the existing floor rule) **only when a topic filter is active**.
+Chosen over lane-pushdown because:
+1. **Fail-open (D-139) needs a discrete topic read to fail** — lane-pushdown folds the predicate
+   into each lane's SQL, where a topic-membership failure is indistinguishable from a lane failure
+   and cannot cleanly fall back to unfiltered; a discrete `MemoriesTopics` call can (grants' shape,
+   error branch inverted).
+2. **Portability** — lane-pushdown would touch 3 SQL lane builders × 2 drivers **and** the `vindex`
+   seam (the vector lane is `Scan`-then-cosine-in-Go, not a ranking-time JOIN). The discrete filter
+   touches neither.
+
+**Consequences.** No new table, no per-lane/vindex change; one D-034 knob (inert with no topic arg,
+so zero-config behaviour unchanged). The no-underfill guarantee holds **within the candidate
+window** (documented, not an absolute claim past the window); AC-2's regression test pins it against
+the naive trimmed-pool approach. The own-scope filter is the primitive ae1/ae9 reuse. Smoke
+`scripts/smoke/phase-ae6.sh`. Plan: `docs/plans/phase-ae6-topic-filter.md`.
+
+
+## D-135 — Parent ae* track; agent is a read-time identity/filter only (no scope-table migration, no agent column)
+
+2026-06-30. Track: Agent-identity & read-time scoping (`phase-ae*`, charter `docs/plans/track-adoption-ergonomics.md`). First implemented by phase ae1. Stowage today resolves only the tenant from a verified key and scopes MCP tenant-only; the finer dimensions survive only as omittable, model-discretionary args. The `ae*` track closes the read-side identity gap without weakening P1–P5.
+
+**Decision.** The `ae*` track exists as an orthogonal, post-launch track (same posture as `h*`/`p*`/`a*`). Its foundational rule: **agent is a read-time identity/filter dimension only.**
+
+- `identity.Scope` gains an optional `Agent` field set **only on the read path**. It is **never persisted**, is **never a column on any of the 12 denormalized scope tables**, and is **never referenced by a scope-`WHERE` builder or an `INSERT`**. Provable inertness (C1): both drivers build their scope `WHERE` field-by-field for non-empty `Tenant/Project/User/Session` (`internal/store/{pgstore,sqlitestore}/scope.go`) and every write `INSERT` enumerates columns explicitly and binds only those dimensions — so a new `Scope.Agent` cannot leak into a write or a scope predicate. `Scope.Validate()`/`String()` are unchanged.
+- **No scope-table migration and no agent column anywhere (C2).** `source_agent` stays a **records-only** label (the D-024 day-one signal); no dedupe-index / `UNIQUE` / DSAR-cascade / buffer→flush change. Persisting agent would be a 12-table × 2-dialect migration plus the full cascade; the read-time model avoids every line of it.
+- **Identity provenance.** Agent identity arrives from host `_meta` (MCP, via `dockyard v1.8.0`'s `server.RequestMeta(ctx) map[string]any`) and, on HTTP/SDK before the JWT verifier, an explicit `agent_id` field; the JWT (ae7) carries `tenant`/`user`/`session` but **never** agent — the two seams stay separate. Stowage is a **verify-never-mint** verifier (elaborated in the Wave-0 ledger D-136–D-140).
+
+**M5 correction (code truth over the charter's framing).** The charter AC sketch called the meta accessor a *placeholder `MetaFromContext` that is wrong*. There was **no** placeholder: a repo-wide search for `MetaFromContext`/`RequestMeta`/`agent_id`/`AgentID`/`Scope.Agent` returned zero Go hits, and `dockyard v1.7.3` exposed only the *outbound* tool-definition `Meta`. The real shipped symbol is `server.RequestMeta` (PREREQ-1, `v1.8.0`); ae1 **adds** the inbound-meta call site from scratch, and the `v1.7.3 → v1.8.0` bump is load-bearing, not cosmetic.
+
+**Consequences.** The whole track banks agent filtering *at read* with zero scope-table migration. ae1 lands `Scope.Agent`, the Dockyard bump + `RequestMeta` call site, and the agent→topic policy binding (D-146); ae2 generalizes `_meta` intake to `user`/`session`; ae8 closes the P3 read-side gap; ae9 generalizes the agent binding to named views. The agent filter fails **open** (D-139), deliberately opposite grants' fail-closed sharing.
+
+
+## D-136 — `aud` strategy for auth-once-talk-to-both
+
+**Status:** settled (Wave-0 ledger; first implemented in phase-ae7).
+**Context:** RFC §5.5, §9.5; the `ae*` agent-identity track (D-135); Harbor's on-disk
+verifier (`repos/Harbor/internal/protocol/auth/auth.go`, PREREQ-2).
+
+**Decision.** Stowage's JWT verifier (phase-ae7) checks the token audience by
+**containment**, not equality: verification passes iff the verifier's own configured
+audience id is *contained* in the token's `aud` claim. Per RFC 7519 §4.1.3 the `aud`
+may be a single string OR an array of strings; the ported `audienceContains` accepts
+both shapes. An **empty configured audience disables the check** entirely. Because
+Harbor already validates its own audience by the same containment rule, a single
+Harbor-minted token whose `aud` carries (or is a shared string matching) both
+services' audience ids verifies at **both** Harbor and Stowage — no shared-secret
+audience hack and no invented token format. This is the `aud` half of the
+verify-never-mint alignment: one client authenticates once and talks to both
+products.
+
+**Consequences.**
+- `auth.audience` is a D-034-complete config knob (default `""` ⇒ check disabled),
+  present in every profile, documented, get/set/explain, validated.
+- The behaviour is a verbatim port of Harbor's `audienceContains` (`auth.go:623`);
+  the string-or-array acceptance and the empty-disables rule are pinned by a unit
+  test.
+- No change to the mandatory `tenant`/`user`/`session` triple or the asymmetric-only
+  algorithm allowlist — audience is an optional, additive containment gate.
+
+**Resolves:** ecosystem alignment (auth-once-talk-to-both); ae7 audience handling.
+
+
+## D-138 — `_meta.tenant` mismatch fails closed — `_meta` may never widen the auth boundary
+
+2026-06-30. Phase ae2 (Agent-identity & read-time scoping track, D-135). Wave-0 ledger entry, first implemented in ae2's additive `_meta` intake. Dockyard v1.8 lets a host attach per-call identity in the inbound `_meta` map (`server.RequestMeta(ctx) map[string]any`), read verbatim by the MCP handlers alongside the existing `project_id`/`user_id`/`session_id` args. The tenant, by contrast, is the **P3 authorization boundary** and is resolved only from the verified credential (`KeyringMiddleware` → `auth.Key.TenantID`, and later the Harbor JWT `tenant` claim). The question this settles: what happens when a host injects a `_meta.tenant` that disagrees with the credential-verified tenant.
+
+**Decision.** A present-but-mismatched `_meta.tenant` **fails closed** — the request is rejected. `_meta` may supply the **non-authorizing** dimensions (agent / user / session / project) but may **never widen or override the authorization boundary**. Concretely, at every MCP handler:
+
+- `_meta.tenant` **absent** ⇒ proceed (the common case; identical to pre-ae2 behaviour).
+- `_meta.tenant` **present and equal** to the credential tenant ⇒ proceed (no-op).
+- `_meta.tenant` **present and different, or a non-string value** ⇒ **reject** with a *redacted* reason that leaks no tenant value (neither the injected nor the real one).
+
+The reject is expressed through a shared identity-domain sentinel `identity.ErrTenantMismatch` (message: `identity: _meta tenant does not match authenticated credential`, value-free by construction), surfaced from the handler as an MCP tool error (an HTTP-4xx-class client reject). The guard runs on **every** handler — read and write — via the single intake helper `mcpserver.readMetaIdentity(ctx, credTenant)`, so a tenant-spoofing `_meta` is rejected regardless of which tool is called. The sentinel lives in `internal/identity` (not `internal/mcpserver`) because the HTTP identity path and ae8's effective-scope resolver reuse it when the header/JWT source lands.
+
+This is the concrete tenant case of D-137's general resolution rule: **the credential pins a dimension ⇒ a disagreeing `_meta`/arg is rejected**. Pre-ae7 the credential pins *only* tenant (`auth.Key` carries no `sub`/`user`), so tenant is the only dimension ae2 enforces this way; `user` remains assertable (pinned-user enforcement is ae8, post-ae7). ae2 files no new id for D-137 — it merely implements the settled additive intake (`_meta`-else-arg precedence, session-REPLACE) alongside this tenant guard.
+
+**Consequences.** P3 is strengthened, never weakened: `_meta` can only narrow within the credential tenant, never escape it; no unscoped query path is introduced. Non-authorizing `_meta` keys fail *open* (a malformed/non-string `user`/`session`/`agent_id` is ignored, yielding `""`); only tenant fails *closed*. Resolves C4 (targeting unchanged for callers that inject nothing) and the ae2 tenant-spoofing risk.
+
+
+## D-142 — Lean MCP read: `Text` markdown + episode hook + drill by citation ULID
+
+**Status:** accepted (phase ae4a, adoption-ergonomics track)
+**Supersedes / relates:** builds on D-141 (ae3 shared render core); Wave-0 track parent D-135; M4/H1/H2 punch-list items in `docs/plans/track-adoption-ergonomics.md`.
+
+### Decision
+
+`memory_retrieve` returns a **lean markdown reader body** in the model-facing
+`Text` block instead of the previous count-only string
+(`internal/mcpserver/handlers.go:244`). The body is produced by ae3's
+`Render(RenderMCP, …)` through a single new core helper
+`retrieval.RenderReadBody(items []MemoryItem) string`, which composes
+`RenderItemsFromMemoryItems` + `Render` and reads `RenderResult.ContextBlock`
+(this also **reconciles the naming gap** in the ae3 plan prose, which referred to a
+nonexistent `.Body` field). ae4a activates the two `RenderItem` slots ae3 stood up
+inert, **for the `RenderMCP` mode only**:
+
+- **Episode hook** — an `[episode:<id>]` marker appended per item **iff**
+  `store.Memory.EpisodeID != ""`. It is sourced from the `Memory` already loaded on
+  the retrieval `Response`, so it costs **no new store query**. The proof is
+  structural: `RenderReadBody` takes `[]MemoryItem` and returns a `string` — it has
+  no `Store`, no `context.Context`, and issues no I/O.
+- **Drill handle** — a `[cite:<ULID>]` marker equal to the item's existing
+  `MemoryItem.Citation` ULID. Feeding it back to `memory_drilldown` reuses the
+  unchanged citation→verbatim path (`Injections().Get` → `inj.MemoryID`,
+  `handlers.go:326-332`) with **zero new store code**.
+
+The full typed result still travels in the `Structured` block, unchanged. For
+surface parity (D-067/D-073) the identical body is exposed on HTTP
+(`retrieveResponse.rendered`) and the SDK (`RetrieveResponse.Rendered`), both
+sourced from the same `RenderReadBody` call. ae4a adds **no config key** — the hook
+and handle are always-on deterministic projections; `RenderMode` stays a call-site
+argument (ae3 AC7).
+
+### Rationale
+
+- **Model-context economy, not wire economy (M4).** The lean `Text`/`rendered` body
+  travels *alongside* the full structured payload, so the **total payload grows**;
+  only the model's context shrinks. An Apps host reading both blocks receives a
+  larger payload, not a smaller one. This honest statement is required in the
+  `memory_retrieve` tool description, this decision, and the phase plan — claiming a
+  wire-size win would be a lie the AC forbids.
+- **Zero new store code by reuse (H1/H2).** The episode hook reuses already-loaded
+  data; the drill handle reuses the existing citation path. Neither adds a store
+  query, a table, or a migration.
+- **No `(response_id, rank)` positional drill in ae4a (H1).** A positional lookup
+  *is* new injections-store code (it would wire `InjectionStore.ListByResponse`
+  rank-order into a drill), so it is **deferred to ae4b**, which owns the store
+  method and its conformance test together.
+
+### Open question recorded (deferred to ae4b)
+
+Whether to pull the positional short drill-handle forward from ae4b into ae4a for
+token economy (a 1–2-char index costs far fewer body tokens than a 26-char citation
+ULID per item). **ae4a keeps the citation-ULID handle** — it is the only handle that
+reuses the existing drill path with zero new store code; the positional handle *is*
+new store code and is gated to ae4b by H1. If promoted later, the positional handle
+should **replace** the ULID marker in the `RenderMCP` branch and land together with
+its store method, not be split across phases. Tradeoff: ~26 chars × N items of body
+tokens now, vs deferring the trim until ae4b can add the positional map safely.
+
+### Consequences
+
+- ae3's "`RenderMCP` base == `RenderEval` / slots inert" diff test is **intentionally
+  revised** in ae4a to assert the divergence (`RenderMCP` emits the markers,
+  `RenderEval` does not). ae3's eval byte-freeze (`TestReaderPrompt_Golden`,
+  `TestEvalCI`) still passes unchanged — eval exercises only `RenderEval`.
+- The render remains gateway-free (D-036): the lean body renders on a degraded
+  retrieval; a missing `EpisodeID`/`Citation` simply omits that marker (no error
+  path).
+
+
+## D-143 — DESC inverted-keyset browse via `ListByScopeRecent`; superseded reuses `ListByStatus` (ae5)
+
+2026-06-30. Phase ae5 (Agent-identity & read-time scoping track, D-135; Wave 0, punch-list H4). Stowage had no general list/browse on any surface — walking a scope's memories required a search query or a seed id you already held (charter §40). ae5 adds a deterministic, gateway-free walk on all three single-user surfaces {SDK, HTTP, MCP}, built as **one core** (`retrieval.Browse`) with thin surfaces (D-067/D-073).
+
+**Decision.**
+
+1. **A new scope-required `MemoryStore.ListByScopeRecent(ctx, scope, limit, cursor)`** returns the scope's memories ordered `created_at DESC, id DESC` — most-recent-first — paginated by the existing opaque `"<millis>:<id>"` **inverted keyset** (rows strictly before the cursor: `(created_at,id) < cursor`), the descending mirror of `ListByStatus`'s ascending `(created_at,id) > cursor`. Implemented on **both** drivers (sqlite text keyset, postgres row-value keyset — copied verbatim from the proven `ListEpisodes` DESC keyset) and proven by a shared conformance test (`MemoryListByScopeRecent`: DESC ordering, full gap-free/dup-free keyset sweep, `created_at`-tie handling, cross-tenant/cross-user isolation, empty-tenant → `ErrScopeRequired`, malformed cursor → `ErrBadCursor`). **No new table, no migration** — `memories.created_at` already exists (§8.1). Scope-required (P3): tenant mandatory, no unscoped variant.
+
+2. **The superseded filter REUSES the existing `ListByStatus(scope, "superseded", limit, cursor)` — no new superseded query is added (H4).** `retrieval.Browse` has two modes: `BrowseRecent` (→ `ListByScopeRecent`) and `BrowseSuperseded` (→ the existing `ListByStatus`). A grep/AST gate asserts no `ListSuperseded`/`ListByScopeSuperseded`/status-scoped-DESC method exists on the seam or either driver.
+
+3. **One config knob** `retrieval.browse_default_limit` (default `30`, bounded `> 0` and `≤ 100` hard cap) governs the page size when `limit` is omitted; D-034-complete (default, allKeys/get/set/explain, docs, validation, smoke). Zero-config start is unchanged (inert when `limit` is passed).
+
+**Two departures from the charter framing, recorded so they are explicit not silent (the ae3/ae6 discipline):**
+
+- **Ordering asymmetry is accepted, not papered over.** `ListByStatus` is `created_at ASC` in both drivers and cannot be made DESC without a new query — which H4 forbids. So `mode=recent` is newest-first and `mode=superseded` is **oldest-first**. Re-sorting a page in the core is rejected (it breaks the stable `next_cursor` keyset contract). The asymmetry is documented on the tool/handler docs; reaching parity would require the exact new `created_at DESC` status query H4 rules out.
+
+- **`ListByScopeRecent` uses PREFIX scope (`buildScopeWhere`), not EXACT-leaf.** The charter said only "scope-required"; an EXACT-leaf reading (à la `ListActiveInScope`) would make the two browse modes disagree, since `ListByStatus` is PREFIX/wildcard. PREFIX is pinned for both so the modes are scope-consistent and browse matches what a caller already sees on retrieve. PREFIX still fails closed on an empty tenant (`ErrScopeRequired`), so P3 holds.
+
+**Out of scope.** No relevance ranking (that is retrieve); no filters beyond the two modes; no agent/topic narrowing (ae1/ae6/ae9). Browse performs no gateway call (D-036 — serves in the degraded path).
+
+
+## D-145 — Causal hook via batch `Store.LinksExist` (+ optional positional injections drilldown)
+
+**Status:** proposed (filed on promotion of the deferred phase ae4b; `docs/plans/phase-ae4b-causal-hook.md`).
+
+**Context.** ae4a adds the lean MCP read and stands up (inert) `RenderMCP` affordance slots, deliberately deferring anything that needs *new store code* (H1): both a per-item "has causal edges" marker and a positional `(response_id, handle)` drilldown require reading the typed-links / injections stores, which ae4a is forbidden from adding. The naive marker implementation — one `ListLinks` per result item — is a hot-path N+1 that would regress the retrieval gain/latency band (brief 04).
+
+**Decision.** When ae4b is promoted on a confirmed host need:
+
+1. A **new scope-required batch method** `Store.LinksExist(ctx, scope, ids) → map[string]bool` answers the whole result page's causal-edge question in **one round-trip** — never per-item `ListLinks`. It is implemented on **both** drivers (sqlite + postgres), proven by the shared conformance suite, adds **no column to the 12 scope tables**, and is forward-only. No unscoped variant exists (P3).
+2. The causal hook fills the render slot ae4a wired in `RenderMCP`, gated behind the knob **`retrieval.causal_hook`** (default `false`, D-034-complete: tuned default, every-profile placement, docs, smoke). It **fails open** (D-036): a `LinksExist` error omits the marker and retrieval still serves gateway-free.
+3. The extra read has a **documented read-path latency budget**, bench-gated against the SLO band (D-031/D-095), kept out of the noisy per-PR CI matrix.
+4. Any positional `(response_id, handle)` drilldown is the **only** new injections-store method and is conformance-tested; it stays **optional**, gated on a confirmed host need, to prevent scope-creep.
+5. Parity across **{SDK, HTTP, MCP}** with an MCP-inclusive parity test in the same PR.
+
+**Consequences.** The causal marker is added without an N+1 and without touching the scope tables. Until promoted, the phase is a thin deferred stub and its smoke script SKIPs. The promotion author confirms against code truth whether `LinksExist` is a distinct seam method or a batch of an existing `ListLinks`, and records any departure from this framing honestly.
+
+**Supersedes / relates to:** builds on D-142 (ae4a citation-ULID drill + episode hook, zero new store code); consistent with D-034 (knob guardrail), D-036 (graceful degradation), D-031/D-095 (SLO/bench gates), P3 (store-layer scope).
+
+
+## D-146 — `agent_topic_policies`: the read-time (tenant_id, agent_id) → {allow, deny} policy-binding table
+
+> **Shape superseded by D-151.** The binding lives in the general **`topic_views`** table
+> (`subject_kind`/`subject_id`/`view_name`/`topic_key`/`effect`, one row per key) created by ae1 at
+> migration **0013** behind the **`TopicViewStore`** seam and gated by **`retrieval.agent_views.enabled`**;
+> ae9 adds no columns. Read `agent_topic_policies` / `AgentPolicyStore` / `agent_filter_enabled` and the
+> "ae9 adds subject_kind + view_name columns" note below as the D-151 names/model.
+
+2026-06-30. Phase ae1 (ae* track, D-135). The read-time agent filter needs to know *which topic keys* an agent may see. That binding is durable state, but it must not become a persisted agent partition (D-135).
+
+**Decision.** Add a new sub-store `AgentPolicyStore` on the `Store` seam (`Store.AgentPolicies()`) and a new table `agent_topic_policies` (migration `0013`, forward-only, **both** drivers, shared-conformance-proven), mapping `(tenant_id, agent_id) → {allow_topics, deny_topics}`.
+
+- **Not a scope table.** It is **not** one of the 12 denormalized scope tables; it carries **no memory rows** and **no `user_id`**. It is per-agent *tenant configuration*, not user PII — so the DSAR cascade (`DSARCounts` / `OpsStore.DeleteUserData`) is **not** extended to it, and no `agent` column lands on any scope table.
+- **Shape.** A small junction — `(id, tenant_id, agent_id, topic_key, effect CHECK(effect IN ('allow','deny')), created_at, updated_at)` with a `(tenant_id, agent_id)` index and a `(tenant_id, agent_id, topic_key, effect)` unique index — mirroring the `memory_topics` idiom and avoiding CSV-in-key fragility. `PutAgentPolicy` replaces a `(tenant, agent)`'s rows atomically (delete + insert in one tx); `GetAgentPolicy` aggregates rows into `AllowTopics`/`DenyTopics`.
+- **P3 (scope-required, no unscoped variant).** Every method requires `scope.Tenant` (`ErrScopeRequired` on empty) and filters on `tenant_id`; cross-tenant reads are unconstructible, proven by conformance (CRUD round-trip, atomic replace, scope-required, cross-tenant isolation, `ErrNotFound`).
+- **Resolution + fail-open (D-139).** At read time, `internal/retrieval` resolves the binding for `scope.Agent` and feeds `{allow, deny}` to ae6's existing `filterByTopicOwnScope` (curation, not isolation). A policy-**store** error fails **open** — unfiltered own-scope results with `DegradedAgentFilter=true`; an **unbound** agent (`ErrNotFound`) is unfiltered but **not** degraded. The filter can only subtract from own-scope candidates; it opens no unscoped path.
+
+**Consequences.** One new forward-only durable surface for the whole track's read-time curation; generalized to named views by ae9 (adding `subject_kind` + `view_name` columns). No scope-table migration for agent identity. The binding admin ships on `{HTTP, MCP}` (policy-admin tier); the read filter on `{SDK, HTTP, MCP}` with a parity test.
+
+
+## D-147 — JWKS-unreachable behaviour (fail-loud boot, fail-closed runtime)
+
+**Status:** settled (phase-ae7). Settles the open item the charter flagged under the
+ae7 risk row and *Open authoring notes* ("ae7 JWKS-unreachable behaviour: fail-closed
+vs keyring fallback under D-036").
+
+**Context:** RFC §5.5, §9.5; D-030 (key store); D-036 (graceful degradation); Harbor's
+fail-loud JWKS constructor (`repos/Harbor/internal/protocol/auth/jwks.go`).
+
+**Decision.** When `auth.mode=jwt`:
+1. **Boot fails loud.** If the JWKS source (`auth.jwks.url`/`auth.jwks.file`) cannot
+   be fetched+parsed into ≥1 usable asymmetric signing key at startup, `stowage`
+   **does not boot**. It does **not** silently fall back to the keyring — an operator
+   who selected `jwt` mode gets an explicit failure, never a quiet downgrade to a
+   different authentication posture.
+2. **Runtime fails closed.** After boot, the `JWKSKeySet` serves the last-known-good
+   snapshot through refresh blips up to the `auth.jwks.max_stale` ceiling; past the
+   ceiling `KeyByID` returns `ErrJWKSStale` and the request is **rejected** (401).
+   A possibly-revoked key in a too-old snapshot is never served.
+3. **The keyring stays the default *mode* but is never an implicit *fallback*.**
+   Zero-config start remains keyring (D-034); selecting `jwt` mode is a deliberate,
+   all-or-nothing choice.
+
+**D-036 reconciliation.** D-036 requires *retrieval* to serve gateway-free (lexical +
+anticipated + structured lanes, flagged degraded) and ingest to keep appending when
+the intelligence gateway is unreachable. It governs **serving memory**, not
+**verifying identity**. Weakening identity verification — accepting unverifiable
+tokens, or silently accepting keyring credentials when JWT verification is
+unavailable — is **not** a sanctioned degradation. Auth failing closed is correct;
+retrieval degrading open is correct; the two rules do not conflict.
+
+**Consequences.**
+- `auth.jwks.max_stale` (default 3600s) is a D-034-complete knob; the ceiling bounds
+  but does not make instantaneous key revocation.
+- A clock-driven test pins the runtime `ErrJWKSStale` fail-closed; a boot test pins
+  the fail-loud construction (bad source / zero usable keys / `oct`-only set).
+
+**Resolves:** the ae7 JWKS-unreachable open question; the D-036-vs-auth ambiguity.
+
+
+## D-148 — Effective-scope resolver, read posture, and identity multiplexing (the concrete realization of D-137)
+
+**Status:** accepted (phase ae8). **Implements:** D-137. **Relates to:** D-125 (sub-tenant targeting), D-138 (`_meta.tenant` mismatch fails closed), D-139 (agent filter fails open), D-140 (MCP-vs-HTTP identity divergence), D-036 (graceful degradation), P3.
+
+**Context.** Stowage's store already filters reads on a populated `Scope.User`/`Project`/`Session`: `buildScopeWhere`/`buildExactScopeWhere` AND-append each set dimension and fail closed on an empty tenant (`internal/store/{pg,sqlite}store/scope.go`), and the vector lane re-implements the same predicate inline in `vectorStore.Scan` (`internal/store/{pg,sqlite}store/vectors.go`). The P3 read-side gap is therefore **not** a missing predicate — it is **upstream**: `user`/`agent` arrive today only from omittable, model-discretionary args, so an omitted arg silently falls back to a tenant-wide read.
+
+**Decision.** ae8 adds a single pure resolver `identity.ResolveReadScope(src IdentitySources, opts ResolveOptions) (Scope, error)` in `internal/identity` that merges the credential tenant, verified JWT claims (ae7), host-injected `_meta` (ae2), and the legacy D-125 args into the effective **read** `Scope`, under the D-137 precedence **verified JWT claims > `_meta` > args** and the D-137 resolution rule:
+
+- **tenant** — pinned always; a `_meta`/claim tenant disagreeing with the credential ⇒ `ErrTenantMismatch` (D-138, fail closed).
+- **session** — always assertable (Harbor parity), never gated by either knob (Claim > `_meta` > arg; the HTTP adapter folds `X-Harbor-Session` into the claim slot).
+- **project** — assertable, no JWT claim (`_meta` > arg); project is host-routing, not an auth claim.
+- **agent** — `_meta`-only, read-time; set on the read `Scope.Agent` (ae1) to drive ae6's fail-open own-scope filter, never a write INSERT or a scope `WHERE`.
+- **user** — pinned by default: with a credential-bound user (`CredUser`), a disagreeing assertion is rejected (`ErrUserConflict`) unless `identity.multiplexing` is on **or** the credential carries the per-credential `CanAssertUser` capability; with no credential-bound user (the pre-ae7 keyring world) the asserted user is taken freely (fully back-compat).
+
+Two orthogonal D-034 knobs ship with it:
+
+- **`retrieval.read_posture`** (`compatible`|`strict`, default `compatible`, home `RetrievalConfig`): `compatible` = today's tenant-wide fallback on an omitted `user`/agent; `strict` = the resolver returns `ErrIdentityRequired` when neither a `user` nor an agent resolves, **before** any store call. It **populates/requires** `Scope.User`; it does **not** add a `WHERE` (the store already filters).
+- **`identity.multiplexing`** (bool, default `false`, home a **new** `IdentityConfig` on `Config` — no `AuthConfig` exists): whether a connection may assert a `user` that disagrees with the credential-pinned `user`. Ships as the **global interim** form; post-ae7 the per-credential JWT scope `memory:assert-user` / keyring flag populates `IdentitySources.CanAssertUser` to grant the same capability without the global flag.
+
+The resolver does **no I/O** (gateway-free, store-free, concurrent-safe) and never returns a `Scope` with an empty `Tenant` on a nil error (P3). Every single-user read surface (SDK, HTTP, MCP) builds its read scope through this one resolver via a thin per-surface source-gathering adapter; the adapters differ by transport (D-140) while the core resolver and posture/mux behaviour are shared and parity-tested. Default ship (`compatible` + `multiplexing=false` + keyring) is byte-identical to pre-ae8.
+
+**Fail-mode reconciliation.** `strict` is a resolve-time *presence* gate (an identity must be supplied); it does **not** change ae1/ae6's agent filter, which fails **open** (D-139/D-036), nor ae7's token path, which fails **closed**. The three operate at different layers and are all preserved. A deployment needing hard isolation-on-error must scope by `user` (store-enforced, fail-closed), not rely on the fail-open agent curation lens.
+
+**Code-truth corrections recorded (departures).** (1) ae8's declared deps (ae2, ae7) and its transitive prereq ae1 are all unbuilt in code, and only phase-ae3/phase-ae6 plan files exist — ae8 cannot *fully* land before ae1+ae2+ae7, so the resolver/knobs/wiring ship now with the JWT/`_meta` source fields present-but-empty (inert, args-only/compatible) until upstream lands, mirroring ae3's inert-seam posture. (2) `identity.multiplexing` ships in its global interim form because no `AuthConfig` exists; the per-credential `CanAssertUser` is threaded for ae7 to populate later without touching the resolver. (3) ae8 adds **no** store predicate and **no** store method — the read-side gap is closed upstream by populating/requiring `Scope.User`, pinned by a P3 test across all three predicate paths.
+
+**Consequences.** One authoritative read-scope construction point; an exhaustively golden-testable precedence/conflict matrix; a safe, opt-in path to strict read isolation with a documented migration window (`compatible` default); no new wire field (posture/mux are server-side config, nothing to fuzz on the wire).
+
+
+## D-149 — Named per-agent/per-key topic VIEWS generalizing ae1's single binding (curation, not isolation; fail-open)
+
+**Status:** accepted (phase ae9). **Implements:** D-139. **Related:** D-089 (memory_topics), D-036 (graceful degradation), D-060/D-089 (grants' fail-closed `filterByTopic`), D-125 (sub-tenant targeting), D-067/D-073 (one logic core), D-034 (knob guardrail).
+
+### Decision
+
+Stowage adds **named, switchable topic views** — a read-time curation lens keyed by `(tenant_id, subject_kind, subject_id, view_name) → {allow_topics, deny_topics}`, stored in one new `topic_views` table. A view generalizes ae1's single `(tenant_id, agent_id) → allow/deny topic-key` binding: **ae1's row is exactly the `(subject_kind='agent', view_name='default')` view** with single-element allow/deny sets. At read time, applying a view resolves the request's **view subject**, looks up the named view, and narrows the caller's own-scope topic-tagged results by reusing ae6's `filterByTopicOwnScope`.
+
+Binding properties:
+
+1. **Curation, not isolation (D-139).** A view can only **subtract** from the store-layer scoped result. The tenant from the verified credential/JWT remains the *only* P3 boundary; a view never widens scope and never surfaces a cross-scope or cross-tenant row.
+2. **Fail-OPEN.** A views-store **error** returns the caller's full own-scope results flagged `DegradedView=true` (default `retrieval.agent_views.on_policy_error=open`) — deliberately the opposite of grants' fail-closed `filterByTopic`. "View not found" is an **unbound** pass-through (unfiltered own scope), not an error. ae9 introduces **no new filter**; it calls ae6's distinct `filterByTopicOwnScope`, and grants' `filterByTopic` stays a separate fail-closed function (the divergence is intentional and must not be "harmonized").
+3. **Identity-derived subject.** The view subject is `(kind, id)` = an `agent_id` (from `_meta`, via ae1) or, when no agent identity is present, the **verified credential's key id**. It is resolved server-side from the request's identity and is **never a wire argument** — a caller can apply only its own subject's views. Precedence (`retrieval.agent_views.subject_precedence`, default `agent,key`) decides which wins when both are present.
+4. **No scope-table change.** `topic_views` is not one of the 12 scope tables and carries no memory rows; there is no agent column on any scope table, no dedupe-index / UNIQUE / DSAR cascade / buffer→flush threading; `source_agent` stays a records-only label. Allow/deny are stored as JSON-encoded `TEXT` arrays (operator-supplied config, decoded with stdlib `encoding/json` — not the forbidden free-text parse of model output).
+5. **Tiered surfaces (D-067/D-073).** Apply-a-view (`view_name` + `degraded_view`) ships on `{SDK, HTTP, MCP}`; view admin (create/update/delete/list) ships on `{HTTP, MCP}` only. Validation lives once in `(TopicView).Validate()` in the store core.
+6. **Gateway-free (D-036).** View resolution and application are pure store reads; the feature serves in the degraded retrieval path.
+7. **Knobs D-034-complete.** `retrieval.agent_views.{enabled(default false),on_policy_error(default open),subject_precedence(default agent,key)}` ship with tuned defaults, every-profile placement, docs, `allKeys`/get/set/explain, validation, and smoke. `enabled=false` keeps zero-config retrieval byte-identical.
+
+### ae1 ↔ ae9 table-ownership contract
+
+The charter says ae1 "introduces" the binding table and ae9 "generalizes" it. Because a cross-driver column rename/reshape is **not** a clean forward-only migration on SQLite, ae9 owns one generalized `topic_views` table whose columns are the superset the charter's gotcha requests (`subject_kind` default `'agent'`, `subject_id`, `view_name` default `'default'`, set-valued allow/deny). ae1 SHOULD store its binding directly in this table shape so ae9 adds no migration; if ae1 shipped a narrower table first, ae9's forward-only migration copies its rows into `topic_views` as `(subject_kind='agent', view_name='default')`. In-place column rename is forbidden.
+
+### Code-truth departures recorded here
+
+- **ae1 and ae6 are unbuilt at authoring time** (no `phase-ae1-*` plan or code; `phase-ae6` is a draft; `identity.Scope` has no `Agent` field; `filterByTopicOwnScope` does not exist; highest migration is `0012`). ae9's plan is authored against their specified seams and **cannot merge until both land**.
+- **The "key-id subject" required new MCP plumbing the charter did not call out.** On HTTP the verified `*auth.Key` (with `ID`) is already on the request context (`internal/api/auth.go`); on MCP, `KeyringMiddleware` injected only `Scope{Tenant}` and discarded `key.ID`. ae9 stashes `key.ID` on the MCP request context and exposes `KeyIDFromContext`, in the same PR, so the key subject reaches parity on MCP.
+
+### Alternatives rejected
+
+- **Reuse grants' `filterByTopic`.** Rejected — its fail-*closed* semantics are for cross-scope isolation; a curation lens must fail *open* (D-139). Kept as a distinct function.
+- **Client-supplied view subject.** Rejected — would let a caller read another agent's/key's lens; the subject is identity-derived only.
+- **`on_policy_error=closed` as the default.** Rejected — `open` is the D-139-aligned default that keeps a view a curation lens; `closed` remains an operator override (documented as re-tiering toward isolation) but never changes the P3 boundary.
+
+## D-150 — Session never scopes OR ranks a read; cross-session recall preserved (not a filter, not a relevance signal)
+
+2026-06-30. Agent-identity & read-time scoping track (D-135). Cross-plan checkpoint decision
+resolving a contradiction the ae* wave-authoring audit surfaced (§17) between ae2 and ae7/ae8.
+
+**Context.** The store's `buildScopeWhere`/`buildExactScopeWhere` (both drivers) and the vector
+lane append `AND session_id = ?` whenever `Scope.Session != ""`. ae2 deliberately routes the
+effective session to the **existing relevance sink** (`retrieval.Request.SessionID` /
+`playbook.Options.SessionID`) and **leaves `Scope.Session` empty on the read path**, precisely so
+retrieval stays user-scoped and cross-session memories remain retrievable — the core purpose of a
+memory server (you must recall what happened in *other* sessions). But ae7's `Authenticate`
+produced a full `Scope{Tenant,User,Session}` from the token triple, and ae8's `ResolveReadScope`
+set `Scope.Session` from claim/`_meta`/arg — which, fed to a retrieval read, would silently narrow
+results to a single session and drop cross-session recall (CONFIRMED against `scope.go` on both
+drivers). This contradicted ae8's own "byte-identical default" claim.
+
+**Decision (sharpened per owner sign-off, 2026-06-30).** **Session plays no role in a
+retrieval/browse read — it neither scopes (filters) nor ranks (boosts) results — under every auth
+mode (keyring, JWT, strict).** Reads are user-scoped; cross-session recall is the value, because in
+agentic systems the *current* session's content is already under the caller's own context
+management, so a same-session preference would only re-surface what the agent already holds — the
+useful learning is from *other* sessions.
+- The effective session VALUE is still resolved (claim > `_meta` > arg, D-137 precedence) for
+  provenance / write-stamping and audit, but on the read path it is **not** placed on
+  `Scope.Session` (no filter) **and** is **not** used as a same-session relevance/affinity boost (no
+  ranking preference — there is no "prefer memories from this session" term).
+- The only session-related read behaviour is **write-echo suppression** — *not* re-surfacing
+  memories just written in the live session (they are already in context). That is a *suppression*,
+  fully consistent with this decision (it removes redundant same-session echoes rather than boosting
+  them), and is retained and orthogonal.
+- On the **retrieval/browse read path** `Scope.Session` is left empty, so `buildScopeWhere` never
+  narrows a read to one session.
+- **Writes remain session-stamped** (memories carry their originating session) — this decision is
+  read-path only.
+- ae7's token-derived `Scope` is an *identity representation*; it is ae8's read-scope resolver (and
+  each read surface) that decides session routing, per this rule.
+
+**Consequences.** Corrects ae7/ae8: neither may place the session claim onto a retrieval read
+`Scope.Session`. ae8 adds a regression/golden row proving a session-bearing token (and `strict`
+posture) still returns cross-session results. `Scope.Session` may still be used by a genuinely
+session-scoped operation if one is ever added (none today), but retrieval/browse are user-scoped.
+Amends the session bullet of D-148 and the session handling of ae7. Preserves P3 (tenant remains
+the boundary) and D-125 (user/project narrow; session does not gate).
+
+## D-151 — ae1↔ae9 converge on one topic-views table, one seam, one enable knob
+
+2026-06-30. Agent-identity & read-time scoping track (D-135). Cross-plan checkpoint decision
+resolving three ae1↔ae9 inconsistencies the wave-authoring audit surfaced (§17): two durable tables
+for one concept, two enable knobs, and order-fragile migration numbering.
+
+**Context.** As authored, ae1 (D-146) creates a narrow `agent_topic_policies` table behind an
+`AgentPolicyStore` seam with a `retrieval.agent_filter_enabled` knob (migration 0013), while ae9
+(D-149) creates a separate general `topic_views` table behind a `TopicViewStore` seam with a
+`retrieval.agent_views.enabled` knob (migration 0014) and gives inconsistent accounts of how ae1's
+rows relate (same-table vs forward-copy vs column-add). That is two tables, two seams, and two
+enable knobs for a single concept (per-subject allow/deny topic curation), plus a landing-order
+dependency on the migration numbers.
+
+**Decision (single model; supersedes the divergent framings in D-146 and D-149).**
+1. **One table, created by ae1 in its general shape:** `topic_views(id, tenant_id, subject_kind
+   DEFAULT 'agent', subject_id, view_name DEFAULT 'default', topic_key, effect CHECK(effect IN
+   ('allow','deny')), created_at, updated_at)` at migration **0013** — forward-only, both drivers,
+   shared-conformance-proven. ae1 writes rows as `(subject_kind='agent', view_name='default')`; ae9
+   adds **no new table and no migration**, only the named-view semantics, the key-id subject, and
+   the admin surface. It is **not** a scope table, carries no memory rows and no `user_id`, and is
+   excluded from the DSAR cascade.
+2. **One seam:** `Store.TopicViews()` (`TopicViewStore`). ae1 introduces it; ae9 extends it with
+   view admin (create/update/delete/list). There is **no** separate `AgentPolicyStore`.
+3. **One enable knob:** `retrieval.agent_views.enabled` (default `false`), introduced by ae1 and
+   reused by ae9. ae9 adds only `retrieval.agent_views.on_policy_error` (default `open`) and
+   `retrieval.agent_views.subject_precedence` (default `agent,key`). There is **no**
+   `retrieval.agent_filter_enabled`.
+4. **One filter:** both ae1's default-view resolution and ae9's named views call ae6's single
+   `filterByTopicOwnScope` (fail-open, D-139); grants' `filterByTopic` stays a distinct fail-closed
+   function (never harmonized).
+
+**Consequences.** Amends D-146 (table `topic_views` not `agent_topic_policies`; seam
+`TopicViewStore` not `AgentPolicyStore`; knob `agent_views.enabled` not `agent_filter_enabled`;
+migration 0013) and D-149 (no new table/migration/enable-knob; it generalizes the ae1 seam). The
+migration-numbering fragility (#7) dissolves because ae9 adds no migration. ae1 and ae9 plan files
+carry a pointer note to this decision. P3 unchanged: the table is scope-required, no unscoped
+variant, and a view can only subtract from own-scope.
+
+## D-140 — MCP-vs-HTTP identity divergence is a sanctioned contract divergence
+
+**Status:** accepted (phase ae2b). **Related:** D-125 (sub-tenant targeting), D-137 (multiplexing/strict posture), D-138 (`_meta.tenant` mismatch fails closed), D-148 (effective-scope resolver), §9.5 (one logic core, D-067/D-073).
+
+**Decision.** Stowage's MCP and HTTP surfaces read per-call identity from different channels, permanently: MCP reads `user`/`session`/`agent` from the host-injected `_meta` map (and, once ae7 lands, a verified JWT claim) — never from a model-filled `user_id`/`project_id` argument, which phase ae2b removes from the MCP wire contracts. HTTP keeps its existing `?project_id=`/`?user_id=` query-param projection (GET) and JSON body fields (POST), unchanged, permanently. This is a deliberate, permanent per-surface difference in *how* identity arrives on the wire, not an oversight or a temporary migration artifact.
+
+**Why this is sanctioned, not a parity violation.** CLAUDE.md's one-logic-core rule (D-067/D-073) requires that a *capability* — its logic and side effects — be implemented once, with thin per-surface callers; it does not require that every surface accept identity through an identical wire shape. Stowage already has a precedent for a deliberate, documented per-surface contract omission: `assert`'s deliberate HTTP omission (the capability exists on {SDK, MCP} but is intentionally not exposed on HTTP, per the tiering rules in CLAUDE.md §6). D-140 extends that same precedent to a *source* divergence rather than a *capability* omission: both surfaces still resolve identity through the one shared core (`identity.ResolveReadScope`, D-148), and both surfaces are proven to resolve the *same* effective scope for the *same* identity via a behavioural (not contractual) parity test — the divergence is confined to which `IdentitySources` fields each surface's thin adapter populates (MCP fills `Meta*`; HTTP fills `Claim*`/`Arg*`), never to duplicated or forked logic.
+
+**Rationale for the specific choice (why MCP moves and HTTP doesn't).** MCP tool arguments are filled by a model at call time — exactly the omittable, discretionary channel that let sub-tenant scoping silently collapse to tenant-wide (the read-side gap this track closes). `_meta` is a host-injected, out-of-band channel a model cannot omit or spoof past the D-138 tenant guard, making it the correct permanent home for MCP identity. HTTP callers are not model-driven — they are programmatic API clients that explicitly construct their own query/body parameters — so the omittable-argument failure mode this track exists to close does not apply to HTTP in the same way, and changing HTTP's stable, documented wire contract would be a breaking change with no corresponding safety benefit.
+
+**Scope.** Filed for phase ae2b (breaking removal of `project_id`/`user_id` from the 13 MCP input contracts that are the sole D-125 sub-tenant read-targeting mechanism). **Removal is hard-gated on ae7 (the JWT verifier, which gives HTTP/MCP a verified `user`/`session` claim to fall back to) and ae8 (`identity.ResolveReadScope`, the effective-scope resolver that sources identity from `_meta`/JWT without the args)** — until both land, MCP has no non-arg source for sub-tenant targeting, and removing the args would collapse MCP reads to tenant-wide, a P3/D-125 regression. This decision governs the *end state* (MCP: `_meta`/JWT only; HTTP: query-param/body projection only); it does not itself authorize skipping ae2b's deprecation window.
+
+**Consequences.** SDK's HTTP-mode client is unaffected (it talks to the unchanged HTTP endpoints and keeps sending `project_id`/`user_id` in the wire body); SDK's embedded mode is unaffected (in-process `callScope`, a different, non-`_meta` channel). Tool/API documentation must state the divergence explicitly so operators migrating MCP callers do not mistakenly also attempt to migrate HTTP callers, which were never asked to change. A future phase that wants to *unify* the two surfaces' identity channels must supersede this decision explicitly, not silently reintroduce args on one surface or `_meta` on the other.

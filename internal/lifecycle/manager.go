@@ -149,6 +149,10 @@ type Manager struct {
 	// for single-user profiles and every caller that doesn't opt in).
 	gw         gateway.Gateway
 	reflectOut chan<- pipeline.CandidateBatch
+	// reflectModel optionally overrides the gateway's configured completion model for
+	// the reflection Complete call ("" = gateway.model). Set from gateway.reflect_model
+	// via SetReflectModel before Start (D-132).
+	reflectModel string
 
 	// Episode wiring (Phase 22, D-079). Set via SetEpisodes; when enabled the
 	// detect + narrate sweeps are registered. Shares the gateway handle (gw) with
@@ -206,6 +210,10 @@ func (m *Manager) SetReflection(gw gateway.Gateway, reflectOut chan<- pipeline.C
 	m.gw = gw
 	m.reflectOut = reflectOut
 }
+
+// SetReflectModel sets the optional per-stage completion model for the reflection
+// sweep ("" = gateway.model). Must be called before Start (D-132).
+func (m *Manager) SetReflectModel(model string) { m.reflectModel = model }
 
 // reflectionEnabled reports whether the reflect sweep should run.
 func (m *Manager) reflectionEnabled() bool {

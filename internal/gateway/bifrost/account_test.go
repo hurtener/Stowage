@@ -103,6 +103,73 @@ func TestAccount_AutoWiresCustomRerank_NonNativePlusModel(t *testing.T) {
 	}
 }
 
+// TestAccount_OpenRouterBaseDefaults asserts the driver supplies OpenRouter's base
+// URLs when the operator leaves them empty (D-131): primary → …/api, auto-wired
+// rerank → …/api/v1. Config Defaults ship these empty so non-OpenRouter providers
+// keep native-endpoint semantics (the next test).
+func TestAccount_OpenRouterBaseDefaults(t *testing.T) {
+	t.Parallel()
+
+	cfg := config.GatewayConfig{
+		Driver:      "bifrost",
+		Provider:    "openrouter",
+		APIKey:      "env.STOWAGE_TEST_BIFROST_SDK_KEY",
+		BaseURL:     "", // empty → driver supplies OpenRouter's
+		Model:       "openai/gpt-5.4-nano",
+		EmbedModel:  "perplexity/pplx-embed-v1-0.6b",
+		EmbedDims:   1024,
+		RerankModel: "cohere/rerank-4-fast",
+	}
+	account, err := NewAccount(cfg)
+	if err != nil {
+		t.Fatalf("NewAccount: %v", err)
+	}
+
+	pc, err := account.GetConfigForProvider(bfschemas.OpenRouter)
+	if err != nil {
+		t.Fatalf("GetConfigForProvider(openrouter): %v", err)
+	}
+	if pc.NetworkConfig.BaseURL != "https://openrouter.ai/api" {
+		t.Errorf("primary base URL = %q, want OpenRouter default …/api", pc.NetworkConfig.BaseURL)
+	}
+
+	rc, err := account.GetConfigForProvider(CustomRerankProviderName())
+	if err != nil {
+		t.Fatalf("GetConfigForProvider(rerank): %v", err)
+	}
+	if rc.NetworkConfig.BaseURL != "https://openrouter.ai/api/v1" {
+		t.Errorf("rerank base URL = %q, want OpenRouter default …/api/v1", rc.NetworkConfig.BaseURL)
+	}
+}
+
+// TestAccount_NonOpenRouterEmptyBasePreserved asserts a non-OpenRouter provider
+// with an empty base_url keeps "" (the SDK's native endpoint) — the driver does NOT
+// force OpenRouter's host onto it (D-131 review regression guard).
+func TestAccount_NonOpenRouterEmptyBasePreserved(t *testing.T) {
+	t.Parallel()
+
+	cfg := config.GatewayConfig{
+		Driver:     "bifrost",
+		Provider:   "openai",
+		APIKey:     "env.STOWAGE_TEST_BIFROST_SDK_KEY",
+		BaseURL:    "", // empty must stay empty → OpenAI native endpoint
+		Model:      "gpt-4o-mini",
+		EmbedModel: "text-embedding-3-small",
+		EmbedDims:  1536,
+	}
+	account, err := NewAccount(cfg)
+	if err != nil {
+		t.Fatalf("NewAccount: %v", err)
+	}
+	pc, err := account.GetConfigForProvider(bfschemas.OpenAI)
+	if err != nil {
+		t.Fatalf("GetConfigForProvider(openai): %v", err)
+	}
+	if pc.NetworkConfig.BaseURL != "" {
+		t.Errorf("primary base URL = %q, want empty (native endpoint)", pc.NetworkConfig.BaseURL)
+	}
+}
+
 // TestAccount_RerankBaseURLOverride asserts rerank_base_url overrides base_url
 // for the auto-wired rerank provider only (embed/complete keep base_url).
 func TestAccount_RerankBaseURLOverride(t *testing.T) {

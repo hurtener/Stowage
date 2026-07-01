@@ -60,9 +60,13 @@ bin/stowage serve
 That's it — no config file. You get:
 
 - the **HTTP API** on `:7160`,
-- a **co-mounted MCP** listener (opt-in via `mcp_listen`; same process, same key policy),
 - a **SQLite** store in a local file (pure-Go, CGo-free) — swap in Postgres later with one config
   block, no code change.
+
+The **MCP tool surface is opt-in**: `serve` binds exactly one port by default. Set
+`server.mcp_listen` (e.g. `:7161`) to co-mount MCP-over-HTTP on a second listener over the same
+process and key policy, or run `stowage mcp` standalone. `serve` logs a one-line hint when MCP is
+off so you know the knob exists.
 
 Confirm what you're running:
 
@@ -221,10 +225,11 @@ Migrations are forward-only: `stowage migrate --config <file>`.
 
 ## Using it from MCP
 
-`stowage serve` co-mounts an MCP tool surface (or run `stowage mcp` standalone). Point any MCP
-host (Claude, Cursor, a Harbor agent) at it and the memory tools — ingest, retrieve, drill-down,
-feedback, topics, episodes, playbook, verify — appear as first-class tools, with the same behavior
-and scope enforcement as the HTTP API (one core, parity-tested).
+`stowage serve` can co-mount an MCP tool surface (opt-in via `server.mcp_listen`), or run
+`stowage mcp` standalone. Point any MCP host (Claude, Cursor, a Harbor agent) at it and the memory
+tools — ingest, retrieve, drill-down, feedback, topics, episodes, playbook, verify — appear as
+first-class tools, with the same behavior and scope enforcement as the HTTP API (one core,
+parity-tested).
 
 ## Embedding it in Go (the SDK)
 

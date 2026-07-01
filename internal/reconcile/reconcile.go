@@ -81,6 +81,12 @@ type ReconcileStage struct {
 	// is unaffected; the eval harness sets it (STOWAGE_EVAL_MODEL_EFFORT) so a
 	// reasoning-only learner model runs at its floor, matching the extract stage (D-128).
 	reasoningEffort string
+
+	// model optionally overrides the gateway's configured completion model for the
+	// reconcile decision Complete call ("" = use gateway.model). Set from
+	// gateway.reconcile_model (D-132) so the reconciler can use a stronger model than
+	// the cheap extractor. Set once before Start.
+	model string
 }
 
 // augmentWithVectorNeighbors merges SEMANTIC neighbors (vector lane, cosine ≥ floor)
@@ -183,6 +189,11 @@ func (r *ReconcileStage) SetRecordStore(recs store.RecordStore) {
 // decision Complete call (see the reasoningEffort field). Empty disables the parameter.
 // Must be called before Start.
 func (r *ReconcileStage) SetReasoningEffort(effort string) { r.reasoningEffort = effort }
+
+// SetModel sets the optional per-stage completion model for the reconcile decision
+// Complete call (see the model field). Empty uses the gateway's configured model.
+// Must be called before Start (D-132).
+func (r *ReconcileStage) SetModel(model string) { r.model = model }
 
 const (
 	// maxContextRecords is the GLOBAL hard ceiling on raw conversation turns fed to one
@@ -450,6 +461,7 @@ func (r *ReconcileStage) processCandidate(ctx context.Context, scope identity.Sc
 		Schema:          DecisionSchema,
 		MaxTokens:       decisionMaxTokens,
 		Temperature:     0,
+		Model:           r.model,           // "" → gateway.model (D-132)
 		ReasoningEffort: r.reasoningEffort, // "" → no reasoning param (D-128)
 	})
 	if err != nil {

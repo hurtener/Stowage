@@ -138,6 +138,12 @@ func Open(ctx context.Context, cfg *config.Config) (*Stack, error) {
 	s.Gateway, err = gateway.Open(ctx, cfg.Gateway, s.Log, s.Metrics)
 	if err != nil {
 		_ = s.close(ctx)
+		// Fail-loud on the five-minute minimum (D-131): a real driver needs one
+		// secret. Name the escape hatch so a hermetic/offline run isn't a guessing
+		// game. The driver error already names the exact env var.
+		if cfg.Gateway.Driver != "mock" {
+			return nil, fmt.Errorf("boot: gateway: %w\n  → the five-minute minimum is one secret: set STOWAGE_GATEWAY_API_KEY, or run without a provider via STOWAGE_GATEWAY_DRIVER=mock", err)
+		}
 		return nil, fmt.Errorf("boot: gateway: %w", err)
 	}
 	s.closers = append(s.closers, s.Gateway.Close)

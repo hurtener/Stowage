@@ -116,7 +116,7 @@ func TestReflect_BuildsStampedCandidates(t *testing.T) {
 		"provenance":[{"record_id":"r1","span_start":0,"span_end":10}]
 	}]}`
 	fg := &fakeGateway{responses: []json.RawMessage{json.RawMessage(resp)}}
-	cands, err := Reflect(context.Background(), fg, identity.Scope{Tenant: "t"}, traj)
+	cands, err := Reflect(context.Background(), fg, identity.Scope{Tenant: "t"}, traj, "")
 	if err != nil {
 		t.Fatalf("Reflect: %v", err)
 	}
@@ -136,6 +136,27 @@ func TestReflect_BuildsStampedCandidates(t *testing.T) {
 	}
 }
 
+// TestReflect_ModelWiring verifies the D-132 per-stage model knob reaches the
+// reflection Complete call: a set model appears on the request, default leaves it empty.
+func TestReflect_ModelWiring(t *testing.T) {
+	traj := Trajectory{Outcome: "success", SessionID: "s1", BranchID: "main", Records: []store.Record{
+		rec("r1", "s1", "main", "success", "used a retry with backoff", 1),
+	}}
+
+	for _, tc := range []struct{ model string }{{"inception/mercury-2"}, {""}} {
+		fg := &fakeGateway{responses: []json.RawMessage{json.RawMessage(`{"reflections":[]}`)}}
+		if _, err := Reflect(context.Background(), fg, identity.Scope{Tenant: "t"}, traj, tc.model); err != nil {
+			t.Fatalf("Reflect(%q): %v", tc.model, err)
+		}
+		if len(fg.reqs) != 1 {
+			t.Fatalf("model=%q: expected 1 Complete call, got %d", tc.model, len(fg.reqs))
+		}
+		if fg.reqs[0].Model != tc.model {
+			t.Errorf("reflect req.Model = %q, want %q", fg.reqs[0].Model, tc.model)
+		}
+	}
+}
+
 func TestReflect_DropsProvenanceToUnknownRecords(t *testing.T) {
 	traj := Trajectory{Outcome: "failure", Records: []store.Record{rec("r1", "s", "m", "failure", "x", 1)}}
 	// Provenance references r9 (not in the trajectory) → candidate has no valid
@@ -144,7 +165,7 @@ func TestReflect_DropsProvenanceToUnknownRecords(t *testing.T) {
 		"entities":[],"keywords":[],"anticipated_queries":["q"],"importance":3,"confidence":0.5,
 		"provenance":[{"record_id":"r9","span_start":0,"span_end":1}]}]}`
 	fg := &fakeGateway{responses: []json.RawMessage{json.RawMessage(resp)}}
-	cands, err := Reflect(context.Background(), fg, identity.Scope{Tenant: "t"}, traj)
+	cands, err := Reflect(context.Background(), fg, identity.Scope{Tenant: "t"}, traj, "")
 	if err != nil {
 		t.Fatalf("Reflect: %v", err)
 	}
@@ -155,7 +176,7 @@ func TestReflect_DropsProvenanceToUnknownRecords(t *testing.T) {
 
 func TestReflect_EmptyTrajectoryNoCall(t *testing.T) {
 	fg := &fakeGateway{}
-	cands, err := Reflect(context.Background(), fg, identity.Scope{Tenant: "t"}, Trajectory{})
+	cands, err := Reflect(context.Background(), fg, identity.Scope{Tenant: "t"}, Trajectory{}, "")
 	if err != nil || len(cands) != 0 {
 		t.Errorf("empty trajectory: expected (nil,0), got (%v,%d)", err, len(cands))
 	}

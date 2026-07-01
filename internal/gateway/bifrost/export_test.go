@@ -51,3 +51,12 @@ func (d *Driver) RerankProviderName() bfschemas.ModelProvider { return d.rerankP
 
 // IsNativeRerankProvider exports the native-rerank gate for tests.
 func IsNativeRerankProvider(p bfschemas.ModelProvider) bool { return isNativeRerankProvider(p) }
+
+// EmbedProviderName returns the provider the embed lane routes to (a1b accessor).
+func (a *Account) EmbedProviderName() bfschemas.ModelProvider { return a.embedProvider }
+
+// DistinctEmbed reports whether embed routes to a distinct provider entry (a1b).
+func (a *Account) DistinctEmbed() bool { return a.distinctEmbed }
+
+// EmbedProviderName returns the provider the Driver routes embed to (a1b accessor).
+func (d *Driver) EmbedProviderName() bfschemas.ModelProvider { return d.embedProvider }

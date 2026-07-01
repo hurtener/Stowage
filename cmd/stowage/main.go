@@ -695,6 +695,11 @@ func runServe(args []string) {
 			Handler:           mcpserver.KeyringMiddleware(stk.Store.Keys(), mcpHandler),
 			ReadHeaderTimeout: 10 * time.Second, // no WriteTimeout — MCP streams
 		}
+	} else {
+		// Discoverability hint (a3, D-133): the MCP tool surface is opt-in. Say so on
+		// startup so an operator who expected MCP knows the knob exists, without
+		// changing the default single-port shape (D-074).
+		stk.Log.Info("stowage serve: MCP surface disabled — set server.mcp_listen (e.g. :7161) to co-mount it, or run `stowage mcp`")
 	}
 
 	// Optional dedicated pprof listener (server.pprof_listen). Off by default;
