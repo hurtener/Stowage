@@ -3649,3 +3649,176 @@ providers); all-empty wiring is byte-identical to a1 (proven by the fallback tes
 Account routing tests (fallback, distinct embed provider+key, rerank key override, distinct
 native rerank) + a Driver embed-routing test; `scripts/smoke/phase-a1b.sh` gates keys/validation/
 redaction. The a1 default still live-validates unchanged (`TestLiveBifrost_DefaultConfig`).
+
+## D-137 — Multiplexing-vs-strict identity posture; default STRICT, two orthogonal knobs
+
+2026-06-30. Agent-identity & read-time scoping track (`phase-ae*`, D-135); settles the Wave-0
+posture decision that ae2 (additive `_meta` intake) and ae8 (effective-scope resolution +
+read-side enforcement) inherit. Decided after reading Harbor's verifier source verbatim
+(PREREQ-2). Tenant is always credential-pinned (P3); the finer dimensions narrow within it.
+This entry supersedes the one-line D-137 ledger row in
+`docs/plans/track-adoption-ergonomics.md` (charter expanded to match in the same change).
+
+**The decisive Harbor evidence.** Harbor pins **`(tenant, user, scopes)`** in the connection
+token cryptographically — *"a per-backend credential, like an API key, NOT a single-session
+pin"* (`internal/protocol/auth/middleware.go:20-34`). It multiplexes **only the session axis**:
+`X-Harbor-Session` *replaces* the token's `session` claim per request (the claim is a default),
+*"so one connection drives many isolated sessions"*, and *"a request can never widen its tenant
+or user"* (`middleware.go:134-146`; `docs/notes/session-model-contract.md`, Harbor D-171).
+Harbor mints **one token per user**; it does **not** assert `user` per call over a shared
+connection. Therefore STRICT (user = the verified credential's `user` claim) is the
+**ecosystem-native** default — not a conservative deviation from it. The earlier worry that
+"Harbor's one-token-many-sessions argues multiplexing is the natural default" conflated *safe
+session-multiplexing* (native, can never widen) with *risky user-multiplexing* (asserting many
+end-users over one connection — which Harbor does not do).
+
+**Decision.**
+1. **Default posture = STRICT.** `user` is credential-pinned; **user-multiplexing is opt-in**;
+   **`session` is always per-call** (Harbor parity) and is *not* governed by the multiplexing
+   flag (it can never widen `(tenant, user)`).
+2. **Two orthogonal knobs** (all four combinations are meaningful):
+   - **`identity.multiplexing`** (bool, default **`false`** = pinned) — the *authority*
+     question: may a `_meta.user`/arg value override the credential-pinned `user`? Authority
+     is a **per-credential capability** — gated by a JWT `scope` (`memory:assert-user`) or a
+     keyring flag — once ae7 lands. A **global server flag is the documented pre-ae7 interim**
+     (pre-ae7 there is no verified `user` to pin against, so this knob does not yet bite).
+   - **`retrieval.read_posture`** (`compatible`|`strict`, default **`compatible`**) — the
+     *presence* question (owned by ae8): when resolution yields no `user`/agent, fall back to a
+     tenant-wide read (`compatible`, today's behaviour) or **refuse** it (`strict`).
+   - Default ship (`multiplexing=false` + `read_posture=compatible`) is **byte-identical to
+     today**; zero-config start preserved (D-034/D-036). Each knob ships D-034-complete (tuned
+     default, every profile, docs, smoke) in its owning phase.
+3. **Per-dimension resolution rule (generalizes D-138).** *A dimension the credential **pins**
+   rejects a disagreeing `_meta`/arg value; a dimension the credential lets the connection
+   **assert** accepts it.*
+   - **tenant** — always pinned (verified key / JWT `tenant`); a present-and-mismatched
+     `_meta.tenant`/arg **fails closed** (D-138). The only P3 access gate; never widened.
+   - **user** — pinned under STRICT (`user` = JWT `user` claim, `== sub`; a mismatched
+     `_meta.user`/`user_id` arg is **rejected**, D-138 symmetry); assertable under multiplexing
+     (`_meta.user`/arg overrides the JWT `user` default, **within tenant**). Pre-ae7 (keyring)
+     there is no credential `user`, so `user` comes from `_meta`/arg by necessity — which is why
+     STRICT refusal and any token-`sub` fallback are **C3-gated on ae7**.
+   - **session** — always assertable: `_meta.session` (MCP) / `X-Harbor-Session` (HTTP)
+     *replaces* the JWT `session` claim (a default); never widens `(tenant, user)`.
+   - **agent** — always assertable, **`_meta.agent_id` only, never in the JWT**, never
+     persisted; a read-time curation filter, **fail-open** (D-139).
+   P3 is untouched in every cell: tenant is the sole boundary, credential-pinned, never widened.
+
+**Charter corrections forced by the Harbor source (recorded so the ports are faithful).**
+- Harbor builds **and** parses claims as **`jwt.MapClaims`** (a `map[string]any`) on both the
+  signing and verifying sides — there is **no typed `Claims` struct** in Harbor. ae7 must parse
+  into a map and extract claims by key; copying a non-existent typed struct would be invention.
+- `sub == user` (audited): "user = token `sub`" and "user = token `user` claim" are the same
+  value.
+- **agent placement is CLOSED** (resolves the prior open decision): agent travels via `_meta`
+  only — Harbor's claim set carries no agent field, so there is nothing to inherit on the JWT.
+
+**Consequences.**
+- **ae2 (additive intake).** Implements the D-138 tenant-mismatch reject and the Harbor
+  session-*replace* semantics now (`_meta.session` / `X-Harbor-Session` replaces, defaulting to
+  any claim/arg session); HTTP accepts `X-Harbor-Session`. It does **not** do token-`sub`
+  fallback or STRICT refusal (C3-gated on ae7); it stays additive and `compatible`.
+- **ae7 (verifier).** Ports Harbor's verifier verbatim into `internal/auth`: asymmetric-only
+  allowlist (RS/ES), `WithValidMethods` parser gate + `WithoutClaimsValidation` with its own
+  `exp`/`nbf` checks against an injectable clock, issuer exact-match, `audienceContains`
+  containment (D-136), JWKS `KeySet` (max-stale ceiling, fail-loud first load), bearer
+  middleware incl. Harbor's `effectiveID.SessionID = hdrSession` session-replace, and the
+  mandatory triple `tenant/user/session` + `exp` via an `identity.Validate` equivalent. ae7 is
+  what makes a verified `user` *exist*, enabling STRICT and the `memory:assert-user` capability,
+  and is the C4 gate for ae2b.
+- **ae8 (effective-scope).** Houses both knobs and the precedence resolver; its golden matrix
+  gains the multiplexing dimension (pinned vs assertable `user`) atop the source matrix
+  (JWT / `_meta` / args). STRICT refusal asserts the resolver *requires* a populated
+  `Scope.User`, **not** a new `WHERE` (`buildScopeWhere`/`buildExactScopeWhere` already filter
+  when set). Resolution precedence: verified JWT claim > `_meta` > D-125 arg, per dimension.
+- No code lands in this entry; it is a settled decision shaping the ae2/ae7/ae8 plans. The
+  multiplexing capability and posture flags ship D-034-complete in their owning phases.
+
+## D-141 — Shared retrieval render core parameterized by `RenderMode` (ae3)
+
+2026-06-30. Agent-identity & read-time scoping track (`phase-ae*`, D-135), phase ae3 (Wave 0,
+ships before ae4a). Closes the duplicated/string-coupled rendering of retrieval results.
+
+**Scope correction (recorded so the work is honest).** The charter framed ae3 as "split MCP's
+private renderer out." Code truth: `internal/mcpserver` has **no** renderer — `makeRetrieveHandler`
+already emits a count-only `Text` (`"Retrieved %d item(s); response_id=%s"`) plus the full typed
+`Structured` (`handlers.go:244`); and `internal/retrieval` has **no** render code at all. The real
+coupling is **inside eval**: `scoreQuestion` (`eval/harness/runner.go:315-343`) writes the
+`"[OUTDATED — … ] "` marker and `BuildReaderPrompt` (`eval/harness/judge.go:119-158`) re-parses it
+(`strings.HasPrefix(c,"[OUTDATED")` + `strings.Index(c,"] ")`). ae3 is therefore *build the shared
+core, migrate eval onto it byte-identically, and stand up the inert `RenderMCP` mode* — not a split.
+
+**Decision.**
+1. **One entry point** in `internal/retrieval` — `Render(mode RenderMode, items []RenderItem)
+   RenderResult`, a pure function (no receiver, no package state, no gateway call), plus a
+   `RenderItemsFromMemoryItems` mapper. Both call sites build the `RenderItem` projection (the
+   server from `retrieval.MemoryItem`; eval from its wire-decoded `retrieveItem`), so the renderer
+   depends on neither the store type nor a wire type.
+2. **Typed seam replaces the string round-trip.** The item→prompt seam becomes `[]RenderItem` (the
+   `Stale` bool travels as a bool); the `[OUTDATED…]` string is produced once, inside `Render`, and
+   never re-parsed — removing a fragile parse surface.
+3. **`RenderMode` is a two-value call-site argument, NOT a config knob** (a knob would invite a
+   third surface-specific mode and re-fork the renderer — the sprawl this removes). No new config
+   key; `RenderMode` must not appear in `internal/config`.
+4. **`RenderMCP` is an inert superset in ae3** — its base body equals `RenderEval` (diff-tested);
+   the citation-handle and episode-hook slots are wired but emit nothing. ae4a is the only phase
+   that makes the modes diverge and flips the MCP `Text` to the rendered body. The eval reader
+   prompt is **byte-frozen** (M3): `TestReaderPrompt_Golden` + `TestEvalCI` pass unchanged.
+
+**Consequences.** Pure refactor, no behaviour change this phase (MCP `Text` byte-unchanged). Net
+test-coverage gain (`scoreQuestion`'s item render is untested today). Unblocks ae4a (lean MCP read).
+Smoke `scripts/smoke/phase-ae3.sh`; glossary gains render mode / render item / context block. No
+RFC change. Plan: `docs/plans/phase-ae3-shared-render-core.md`.
+
+## D-139 — Topic-views/filters are curation, not isolation; the read-time topic filter fails OPEN
+
+2026-06-30. Wave-0 decision of the agent-identity track (D-135); first implemented in phase ae6
+(the own-scope topic filter ae1's read-time agent filter and ae9's topic views reuse). Filed here
+because ae6 is the first phase to ship the fail-open behaviour.
+
+**Decision.** The agent→topic and request-level topic filters are a **curation / relevance lens,
+not a security boundary.** They filter *which of the caller's own-scope memories surface*; they
+never cross a scope. Cross-scope isolation remains the store-layer scope query (P3) + grants. The
+read-time topic filter (`retrieval.filterByTopicOwnScope`) therefore **fails OPEN**: on a
+topic-store (`MemoriesTopics`) error it returns the caller's own *unfiltered* results with a
+`DegradedTopicFilter` marker (D-036). This is the **deliberate opposite** of grants'
+`filterByTopic`, which **fails CLOSED** (returns `nil`, dropping the whole granted scope) because
+that filter guards *cross-scope sharing* — over-sharing must never happen, so a membership-read
+failure must drop, not pass. The two are **distinct functions** with intentionally opposite error
+semantics; the divergence is recorded here to prevent a future "make them consistent" refactor.
+
+**Consequences.** ae6 adds `filterByTopicOwnScope` beside grants' `filterByTopic` (never merged);
+ae1/ae9 layer agent-policy / named-view topic sets onto the same fail-open primitive. A topic filter
+can only **subtract** from own-scope, never widen — P3 stays the store-layer scope query. Glossary:
+own-scope topic filter, `DegradedTopicFilter`. No RFC change (RFC §5.3 topic slicing).
+
+## D-144 — Own-scope topic filter: discrete read after fusion, before the scoringK trim (ae6)
+
+2026-06-30. Agent-identity track (D-135), phase ae6 (Wave 0). Settles the charter's open
+lane-integration choice (lane-pushdown vs `scoringK` widening) for the no-underfill remedy.
+
+**Context.** The retrieve pipeline is lanes (laneK each) → RRF fuse → **trim-to-`scoringK`** →
+`GetMany` → score → rerank → **trim-to-`limit`** (`internal/retrieval/retrieval.go`). A topic
+filter applied after the `scoringK` trim drops rows from a capped pool with no backfill →
+underfill. Grants' `filterByTopic` runs post-trim per granted scope and structurally underfills
+(accepted there: fail-closed correctness > completeness).
+
+**Decision.** ae6 filters the **fused candidate IDs** with a discrete `MemoriesTopics` read
+**after `rrf(lanes)` and *before* the `fused = fused[:scoringK]` trim**, so the filter runs over the
+**laneK-wide** pool (≤200), not the trimmed pool (≤50); then the existing trim/`GetMany`/score/limit
+run over the on-topic pool unchanged. A `retrieval.topic_filter_scoring_k` knob (default `100`)
+widens `scoringK` (and `laneK` via the existing floor rule) **only when a topic filter is active**.
+Chosen over lane-pushdown because:
+1. **Fail-open (D-139) needs a discrete topic read to fail** — lane-pushdown folds the predicate
+   into each lane's SQL, where a topic-membership failure is indistinguishable from a lane failure
+   and cannot cleanly fall back to unfiltered; a discrete `MemoriesTopics` call can (grants' shape,
+   error branch inverted).
+2. **Portability** — lane-pushdown would touch 3 SQL lane builders × 2 drivers **and** the `vindex`
+   seam (the vector lane is `Scan`-then-cosine-in-Go, not a ranking-time JOIN). The discrete filter
+   touches neither.
+
+**Consequences.** No new table, no per-lane/vindex change; one D-034 knob (inert with no topic arg,
+so zero-config behaviour unchanged). The no-underfill guarantee holds **within the candidate
+window** (documented, not an absolute claim past the window); AC-2's regression test pins it against
+the naive trimmed-pool approach. The own-scope filter is the primitive ae1/ae9 reuse. Smoke
+`scripts/smoke/phase-ae6.sh`. Plan: `docs/plans/phase-ae6-topic-filter.md`.

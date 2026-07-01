@@ -491,3 +491,28 @@ keys (a1b), which split the provider/credential rather than the model.
 rerank lane, distinct from the primary completion provider and inheriting it when empty (a1b,
 D-134). The bifrost `Account` exposes each concern as its own provider entry with its own
 credential; "same provider name, different key" is out of scope (use a distinct provider name).
+
+**Render mode** — the two-value `RenderEval` / `RenderMCP` argument to `retrieval.Render`; selects
+the reader-facing shape of retrieval results without forking the renderer (ae3, D-141). A
+deliberate call-site argument, **not** a config knob — a knob would re-fork the renderer it unifies.
+
+**Render item** — `retrieval.RenderItem`, the projection both render call sites build (the server
+from `retrieval.MemoryItem`, eval from its wire-decoded result) so the single `Render` function
+depends on neither the store type nor a wire type (ae3, D-141). Carries the citation-handle and
+episode-hook slots that stay inert until ae4a.
+
+**Context block** — the assembled CURRENT / SUPERSEDED reader sections (with `[N]` / `[S1]`
+positional markers and `| When:` assertion dates) produced by `retrieval.Render`; the eval reader
+prompt embeds it byte-for-byte (ae3, D-141).
+
+**Own-scope topic filter** — `retrieval.filterByTopicOwnScope`: an optional include/exclude on
+retrieve that narrows the caller's **own-scope** results to topic-tagged memories via the
+`memory_topics` junction / `MemoriesTopics` batch read (ae6, D-144). A curation / relevance lens,
+**not** a P3 isolation boundary (D-139) — it can only subtract from own-scope, never widen. **Fails
+open** (returns the unfiltered own-scope results with `DegradedTopicFilter=true` on a topic-store
+error), the deliberate opposite of grants' fail-closed `filterByTopic`. Reused by ae1 (read-time
+agent filter) and ae9 (topic views).
+
+**`DegradedTopicFilter`** — a retrieve-response marker that the own-scope topic filter could not be
+applied (topic-store error) and unfiltered own-scope results were returned instead (D-036 fail-open
+transparency; ae6).

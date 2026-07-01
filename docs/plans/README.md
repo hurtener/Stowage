@@ -465,3 +465,38 @@ still match the `scripts/smoke/phase-*.sh` gate.
 Plans: `phase-a1-gateway-defaults.md` (shipped), `phase-a2-learner-models.md` (shipped),
 `phase-a3-quickstart-honesty.md` (shipped). Per-concern keys (a1b) were folded out of a1 once OpenRouter
 proved it serves all three lanes on one key (D-131 deviation note).
+
+## Agent-identity & read-time scoping track (D-135)
+
+An orthogonal, post-launch track that gives Stowage read-time agent identity
+and per-agent curation without persisting agent on any of the 12 scope tables.
+Numbered `phase-aeN-*` so it does not collide with the launch (01–27),
+post-launch (22–27), productionization (`h*`), performance (`p*`), or adoption
+(`a*`) slots; smoke scripts still match the `scripts/smoke/phase-*.sh` gate.
+
+Charter (wave map + dependency graph): `docs/plans/track-adoption-ergonomics.md`.
+Posture is **additive-first** — read identity from `_meta` *alongside* the existing
+arguments until the JWT verifier (ae7) lands; tenant stays the credential-pinned P3
+boundary throughout. Wave-0 posture decisions are settled (D-135–D-140); the
+multiplexing-vs-strict default is **STRICT** with two orthogonal opt-in knobs (D-137).
+
+| # | Phase | Owns | RFC | Deps | Decision |
+|---|-------|------|-----|------|----------|
+| ae3 | Shared render core (eval-mode vs MCP-mode) | `internal/retrieval` (render), `eval/harness`, `internal/mcpserver` | §4.2, §9.2, §9.5 | — | D-141 |
+| ae4a | Lean MCP read — `Text` markdown + episode hook + drill by citation ULID | `internal/mcpserver`, `internal/retrieval`, `sdk/stowage`, `internal/api` | §4.2, §5.7, §6b, §9.2, §9.5 | ae3 | D-142 (proposed) |
+| ae5 | List / browse (most-recent-first, superseded filter) | `internal/store` (+ both drivers + conformance), `internal/retrieval`, surfaces | §5.2, §5.3, §8.1, §9.1-9.5 | — | D-143 (proposed) |
+| ae6 | Request-level topic filter (own-scope, fail-open, lane-aware) | `internal/retrieval`, surfaces | §4.2, §5.3, §5.4, §9.5 | — | D-144 (proposed) |
+| ae1 | Read-time agent identity dimension (+ Dockyard v1.8 bump) | `internal/identity`, `internal/store`, `internal/retrieval`, surfaces | §5, §5.3, §9.5 | ae6 | D-135, D-139 |
+| ae2 | Additive `_meta` identity intake | `internal/mcpserver`, `internal/identity` | §5, §9.5, D-125 | ae1 | D-137, D-138 |
+| ae7 | Harbor-aligned JWT verifier (second mode) | `internal/auth`, `internal/api`, `internal/mcpserver`, `internal/config` | §5.5, §9.5 | — | D-136 |
+| ae8 | Effective-scope resolution + read-side enforcement | `internal/identity`, `internal/store`, `internal/retrieval`, `internal/config` | P3/§6, §5, §9.5 | ae2, ae7 | D-137 |
+| ae9 | Per-agent / per-key topic views (read-time curation) | `internal/retrieval`, `internal/identity`, `internal/store`, surfaces | §5.3, §6, §9.5 | ae1, ae6 | D-139 |
+| ae4b | *(deferred)* Causal hook (batch links-exist) + positional drilldown | `internal/store` (+ drivers + conformance), `internal/reconcile`/`internal/episodes`, `internal/retrieval`, `internal/mcpserver` | §5.6, §5.7, §4.2, §8.1 | ae4a | D-145 (on promotion) |
+| ae2b | Breaking removal of `project_id`/`user_id` from MCP contracts | `internal/mcpserver`, `sdk/stowage`, `docs/` | D-125, §9.5 | ae7, ae8 | D-140 |
+| ae10 | *(deferred)* `layer`/`intent` read-shaping argument | `internal/retrieval`, surfaces | §6 | ae2, ae3 | — |
+
+Plans: `phase-ae3-shared-render-core.md`, `phase-ae6-topic-filter.md` (draft);
+`phase-ae4a-lean-mcp-render.md`, `phase-ae5-browse.md`, `phase-ae1-read-time-agent.md`,
+`phase-ae2-meta-intake.md`, `phase-ae7-jwt-verifier.md`, `phase-ae8-effective-scope.md`,
+`phase-ae9-topic-views.md`, `phase-ae2b-contract-removal.md` (to author);
+`phase-ae4b-causal-hook.md`, `phase-ae10-read-shaping.md` (deferred).
