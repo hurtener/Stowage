@@ -1,6 +1,6 @@
 # Phase ae3 — shared render core (eval-mode vs MCP-mode)
 
-- **Status:** draft
+- **Status:** implemented (see "As-built deviations" below)
 - **Owning subsystem(s):** `internal/retrieval` (new render path); `eval/harness` and `internal/mcpserver` (call sites)
 - **RFC sections:** §4.2 (read path), §9.2 (MCP surface), §9.5 (one logic core, D-067/D-073)
 - **Depends on phases:** the shipped retrieval render/result path (`internal/retrieval.MemoryItem`/`Response`); the ae-track parent (D-135). No in-track dependency — lands **first** in Wave 0, **before ae4a**.
@@ -228,6 +228,60 @@ docs/glossary.md                        # CHANGED — render mode, render item, 
   renderer depends on neither the store type nor a wire type.
 - **Context block** — the assembled CURRENT/SUPERSEDED reader sections (with `[N]`/`[S1]`
   positional markers) produced by `Render`.
+
+## As-built deviations
+
+- **`BuildReaderPrompt`'s signature changed** from `contexts []string` to
+  `items []retrieval.RenderItem`, as anticipated. Its only direct callers are
+  `JudgeQuestionWith` (production) and the golden tests — both in
+  `eval/harness`, so this stayed in-file-list.
+- **`JudgeQuestion`/`JudgeQuestionWith` kept their existing `contexts []string`
+  signature**, unchanged, rather than threading `[]retrieval.RenderItem` further
+  up the call graph. Their other callers (`gain.go`, `adapt.go`, `dataset.go`,
+  `sweep_test.go`) are all outside this phase's file list and pass plain
+  content strings — some of them (`dataset.go`'s judged-QA path, and the
+  `fullmode`-tagged sweep) can carry the pre-rendered `"[OUTDATED …]"` marker
+  baked into those strings by a prior `scoreQuestion` run. `JudgeQuestionWith`
+  now wraps each string into `retrieval.RenderItem{Content: c}` (a trivial,
+  non-parsing wrap — `renderItemsFromContexts` in `judge.go`) before calling
+  `BuildReaderPrompt`, rather than re-detecting `Stale` from the marker text
+  (which would just relocate the banned re-parse this phase removes, still
+  inside `judge.go`, still failing AC3's intent even if it dodged the literal
+  grep).
+  - **Consequence:** the judged/full-eval path (`opts.Judge`, gated behind a
+    live gateway) no longer partitions a pre-rendered marker string into a
+    CURRENT/SUPERSEDED split — every item is treated as current for that path.
+    **This is inert for everything AC2 requires**: `RunCI`
+    (`TestEvalCI`/`TestEvalCIGateBites`) never calls the judge at all (verified
+    by reading `RunCI`), so the CI/mock path this phase's byte-identity gate
+    covers is unaffected. The regression is confined to the operator-gated,
+    non-CI judged/sweep path.
+  - **Follow-up:** if judged-mode stale sectioning is wanted, a later phase
+    should thread `[]retrieval.RenderItem` through `JudgeQuestion`/
+    `JudgeQuestionWith` and their four external callers — out of scope here to
+    keep ae3's blast radius to its stated file list (CLAUDE.md §4.3).
+  - **RESOLVED (wave-0 fix, two adversarial reviews):** the follow-up above
+    landed. `QuestionResult` (`eval/harness/scores.go`) now carries a
+    `RenderItems []retrieval.RenderItem` field alongside `Items []string`,
+    populated by `runner.go`'s `scoreQuestion` from the same typed items it
+    already builds for `retrieval.Render`. A new `JudgeQuestionWithItems`
+    entry point (`judge.go`) calls `BuildReaderPrompt` directly on typed
+    items — no string re-wrap, no marker re-parse. `dataset.go`'s judged path
+    and `gain.go`'s `judgeOnOff` (memory-ON condition) now call
+    `JudgeQuestionWithItems(..., qr.RenderItems)` instead of
+    `JudgeQuestionWith(..., qr.Items)`, restoring the pre-ae3
+    CURRENT/SUPERSEDED partition on the operator-gated judged/gain paths.
+    `JudgeQuestionWith`'s `[]string` signature is preserved unchanged (now a
+    thin delegate to `JudgeQuestionWithItems` via `renderItemsFromContexts`)
+    for the genuinely-all-current callers: `adapt.go`'s playbook context, the
+    gain memory-OFF condition, and the `fullmode`-tagged sweep (which reads a
+    frozen `[]string` JSONL with no typed items available). See
+    `eval/harness/judge_test.go`'s `TestJudgeQuestionWithItems_PartitionsStale`
+    for the pinning test.
+- `TestEvalCI`'s `answer_context_hit` score is confirmed **inherently flaky**
+  independent of this change (0.93–0.98 across repeated runs on both the
+  pre-ae3 and post-ae3 code, due to async-pipeline timing under load per the
+  existing `RunCI` quiescence comments) — not a regression introduced here.
 
 ## Decisions filed
 

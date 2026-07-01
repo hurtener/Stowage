@@ -28,6 +28,11 @@ type retrieveRequest struct {
 	Debug      bool   `json:"debug"`       // if true, include per-item scoring breakdowns (Phase 10)
 	ResponseID string `json:"response_id"` // caller-supplied; generated when absent (D-051)
 	Profile    string `json:"profile"`     // "precise"|"balanced"|"broad"; default "balanced"
+	// IncludeTopics/ExcludeTopics narrow the caller's own-scope results to topic-tagged
+	// memories (ae6, D-144). Own-scope only (P3); fails open on a topic-store error
+	// (D-139, see retrieveResponse.DegradedTopicFilter). Empty = no constraint.
+	IncludeTopics []string `json:"include_topics"`
+	ExcludeTopics []string `json:"exclude_topics"`
 }
 
 // retrieveBreakdown is the wire format for a per-item scoring breakdown.
@@ -89,8 +94,17 @@ type retrieveResponse struct {
 	Support        retrieveSupport      `json:"support"`
 	Degraded       bool                 `json:"degraded"`
 	DegradedRerank bool                 `json:"degraded_rerank,omitempty"` // true when rerank failed; Phase-10 order preserved (Phase 12)
-	CacheHit       bool                 `json:"cache_hit,omitempty"`       // true when served from the hot–warm cache (Phase 12)
-	API            string               `json:"api"`                       // "v1"
+	// DegradedTopicFilter is true when include_topics/exclude_topics were requested but
+	// the topic store failed, so the caller's own UNFILTERED results were returned
+	// instead (fail-open, D-139, ae6).
+	DegradedTopicFilter bool   `json:"degraded_topic_filter,omitempty"`
+	CacheHit            bool   `json:"cache_hit,omitempty"` // true when served from the hot–warm cache (Phase 12)
+	API                 string `json:"api"`                 // "v1"
+	// Rendered is the identical lean markdown reader body the MCP Text block and
+	// SDK Rendered field carry (D-142, ae4a) — the same retrieval.RenderReadBody
+	// call, so all three single-user read surfaces stay byte-identical (D-067/
+	// D-073). This GROWS the response payload (M4): Items still travels in full.
+	Rendered string `json:"rendered,omitempty"`
 }
 
 // handleRetrieve implements POST /v1/retrieve.
@@ -140,15 +154,17 @@ func (s *Server) handleRetrieve(w http.ResponseWriter, r *http.Request) {
 	}
 
 	resp, err := s.retriever.Retrieve(r.Context(), scope, retrieval.Request{
-		Query:        req.Query,
-		Limit:        req.Limit,
-		Window:       store.Window{From: req.From, Until: req.Until},
-		Kinds:        req.Kinds,
-		IncludeLanes: req.IncludeLanes,
-		SessionID:    req.SessionID,
-		Debug:        req.Debug,
-		ResponseID:   req.ResponseID,
-		Profile:      req.Profile,
+		Query:         req.Query,
+		Limit:         req.Limit,
+		Window:        store.Window{From: req.From, Until: req.Until},
+		Kinds:         req.Kinds,
+		IncludeLanes:  req.IncludeLanes,
+		SessionID:     req.SessionID,
+		Debug:         req.Debug,
+		ResponseID:    req.ResponseID,
+		Profile:       req.Profile,
+		IncludeTopics: req.IncludeTopics,
+		ExcludeTopics: req.ExcludeTopics,
 	})
 	if err != nil {
 		s.log.ErrorContext(r.Context(), "api: retrieve failed", "err", err)
@@ -192,13 +208,15 @@ func (s *Server) handleRetrieve(w http.ResponseWriter, r *http.Request) {
 	}
 
 	respondJSON(w, http.StatusOK, retrieveResponse{
-		ResponseID:     resp.ResponseID,
-		Items:          items,
-		Support:        sup,
-		Degraded:       resp.Degraded,
-		DegradedRerank: resp.DegradedRerank,
-		CacheHit:       resp.CacheHit,
-		API:            resp.API,
+		ResponseID:          resp.ResponseID,
+		Items:               items,
+		Support:             sup,
+		Degraded:            resp.Degraded,
+		DegradedRerank:      resp.DegradedRerank,
+		DegradedTopicFilter: resp.DegradedTopicFilter,
+		CacheHit:            resp.CacheHit,
+		API:                 resp.API,
+		Rendered:            retrieval.RenderReadBody(resp.Items),
 	})
 }
 

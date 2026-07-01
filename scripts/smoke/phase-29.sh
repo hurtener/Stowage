@@ -60,7 +60,12 @@ fi
 # --- H5: dual-visibility (retain-and-flag superseded) + config knob (D-105) ----
 BIN=/tmp/stowage-smoke-29
 if CGO_ENABLED=0 go build -o "$BIN" ./cmd/stowage >/dev/null 2>&1; then
-  if "$BIN" config explain 2>/dev/null | grep -q "retrieval.include_superseded"; then
+  # Capture output first, then grep: piping directly into `grep -q` lets grep close
+  # the pipe on the first match, SIGPIPE-ing `config explain` mid-write; under
+  # `set -o pipefail` that non-zero producer status fails the check nondeterministically
+  # (surfaced once a retrieval.* key sorted after include_superseded — ae6, D-144).
+  cfg_explain=$("$BIN" config explain 2>/dev/null)
+  if printf '%s\n' "$cfg_explain" | grep -q "retrieval.include_superseded"; then
     ok "H5 config explain: retrieval.include_superseded present"
   else
     failc "H5 config explain: retrieval.include_superseded missing"

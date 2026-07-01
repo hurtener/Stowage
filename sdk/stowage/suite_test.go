@@ -81,6 +81,12 @@ func RunSuite(t *testing.T, client stowage.Client) {
 		if rResp.API != "v1" {
 			t.Errorf("Retrieve: API want %q, got %q", "v1", rResp.API)
 		}
+		// Rendered (D-142, ae4a) is always non-empty — RenderReadBody returns the
+		// empty-context sentinel even with zero items, and the parity contract
+		// requires both surfaces to populate it identically.
+		if rResp.Rendered == "" {
+			t.Error("Retrieve: empty Rendered field (D-142)")
+		}
 		// Items may be empty if pipeline hasn't processed yet — that's fine.
 		// Degraded is acceptable with mock gateway.
 	})
@@ -311,6 +317,37 @@ func RunSuite(t *testing.T, client stowage.Client) {
 		}
 		if resp.Status != "active" {
 			t.Errorf("Assert add: status want active got %q", resp.Status)
+		}
+	})
+
+	// ── 15. Browse (ae5, D-143) — deterministic, gateway-free scoped walk ────
+	t.Run("browse_recent_and_unknown_mode", func(t *testing.T) {
+		t.Parallel()
+		// Seed a memory via Assert so the scope has ≥1 row (HTTP omits Assert —
+		// Ingest is the portable seed path for all three surfaces).
+		if _, err := client.Ingest(ctx, stowage.IngestRequest{
+			Records: []stowage.RecordInput{{Role: "user", Content: "browse suite seed", SessionID: "browse-suite"}},
+		}); err != nil {
+			t.Fatalf("Ingest (browse seed): %v", err)
+		}
+
+		resp, err := client.Browse(ctx, stowage.BrowseRequest{})
+		if err != nil {
+			t.Fatalf("Browse (default mode): %v", err)
+		}
+		if resp.Memories == nil {
+			t.Error("Browse: Memories should be a non-nil (possibly empty) slice")
+		}
+
+		// A closed enum: an unrecognised mode must error on both impls, never
+		// silently default to recent (AC-7).
+		if _, err := client.Browse(ctx, stowage.BrowseRequest{Mode: "bogus-mode"}); err == nil {
+			t.Error("Browse: unknown mode should error, got nil")
+		}
+
+		// A malformed cursor must error, not panic or silently return page 1.
+		if _, err := client.Browse(ctx, stowage.BrowseRequest{Cursor: "not-a-cursor"}); err == nil {
+			t.Error("Browse: malformed cursor should error, got nil")
 		}
 	})
 }

@@ -48,6 +48,11 @@ type Services struct {
 	// Profile is the active config profile — selects the profile-internal
 	// playbook token budget for memory_playbook (D-072/D-042).
 	Profile string
+	// BrowseDefaultLimit is the configured retrieval.browse_default_limit
+	// (ae5, D-143) — the memory_browse page size used when the caller omits
+	// limit. Threaded from cfg.Retrieval.BrowseDefaultLimit at construction
+	// (main.go); 0 is safe (retrieval.Browse clamps to its hard page cap).
+	BrowseDefaultLimit int
 }
 
 // StdioScopeFn returns a ScopeFn that always resolves to a tenant-only scope
@@ -59,10 +64,11 @@ func StdioScopeFn(tenant string) ScopeFn {
 	}
 }
 
-// New creates a Dockyard *server.Server with all 20 Stowage MCP tools registered:
+// New creates a Dockyard *server.Server with all 21 Stowage MCP tools registered:
 // the original seven, the D-070 reversibility trio (memory_get, memory_rollback,
 // memory_resolve), the D-071 Tier control verbs (memory_flush, memory_branch, and the
 // Tier-B memory_grants), the episodic reads (memory_episodes, memory_causal), the
+// deterministic scope walk (memory_browse, ae5/D-143), the
 // §6c trust verbs (memory_verify, memory_review), the §6c trace export (memory_trace),
 // and the §6d proactive verbs (memory_suggestions, memory_proactive_config).
 // It returns an error when any tool fails to register (type mismatch, missing
@@ -81,7 +87,10 @@ func New(info server.Info, svc *Services) (*server.Server, error) {
 	}
 
 	if err := tool.New[RetrieveInput, RetrieveOutput]("memory_retrieve").
-		Describe("Retrieve relevant memories for a query using the four-lane (lexical+queries+structured+vector) retrieval pipeline.").
+		Describe("Retrieve relevant memories for a query using the four-lane (lexical+queries+structured+vector) retrieval pipeline. " +
+			"Returns a lean markdown reader body in the model-facing Text block (episode hooks + per-item [cite:…] drill handles for " +
+			"memory_drilldown) and the full typed result in Structured (D-142). The lean body shrinks the model's context, not the wire " +
+			"payload: both blocks travel, so a host reading both receives a larger payload, not a smaller one.").
 		Handler(makeRetrieveHandler(svc)).
 		Register(srv); err != nil {
 		return nil, err
@@ -97,6 +106,13 @@ func New(info server.Info, svc *Services) (*server.Server, error) {
 	if err := tool.New[EpisodesInput, EpisodesOutput]("memory_episodes").
 		Describe("Read the caller's episodes + their narratives (mirrors GET /v1/episodes; RFC §6b, D-080): most-recent-first list, or one episode when id is set, narrowed by session_id and the [from,until] time window. Deterministic + LLM-free.").
 		Handler(makeEpisodesHandler(svc)).
+		Register(srv); err != nil {
+		return nil, err
+	}
+
+	if err := tool.New[BrowseInput, BrowseOutput]("memory_browse").
+		Describe("Walk the caller's memories deterministically and gateway-free (mirrors GET /v1/memories; ae5, D-143): mode=recent (default) returns the scope's memories most-recent-first (created_at DESC) via a new store method; mode=superseded returns the scope's superseded memories by reusing the EXISTING status query — an ordering asymmetry (superseded is OLDEST-first) accepted as the cost of not adding a new query (H4). Neither mode ranks by relevance — for that use memory_retrieve.").
+		Handler(makeBrowseHandler(svc)).
 		Register(srv); err != nil {
 		return nil, err
 	}

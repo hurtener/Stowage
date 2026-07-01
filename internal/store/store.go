@@ -231,6 +231,16 @@ type MemoryStore interface {
 	// created_at ascending. cursor is an opaque pagination token.
 	ListByStatus(ctx context.Context, scope identity.Scope, status string, limit int, cursor string) ([]Memory, string, error)
 
+	// ListByScopeRecent returns the scope's memories ordered by (created_at, id)
+	// DESCENDING — most-recent-first — paginated by an opaque "<millis>:<id>"
+	// cursor (the inverted keyset: rows strictly BEFORE the cursor,
+	// (created_at,id) < cursor). cursor "" is the first page. Scope-required
+	// (P3): tenant is mandatory via buildScopeWhere and there is NO unscoped
+	// variant. PREFIX/wildcard scope, matching ListByStatus and the retrieval
+	// read lanes. Mirrors ListEpisodes' DESC keyset on the memories table
+	// (ae5, D-143).
+	ListByScopeRecent(ctx context.Context, scope identity.Scope, limit int, cursor string) ([]Memory, string, error)
+
 	// InsertLinks stores typed directed edges between memories.
 	InsertLinks(ctx context.Context, scope identity.Scope, links []Link) error
 

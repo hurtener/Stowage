@@ -42,3 +42,5 @@ retrieval.broad.lane_k             = 0                                    [defau
 retrieval.broad.scoring_k          = 0                                    [default]
 retrieval.broad.default_limit      = 0                                    [default]
 retrieval.include_superseded       = true                                 [default]
+retrieval.browse_default_limit     = 30                                   [default]
+retrieval.topic_filter_scoring_k   = 100                                  [default]

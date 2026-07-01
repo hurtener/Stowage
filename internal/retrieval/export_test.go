@@ -1,9 +1,11 @@
 package retrieval
 
 import (
+	"context"
 	"log/slog"
 	"time"
 
+	"github.com/hurtener/stowage/internal/identity"
 	"github.com/hurtener/stowage/internal/store"
 )
 
@@ -49,3 +51,29 @@ func (r *Retriever) CacheOf() *ResultCache { return r.cache }
 
 // HotSetOf returns the Retriever's HotSet.
 func (r *Retriever) HotSetOf() *HotSet { return r.hotSet }
+
+// ExportFilterByTopicOwnScope exposes filterByTopicOwnScope (ae6, D-139/D-144) for
+// testing the own-scope fail-OPEN topic filter directly.
+func (r *Retriever) ExportFilterByTopicOwnScope(
+	ctx context.Context, scope identity.Scope, ids []string, include, exclude []string,
+) ([]string, bool) {
+	return r.filterByTopicOwnScope(ctx, scope, ids, include, exclude)
+}
+
+// ExportFilterByTopic exposes grants' filterByTopic (fail-CLOSED) so tests can
+// directly contrast its error semantics against ExportFilterByTopicOwnScope's
+// fail-OPEN semantics on the SAME injected error (D-139).
+func (r *Retriever) ExportFilterByTopic(
+	ctx context.Context, scope identity.Scope, mems []store.Memory, topicKey string,
+) []store.Memory {
+	return r.filterByTopic(ctx, scope, mems, topicKey)
+}
+
+// ExportTopicFilterScoringK exposes the resolved topicFilterScoringK (falling back to
+// defaultTopicFilterScoringK when unset) for testing the D-144 widening knob.
+func (r *Retriever) ExportTopicFilterScoringK() int {
+	if r.topicFilterScoringK <= 0 {
+		return defaultTopicFilterScoringK
+	}
+	return r.topicFilterScoringK
+}

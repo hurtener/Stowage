@@ -185,37 +185,44 @@ func makeRetrieveHandler(svc *Services) tool.Handler[RetrieveInput, RetrieveOutp
 		}
 
 		resp, err := svc.Retriever.Retrieve(ctx, scope, retrieval.Request{
-			Query:        in.Query,
-			Limit:        in.Limit,
-			Window:       store.Window{From: in.From, Until: in.Until},
-			Kinds:        in.Kinds,
-			IncludeLanes: in.IncludeLanes,
-			SessionID:    in.SessionID,
-			Debug:        in.Debug,
-			ResponseID:   in.ResponseID,
-			Profile:      in.Profile,
+			Query:         in.Query,
+			Limit:         in.Limit,
+			Window:        store.Window{From: in.From, Until: in.Until},
+			Kinds:         in.Kinds,
+			IncludeLanes:  in.IncludeLanes,
+			SessionID:     in.SessionID,
+			Debug:         in.Debug,
+			ResponseID:    in.ResponseID,
+			Profile:       in.Profile,
+			IncludeTopics: in.IncludeTopics,
+			ExcludeTopics: in.ExcludeTopics,
 		})
 		if err != nil {
 			return tool.Result[RetrieveOutput]{}, fmt.Errorf("memory_retrieve: %w", err)
 		}
+
+		// Build the shared render-input projection (D-141); its Citation/EpisodeID
+		// slots feed both the Structured item mapping below AND the rendered Text
+		// body (via retrieval.RenderReadBody below, D-142).
+		renderItems := retrieval.RenderItemsFromMemoryItems(resp.Items)
 
 		items := make([]RetrieveItem, len(resp.Items))
 		for i, it := range resp.Items {
 			ri := RetrieveItem{
 				ID:       it.Memory.ID,
 				Kind:     it.Memory.Kind,
-				Content:  it.Memory.Content,
+				Content:  renderItems[i].Content,
 				Context:  it.Memory.Context,
 				Score:    it.Score,
-				Citation: it.Citation,
+				Citation: renderItems[i].Citation,
 			}
 			if it.Stale {
 				ri.Stale = true
 				ri.SupersededBy = it.Memory.SupersededByID
-				ri.SupersededByContent = it.SupersededByContent
-				ri.SupersededByDate = it.SupersededByDate
+				ri.SupersededByContent = renderItems[i].SupersededByContent
+				ri.SupersededByDate = renderItems[i].SupersededByDate
 			}
-			ri.OccurredAt = it.Memory.ValidFrom
+			ri.OccurredAt = renderItems[i].OccurredAt
 			if in.IncludeLanes {
 				ri.Lanes = it.Lanes
 			}
@@ -235,13 +242,17 @@ func makeRetrieveHandler(svc *Services) tool.Handler[RetrieveInput, RetrieveOutp
 				TopScore:  resp.Support.TopScore,
 				Conflicts: conflicts,
 			},
-			Degraded:       resp.Degraded,
-			DegradedRerank: resp.DegradedRerank,
-			CacheHit:       resp.CacheHit,
-			API:            resp.API,
+			Degraded:            resp.Degraded,
+			DegradedRerank:      resp.DegradedRerank,
+			DegradedTopicFilter: resp.DegradedTopicFilter,
+			CacheHit:            resp.CacheHit,
+			API:                 resp.API,
 		}
+		// Lean MCP read (D-142, ae4a): the model-facing Text is the rendered
+		// markdown body — episode hooks + per-item [cite:…] drill handles — not
+		// a count string. Structured keeps the full typed result unchanged.
 		return tool.Result[RetrieveOutput]{
-			Text:       fmt.Sprintf("Retrieved %d item(s); response_id=%s", len(items), resp.ResponseID),
+			Text:       retrieval.RenderReadBody(resp.Items),
 			Structured: out,
 		}, nil
 	}
@@ -1005,6 +1016,56 @@ func episodeToItem(v episodes.EpisodeView) EpisodeItem {
 		ID: v.ID, SessionID: v.SessionID, Title: v.Title, Status: v.Status, Outcome: v.Outcome,
 		StartedAt: v.StartedAt, EndedAt: v.EndedAt, NarrativeMemoryID: v.NarrativeMemoryID, Narrative: v.Narrative,
 		Score: v.Score,
+	}
+}
+
+// makeBrowseHandler implements memory_browse (ae5, D-143): the deterministic,
+// gateway-free scoped walk over a scope's memories (mirrors GET /v1/memories +
+// the embedded SDK Browse). Thin caller over retrieval.Browse — the one core
+// (D-067/D-073). Scope resolved via svc.ScopeFn, narrowed by ProjectID/UserID
+// (D-125).
+func makeBrowseHandler(svc *Services) tool.Handler[BrowseInput, BrowseOutput] {
+	return func(ctx context.Context, in BrowseInput) (tool.Result[BrowseOutput], error) {
+		scope, err := svc.ScopeFn(ctx)
+		if err != nil {
+			return tool.Result[BrowseOutput]{}, fmt.Errorf("memory_browse: resolve scope: %w", err)
+		}
+		scope = identity.Scope{Tenant: scope.Tenant, Project: in.ProjectID, User: in.UserID}
+
+		mode, perr := retrieval.ParseBrowseMode(in.Mode)
+		if perr != nil {
+			return tool.Result[BrowseOutput]{}, fmt.Errorf("memory_browse: %w", perr)
+		}
+
+		res, berr := retrieval.Browse(ctx, svc.Store, scope, retrieval.BrowseOptions{
+			Mode: mode, Limit: in.Limit, Cursor: in.Cursor, DefaultLimit: svc.BrowseDefaultLimit,
+		})
+		if berr != nil {
+			return tool.Result[BrowseOutput]{}, fmt.Errorf("memory_browse: %w", berr)
+		}
+
+		out := BrowseOutput{Memories: make([]BrowseMemoryItem, 0, len(res.Memories)), NextCursor: res.NextCursor}
+		for i := range res.Memories {
+			out.Memories = append(out.Memories, memoryToBrowseItem(&res.Memories[i]))
+		}
+		return tool.Result[BrowseOutput]{
+			Text:       fmt.Sprintf("Browse: %d memories returned", len(out.Memories)),
+			Structured: out,
+		}, nil
+	}
+}
+
+// memoryToBrowseItem converts a *store.Memory to the memory_browse wire item.
+func memoryToBrowseItem(m *store.Memory) BrowseMemoryItem {
+	return BrowseMemoryItem{
+		ID: m.ID, Kind: m.Kind, Content: m.Content, Context: m.Context, Status: m.Status,
+		Importance: m.Importance, Confidence: m.Confidence, TrustSource: m.TrustSource,
+		MatchCount: m.MatchCount, InjectCount: m.InjectCount, UseCount: m.UseCount,
+		SaveCount: m.SaveCount, FailCount: m.FailCount, NoiseCount: m.NoiseCount,
+		Stability: m.Stability, ValidFrom: m.ValidFrom, ValidUntil: m.ValidUntil,
+		EpisodeID: m.EpisodeID, SupersedesID: m.SupersedesID, SupersededByID: m.SupersededByID,
+		PrivacyZone: m.PrivacyZone, ContentHash: m.ContentHash,
+		CreatedAt: m.CreatedAt, UpdatedAt: m.UpdatedAt,
 	}
 }
 

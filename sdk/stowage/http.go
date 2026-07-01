@@ -301,6 +301,30 @@ func (c *httpClient) Playbook(ctx context.Context, req PlaybookRequest) (Playboo
 	return resp, nil
 }
 
+// Browse implements Client via GET /v1/memories (ae5, D-143).
+func (c *httpClient) Browse(ctx context.Context, req BrowseRequest) (BrowseResponse, error) {
+	v := url.Values{}
+	if req.Mode != "" {
+		v.Set("mode", req.Mode)
+	}
+	if req.Limit > 0 {
+		v.Set("limit", strconv.Itoa(req.Limit))
+	}
+	if req.Cursor != "" {
+		v.Set("cursor", req.Cursor)
+	}
+	c.addEffScope(v, req.ProjectID, req.UserID)
+	path := "/v1/memories"
+	if enc := v.Encode(); enc != "" {
+		path += "?" + enc
+	}
+	var resp BrowseResponse
+	if err := c.do(ctx, http.MethodGet, path, nil, &resp); err != nil {
+		return BrowseResponse{}, err
+	}
+	return resp, nil
+}
+
 // Episodes implements Client via GET /v1/episodes (D-080).
 func (c *httpClient) Episodes(ctx context.Context, req EpisodesRequest) (EpisodesResponse, error) {
 	v := url.Values{}

@@ -3,7 +3,9 @@ package api_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"os"
@@ -338,6 +340,69 @@ func TestRetrieve_SupersededCompanionInline(t *testing.T) {
 	}
 }
 
+// TestRetrieve_RenderedFieldPresent proves the HTTP parity surface (D-142,
+// ae4a): retrieveResponse.rendered carries the identical lean markdown body
+// the MCP Text block and SDK Rendered field carry, sourced from the single
+// retrieval.RenderReadBody call. A matching memory's citation must appear in
+// the rendered body as a [cite:…] drill handle.
+func TestRetrieve_RenderedFieldPresent(t *testing.T) {
+	t.Parallel()
+	srv, ts, st := newTestServer(t)
+	_, pt := mustCreateAgentKey(t, st, "tenant-rendered")
+	setRetriever(t, srv, st)
+
+	scope := identity.Scope{Tenant: "tenant-rendered"}
+	uniqueTerm := "renderedfieldapitestxyzzy"
+	nowMs := time.Now().UnixMilli()
+	memID := fmt.Sprintf("01rnd%016x0000", nowMs)
+	cs := store.CommitSet{
+		Action: store.ActionAdd,
+		Memory: store.Memory{
+			ID: memID, Kind: "fact", Content: uniqueTerm + " is a unique rendered-field test memory",
+			Status: "active", Confidence: 0.9, TrustSource: "llm_extracted", Stability: 1.0,
+			ContentHash: memID, CreatedAt: nowMs, UpdatedAt: nowMs,
+		},
+		Events: []store.Event{{ID: fmt.Sprintf("01rev%016x0000", nowMs), Type: "memory.added", SubjectID: memID, Payload: `{}`}},
+		Scope:  scope,
+	}
+	if err := st.Memories().Commit(context.Background(), scope, cs); err != nil {
+		t.Fatalf("insert memory: %v", err)
+	}
+
+	body := jsonBody(t, map[string]interface{}{"query": uniqueTerm, "limit": 5})
+	req, _ := http.NewRequest("POST", ts.URL+"/v1/retrieve", body)
+	req.Header.Set("Authorization", bearerHeader(pt))
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("POST /v1/retrieve rendered: %v", err)
+	}
+	defer drainClose(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("rendered retrieve: got %d want 200", resp.StatusCode)
+	}
+	var res struct {
+		Items []struct {
+			ID       string `json:"id"`
+			Citation string `json:"citation"`
+		} `json:"items"`
+		Rendered string `json:"rendered"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&res); err != nil {
+		t.Fatalf("decode rendered response: %v", err)
+	}
+	if len(res.Items) == 0 {
+		t.Skip("no items returned by lexical search — rendered-field assertion unobservable")
+	}
+	if res.Rendered == "" {
+		t.Fatal("rendered field must not be empty when items are present")
+	}
+	if !strings.Contains(res.Rendered, "[cite:"+res.Items[0].Citation+"]") {
+		t.Errorf("rendered field missing drill handle for citation %q: %q", res.Items[0].Citation, res.Rendered)
+	}
+}
+
 // TestRetrieve_InvalidProfile proves an unknown profile is rejected with 400 (D-034:
 // the profile knob ships with validation).
 func TestRetrieve_InvalidProfile(t *testing.T) {
@@ -416,5 +481,115 @@ func TestRetrieve_IncludeLanesPopulatesItems(t *testing.T) {
 	}
 	if len(res.Items[0].Lanes) == 0 {
 		t.Errorf("include_lanes:true: item %s carries no lane attribution", res.Items[0].ID)
+	}
+}
+
+// TestRetrieve_TopicFilterFieldsAccepted proves include_topics/exclude_topics
+// (ae6) are recognized retrieveRequest fields — the handler's json.Decoder
+// runs with DisallowUnknownFields (retrieve_handler.go), so a request
+// carrying these fields must decode successfully rather than 400 as an
+// unknown field, and DegradedTopicFilter must be absent (omitempty, false)
+// on the un-degraded path.
+func TestRetrieve_TopicFilterFieldsAccepted(t *testing.T) {
+	t.Parallel()
+	srv, ts, st := newTestServer(t)
+	_, pt := mustCreateAgentKey(t, st, "tenant-topicfields")
+	setRetriever(t, srv, st)
+
+	body := jsonBody(t, map[string]interface{}{
+		"query":          "anything",
+		"include_topics": []string{"onboarding"},
+		"exclude_topics": []string{"deprecated"},
+	})
+	req, _ := http.NewRequest("POST", ts.URL+"/v1/retrieve", body)
+	req.Header.Set("Authorization", bearerHeader(pt))
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("POST /v1/retrieve topic fields: %v", err)
+	}
+	defer drainClose(resp.Body)
+	raw, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("include_topics/exclude_topics: got %d want 200 (fields must not be rejected as unknown): %s", resp.StatusCode, raw)
+	}
+	var res struct {
+		DegradedTopicFilter bool `json:"degraded_topic_filter"`
+	}
+	if err := json.Unmarshal(raw, &res); err != nil {
+		t.Fatalf("decode topic-fields response: %v", err)
+	}
+	if res.DegradedTopicFilter {
+		t.Error("degraded_topic_filter should be false (omitted) when the topic store is healthy")
+	}
+}
+
+// failingTopicsMemoryStore wraps a real store.MemoryStore but fails every
+// MemoriesTopics call, forcing retrieval's own-scope topic filter into its
+// fail-open degraded branch (D-139) — mirrors
+// internal/retrieval/topicfilter_test.go's memoriesTopicsFailStore.
+type failingTopicsMemoryStore struct {
+	store.MemoryStore
+}
+
+func (failingTopicsMemoryStore) MemoriesTopics(context.Context, identity.Scope, []string) (map[string][]string, error) {
+	return nil, errors.New("synthetic MemoriesTopics failure")
+}
+
+// TestRetrieve_DegradedTopicFilterSerializes proves retrieveResponse's
+// degraded_topic_filter field (ae6) serializes as true on the wire when the
+// topic store fails and the own-scope filter fails open (D-139).
+func TestRetrieve_DegradedTopicFilterSerializes(t *testing.T) {
+	t.Parallel()
+	srv, ts, st := newTestServer(t)
+	_, pt := mustCreateAgentKey(t, st, "tenant-topicdegraded")
+
+	scope := identity.Scope{Tenant: "tenant-topicdegraded"}
+	uniqueTerm := "topicdegradedapitestxyzzy"
+	nowMs := time.Now().UnixMilli()
+	memID := fmt.Sprintf("01tpd%016x0000", nowMs)
+	cs := store.CommitSet{
+		Action: store.ActionAdd,
+		Memory: store.Memory{
+			ID: memID, Kind: "fact", Content: uniqueTerm + " is a unique topic-degraded test memory",
+			Status: "active", Confidence: 0.9, TrustSource: "llm_extracted", Stability: 1.0,
+			ContentHash: memID, CreatedAt: nowMs, UpdatedAt: nowMs,
+		},
+		Events: []store.Event{{ID: fmt.Sprintf("01tpe%016x0000", nowMs), Type: "memory.added", SubjectID: memID, Payload: `{}`}},
+		Scope:  scope,
+	}
+	if err := st.Memories().Commit(context.Background(), scope, cs); err != nil {
+		t.Fatalf("insert memory: %v", err)
+	}
+
+	log := slog.New(slog.NewTextHandler(io.Discard, &slog.HandlerOptions{Level: slog.LevelError}))
+	vi := vindex.New(st.Vectors(), 4, "test-model")
+	r := retrieval.New(failingTopicsMemoryStore{st.Memories()}, st.Records(), vi, nil, log)
+	srv.SetRetriever(r)
+
+	body := jsonBody(t, map[string]interface{}{
+		"query": uniqueTerm, "limit": 5, "include_topics": []string{"onboarding"},
+	})
+	req, _ := http.NewRequest("POST", ts.URL+"/v1/retrieve", body)
+	req.Header.Set("Authorization", bearerHeader(pt))
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("POST /v1/retrieve degraded topic filter: %v", err)
+	}
+	defer drainClose(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("degraded topic filter retrieve: got %d want 200", resp.StatusCode)
+	}
+	var res struct {
+		DegradedTopicFilter bool `json:"degraded_topic_filter"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&res); err != nil {
+		t.Fatalf("decode degraded-topic-filter response: %v", err)
+	}
+	if !res.DegradedTopicFilter {
+		t.Error("degraded_topic_filter must serialize as true when the topic store fails (D-139 fail-open)")
 	}
 }

@@ -10,6 +10,6 @@ grep -q "ValidFrom:   c.OccurredAt" internal/reconcile/reconcile.go && ok "candi
 grep -q "ri.OccurredAt = item.Memory.ValidFrom" internal/api/retrieve_handler.go && ok "HTTP retrieve surfaces occurred_at" || failc "HTTP retrieve missing occurred_at"
 grep -q "occurred_at" internal/mcpserver/contracts.go && ok "MCP retrieve item has occurred_at" || failc "MCP missing occurred_at"
 grep -q "OccurredAt int64" sdk/stowage/types.go && ok "SDK retrieve item has occurred_at" || failc "SDK missing occurred_at"
-grep -q "When: " eval/harness/runner.go && ok "eval reader renders | When: date" || failc "eval reader missing When rendering"
+grep -q "When: " internal/retrieval/render.go && ok "eval reader renders | When: date (retrieval.Render, ae3/D-141)" || failc "eval reader missing When rendering"
 go build ./... >/dev/null 2>&1 && ok "build green" || failc "build"
 exit "$fails"

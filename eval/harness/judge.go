@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/hurtener/stowage/internal/gateway"
+	"github.com/hurtener/stowage/internal/retrieval"
 )
 
 // judged-QA mode (Phase 20, D-076): a reader LLM answers an eval question from
@@ -81,9 +82,11 @@ type JudgedResult struct {
 }
 
 // BuildReaderPrompt assembles the (system, user) prompt for the reader. Pure and
-// deterministic — golden-tested. The context blocks are the retrieved memory
-// contents (already scored), joined with stable numbering.
-func BuildReaderPrompt(question string, questionDate string, contexts []string) (system, user string) {
+// deterministic — golden-tested. The context block is assembled by the shared
+// render core (D-141, internal/retrieval.Render): items carry their CURRENT/
+// SUPERSEDED status as a typed bool, so this function no longer re-parses an
+// inline "[OUTDATED …]" marker out of a rendered string.
+func BuildReaderPrompt(question string, questionDate string, items []retrieval.RenderItem) (system, user string) {
 	system = "You are answering a question using ONLY the memory context retrieved below. " +
 		"Rules: (1) Use ONLY the retrieved context — never rely on outside knowledge, prior " +
 		"training, or assumptions; do not answer anything that is not supported by the context. " +
@@ -116,37 +119,12 @@ func BuildReaderPrompt(question string, questionDate string, contexts []string) 
 		"Answer directly: a specific-value question gets the single current value; a preference/open " +
 		"question gets the described preference or the relevant details."
 
-	// Partition into current vs superseded (the runner prefixes superseded items with
-	// "[OUTDATED …]"). A clearly-separated section is far harder for the reader to miss
-	// than an inline tag buried among 30+ items (D-105 reader-prompt hardening).
-	const staleMark = "[OUTDATED"
-	var current, superseded []string
-	for _, c := range contexts {
-		if strings.HasPrefix(strings.TrimSpace(c), staleMark) {
-			// Strip the inline marker; the section header carries the instruction.
-			if i := strings.Index(c, "] "); i >= 0 {
-				c = c[i+2:]
-			}
-			superseded = append(superseded, c)
-		} else {
-			current = append(current, c)
-		}
-	}
-
+	// The CURRENT/SUPERSEDED partition (D-105 reader-prompt hardening — a clearly
+	// separated section is far harder for the reader to miss than an inline tag
+	// buried among 30+ items) is assembled once, by the shared render core, off
+	// the typed Stale bool — no string re-parse here (D-141).
 	var b strings.Builder
-	b.WriteString("CURRENT memories (answer from these):\n")
-	if len(current) == 0 {
-		b.WriteString("(no current memories retrieved)\n")
-	}
-	for i, c := range current {
-		fmt.Fprintf(&b, "[%d] %s\n", i+1, strings.TrimSpace(c))
-	}
-	if len(superseded) > 0 {
-		b.WriteString("\nSUPERSEDED memories (earlier values the user CHANGED — history only, NEVER answer with these):\n")
-		for i, c := range superseded {
-			fmt.Fprintf(&b, "[S%d] %s\n", i+1, strings.TrimSpace(c))
-		}
-	}
+	b.WriteString(retrieval.Render(retrieval.RenderEval, items).ContextBlock)
 	b.WriteString("\nQuestion: ")
 	b.WriteString(strings.TrimSpace(question))
 	if qd := strings.TrimSpace(questionDate); qd != "" {
@@ -156,6 +134,27 @@ func BuildReaderPrompt(question string, questionDate string, contexts []string) 
 		b.WriteString(qd)
 	}
 	return system, b.String()
+}
+
+// renderItemsFromContexts wraps a caller-supplied []string context list into
+// []retrieval.RenderItem so JudgeQuestionWith can call the typed
+// BuildReaderPrompt without changing its own exported signature.
+//
+// This wrap does NOT reconstruct Stale/Superseded from a string — doing so
+// would just relocate the banned "[OUTDATED" re-parse ae3 removed (D-141).
+// Every item is treated as current. It is correct for callers that are
+// genuinely all-current (adapt.go's playbook context, the gain memory-OFF
+// condition, sweep_test.go). Callers backed by a retrieve response that may
+// carry stale companions (dataset.go's judged path, gain.go's memory-ON
+// condition) call JudgeQuestionWithItems directly with the typed items the
+// runner already built, restoring the CURRENT/SUPERSEDED partition on those
+// paths (wave-0 fix, adversarial-review finding).
+func renderItemsFromContexts(contexts []string) []retrieval.RenderItem {
+	items := make([]retrieval.RenderItem, len(contexts))
+	for i, c := range contexts {
+		items[i] = retrieval.RenderItem{Content: c}
+	}
+	return items
 }
 
 // BuildJudgePrompt assembles the (system, user) prompt for the judge. Pure and
@@ -238,8 +237,24 @@ func JudgeQuestion(ctx context.Context, gw gateway.Gateway, question, gold strin
 // overrides (D-100, D-076). The reader answers ONLY from the retrieved context and
 // may abstain; the judge grades that answer against the gold answer semantically.
 // Both calls go through the gateway seam (P5) and are JSON-schema-constrained.
+//
+// This is the []string wrapper for callers that only ever have all-current
+// context (adapt.go's playbook context, the gain memory-OFF condition, and
+// sweep_test.go). Callers that carry the typed CURRENT/SUPERSEDED partition
+// (the retrieve-backed judged/gain paths) call JudgeQuestionWithItems directly
+// (wave-0 fix — restores pre-ae3 partitioning on the judged path, D-141).
 func JudgeQuestionWith(ctx context.Context, gw gateway.Gateway, opts ReaderOpts, category, question, questionDate, gold string, contexts []string) (JudgedResult, error) {
-	rSys, rUser := BuildReaderPrompt(question, questionDate, contexts)
+	return JudgeQuestionWithItems(ctx, gw, opts, category, question, questionDate, gold, renderItemsFromContexts(contexts))
+}
+
+// JudgeQuestionWithItems runs the reader then the judge over TYPED render
+// items (Stale, SupersededByContent, SupersededByDate, OccurredAt), so
+// BuildReaderPrompt partitions CURRENT/SUPERSEDED off the typed Stale bool
+// instead of treating every item as current. This is the entry point for any
+// caller that already has the typed items the shared render core built
+// (D-141) — no string re-wrap, no inline "[OUTDATED" re-parse.
+func JudgeQuestionWithItems(ctx context.Context, gw gateway.Gateway, opts ReaderOpts, category, question, questionDate, gold string, items []retrieval.RenderItem) (JudgedResult, error) {
+	rSys, rUser := BuildReaderPrompt(question, questionDate, items)
 	rResp, err := gw.Complete(ctx, gateway.CompleteRequest{
 		System:          rSys,
 		Messages:        []gateway.Message{{Role: "user", Content: rUser}},

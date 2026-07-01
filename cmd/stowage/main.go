@@ -451,17 +451,18 @@ func runMCP(args []string) {
 	}
 
 	svc := &mcpserver.Services{
-		Store:         stk.Store,
-		Retriever:     stk.Retriever,
-		TopicSvc:      stk.TopicSvc,
-		GrantsSvc:     stk.GrantsSvc,
-		Gateway:       stk.Gateway,
-		TraceSigner:   stk.TraceSigner,
-		PipelineIn:    p.In,
-		PipelineStage: p.Stage,
-		Log:           stk.Log,
-		ScopeFn:       scopeFn,
-		Profile:       cfg.Profile,
+		Store:              stk.Store,
+		Retriever:          stk.Retriever,
+		TopicSvc:           stk.TopicSvc,
+		GrantsSvc:          stk.GrantsSvc,
+		Gateway:            stk.Gateway,
+		TraceSigner:        stk.TraceSigner,
+		PipelineIn:         p.In,
+		PipelineStage:      p.Stage,
+		Log:                stk.Log,
+		ScopeFn:            scopeFn,
+		Profile:            cfg.Profile,
+		BrowseDefaultLimit: cfg.Retrieval.BrowseDefaultLimit,
 	}
 
 	srv, err := mcpserver.New(server.Info{
@@ -664,17 +665,18 @@ func runServe(args []string) {
 	var mcpHTTP *http.Server
 	if cfg.Server.MCPListen != "" {
 		mcpSvc := &mcpserver.Services{
-			Store:         stk.Store,
-			Retriever:     stk.Retriever,
-			TopicSvc:      stk.TopicSvc,
-			GrantsSvc:     stk.GrantsSvc,
-			Gateway:       stk.Gateway,
-			TraceSigner:   stk.TraceSigner,
-			PipelineIn:    p.In,    // SAME ingest channel as the HTTP API
-			PipelineStage: p.Stage, // SAME buffer stage (flush/branch control)
-			Log:           stk.Log,
-			ScopeFn:       mcpserver.CtxScopeFn(), // tenant from the authenticated key
-			Profile:       cfg.Profile,
+			Store:              stk.Store,
+			Retriever:          stk.Retriever,
+			TopicSvc:           stk.TopicSvc,
+			GrantsSvc:          stk.GrantsSvc,
+			Gateway:            stk.Gateway,
+			TraceSigner:        stk.TraceSigner,
+			PipelineIn:         p.In,    // SAME ingest channel as the HTTP API
+			PipelineStage:      p.Stage, // SAME buffer stage (flush/branch control)
+			Log:                stk.Log,
+			ScopeFn:            mcpserver.CtxScopeFn(), // tenant from the authenticated key
+			Profile:            cfg.Profile,
+			BrowseDefaultLimit: cfg.Retrieval.BrowseDefaultLimit,
 		}
 		mcpSrv, mcpErr := mcpserver.New(server.Info{
 			Name:    "stowage",

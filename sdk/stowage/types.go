@@ -54,6 +54,11 @@ type RetrieveRequest struct {
 	Debug      bool   `json:"debug,omitempty"`
 	ResponseID string `json:"response_id,omitempty"`
 	Profile    string `json:"profile,omitempty"` // precise|balanced|broad
+	// IncludeTopics/ExcludeTopics narrow the caller's own-scope results to topic-tagged
+	// memories (ae6, D-144). Own-scope only (P3); fails open on a topic-store error
+	// (D-139, see RetrieveResponse.DegradedTopicFilter). Empty = no constraint.
+	IncludeTopics []string `json:"include_topics,omitempty"`
+	ExcludeTopics []string `json:"exclude_topics,omitempty"`
 }
 
 // RetrieveBreakdown is the per-item scoring breakdown (present when Debug:true).
@@ -113,8 +118,17 @@ type RetrieveResponse struct {
 	Support        RetrieveSupport `json:"support"`
 	Degraded       bool            `json:"degraded"`
 	DegradedRerank bool            `json:"degraded_rerank,omitempty"`
-	CacheHit       bool            `json:"cache_hit,omitempty"`
-	API            string          `json:"api"`
+	// DegradedTopicFilter is true when IncludeTopics/ExcludeTopics were requested but
+	// the topic store failed, so the caller's own UNFILTERED results were returned
+	// instead (fail-open, D-139, ae6).
+	DegradedTopicFilter bool   `json:"degraded_topic_filter,omitempty"`
+	CacheHit            bool   `json:"cache_hit,omitempty"`
+	API                 string `json:"api"`
+	// Rendered is the identical lean markdown reader body the MCP Text block and
+	// HTTP `rendered` field carry (D-142, ae4a) — the same retrieval.RenderReadBody
+	// call, so all three single-user read surfaces stay byte-identical (D-067/
+	// D-073). This GROWS the response payload (M4): Items still travels in full.
+	Rendered string `json:"rendered,omitempty"`
 }
 
 // ---- Drilldown types --------------------------------------------------------
@@ -635,6 +649,29 @@ type EpisodesResponse struct {
 	Episodes   []Episode `json:"episodes"`
 	NextCursor string    `json:"next_cursor,omitempty"`
 	Degraded   bool      `json:"degraded,omitempty"`
+}
+
+// BrowseRequest walks the client's memories deterministically and
+// gateway-free (ae5, D-143). Mode is a CLOSED string enum: "" and "recent"
+// (the default) walk most-recent-first (created_at DESC, via the new
+// Store.ListByScopeRecent); "superseded" walks the superseded set oldest-first
+// (it reuses the EXISTING Store.ListByStatus query — H4, the ordering
+// asymmetry is deliberate). Any other Mode value is rejected — never silently
+// defaulted. Limit<=0 uses the server's configured retrieval.browse_default_limit.
+type BrowseRequest struct {
+	Mode   string
+	Limit  int
+	Cursor string
+	// ProjectID/UserID scope the read to a sub-tenant identity (P3, D-125); empty
+	// inherits the client's construction scope, then tenant-wide. Sent as query params.
+	ProjectID string
+	UserID    string
+}
+
+// BrowseResponse is one page of the scoped browse walk.
+type BrowseResponse struct {
+	Memories   []Memory `json:"memories"`
+	NextCursor string   `json:"next_cursor,omitempty"`
 }
 
 // CausalRequest walks the causal graph from MemoryID (RFC §5.6/§6b, D-083).

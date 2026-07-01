@@ -60,6 +60,10 @@ func (f *fakeClient) Drilldown(_ context.Context, _ stowage.DrilldownRequest) (s
 	return stowage.DrilldownResponse{}, errors.New("fake: not found")
 }
 
+func (f *fakeClient) Browse(_ context.Context, _ stowage.BrowseRequest) (stowage.BrowseResponse, error) {
+	return stowage.BrowseResponse{}, nil
+}
+
 func (f *fakeClient) Feedback(ctx context.Context, req stowage.FeedbackRequest) (stowage.FeedbackResponse, error) {
 	f.mu.Lock()
 	f.feedbacks = append(f.feedbacks, req)

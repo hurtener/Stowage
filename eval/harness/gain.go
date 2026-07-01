@@ -8,6 +8,7 @@ import (
 	"github.com/hurtener/stowage/eval/datasets"
 	"github.com/hurtener/stowage/eval/gain"
 	"github.com/hurtener/stowage/internal/gateway"
+	"github.com/hurtener/stowage/internal/retrieval"
 )
 
 // gain harness (Phase 20b, D-078): measures whether memory improves task
@@ -91,14 +92,20 @@ func scenarioToFixture(sc gain.Scenario) ConvFixture {
 }
 
 // judgeOnOff runs the reader+judge for the memory-OFF (no context) and memory-ON
-// (provided contexts) conditions and assembles the GainResult. Pure of ingestion —
-// CI-testable with a fakeGateway.
-func judgeOnOff(ctx context.Context, gw gateway.Gateway, scenarioID, category, question, expected string, onContexts []string) (GainResult, error) {
+// (provided items) conditions and assembles the GainResult. Pure of ingestion —
+// CI-testable with a fakeGateway. onItems carries the typed CURRENT/SUPERSEDED
+// partition the runner already built (wave-0 fix, D-141) so a stale companion
+// in the memory-ON context doesn't leak into the reader's CURRENT section.
+func judgeOnOff(ctx context.Context, gw gateway.Gateway, scenarioID, category, question, expected string, onItems []retrieval.RenderItem) (GainResult, error) {
 	off, err := JudgeQuestion(ctx, gw, question, expected, nil)
 	if err != nil {
 		return GainResult{}, fmt.Errorf("judge memory-off: %w", err)
 	}
-	on, err := JudgeQuestion(ctx, gw, question, expected, onContexts)
+	// category is intentionally "" here, matching JudgeQuestion's zero-opts
+	// wrapper above (JudgeQuestion always hardcodes category="" — see judge.go)
+	// so this fix changes ONLY the CURRENT/SUPERSEDED partitioning, not the
+	// per-category judge leniency behavior.
+	on, err := JudgeQuestionWithItems(ctx, gw, ReaderOpts{}, "", question, "", expected, onItems)
 	if err != nil {
 		return GainResult{}, fmt.Errorf("judge memory-on: %w", err)
 	}
@@ -135,7 +142,7 @@ func RunGainScenario(ctx context.Context, srv *TestServer, runner *Runner, gw ga
 	if err != nil {
 		return GainResult{}, fmt.Errorf("retrieve %s: %w", sc.ID, err)
 	}
-	return judgeOnOff(ctx, gw, sc.ID, sc.Category, sc.EvalQuestion, sc.ExpectedAnswer, qr.Items)
+	return judgeOnOff(ctx, gw, sc.ID, sc.Category, sc.EvalQuestion, sc.ExpectedAnswer, qr.RenderItems)
 }
 
 // RunGainOverDataset measures memory-on-vs-off gain for ONE public-benchmark
@@ -164,5 +171,5 @@ func RunGainOverDataset(ctx context.Context, srv *TestServer, runner *Runner, gw
 	if err != nil {
 		return GainResult{}, fmt.Errorf("retrieve %s: %w", q.ID, err)
 	}
-	return judgeOnOff(ctx, gw, q.ID, q.Category, q.Text, q.Expected.Answer, qr.Items)
+	return judgeOnOff(ctx, gw, q.ID, q.Category, q.Text, q.Expected.Answer, qr.RenderItems)
 }

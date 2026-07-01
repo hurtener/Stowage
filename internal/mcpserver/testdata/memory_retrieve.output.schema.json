@@ -109,6 +109,9 @@
     "degraded_rerank": {
       "type": "boolean"
     },
+    "degraded_topic_filter": {
+      "type": "boolean"
+    },
     "cache_hit": {
       "type": "boolean"
     },

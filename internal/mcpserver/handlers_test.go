@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -342,6 +343,229 @@ func TestHandlerRetrieve_WithSessionAndProfile(t *testing.T) {
 		t.Fatalf("retrieve with session: %v", err)
 	}
 	_ = result.Structured
+}
+
+// seedRetrievableMemory directly commits a memory (bypassing the pipeline) so
+// it is lexically searchable via FTS (Commit maintains the trigger-backed
+// index) without depending on gateway/vindex embedding. episodeID may be "" to
+// omit the episode hook.
+func seedRetrievableMemory(t *testing.T, st store.Store, scope identity.Scope, id, content, episodeID string) {
+	t.Helper()
+	now := time.Now().UnixMilli()
+	cs := store.CommitSet{
+		Action: store.ActionAdd,
+		Memory: store.Memory{
+			ID: id, TenantID: scope.Tenant, Kind: "fact", Content: content,
+			Status: "active", Confidence: 0.9, TrustSource: "llm_extracted",
+			Stability: 1.0, ContentHash: ulid.Make().String(), EpisodeID: episodeID,
+			ValidFrom: now, CreatedAt: now, UpdatedAt: now,
+		},
+		Events: []store.Event{{ID: ulid.Make().String(), Type: "memory.added", SubjectID: id, Payload: "{}", CreatedAt: now}},
+		Scope:  scope,
+	}
+	if err := st.Memories().Commit(context.Background(), scope, cs); err != nil {
+		t.Fatalf("seed retrievable memory: %v", err)
+	}
+}
+
+// reconstructMemoryItems rebuilds a []retrieval.MemoryItem from the wire-level
+// RetrieveItem fields the handler already returns (Content/OccurredAt/Stale/
+// SupersededByContent/Date/Citation — everything RenderItem needs EXCEPT
+// EpisodeID, which the wire type deliberately does not expose; the episode hook
+// lives only in the rendered body, never duplicated into Structured).
+func reconstructMemoryItems(items []RetrieveItem) []retrieval.MemoryItem {
+	out := make([]retrieval.MemoryItem, len(items))
+	for i, it := range items {
+		out[i] = retrieval.MemoryItem{
+			Memory:              store.Memory{Content: it.Content, ValidFrom: it.OccurredAt},
+			Citation:            it.Citation,
+			Stale:               it.Stale,
+			SupersededByContent: it.SupersededByContent,
+			SupersededByDate:    it.SupersededByDate,
+		}
+	}
+	return out
+}
+
+// TestHandlerRetrieve_TextIsLeanRenderedBody pins AC1/AC2/AC3 (D-142): Text is
+// no longer the count-only string — it is the rendered markdown body with the
+// item's drill handle ([cite:<citation>]) and episode hook ([episode:<id>]),
+// and Structured stays the full typed result (byte-identical field values).
+func TestHandlerRetrieve_TextIsLeanRenderedBody(t *testing.T) {
+	svc := newFullServices(t)
+	scope := testScope()
+	memID := ulid.Make().String()
+	seedRetrievableMemory(t, svc.Store, scope, memID, "The quarterly roadmap review happens every first Monday.", "ep-roadmap")
+
+	h := makeRetrieveHandler(svc)
+	result, err := h(context.Background(), RetrieveInput{Query: "quarterly roadmap review", ResponseID: "resp-lean"})
+	if err != nil {
+		t.Fatalf("retrieve: %v", err)
+	}
+
+	var target RetrieveItem
+	found := false
+	for _, it := range result.Structured.Items {
+		if it.ID == memID {
+			target = it
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("seeded memory %s not retrieved: %+v", memID, result.Structured.Items)
+	}
+	if target.Citation == "" {
+		t.Fatal("expected a non-empty citation on the retrieved item")
+	}
+
+	if strings.Contains(result.Text, "Retrieved") && strings.Contains(result.Text, "item(s)") {
+		t.Errorf("Text must not be the old count-only shape: %q", result.Text)
+	}
+	if !strings.Contains(result.Text, "[cite:"+target.Citation+"]") {
+		t.Errorf("Text missing drill handle for citation %q: %q", target.Citation, result.Text)
+	}
+	if !strings.Contains(result.Text, "[episode:ep-roadmap]") {
+		t.Errorf("Text missing episode hook: %q", result.Text)
+	}
+
+	// Structured is unchanged in shape: ResponseID still round-trips.
+	if result.Structured.ResponseID != "resp-lean" {
+		t.Errorf("Structured.ResponseID = %q, want resp-lean", result.Structured.ResponseID)
+	}
+}
+
+// TestHandlerRetrieve_TextEqualsRenderReadBody proves Text is EXACTLY
+// retrieval.RenderReadBody(resp.Items) — not a hand-rolled per-surface string
+// (D-067/D-073) — by reconstructing the render fixture from the handler's own
+// Structured output and comparing byte-for-byte. Uses a memory with no episode
+// so every RenderItem field the comparison needs is wire-exposed.
+func TestHandlerRetrieve_TextEqualsRenderReadBody(t *testing.T) {
+	svc := newFullServices(t)
+	scope := testScope()
+	memID := ulid.Make().String()
+	seedRetrievableMemory(t, svc.Store, scope, memID, "The onboarding checklist lives in the wiki under Getting Started.", "")
+
+	h := makeRetrieveHandler(svc)
+	result, err := h(context.Background(), RetrieveInput{Query: "onboarding checklist wiki"})
+	if err != nil {
+		t.Fatalf("retrieve: %v", err)
+	}
+	if len(result.Structured.Items) == 0 {
+		t.Fatal("expected at least one retrieved item")
+	}
+
+	want := retrieval.RenderReadBody(reconstructMemoryItems(result.Structured.Items))
+	if result.Text != want {
+		t.Errorf("Text = %q, want %q (must equal retrieval.RenderReadBody(resp.Items))", result.Text, want)
+	}
+}
+
+// TestHandlerRetrieve_EmptyResultRendersSentinel pins the empty-Items case: Text
+// still renders (ae3's empty-context sentinel), and Structured.ResponseID keeps
+// the drill/feedback loop intact even with zero items.
+func TestHandlerRetrieve_EmptyResultRendersSentinel(t *testing.T) {
+	svc := newFullServices(t)
+	h := makeRetrieveHandler(svc)
+
+	result, err := h(context.Background(), RetrieveInput{Query: "nothing in this empty store", ResponseID: "resp-empty"})
+	if err != nil {
+		t.Fatalf("retrieve empty store: %v", err)
+	}
+	want := "CURRENT memories (answer from these):\n(no current memories retrieved)\n"
+	if result.Text != want {
+		t.Errorf("Text = %q, want empty-context sentinel %q", result.Text, want)
+	}
+	if result.Structured.ResponseID != "resp-empty" {
+		t.Errorf("Structured.ResponseID = %q, want resp-empty", result.Structured.ResponseID)
+	}
+}
+
+// countingStore wraps a real store.Store and counts calls to
+// Injections()/Episodes()/Memories() so a test can prove the render step
+// (retrieval.RenderReadBody) issues no store call beyond what Retrieve itself
+// already made (AC2, D-142): the episode hook and drill handle are pure field
+// reads on data the retrieval Response already carries.
+type countingStore struct {
+	store.Store
+	injections int
+	episodes   int
+	memories   int
+}
+
+func (c *countingStore) Injections() store.InjectionStore {
+	c.injections++
+	return c.Store.Injections()
+}
+
+func (c *countingStore) Episodes() store.EpisodeStore {
+	c.episodes++
+	return c.Store.Episodes()
+}
+
+func (c *countingStore) Memories() store.MemoryStore {
+	c.memories++
+	return c.Store.Memories()
+}
+
+// TestRenderReadBody_NoExtraStoreCalls is the AC2 store-spy: calling
+// retrieval.RenderReadBody on an already-obtained retrieval Response issues
+// ZERO additional Injections()/Episodes()/Memories() calls — the episode hook
+// is a field read on Memory.EpisodeID already loaded by Retrieve, not a new
+// query.
+func TestRenderReadBody_NoExtraStoreCalls(t *testing.T) {
+	st := newHandlerStore(t)
+	scope := testScope()
+	memID := ulid.Make().String()
+	seedRetrievableMemory(t, st, scope, memID, "distinctive spy content for the lean read store-spy test", "ep-spy")
+
+	cs := &countingStore{Store: st}
+	log := noopLog()
+	gw, err := gateway.Open(context.Background(), config.GatewayConfig{Driver: "mock", EmbedDims: 8}, slog.Default(), prometheus.NewRegistry())
+	if err != nil {
+		t.Fatalf("open mock gateway: %v", err)
+	}
+	t.Cleanup(func() { _ = gw.Close(context.Background()) })
+	vi := vindex.New(cs.Vectors(), 8, "mock-embed")
+	ret := retrieval.New(cs.Memories(), cs.Records(), vi, gw, log)
+
+	resp, err := ret.Retrieve(context.Background(), scope, retrieval.Request{Query: "distinctive spy content lean read"})
+	if err != nil {
+		t.Fatalf("retrieve: %v", err)
+	}
+	if len(resp.Items) == 0 {
+		t.Fatal("expected at least one retrieved item")
+	}
+
+	injBefore, epBefore, memBefore := cs.injections, cs.episodes, cs.memories
+	text := retrieval.RenderReadBody(resp.Items)
+	if cs.injections != injBefore || cs.episodes != epBefore || cs.memories != memBefore {
+		t.Errorf("RenderReadBody issued extra store calls: injections %d->%d episodes %d->%d memories %d->%d",
+			injBefore, cs.injections, epBefore, cs.episodes, memBefore, cs.memories)
+	}
+	if !strings.Contains(text, "[episode:ep-spy]") {
+		t.Errorf("expected episode hook in rendered body: %q", text)
+	}
+}
+
+// TestHandlerRetrieve_DegradedRenders proves the lean body renders on a
+// degraded (gateway-free) retrieval (AC7, D-036): Render performs no gateway
+// call, so a Response with Degraded=true still renders its items with hooks
+// and handles intact.
+func TestHandlerRetrieve_DegradedRenders(t *testing.T) {
+	degraded := &retrieval.Response{
+		ResponseID: "resp-degraded",
+		Degraded:   true,
+		Items: []retrieval.MemoryItem{
+			{Memory: store.Memory{Content: "lexical-only fact, vector lane was down", EpisodeID: "ep-degraded"}, Citation: "cite-degraded-1"},
+		},
+	}
+	text := retrieval.RenderReadBody(degraded.Items)
+	if !strings.Contains(text, "[cite:cite-degraded-1]") {
+		t.Errorf("degraded body missing drill handle: %q", text)
+	}
+	if !strings.Contains(text, "[episode:ep-degraded]") {
+		t.Errorf("degraded body missing episode hook: %q", text)
+	}
 }
 
 // ── memory_playbook ───────────────────────────────────────────────────────────

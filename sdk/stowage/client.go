@@ -45,6 +45,14 @@ type Client interface {
 	// SessionID and the [From,Until] time window. Deterministic and LLM-free.
 	Episodes(ctx context.Context, req EpisodesRequest) (EpisodesResponse, error)
 
+	// Browse walks the client's memories deterministically and gateway-free
+	// (RFC §5.2/§5.3/§9.1-9.5, D-143): mode "recent" (default) returns the
+	// scope's memories most-recent-first; mode "superseded" returns the
+	// scope's superseded memories (oldest-first — it reuses the existing
+	// status query rather than adding a new one, H4). mode is a closed enum;
+	// an unknown value is rejected. Deterministic and LLM-free.
+	Browse(ctx context.Context, req BrowseRequest) (BrowseResponse, error)
+
 	// Causal walks the causal graph from a memory (RFC §5.6/§6b, D-083): backward
 	// to its causes ("why did this happen"), forward to its effects, or both, with
 	// provenance at every hop. Deterministic and LLM-free.

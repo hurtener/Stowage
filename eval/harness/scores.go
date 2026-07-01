@@ -4,6 +4,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/hurtener/stowage/internal/retrieval"
 )
 
 // Scores holds the aggregate metrics for one CI eval run.
@@ -46,16 +48,24 @@ type CategoryScore struct {
 // ReaderAnswer/JudgeVerdict/JudgeJustification are populated only by the judged
 // path (omitempty: the CI run never sets them, keeping its JSON unchanged).
 type QuestionResult struct {
-	QuestionID         string        `json:"question_id"`
-	Category           string        `json:"category,omitempty"`
-	Query              string        `json:"query"`
-	Expected           string        `json:"expected"`
-	Hit                bool          `json:"hit"`
-	Latency            time.Duration `json:"latency_ns"`
-	Items              []string      `json:"items"` // content of retrieved items
-	ReaderAnswer       string        `json:"reader_answer,omitempty"`
-	JudgeVerdict       string        `json:"judge_verdict,omitempty"` // correct|partial|incorrect
-	JudgeJustification string        `json:"judge_justification,omitempty"`
+	QuestionID string        `json:"question_id"`
+	Category   string        `json:"category,omitempty"`
+	Query      string        `json:"query"`
+	Expected   string        `json:"expected"`
+	Hit        bool          `json:"hit"`
+	Latency    time.Duration `json:"latency_ns"`
+	Items      []string      `json:"items"` // content of retrieved items
+	// RenderItems is the typed projection Items was rendered from (Stale,
+	// SupersededByContent, SupersededByDate, OccurredAt) — carried alongside
+	// Items so the judged-QA path (dataset.go, gain.go) can partition
+	// CURRENT/SUPERSEDED via BuildReaderPrompt instead of re-deriving it from
+	// the rendered strings (wave-0 fix: restores pre-ae3 partitioning on the
+	// judged path, D-141). Not part of the wire JSON — it is redundant with
+	// Items for any external consumer.
+	RenderItems        []retrieval.RenderItem `json:"-"`
+	ReaderAnswer       string                 `json:"reader_answer,omitempty"`
+	JudgeVerdict       string                 `json:"judge_verdict,omitempty"` // correct|partial|incorrect
+	JudgeJustification string                 `json:"judge_justification,omitempty"`
 }
 
 // ComputeScores computes aggregate metrics from per-question results.

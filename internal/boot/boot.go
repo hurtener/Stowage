@@ -203,8 +203,9 @@ func Open(ctx context.Context, cfg *config.Config) (*Stack, error) {
 		retrieval.ProfileOverride(cfg.Retrieval.Balanced),
 		retrieval.ProfileOverride(cfg.Retrieval.Broad),
 	))
-	s.Retriever.WithIncludeSuperseded(cfg.Retrieval.IncludeSuperseded) // D-105 dual-visibility (§6c)
-	s.Retriever.WithEventCapture(s.Store.Events())                     // Phase 26: async retrieve.query trace capture
+	s.Retriever.WithIncludeSuperseded(cfg.Retrieval.IncludeSuperseded)     // D-105 dual-visibility (§6c)
+	s.Retriever.WithTopicFilterScoringK(cfg.Retrieval.TopicFilterScoringK) // D-144 own-scope topic filter window (ae6)
+	s.Retriever.WithEventCapture(s.Store.Events())                         // Phase 26: async retrieve.query trace capture
 	s.Retriever.SetGrants(s.Store.Grants())
 	s.closers = append(s.closers, func(context.Context) error {
 		s.Retriever.Close() // drains injection writer goroutine

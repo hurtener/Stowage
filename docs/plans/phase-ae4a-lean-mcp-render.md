@@ -1,6 +1,6 @@
 # Phase ae4a — lean MCP read (`Text` markdown + episode hook + drill by citation ULID)
 
-- **Status:** draft
+- **Status:** implemented (see "As-built deviations" below)
 - **Owning subsystem(s):** `internal/mcpserver` (the `memory_retrieve` handler + tool doc); `internal/retrieval` (the `RenderMCP` slot-fill in `render.go` — activating the citation/episode slots ae3 stood up, plus one `RenderReadBody` helper); the `sdk/stowage` + `internal/api` parity surfaces
 - **RFC sections:** §4.2 (read path / drill-down), §5.7 (injections & citations), §6b (episodes), §9.2 (MCP surface), §9.5 (one logic core, D-067/D-073)
 - **Depends on phases:** **ae3** (the parameterized render core: `RenderMode`, `RenderItem`, `RenderResult`, `Render`, `RenderItemsFromMemoryItems` — the slots ae4a fills); the shipped injections/citations path (`MemoryItem.Citation`, `Injections().Get`); the shipped episodes phase (`store.Memory.EpisodeID`). Lands **after ae3** within Wave 0.
@@ -349,3 +349,37 @@ ULID; defer the positional shortcut to ae4b** (recorded in D-142).
   ae4b); the same body is exposed on HTTP/SDK as `rendered` for parity; the token
   win is **model-context only, not wire size** (M4). Records the open positional-
   handle tradeoff as deferred to ae4b.
+
+## As-built deviations
+
+- **The AC5 "byte-for-byte over one fixture" parity test compares NORMALIZED
+  live-surface output, not three calls to `RenderReadBody` over one literal Go
+  fixture.** `MemoryItem.Citation` is a fresh ULID minted inside
+  `Retriever.Retrieve` (`ulid.Make()`), so three independent live retrieves —
+  one per surface — can never be literally byte-identical even though all three
+  call the identical `RenderReadBody`. `TestRetrieveLeanRead_SurfaceParity`
+  (`test/integration/retrieve_lean_read_test.go`) exercises the real MCP, HTTP,
+  and embedded-SDK code paths end to end (proving the wiring, not just the pure
+  function), then normalizes each body by substituting its own citation value
+  with a placeholder before the byte comparison — the one field that is
+  legitimately unique per response. `internal/retrieval/render_test.go` and
+  `internal/mcpserver/handlers_test.go` separately pin the pure-function and
+  single-surface byte-equality claims (`TestRenderReadBody_ComposesMapperAndRender`,
+  `TestHandlerRetrieve_TextEqualsRenderReadBody`) with a literal fixture, so the
+  "one core function" claim is still proven exactly, just split across two test
+  layers instead of one.
+- **`test/integration` gains its first postgres-gated subtests.** No prior file
+  in this package exercised the `postgres` driver; `retrieve_lean_read_test.go`
+  extends the established `STOWAGE_TEST_PG_DSN` env-gate from
+  `internal/store/pgstore/pgstore_test.go` (SKIP, not fail, when unset) rather
+  than inventing a new gating scheme, and blank-imports `internal/store/pgstore`
+  for driver registration. Postgres subtests use a ULID-suffixed tenant per run
+  instead of `TRUNCATE` (P3 tenant scoping already isolates repeated runs
+  against a persistent instance).
+- **The store-spy (AC2) wraps `store.Store` via interface embedding** —
+  `countingStore` (`internal/mcpserver/handlers_test.go`) embeds the real
+  `store.Store` and overrides only `Injections()`/`Episodes()`/`Memories()` to
+  count calls, rather than hand-implementing the full interface. This was not
+  specified at the plan's code-sketch level but is a mechanical, structural
+  proof of the same claim the plan describes (RenderReadBody's `Store`-free
+  signature).
