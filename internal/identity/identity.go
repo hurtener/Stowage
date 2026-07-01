@@ -46,7 +46,12 @@ type Scope struct {
 	// builder or an INSERT. It drives only the read-time agent→topic filter
 	// (internal/retrieval), which can only SUBTRACT from the caller's own-scope
 	// results (P3 preserved, fails open per D-139).
-	Agent string
+	//
+	// json:"-" enforces the never-persisted guarantee at the serialization
+	// boundary: Agent must never leak into any persisted/golden JSON (e.g. the
+	// pipeline buffer item), only into the in-memory read-result cache key
+	// (which is built by manual concatenation in retrieval, not JSON).
+	Agent string `json:"-"`
 }
 
 // String returns the canonical slash-separated form, omitting empty trailing
