@@ -16,10 +16,12 @@ const (
 	// RenderEval reproduces the eval harness's reader-prompt context block,
 	// byte-for-byte, as it existed before this phase.
 	RenderEval RenderMode = iota
-	// RenderMCP is the model-facing MCP body — a superset of RenderEval. In this
-	// phase (ae3) its affordance slots (Citation, EpisodeID) are wired but INERT:
-	// the base body is identical to RenderEval. ae4a (D-142) is the phase that
-	// makes the two modes diverge.
+	// RenderMCP is the model-facing MCP body — a superset of RenderEval. Per
+	// item it appends a drill handle ([cite:<Citation>]) whenever Citation is
+	// set, and an episode hook ([episode:<EpisodeID>]) whenever EpisodeID is
+	// set (D-142, ae4a). RenderEval never emits these — the eval harness's
+	// wire-decoded items carry neither field, and only RenderMCP's branch
+	// appends them.
 	RenderMCP
 )
 
@@ -39,10 +41,10 @@ type RenderItem struct {
 	SupersededByDate    int64
 
 	// RenderMCP affordance slots — populated only on the server path (eval's
-	// wire struct carries neither). INERT in ae3: Render emits nothing for
-	// them regardless of mode. ae4a (D-142) turns them on for RenderMCP only.
-	Citation  string // per-item injection ULID = drill handle (ae4a)
-	EpisodeID string // store.Memory.EpisodeID → episode hook (ae4a)
+	// wire struct carries neither). Active for RenderMCP only (D-142, ae4a):
+	// RenderEval's branch never emits them, regardless of whether they're set.
+	Citation  string // per-item injection ULID = drill handle (D-142)
+	EpisodeID string // store.Memory.EpisodeID → episode hook (D-142)
 }
 
 // RenderResult exposes both shapes byte-identity requires.
@@ -81,30 +83,59 @@ func withDate(content string, occurredAt int64) string {
 	return content + " | When: " + time.UnixMilli(occurredAt).UTC().Format("2006-01-02")
 }
 
+// renderMarkers builds the RenderMCP-only affordance suffix for one item: a
+// drill handle ([cite:<ULID>]) whenever Citation is set, followed by an
+// episode hook ([episode:<id>]) whenever EpisodeID is set (D-142, ae4a). Each
+// present marker is space-prefixed so it reads as a trailing annotation on the
+// item's ContextBlock line. RenderEval returns "" unconditionally — the two
+// modes diverge starting here (ae3's base bodies were identical; this is the
+// one phase that makes them differ). Both slots fail soft by construction: an
+// empty field simply omits that marker, never an error.
+func renderMarkers(mode RenderMode, it RenderItem) string {
+	if mode != RenderMCP {
+		return ""
+	}
+	var b strings.Builder
+	if it.Citation != "" {
+		b.WriteString(" [cite:" + it.Citation + "]")
+	}
+	if it.EpisodeID != "" {
+		b.WriteString(" [episode:" + it.EpisodeID + "]")
+	}
+	return b.String()
+}
+
 // Render is a pure function: no receiver, no package-level mutable state, no
 // gateway call (P5). Safe for concurrent reuse (proven under -race).
 //
-// RenderMCP and RenderEval produce the SAME base body in ae3 — the Citation/
-// EpisodeID slots emit nothing in either mode; ae4a is the only phase that
-// makes the two modes diverge.
+// RenderEval reproduces the pre-ae3 eval reader-prompt body byte-for-byte.
+// RenderMCP is a superset: it appends the drill-handle/episode-hook markers
+// (renderMarkers) to each CURRENT/SUPERSEDED line (D-142, ae4a) — the one
+// divergence between the two modes.
 func Render(mode RenderMode, items []RenderItem) RenderResult {
-	_ = mode // inert this phase (D-141/D-142) — both modes render identically
-
 	lines := make([]string, 0, len(items))
 	currentOnly := make([]string, 0, len(items))
 	var current, superseded []string
+	// currentMarkers/supersededMarkers are index-aligned with current/superseded —
+	// the RenderMCP-only affordance suffix for that item ("" for RenderEval, or
+	// when neither slot is set). Lines/CurrentOnly are untouched by markers: they
+	// feed the eval harness (RenderEval only), which carries neither slot.
+	var currentMarkers, supersededMarkers []string
 
 	for _, it := range items {
 		dated := withDate(it.Content, it.OccurredAt)
+		marker := renderMarkers(mode, it)
 		if it.Stale {
 			// Dual-visibility (D-105) + self-contained successor (D-114): mark the
 			// retired value AND name what replaced it and when.
 			lines = append(lines, staleTag(it)+dated)
 			superseded = append(superseded, dated)
+			supersededMarkers = append(supersededMarkers, marker)
 			continue
 		}
 		lines = append(lines, dated)
 		current = append(current, dated)
+		currentMarkers = append(currentMarkers, marker)
 		currentOnly = append(currentOnly, it.Content) // raw content, no date suffix
 	}
 
@@ -114,12 +145,12 @@ func Render(mode RenderMode, items []RenderItem) RenderResult {
 		b.WriteString("(no current memories retrieved)\n")
 	}
 	for i, c := range current {
-		fmt.Fprintf(&b, "[%d] %s\n", i+1, strings.TrimSpace(c))
+		fmt.Fprintf(&b, "[%d] %s%s\n", i+1, strings.TrimSpace(c), currentMarkers[i])
 	}
 	if len(superseded) > 0 {
 		b.WriteString("\nSUPERSEDED memories (earlier values the user CHANGED — history only, NEVER answer with these):\n")
 		for i, c := range superseded {
-			fmt.Fprintf(&b, "[S%d] %s\n", i+1, strings.TrimSpace(c))
+			fmt.Fprintf(&b, "[S%d] %s%s\n", i+1, strings.TrimSpace(c), supersededMarkers[i])
 		}
 	}
 
@@ -130,9 +161,21 @@ func Render(mode RenderMode, items []RenderItem) RenderResult {
 	}
 }
 
+// RenderReadBody renders the model-facing lean markdown body for a retrieval
+// response. It is the ONE place the RenderMCP mode and the MemoryItem→RenderItem
+// mapper are composed, so every surface (MCP Text, HTTP rendered, SDK Rendered)
+// emits a byte-identical reader body (D-067/D-073). Pure: no receiver, no store,
+// no ctx, no gateway call (D-036 gateway-free; the source data is already loaded
+// on the Response) — that signature is the no-new-query proof for the episode
+// hook (D-142, ae4a): it reads item.Memory.EpisodeID, already populated by the
+// retrieval GetMany, so no new store query is issued.
+func RenderReadBody(items []MemoryItem) string {
+	return Render(RenderMCP, RenderItemsFromMemoryItems(items)).ContextBlock
+}
+
 // RenderItemsFromMemoryItems maps the server's retrieval results onto the
 // render projection. It carries Citation and Memory.EpisodeID into the
-// RenderMCP affordance slots — INERT this phase (ae4a activates them).
+// RenderMCP affordance slots (D-142, ae4a activates them for RenderMCP only).
 func RenderItemsFromMemoryItems(items []MemoryItem) []RenderItem {
 	out := make([]RenderItem, len(items))
 	for i, it := range items {

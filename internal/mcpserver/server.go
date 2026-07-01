@@ -81,7 +81,10 @@ func New(info server.Info, svc *Services) (*server.Server, error) {
 	}
 
 	if err := tool.New[RetrieveInput, RetrieveOutput]("memory_retrieve").
-		Describe("Retrieve relevant memories for a query using the four-lane (lexical+queries+structured+vector) retrieval pipeline.").
+		Describe("Retrieve relevant memories for a query using the four-lane (lexical+queries+structured+vector) retrieval pipeline. " +
+			"Returns a lean markdown reader body in the model-facing Text block (episode hooks + per-item [cite:…] drill handles for " +
+			"memory_drilldown) and the full typed result in Structured (D-142). The lean body shrinks the model's context, not the wire " +
+			"payload: both blocks travel, so a host reading both receives a larger payload, not a smaller one.").
 		Handler(makeRetrieveHandler(svc)).
 		Register(srv); err != nil {
 		return nil, err

@@ -6,9 +6,12 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/hurtener/dockyard/runtime/server"
 
@@ -119,6 +122,52 @@ func TestNew_ConcurrentCreation(t *testing.T) {
 		if n := len(srv.Tools()); n != 20 {
 			t.Errorf("goroutine %d: expected 20 tools, got %d", i, n)
 		}
+	}
+}
+
+// TestMemoryRetrieveDescribe_M4WireTruth pins AC4 (D-142): the memory_retrieve
+// tool doc states the honest M4 contract — the lean Text body shrinks the
+// model's context, not the wire payload, since Structured still travels
+// alongside it (so the total payload GROWS, never shrinks).
+func TestMemoryRetrieveDescribe_M4WireTruth(t *testing.T) {
+	svc := newTestServices(t)
+	srv, err := mcpserver.New(server.Info{Name: "stowage-mcp-test", Version: "0.0.1"}, svc)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	clientT := srv.ServeInMemory(ctx)
+	client := mcpsdk.NewClient(&mcpsdk.Implementation{Name: "describe-test", Version: "0.0.0"}, nil)
+	session, err := client.Connect(ctx, clientT, nil)
+	if err != nil {
+		t.Fatalf("mcp connect: %v", err)
+	}
+	defer func() { _ = session.Close() }()
+
+	res, err := session.ListTools(ctx, &mcpsdk.ListToolsParams{})
+	if err != nil {
+		t.Fatalf("ListTools: %v", err)
+	}
+	var desc string
+	found := false
+	for _, tl := range res.Tools {
+		if tl.Name == "memory_retrieve" {
+			desc = tl.Description
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatal("memory_retrieve tool not found in ListTools result")
+	}
+	if !strings.Contains(desc, "context, not the wire") && !strings.Contains(desc, "payload grows") {
+		t.Errorf("memory_retrieve Describe() missing the M4 wire-truth phrase (want %q or %q substring); got: %s",
+			"context, not the wire", "payload grows", desc)
+	}
+	if !strings.Contains(desc, "larger payload") && !strings.Contains(desc, "payload grows") {
+		t.Errorf("memory_retrieve Describe() must state the payload GROWS (not shrinks); got: %s", desc)
 	}
 }
 

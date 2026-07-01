@@ -199,9 +199,9 @@ func makeRetrieveHandler(svc *Services) tool.Handler[RetrieveInput, RetrieveOutp
 			return tool.Result[RetrieveOutput]{}, fmt.Errorf("memory_retrieve: %w", err)
 		}
 
-		// Build the shared render-input projection (D-141) so the mapper is
-		// exercised on the server path too — its Citation/EpisodeID slots are
-		// wired but inert this phase (ae4a activates them for RenderMCP).
+		// Build the shared render-input projection (D-141); its Citation/EpisodeID
+		// slots feed both the Structured item mapping below AND the rendered Text
+		// body (via retrieval.RenderReadBody below, D-142).
 		renderItems := retrieval.RenderItemsFromMemoryItems(resp.Items)
 
 		items := make([]RetrieveItem, len(resp.Items))
@@ -245,8 +245,11 @@ func makeRetrieveHandler(svc *Services) tool.Handler[RetrieveInput, RetrieveOutp
 			CacheHit:       resp.CacheHit,
 			API:            resp.API,
 		}
+		// Lean MCP read (D-142, ae4a): the model-facing Text is the rendered
+		// markdown body — episode hooks + per-item [cite:…] drill handles — not
+		// a count string. Structured keeps the full typed result unchanged.
 		return tool.Result[RetrieveOutput]{
-			Text:       fmt.Sprintf("Retrieved %d item(s); response_id=%s", len(items), resp.ResponseID),
+			Text:       retrieval.RenderReadBody(resp.Items),
 			Structured: out,
 		}, nil
 	}

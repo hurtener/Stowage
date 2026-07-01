@@ -115,6 +115,11 @@ type RetrieveResponse struct {
 	DegradedRerank bool            `json:"degraded_rerank,omitempty"`
 	CacheHit       bool            `json:"cache_hit,omitempty"`
 	API            string          `json:"api"`
+	// Rendered is the identical lean markdown reader body the MCP Text block and
+	// HTTP `rendered` field carry (D-142, ae4a) — the same retrieval.RenderReadBody
+	// call, so all three single-user read surfaces stay byte-identical (D-067/
+	// D-073). This GROWS the response payload (M4): Items still travels in full.
+	Rendered string `json:"rendered,omitempty"`
 }
 
 // ---- Drilldown types --------------------------------------------------------

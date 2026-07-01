@@ -89,19 +89,42 @@ func TestRender_GoldenMirrorsReaderPrompt(t *testing.T) {
 	}
 }
 
-// TestRender_ModeDiff pins AC4: RenderMCP and RenderEval produce the identical
-// base body over a shared fixture in ae3 — the Citation/EpisodeID slots are
-// wired but inert until ae4a.
-func TestRender_ModeDiff(t *testing.T) {
+// TestRender_ModeDivergence pins AC6 (D-142): RenderMCP and RenderEval now
+// DIVERGE over a fixture carrying Citation/EpisodeID — RenderMCP appends the
+// drill-handle/episode-hook markers to ContextBlock, RenderEval does not. This
+// REVISES ae3's TestRender_ModeDiff (which asserted the two modes were
+// byte-identical, back when the slots were inert); the divergence is now the
+// intentional, phase-defining behavior. Lines/CurrentOnly stay identical
+// across modes either way — markers only ever land in ContextBlock.
+func TestRender_ModeDivergence(t *testing.T) {
 	fixture := []RenderItem{
 		{Content: "current fact", OccurredAt: 1684108800000, Citation: "01ARZ3NDEKTSV4RRFFQ69G5FAV", EpisodeID: "ep-1"},
 		{Content: "stale fact", Stale: true, SupersededByContent: "new fact", SupersededByDate: 1684108800000, Citation: "01ARZ3NDEKTSV4RRFFQ69G5FAW", EpisodeID: "ep-2"},
 	}
 	evalRes := Render(RenderEval, fixture)
 	mcpRes := Render(RenderMCP, fixture)
-	if evalRes.ContextBlock != mcpRes.ContextBlock {
-		t.Errorf("ContextBlock differs by mode:\neval: %q\nmcp:  %q", evalRes.ContextBlock, mcpRes.ContextBlock)
+
+	if evalRes.ContextBlock == mcpRes.ContextBlock {
+		t.Errorf("ContextBlock must diverge by mode when Citation/EpisodeID are set (D-142); both were: %q", evalRes.ContextBlock)
 	}
+	if strings.Contains(evalRes.ContextBlock, "[cite:") || strings.Contains(evalRes.ContextBlock, "[episode:") {
+		t.Errorf("RenderEval must never emit drill/episode markers: %q", evalRes.ContextBlock)
+	}
+	if !strings.Contains(mcpRes.ContextBlock, "[cite:01ARZ3NDEKTSV4RRFFQ69G5FAV]") {
+		t.Errorf("RenderMCP missing drill handle for current item: %q", mcpRes.ContextBlock)
+	}
+	if !strings.Contains(mcpRes.ContextBlock, "[episode:ep-1]") {
+		t.Errorf("RenderMCP missing episode hook for current item: %q", mcpRes.ContextBlock)
+	}
+	if !strings.Contains(mcpRes.ContextBlock, "[cite:01ARZ3NDEKTSV4RRFFQ69G5FAW]") {
+		t.Errorf("RenderMCP missing drill handle for superseded item: %q", mcpRes.ContextBlock)
+	}
+	if !strings.Contains(mcpRes.ContextBlock, "[episode:ep-2]") {
+		t.Errorf("RenderMCP missing episode hook for superseded item: %q", mcpRes.ContextBlock)
+	}
+
+	// Lines/CurrentOnly are untouched by markers — they feed the eval harness
+	// (RenderEval only) and never carry the RenderMCP affordance suffix.
 	if len(evalRes.Lines) != len(mcpRes.Lines) {
 		t.Fatalf("Lines length differs: eval=%d mcp=%d", len(evalRes.Lines), len(mcpRes.Lines))
 	}
@@ -109,27 +132,60 @@ func TestRender_ModeDiff(t *testing.T) {
 		if evalRes.Lines[i] != mcpRes.Lines[i] {
 			t.Errorf("Lines[%d] differs by mode: eval=%q mcp=%q", i, evalRes.Lines[i], mcpRes.Lines[i])
 		}
+		if strings.Contains(mcpRes.Lines[i], "[cite:") || strings.Contains(mcpRes.Lines[i], "[episode:") {
+			t.Errorf("Lines[%d] must not carry markers: %q", i, mcpRes.Lines[i])
+		}
 	}
 	if len(evalRes.CurrentOnly) != len(mcpRes.CurrentOnly) {
 		t.Fatalf("CurrentOnly length differs: eval=%d mcp=%d", len(evalRes.CurrentOnly), len(mcpRes.CurrentOnly))
 	}
 }
 
-// TestRender_SlotsInert pins AC5: a fixture carrying Citation/EpisodeID renders
-// no citation handle or episode hook anywhere in the output, in RenderMCP, in
-// ae3 (ae4a is the phase that activates them).
-func TestRender_SlotsInert(t *testing.T) {
-	fixture := []RenderItem{
-		{Content: "fact with handles", Citation: "01ARZ3NDEKTSV4RRFFQ69G5FAV", EpisodeID: "ep-42"},
+// TestRender_MCPGolden_LiveSlots pins the exact marker syntax (D-142) so ae4b
+// and later phases cannot drift it: [cite:<ULID>] then [episode:<id>],
+// space-prefixed, appended after the "| When:" date suffix on each
+// CURRENT/SUPERSEDED line.
+func TestRender_MCPGolden_LiveSlots(t *testing.T) {
+	res := Render(RenderMCP, []RenderItem{
+		{Content: "User prefers dark mode.", OccurredAt: 1684108800000, Citation: "01ARZ3NDEKTSV4RRFFQ69G5FAV", EpisodeID: "ep-ui-prefs"},
+		{
+			Content: "User's commute was 45 minutes.", Stale: true,
+			SupersededByContent: "User's commute is now 30 minutes.", SupersededByDate: 1684195200000,
+			Citation: "01ARZ3NDEKTSV4RRFFQ69G5FAW", EpisodeID: "ep-commute",
+		},
+	})
+	want := "CURRENT memories (answer from these):\n" +
+		"[1] User prefers dark mode. | When: 2023-05-15 [cite:01ARZ3NDEKTSV4RRFFQ69G5FAV] [episode:ep-ui-prefs]\n" +
+		"\nSUPERSEDED memories (earlier values the user CHANGED — history only, NEVER answer with these):\n" +
+		"[S1] User's commute was 45 minutes. [cite:01ARZ3NDEKTSV4RRFFQ69G5FAW] [episode:ep-commute]\n"
+	if res.ContextBlock != want {
+		t.Errorf("RenderMCP golden ContextBlock =\n%q\nwant\n%q", res.ContextBlock, want)
 	}
-	res := Render(RenderMCP, fixture)
-	for _, blob := range append([]string{res.ContextBlock}, res.Lines...) {
-		if strings.Contains(blob, "01ARZ3NDEKTSV4RRFFQ69G5FAV") {
-			t.Errorf("Citation leaked into render output in ae3: %q", blob)
-		}
-		if strings.Contains(blob, "ep-42") {
-			t.Errorf("EpisodeID leaked into render output in ae3: %q", blob)
-		}
+}
+
+// TestRender_MCPSlotOmitBoundary pins AC2's boundary (D-142): a Citation with
+// no EpisodeID emits the drill handle but omits the episode hook entirely —
+// no empty "[episode:]" placeholder, no error.
+func TestRender_MCPSlotOmitBoundary(t *testing.T) {
+	res := Render(RenderMCP, []RenderItem{
+		{Content: "fact with citation only", Citation: "01ARZ3NDEKTSV4RRFFQ69G5FAV"},
+	})
+	if !strings.Contains(res.ContextBlock, "[cite:01ARZ3NDEKTSV4RRFFQ69G5FAV]") {
+		t.Errorf("missing drill handle: %q", res.ContextBlock)
+	}
+	if strings.Contains(res.ContextBlock, "[episode:") {
+		t.Errorf("episode hook must be absent when EpisodeID is empty: %q", res.ContextBlock)
+	}
+
+	// And the inverse: EpisodeID with no Citation emits the hook but no handle.
+	res2 := Render(RenderMCP, []RenderItem{
+		{Content: "fact with episode only", EpisodeID: "ep-only"},
+	})
+	if strings.Contains(res2.ContextBlock, "[cite:") {
+		t.Errorf("drill handle must be absent when Citation is empty: %q", res2.ContextBlock)
+	}
+	if !strings.Contains(res2.ContextBlock, "[episode:ep-only]") {
+		t.Errorf("missing episode hook: %q", res2.ContextBlock)
 	}
 }
 
@@ -161,6 +217,84 @@ func TestRender_ConcurrentReuse(t *testing.T) {
 		if results[i].ContextBlock != results[0].ContextBlock {
 			t.Errorf("goroutine %d ContextBlock diverged from goroutine 0", i)
 		}
+	}
+}
+
+// TestRender_ConcurrentReuse_PopulatedSlots extends the concurrency proof to the
+// live Citation/EpisodeID slots (D-142, ae4a): N goroutines calling Render
+// concurrently with RenderMCP over a fixture carrying both markers must all
+// produce the byte-identical ContextBlock (run under -race).
+func TestRender_ConcurrentReuse_PopulatedSlots(t *testing.T) {
+	fixture := []RenderItem{
+		{Content: "fact one", OccurredAt: 1684108800000, Citation: "01ARZ3NDEKTSV4RRFFQ69G5FAV", EpisodeID: "ep-1"},
+		{Content: "fact two", Stale: true, SupersededByContent: "fact two updated", SupersededByDate: 1684108800000, Citation: "01ARZ3NDEKTSV4RRFFQ69G5FAW", EpisodeID: "ep-2"},
+		{Content: "fact three", Citation: "01ARZ3NDEKTSV4RRFFQ69G5FAX"},
+	}
+	const n = 50
+	var wg sync.WaitGroup
+	results := make([]RenderResult, n)
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			results[i] = Render(RenderMCP, fixture)
+		}(i)
+	}
+	wg.Wait()
+	for i := 1; i < n; i++ {
+		if results[i].ContextBlock != results[0].ContextBlock {
+			t.Errorf("goroutine %d ContextBlock diverged from goroutine 0 (populated slots)", i)
+		}
+	}
+	if !strings.Contains(results[0].ContextBlock, "[cite:01ARZ3NDEKTSV4RRFFQ69G5FAV]") ||
+		!strings.Contains(results[0].ContextBlock, "[episode:ep-1]") {
+		t.Errorf("expected markers missing from concurrent result: %q", results[0].ContextBlock)
+	}
+}
+
+// TestRenderReadBody_ComposesMapperAndRender pins the ae4a composition helper
+// (D-142): RenderReadBody(items) == Render(RenderMCP, RenderItemsFromMemoryItems(items)).ContextBlock,
+// and its signature (no Store, no ctx) is itself the no-new-query proof.
+func TestRenderReadBody_ComposesMapperAndRender(t *testing.T) {
+	items := []MemoryItem{
+		{
+			Memory:   store.Memory{Content: "hello", ValidFrom: 1684108800000, EpisodeID: "ep-7"},
+			Citation: "cite-1",
+		},
+	}
+	got := RenderReadBody(items)
+	want := Render(RenderMCP, RenderItemsFromMemoryItems(items)).ContextBlock
+	if got != want {
+		t.Errorf("RenderReadBody = %q, want %q", got, want)
+	}
+	if !strings.Contains(got, "[cite:cite-1]") || !strings.Contains(got, "[episode:ep-7]") {
+		t.Errorf("RenderReadBody missing expected markers: %q", got)
+	}
+}
+
+// TestRenderReadBody_Empty pins the empty-items case (no crash, sentinel body).
+func TestRenderReadBody_Empty(t *testing.T) {
+	got := RenderReadBody(nil)
+	want := "CURRENT memories (answer from these):\n(no current memories retrieved)\n"
+	if got != want {
+		t.Errorf("RenderReadBody(nil) = %q, want %q", got, want)
+	}
+}
+
+// TestRenderReadBody_Degraded proves the render step needs nothing from the
+// gateway (D-036/AC7): a "degraded" retrieval Response's Items still render
+// with hooks/handles intact — Render never inspects Response.Degraded, it only
+// ever sees the Items slice already carried on it.
+func TestRenderReadBody_Degraded(t *testing.T) {
+	degraded := &Response{
+		Degraded: true,
+		Items: []MemoryItem{
+			{Memory: store.Memory{Content: "lexical-only fact", EpisodeID: "ep-degraded"}, Citation: "cite-degraded"},
+		},
+	}
+	got := RenderReadBody(degraded.Items)
+	if !strings.Contains(got, "[cite:cite-degraded]") || !strings.Contains(got, "[episode:ep-degraded]") {
+		t.Errorf("degraded response body missing expected markers: %q", got)
 	}
 }
 

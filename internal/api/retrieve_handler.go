@@ -91,6 +91,11 @@ type retrieveResponse struct {
 	DegradedRerank bool                 `json:"degraded_rerank,omitempty"` // true when rerank failed; Phase-10 order preserved (Phase 12)
 	CacheHit       bool                 `json:"cache_hit,omitempty"`       // true when served from the hot–warm cache (Phase 12)
 	API            string               `json:"api"`                       // "v1"
+	// Rendered is the identical lean markdown reader body the MCP Text block and
+	// SDK Rendered field carry (D-142, ae4a) — the same retrieval.RenderReadBody
+	// call, so all three single-user read surfaces stay byte-identical (D-067/
+	// D-073). This GROWS the response payload (M4): Items still travels in full.
+	Rendered string `json:"rendered,omitempty"`
 }
 
 // handleRetrieve implements POST /v1/retrieve.
@@ -199,6 +204,7 @@ func (s *Server) handleRetrieve(w http.ResponseWriter, r *http.Request) {
 		DegradedRerank: resp.DegradedRerank,
 		CacheHit:       resp.CacheHit,
 		API:            resp.API,
+		Rendered:       retrieval.RenderReadBody(resp.Items),
 	})
 }
 

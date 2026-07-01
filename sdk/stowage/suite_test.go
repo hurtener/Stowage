@@ -81,6 +81,12 @@ func RunSuite(t *testing.T, client stowage.Client) {
 		if rResp.API != "v1" {
 			t.Errorf("Retrieve: API want %q, got %q", "v1", rResp.API)
 		}
+		// Rendered (D-142, ae4a) is always non-empty — RenderReadBody returns the
+		// empty-context sentinel even with zero items, and the parity contract
+		// requires both surfaces to populate it identically.
+		if rResp.Rendered == "" {
+			t.Error("Retrieve: empty Rendered field (D-142)")
+		}
 		// Items may be empty if pipeline hasn't processed yet — that's fine.
 		// Degraded is acceptable with mock gateway.
 	})

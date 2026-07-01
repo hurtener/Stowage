@@ -338,6 +338,69 @@ func TestRetrieve_SupersededCompanionInline(t *testing.T) {
 	}
 }
 
+// TestRetrieve_RenderedFieldPresent proves the HTTP parity surface (D-142,
+// ae4a): retrieveResponse.rendered carries the identical lean markdown body
+// the MCP Text block and SDK Rendered field carry, sourced from the single
+// retrieval.RenderReadBody call. A matching memory's citation must appear in
+// the rendered body as a [cite:…] drill handle.
+func TestRetrieve_RenderedFieldPresent(t *testing.T) {
+	t.Parallel()
+	srv, ts, st := newTestServer(t)
+	_, pt := mustCreateAgentKey(t, st, "tenant-rendered")
+	setRetriever(t, srv, st)
+
+	scope := identity.Scope{Tenant: "tenant-rendered"}
+	uniqueTerm := "renderedfieldapitestxyzzy"
+	nowMs := time.Now().UnixMilli()
+	memID := fmt.Sprintf("01rnd%016x0000", nowMs)
+	cs := store.CommitSet{
+		Action: store.ActionAdd,
+		Memory: store.Memory{
+			ID: memID, Kind: "fact", Content: uniqueTerm + " is a unique rendered-field test memory",
+			Status: "active", Confidence: 0.9, TrustSource: "llm_extracted", Stability: 1.0,
+			ContentHash: memID, CreatedAt: nowMs, UpdatedAt: nowMs,
+		},
+		Events: []store.Event{{ID: fmt.Sprintf("01rev%016x0000", nowMs), Type: "memory.added", SubjectID: memID, Payload: `{}`}},
+		Scope:  scope,
+	}
+	if err := st.Memories().Commit(context.Background(), scope, cs); err != nil {
+		t.Fatalf("insert memory: %v", err)
+	}
+
+	body := jsonBody(t, map[string]interface{}{"query": uniqueTerm, "limit": 5})
+	req, _ := http.NewRequest("POST", ts.URL+"/v1/retrieve", body)
+	req.Header.Set("Authorization", bearerHeader(pt))
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("POST /v1/retrieve rendered: %v", err)
+	}
+	defer drainClose(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("rendered retrieve: got %d want 200", resp.StatusCode)
+	}
+	var res struct {
+		Items []struct {
+			ID       string `json:"id"`
+			Citation string `json:"citation"`
+		} `json:"items"`
+		Rendered string `json:"rendered"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&res); err != nil {
+		t.Fatalf("decode rendered response: %v", err)
+	}
+	if len(res.Items) == 0 {
+		t.Skip("no items returned by lexical search — rendered-field assertion unobservable")
+	}
+	if res.Rendered == "" {
+		t.Fatal("rendered field must not be empty when items are present")
+	}
+	if !strings.Contains(res.Rendered, "[cite:"+res.Items[0].Citation+"]") {
+		t.Errorf("rendered field missing drill handle for citation %q: %q", res.Items[0].Citation, res.Rendered)
+	}
+}
+
 // TestRetrieve_InvalidProfile proves an unknown profile is rejected with 400 (D-034:
 // the profile knob ships with validation).
 func TestRetrieve_InvalidProfile(t *testing.T) {

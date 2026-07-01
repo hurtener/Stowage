@@ -337,6 +337,7 @@ func (c *embeddedClient) Retrieve(ctx context.Context, req RetrieveRequest) (Ret
 		DegradedRerank: resp.DegradedRerank,
 		CacheHit:       resp.CacheHit,
 		API:            resp.API,
+		Rendered:       retrieval.RenderReadBody(resp.Items),
 	}, nil
 }
 

@@ -483,7 +483,7 @@ multiplexing-vs-strict default is **STRICT** with two orthogonal opt-in knobs (D
 | # | Phase | Owns | RFC | Deps | Decision |
 |---|-------|------|-----|------|----------|
 | ae3 | Shared render core (eval-mode vs MCP-mode) | `internal/retrieval` (render), `eval/harness`, `internal/mcpserver` | §4.2, §9.2, §9.5 | — | D-141 |
-| ae4a | Lean MCP read — `Text` markdown + episode hook + drill by citation ULID | `internal/mcpserver`, `internal/retrieval`, `sdk/stowage`, `internal/api` | §4.2, §5.7, §6b, §9.2, §9.5 | ae3 | D-142 (proposed) |
+| ae4a | Lean MCP read — `Text` markdown + episode hook + drill by citation ULID | `internal/mcpserver`, `internal/retrieval`, `sdk/stowage`, `internal/api` | §4.2, §5.7, §6b, §9.2, §9.5 | ae3 | D-142 |
 | ae5 | List / browse (most-recent-first, superseded filter) | `internal/store` (+ both drivers + conformance), `internal/retrieval`, surfaces | §5.2, §5.3, §8.1, §9.1-9.5 | — | D-143 (proposed) |
 | ae6 | Request-level topic filter (own-scope, fail-open, lane-aware) | `internal/retrieval`, surfaces | §4.2, §5.3, §5.4, §9.5 | — | D-144 (proposed) |
 | ae1 | Read-time agent identity dimension (+ Dockyard v1.8 bump) | `internal/identity`, `internal/store`, `internal/retrieval`, surfaces | §5, §5.3, §9.5 | ae6 | D-135, D-139 |
