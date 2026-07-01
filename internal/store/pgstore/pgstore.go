@@ -186,6 +186,7 @@ func (s *pgStore) Close(_ context.Context) error {
 func (s *pgStore) Records() store.RecordStore       { return &recordStore{s} }
 func (s *pgStore) Memories() store.MemoryStore      { return &memoryStore{s} }
 func (s *pgStore) Topics() store.TopicStore         { return &topicStore{s} }
+func (s *pgStore) TopicViews() store.TopicViewStore { return &topicViewStore{s} }
 func (s *pgStore) Buffers() store.BufferStore       { return &bufferStore{s} }
 func (s *pgStore) Keys() auth.Keyring               { return &keyStore{s} }
 func (s *pgStore) Events() store.EventStore         { return &eventStore{s} }

@@ -1,6 +1,6 @@
 # Phase ae1 — read-time agent identity dimension (+ Dockyard bump)
 
-- **Status:** draft
+- **Status:** implemented (see "As-built deviations" below)
 - **Owning subsystem(s):** `internal/identity` (optional read-only `Scope.Agent`); `internal/store` (a new `TopicViewStore` seam + `topic_views` table on **both** drivers + conformance — **not** a scope table); `internal/retrieval` (the agent→topic-keys resolver that feeds ae6's `filterByTopicOwnScope`); `internal/mcpserver` (the `dockyard v1.8.0` bump + the `server.RequestMeta(ctx)["agent_id"]` read; a `memory_agent_policy` admin tool); `internal/api` (agent-filter intake + policy-admin routes); `sdk/stowage` (agent-filter intake); `internal/config` (one enable knob)
 - **RFC sections:** §5 (identity & scopes), §5.3 (`memory_topics`/topic-keyed slicing reuse), §9.5 (one logic core, D-067/D-073)
 - **Depends on phases:** **ae6** (reuses its own-scope fail-open `filterByTopicOwnScope` + the H3 lane/`scoringK` remedy — the generic filter is built **once**, in ae6). **Does *not* depend on ae7** — `agent_id` arrives via `_meta` (MCP) or an explicit field (HTTP/SDK), never the JWT. This phase performs the mechanical Dockyard bump the rest of the track builds on (W1).
@@ -566,6 +566,39 @@ docs/glossary.md                                               # CHANGED — rea
   via `server.RequestMeta(ctx) map[string]any` (nil when unsent); the key contract
   (e.g. `agent_id`) is owned by Stowage + Harbor, not Dockyard. ae1 is its first
   consumer (agent identity); ae2 generalizes intake to `user`/`session`.
+
+## As-built deviations
+
+- **Cache invalidation (§6 blocking #2) uses a tenant-wide `InvalidateScope({Tenant})`
+  bump, not a per-agent generation.** The design text names both as valid options;
+  the tenant-wide bump is simpler, reuses the existing `ResultCache.InvalidateScope`
+  entry point unchanged, and is provably correct (it busts every cached read for
+  the tenant, agent-filtered or not — coarser than a per-agent bump but never
+  stale). `Retriever.PutAgentPolicy`/`DeleteAgentPolicy` (new methods on
+  `*retrieval.Retriever`, `internal/retrieval/agentfilter.go`) are the CORE
+  mutation path: they write through the wired `TopicViewStore` then call
+  `r.cache.InvalidateScope(identity.Scope{Tenant: scope.Tenant})`. Both HTTP
+  (`internal/api/agentpolicy_handler.go`) and MCP
+  (`makeAgentPolicyHandler`, `internal/mcpserver/handlers.go`) call these two
+  methods for their write ops and `GetAgentPolicy`/`ListAgentPolicies` (also added
+  to `*Retriever`, side-effect-free passthroughs) for reads — one core, four thin
+  callers per surface, matching D-067/D-073. A direct `store.TopicViews()` write
+  that bypasses the `Retriever` wrapper does **not** invalidate (proven by
+  `TestRetrieve_DirectStoreMutation_DoesNotInvalidateCache`,
+  `internal/retrieval/cache_test.go`) — that is the point: the invalidation lives
+  in one place, not sprinkled per-surface.
+- **`internal/store/conformance/phase-ae1.go`** (matching the plan's literal
+  filename) rather than the repo's more common unhyphenated `phaseNN.go`
+  convention (`phase18.go`, `phase21.go`) — the plan's Files list names it
+  explicitly with the `ae1` hyphenated form, so it was kept as specified rather
+  than silently renamed to match the older phase-number files.
+- **`memory_agent_policy`'s MCP tool registration bumped `New()`'s tool count
+  21→22** (`internal/mcpserver/server.go` docstring, `TestNew_SevenToolsRegistered`
+  and `TestNew_ConcurrentCreation` in `server_test.go`) — a mechanical consequence
+  of AC-9, not a deviation from intent, called out here because it touches two
+  pre-existing tests outside ae1's own file list.
+- No other deviations from the plan's Design §1-§6; all 13 acceptance criteria are
+  met as specified (see the smoke script and the verification tails in the PR).
 
 ## Decisions filed
 

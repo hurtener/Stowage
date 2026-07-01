@@ -112,6 +112,9 @@
     "degraded_topic_filter": {
       "type": "boolean"
     },
+    "degraded_agent_filter": {
+      "type": "boolean"
+    },
     "cache_hit": {
       "type": "boolean"
     },

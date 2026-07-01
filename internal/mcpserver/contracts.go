@@ -120,7 +120,11 @@ type RetrieveOutput struct {
 	// DegradedTopicFilter is true when include_topics/exclude_topics were requested
 	// but the topic store failed, so the caller's own UNFILTERED results were
 	// returned instead (fail-open, D-139, ae6).
-	DegradedTopicFilter bool   `json:"degraded_topic_filter,omitempty"`
+	DegradedTopicFilter bool `json:"degraded_topic_filter,omitempty"`
+	// DegradedAgentFilter is true when the caller's agent identity (_meta.agent_id)
+	// was bound to a policy but the agent-policy store failed, so the caller's own
+	// UNFILTERED results were returned instead (fail-open, D-139/D-036, ae1).
+	DegradedAgentFilter bool   `json:"degraded_agent_filter,omitempty"`
 	CacheHit            bool   `json:"cache_hit,omitempty"`
 	API                 string `json:"api"`
 }
@@ -588,6 +592,38 @@ type GrantsOutput struct {
 	Grants  []GrantRecord `json:"grants,omitempty"`
 	Removed bool          `json:"removed,omitempty"`
 	Revoked string        `json:"revoked,omitempty"`
+}
+
+// ─── memory_agent_policy (Phase ae1 — D-135/D-146/D-151) ───────────────────────
+
+// AgentPolicyInput is the action-tagged memory_agent_policy tool input. action ∈
+// {create, get, list, delete}. Policy-admin tier: reachable on {HTTP, MCP} only,
+// never the single-user SDK (D-067), matching memory_grants' tiering. agent_id
+// is required for create/get/delete. allow_topics/deny_topics are the
+// (tenant_id, agent_id) -> topic-key binding create writes (replaces any
+// existing binding atomically).
+type AgentPolicyInput struct {
+	Action      string   `json:"action"`
+	AgentID     string   `json:"agent_id,omitempty"`
+	AllowTopics []string `json:"allow_topics,omitempty"`
+	DenyTopics  []string `json:"deny_topics,omitempty"`
+}
+
+// AgentPolicyRecord mirrors the store.AgentPolicy wire shape.
+type AgentPolicyRecord struct {
+	AgentID     string   `json:"agent_id"`
+	AllowTopics []string `json:"allow_topics,omitempty"`
+	DenyTopics  []string `json:"deny_topics,omitempty"`
+	CreatedAt   int64    `json:"created_at,omitempty"`
+	UpdatedAt   int64    `json:"updated_at,omitempty"`
+}
+
+// AgentPolicyOutput is the memory_agent_policy tool output; only the fields
+// relevant to the requested action are populated.
+type AgentPolicyOutput struct {
+	Policy   *AgentPolicyRecord  `json:"policy,omitempty"`
+	Policies []AgentPolicyRecord `json:"policies,omitempty"`
+	Deleted  string              `json:"deleted,omitempty"`
 }
 
 // ─── memory reversibility tools (D-070) ───────────────────────────────────────

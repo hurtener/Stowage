@@ -119,6 +119,11 @@ type Response struct {
 	// failed, so the caller's own UNFILTERED results were returned instead (fail-open,
 	// D-139, ae6). False when no topic filter was requested or the filter applied cleanly.
 	DegradedTopicFilter bool
+	// DegradedAgentFilter is true when scope.Agent was bound to a policy but the
+	// agent-policy store errored, so the caller's own UNFILTERED results were
+	// returned instead (fail-open, D-139/D-036, ae1). False when no agent filter was
+	// active (disabled, no agent, or an UNBOUND agent) or the filter applied cleanly.
+	DegradedAgentFilter bool
 }
 
 // Retriever executes the four-lane retrieval and returns fused + scored results.
@@ -142,6 +147,12 @@ type Retriever struct {
 	// the existing floor rule) ONLY when a request carries a topic filter (D-144, ae6).
 	// <= 0 falls back to defaultTopicFilterScoringK.
 	topicFilterScoringK int
+	// agentPolSt is the agent->topic policy store (Phase ae1, D-135/D-146); nil ⇒ the
+	// agent filter is disabled regardless of agentFilterOn (wired via WithAgentPolicy).
+	agentPolSt store.TopicViewStore
+	// agentFilterOn mirrors retrieval.agent_views.enabled (D-034); default false ⇒
+	// zero-config start is byte-identical even when a host injects scope.Agent.
+	agentFilterOn bool
 }
 
 // New creates a Retriever wired to the given dependencies.
@@ -576,6 +587,37 @@ func (r *Retriever) Retrieve(ctx context.Context, scope identity.Scope, req Requ
 		fused = onTopic
 	}
 
+	// Agent own-scope topic filter (Phase ae1, D-135/D-146/D-139): a SECOND,
+	// independently fail-open pass over ae6's EXISTING filterByTopicOwnScope — this
+	// is the SAME post-RRF-fusion / pre-scoringK-trim point ae6 introduced, running
+	// AFTER ae6's request-topic pass above, so it inherits ae6's no-underfill
+	// property (H3) without any new lane/scoringK logic (AC-7). Each pass only
+	// subtracts and fails open independently; composition is (request filter ∩
+	// agent filter). Inert (no-op) when agent filtering is disabled, scope.Agent is
+	// empty, or the agent is unbound (resolveAgentTopics returns active=false).
+	var degradedAgentFilter bool
+	if allow, deny, active, resolveDegraded := r.resolveAgentTopics(ctx, scope); resolveDegraded {
+		degradedAgentFilter = true
+	} else if active {
+		ids := make([]string, len(fused))
+		for i, h := range fused {
+			ids[i] = h.MemoryID
+		}
+		kept, afDegraded := r.filterByTopicOwnScope(ctx, scope, ids, allow, deny)
+		degradedAgentFilter = afDegraded
+		keptSet := make(map[string]bool, len(kept))
+		for _, id := range kept {
+			keptSet[id] = true
+		}
+		onAgentTopic := make([]FusedHit, 0, len(fused))
+		for _, h := range fused {
+			if keptSet[h.MemoryID] {
+				onAgentTopic = append(onAgentTopic, h)
+			}
+		}
+		fused = onAgentTopic
+	}
+
 	// Trim to scoringK (≥ requested limit, see above) before scoring to bound the
 	// GetMany call while still feeding the reranker the full requested window.
 	if len(fused) > scoringK {
@@ -586,6 +628,7 @@ func (r *Retriever) Retrieve(ctx context.Context, scope identity.Scope, req Requ
 		return &Response{
 			ResponseID: responseID, Support: Support{Strength: "weak"}, Degraded: degraded, API: "v1",
 			DegradedTopicFilter: degradedTopicFilter,
+			DegradedAgentFilter: degradedAgentFilter,
 		}, nil
 	}
 
@@ -862,6 +905,7 @@ func (r *Retriever) Retrieve(ctx context.Context, scope identity.Scope, req Requ
 		API:                 "v1",
 		DegradedRerank:      degradedRerank,
 		DegradedTopicFilter: degradedTopicFilter,
+		DegradedAgentFilter: degradedAgentFilter,
 	}, nil
 }
 

@@ -86,6 +86,23 @@ type RetrievalConfig struct {
 	// so zero-config start is unchanged. Bounded 1..maxLimit (100, retrieval's hard
 	// result cap).
 	TopicFilterScoringK int `yaml:"topic_filter_scoring_k"`
+	// AgentViews groups the read-time agent->topic filter knobs (Phase ae1,
+	// D-135/D-146, generalized by D-151). A nested group (not a flat scalar like
+	// the two above) because ae9 adds on_policy_error/subject_precedence here
+	// alongside Enabled — no new table, migration, or master switch.
+	AgentViews AgentViewsConfig `yaml:"agent_views"`
+}
+
+// AgentViewsConfig groups the read-time agent->topic filter knobs (ae1,
+// D-135/D-146/D-151).
+type AgentViewsConfig struct {
+	// Enabled is the master switch for the read-time agent->topic filter (D-151:
+	// the one shared enable knob for the topic_views table, introduced by ae1,
+	// reused by ae9). Default false: zero-config start is byte-identical even for
+	// a host that injects _meta.agent_id — filtering only activates once an
+	// operator opts in. Fail-open behaviour on a policy-store error is hardwired
+	// per D-139 (not a knob).
+	Enabled bool `yaml:"enabled"`
 }
 
 // ProfileTuning overrides one retrieval profile's candidate windows. A zero field
@@ -244,6 +261,7 @@ var allKeys = []string{
 	"retrieval.include_superseded",
 	"retrieval.browse_default_limit",
 	"retrieval.topic_filter_scoring_k",
+	"retrieval.agent_views.enabled",
 }
 
 // secretKeyPaths is the set of keys that hold env.VAR_NAME references.
@@ -346,9 +364,10 @@ func Defaults() *Config {
 			StdioTenant: "default",
 		},
 		Retrieval: RetrievalConfig{
-			IncludeSuperseded:   true, // dual-visibility default (§6c, D-105)
-			BrowseDefaultLimit:  30,   // ae5 browse page size (D-143)
-			TopicFilterScoringK: 100,  // ae6 topic-filter candidate window (D-144)
+			IncludeSuperseded:   true,                             // dual-visibility default (§6c, D-105)
+			BrowseDefaultLimit:  30,                               // ae5 browse page size (D-143)
+			TopicFilterScoringK: 100,                              // ae6 topic-filter candidate window (D-144)
+			AgentViews:          AgentViewsConfig{Enabled: false}, // ae1 agent filter master switch (D-135/D-146/D-151), off by default
 		},
 		prov: make(Provenance),
 	}
@@ -857,6 +876,8 @@ func (c *Config) getByPath(path string) string {
 		return strconv.Itoa(c.Retrieval.BrowseDefaultLimit)
 	case "retrieval.topic_filter_scoring_k":
 		return strconv.Itoa(c.Retrieval.TopicFilterScoringK)
+	case "retrieval.agent_views.enabled":
+		return strconv.FormatBool(c.Retrieval.AgentViews.Enabled)
 	default:
 		return ""
 	}
@@ -1002,6 +1023,12 @@ func (c *Config) setByPath(path, value string) error {
 			return fmt.Errorf("config.%s: %w", path, err)
 		}
 		c.Retrieval.TopicFilterScoringK = n
+	case "retrieval.agent_views.enabled":
+		b, err := strconv.ParseBool(value)
+		if err != nil {
+			return fmt.Errorf("config.%s: %w", path, err)
+		}
+		c.Retrieval.AgentViews.Enabled = b
 	default:
 		return fmt.Errorf("config: unknown key path %q", path)
 	}

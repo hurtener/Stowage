@@ -33,6 +33,12 @@ type retrieveRequest struct {
 	// (D-139, see retrieveResponse.DegradedTopicFilter). Empty = no constraint.
 	IncludeTopics []string `json:"include_topics"`
 	ExcludeTopics []string `json:"exclude_topics"`
+	// AgentID is the D-140-sanctioned HTTP intake for the calling agent identity
+	// (MCP sources the same dimension from _meta.agent_id instead; there is no
+	// JWT-carried agent seam until ae7, and even then agent stays out of the JWT —
+	// D-135). Read-time only: stamped onto Scope.Agent, never persisted. Empty =
+	// no agent filtering.
+	AgentID string `json:"agent_id"`
 }
 
 // retrieveBreakdown is the wire format for a per-item scoring breakdown.
@@ -97,7 +103,11 @@ type retrieveResponse struct {
 	// DegradedTopicFilter is true when include_topics/exclude_topics were requested but
 	// the topic store failed, so the caller's own UNFILTERED results were returned
 	// instead (fail-open, D-139, ae6).
-	DegradedTopicFilter bool   `json:"degraded_topic_filter,omitempty"`
+	DegradedTopicFilter bool `json:"degraded_topic_filter,omitempty"`
+	// DegradedAgentFilter is true when agent_id was bound to a policy but the
+	// agent-policy store failed, so the caller's own UNFILTERED results were
+	// returned instead (fail-open, D-139/D-036, ae1).
+	DegradedAgentFilter bool   `json:"degraded_agent_filter,omitempty"`
 	CacheHit            bool   `json:"cache_hit,omitempty"` // true when served from the hot–warm cache (Phase 12)
 	API                 string `json:"api"`                 // "v1"
 	// Rendered is the identical lean markdown reader body the MCP Text block and
@@ -146,7 +156,7 @@ func (s *Server) handleRetrieve(w http.ResponseWriter, r *http.Request) {
 	authKey := keyFromContext(r.Context())
 	// Tenant is the auth boundary (the key); project/user are caller-supplied read sub-scopes
 	// (D-125). The store hard-isolates to this scope; grants may widen it (EffectiveScopes).
-	scope := identity.Scope{Tenant: authKey.TenantID, Project: req.ProjectID, User: req.UserID}
+	scope := identity.Scope{Tenant: authKey.TenantID, Project: req.ProjectID, User: req.UserID, Agent: req.AgentID}
 
 	if s.retriever == nil {
 		respondJSON(w, http.StatusServiceUnavailable, errBody("retrieval not available"))
@@ -214,6 +224,7 @@ func (s *Server) handleRetrieve(w http.ResponseWriter, r *http.Request) {
 		Degraded:            resp.Degraded,
 		DegradedRerank:      resp.DegradedRerank,
 		DegradedTopicFilter: resp.DegradedTopicFilter,
+		DegradedAgentFilter: resp.DegradedAgentFilter,
 		CacheHit:            resp.CacheHit,
 		API:                 resp.API,
 		Rendered:            retrieval.RenderReadBody(resp.Items),

@@ -29,6 +29,10 @@ type Store interface {
 	// Topics returns the extraction-magnet sub-store.
 	Topics() TopicStore
 
+	// TopicViews returns the general (subject_kind, subject_id, view_name) →
+	// topic-key policy-binding sub-store (Phase ae1, D-135/D-146/D-151).
+	TopicViews() TopicViewStore
+
 	// Buffers returns the multi-agent accumulation sub-store.
 	Buffers() BufferStore
 
@@ -389,6 +393,33 @@ type TopicStore interface {
 
 	// Delete soft-deletes a topic (sets status = "deleted").
 	Delete(ctx context.Context, scope identity.Scope, key string) error
+}
+
+// TopicViewStore manages the general (subject_kind, subject_id, view_name) →
+// {allow, deny} topic-key junction (D-151). NOT a scope table — carries no memory
+// rows. All methods are tenant-scoped (P3, scope.Tenant required — ErrScopeRequired
+// on empty); there is NO unscoped variant. ae1 is the first consumer and only ever
+// operates on (subject_kind='agent', view_name='default') rows via the
+// agent-shaped methods below; ae9 extends this same seam with named-view + key-id
+// subject admin (create/update/delete/list) — no new table, migration, or seam.
+type TopicViewStore interface {
+	// PutAgentPolicy upserts the (subject_kind='agent', view_name='default') binding
+	// for (scope.Tenant, agentID). Replaces any existing allow/deny sets for that
+	// agent atomically. Rejects an empty agentID.
+	PutAgentPolicy(ctx context.Context, scope identity.Scope, p AgentPolicy) error
+
+	// GetAgentPolicy returns the binding for (scope.Tenant, agentID). Returns
+	// ErrNotFound when no binding exists (an UNBOUND agent — the filter then leaves
+	// the caller's own-scope results unfiltered, NOT degraded).
+	GetAgentPolicy(ctx context.Context, scope identity.Scope, agentID string) (*AgentPolicy, error)
+
+	// ListAgentPolicies returns all agent bindings for the tenant, ordered by
+	// agent_id asc.
+	ListAgentPolicies(ctx context.Context, scope identity.Scope) ([]AgentPolicy, error)
+
+	// DeleteAgentPolicy removes the binding for (scope.Tenant, agentID).
+	// Returns ErrNotFound when absent.
+	DeleteAgentPolicy(ctx context.Context, scope identity.Scope, agentID string) error
 }
 
 // BufferStore manages multi-agent accumulation buffers (RFC §4.1, D-007).

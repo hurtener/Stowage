@@ -205,7 +205,11 @@ func Open(ctx context.Context, cfg *config.Config) (*Stack, error) {
 	))
 	s.Retriever.WithIncludeSuperseded(cfg.Retrieval.IncludeSuperseded)     // D-105 dual-visibility (§6c)
 	s.Retriever.WithTopicFilterScoringK(cfg.Retrieval.TopicFilterScoringK) // D-144 own-scope topic filter window (ae6)
-	s.Retriever.WithEventCapture(s.Store.Events())                         // Phase 26: async retrieve.query trace capture
+	// D-135/D-146/D-151: the read-time agent->topic filter, gated by
+	// retrieval.agent_views.enabled (default false — zero-config start
+	// unaffected even when a host injects an agent identity).
+	s.Retriever.WithAgentPolicy(s.Store.TopicViews(), cfg.Retrieval.AgentViews.Enabled)
+	s.Retriever.WithEventCapture(s.Store.Events()) // Phase 26: async retrieve.query trace capture
 	s.Retriever.SetGrants(s.Store.Grants())
 	s.closers = append(s.closers, func(context.Context) error {
 		s.Retriever.Close() // drains injection writer goroutine

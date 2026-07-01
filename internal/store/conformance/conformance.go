@@ -197,6 +197,8 @@ func Run(t *testing.T, factory Factory) {
 	t.Run("DSARDeleteUserDataCascade", func(t *testing.T) { testDSARDeleteUserDataCascade(t, factory) })
 	t.Run("DSARDeleteUserDataCrossTenantIsolation", func(t *testing.T) { testDSARDeleteUserDataCrossTenantIsolation(t, factory) })
 	t.Run("DSARDeleteUserDataScopeRequired", func(t *testing.T) { testDSARDeleteUserDataScopeRequired(t, factory) })
+	// Phase ae1 — TopicViewStore: the agent->topic policy binding (D-135/D-146/D-151)
+	RunAgentPolicy(t, factory)
 }
 
 // --- helpers ----------------------------------------------------------------

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/hurtener/dockyard/runtime/server"
 	"github.com/hurtener/dockyard/runtime/tool"
 
 	"github.com/hurtener/stowage/internal/causal"
@@ -175,6 +176,16 @@ func makeRetrieveHandler(svc *Services) tool.Handler[RetrieveInput, RetrieveOutp
 		// Tenant is the auth boundary (ScopeFn); project/user are caller-supplied read sub-scopes
 		// (P3, D-125). Empty = tenant-wide (back-compat). The store hard-isolates to this scope.
 		scope = identity.Scope{Tenant: scope.Tenant, Project: in.ProjectID, User: in.UserID}
+		// Agent identity arrives via the host-injected _meta seam (dockyard v1.8.0,
+		// D-135) — NEVER a model-fillable tool argument — and is stamped on the READ
+		// scope only: it is never persisted (identity.Scope.Agent, C1). RequestMeta
+		// returns nil when the host sent no _meta; the agent_id value is
+		// type-asserted to string (nil-safe on a missing key or wrong type).
+		if m := server.RequestMeta(ctx); m != nil {
+			if a, ok := m["agent_id"].(string); ok {
+				scope.Agent = a
+			}
+		}
 
 		if in.Query == "" {
 			return tool.Result[RetrieveOutput]{}, fmt.Errorf("memory_retrieve: query must not be empty")
@@ -245,6 +256,7 @@ func makeRetrieveHandler(svc *Services) tool.Handler[RetrieveInput, RetrieveOutp
 			Degraded:            resp.Degraded,
 			DegradedRerank:      resp.DegradedRerank,
 			DegradedTopicFilter: resp.DegradedTopicFilter,
+			DegradedAgentFilter: resp.DegradedAgentFilter,
 			CacheHit:            resp.CacheHit,
 			API:                 resp.API,
 		}
@@ -940,6 +952,92 @@ func makeGrantsHandler(svc *Services) tool.Handler[GrantsInput, GrantsOutput] {
 
 func grantsResult(out GrantsOutput, text string) tool.Result[GrantsOutput] {
 	return tool.Result[GrantsOutput]{Text: text, Structured: out}
+}
+
+// ─── memory_agent_policy (Phase ae1 — D-135/D-146/D-151) ───────────────────────
+
+func agentPolicyToWire(p store.AgentPolicy) AgentPolicyRecord {
+	return AgentPolicyRecord{
+		AgentID: p.AgentID, AllowTopics: p.AllowTopics, DenyTopics: p.DenyTopics,
+		CreatedAt: p.CreatedAt, UpdatedAt: p.UpdatedAt,
+	}
+}
+
+// makeAgentPolicyHandler implements memory_agent_policy: op-dispatched
+// (create|get|list|delete) admin over the (tenant_id, agent_id) -> {allow, deny}
+// topic-key binding (D-135/D-146/D-151). Policy-admin tier (mirrors
+// makeGrantsHandler): reachable on {HTTP, MCP} only, never the single-user SDK
+// (D-067). The CORE is svc.Retriever's PutAgentPolicy/DeleteAgentPolicy (which
+// also invalidate the affected agent's cached reads, §6 blocking #2) and
+// GetAgentPolicy/ListAgentPolicies (pure reads) — validation lives in the
+// TopicViewStore drivers, proven identically by conformance, so this handler is a
+// thin caller.
+func makeAgentPolicyHandler(svc *Services) tool.Handler[AgentPolicyInput, AgentPolicyOutput] {
+	return func(ctx context.Context, in AgentPolicyInput) (tool.Result[AgentPolicyOutput], error) {
+		scope, err := svc.ScopeFn(ctx)
+		if err != nil {
+			return tool.Result[AgentPolicyOutput]{}, fmt.Errorf("memory_agent_policy: resolve scope: %w", err)
+		}
+		if svc.Retriever == nil {
+			return tool.Result[AgentPolicyOutput]{}, fmt.Errorf("memory_agent_policy: retriever not available")
+		}
+		tenantScope := identity.Scope{Tenant: scope.Tenant}
+
+		switch in.Action {
+		case "create":
+			if in.AgentID == "" {
+				return tool.Result[AgentPolicyOutput]{}, fmt.Errorf("memory_agent_policy: agent_id is required for create")
+			}
+			p := store.AgentPolicy{AgentID: in.AgentID, AllowTopics: in.AllowTopics, DenyTopics: in.DenyTopics}
+			if err := svc.Retriever.PutAgentPolicy(ctx, tenantScope, p); err != nil {
+				return tool.Result[AgentPolicyOutput]{}, fmt.Errorf("memory_agent_policy: create: %w", err)
+			}
+			got, err := svc.Retriever.GetAgentPolicy(ctx, tenantScope, in.AgentID)
+			if err != nil {
+				return tool.Result[AgentPolicyOutput]{}, fmt.Errorf("memory_agent_policy: create (read-back): %w", err)
+			}
+			wire := agentPolicyToWire(*got)
+			return agentPolicyResult(AgentPolicyOutput{Policy: &wire}, fmt.Sprintf("Bound agent %s", in.AgentID)), nil
+
+		case "get":
+			if in.AgentID == "" {
+				return tool.Result[AgentPolicyOutput]{}, fmt.Errorf("memory_agent_policy: agent_id is required for get")
+			}
+			p, err := svc.Retriever.GetAgentPolicy(ctx, tenantScope, in.AgentID)
+			if err != nil {
+				return tool.Result[AgentPolicyOutput]{}, fmt.Errorf("memory_agent_policy: get: %w", err)
+			}
+			wire := agentPolicyToWire(*p)
+			return agentPolicyResult(AgentPolicyOutput{Policy: &wire}, fmt.Sprintf("Agent %s binding", in.AgentID)), nil
+
+		case "list":
+			list, err := svc.Retriever.ListAgentPolicies(ctx, tenantScope)
+			if err != nil {
+				return tool.Result[AgentPolicyOutput]{}, fmt.Errorf("memory_agent_policy: list: %w", err)
+			}
+			out := AgentPolicyOutput{Policies: make([]AgentPolicyRecord, len(list))}
+			for i, p := range list {
+				out.Policies[i] = agentPolicyToWire(p)
+			}
+			return agentPolicyResult(out, fmt.Sprintf("Listed %d agent binding(s)", len(out.Policies))), nil
+
+		case "delete":
+			if in.AgentID == "" {
+				return tool.Result[AgentPolicyOutput]{}, fmt.Errorf("memory_agent_policy: agent_id is required for delete")
+			}
+			if err := svc.Retriever.DeleteAgentPolicy(ctx, tenantScope, in.AgentID); err != nil {
+				return tool.Result[AgentPolicyOutput]{}, fmt.Errorf("memory_agent_policy: delete: %w", err)
+			}
+			return agentPolicyResult(AgentPolicyOutput{Deleted: in.AgentID}, fmt.Sprintf("Unbound agent %s", in.AgentID)), nil
+
+		default:
+			return tool.Result[AgentPolicyOutput]{}, fmt.Errorf("memory_agent_policy: unknown action %q (want create|get|list|delete)", in.Action)
+		}
+	}
+}
+
+func agentPolicyResult(out AgentPolicyOutput, text string) tool.Result[AgentPolicyOutput] {
+	return tool.Result[AgentPolicyOutput]{Text: text, Structured: out}
 }
 
 // makeEpisodesHandler implements memory_episodes (RFC §6b, D-080): the

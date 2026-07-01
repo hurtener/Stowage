@@ -99,9 +99,9 @@ Internal order: **ae3 → ae4a**; ae5 and ae6 independent (ae6 is the filter key
 - [x] Dual adversarial review complete · [x] live 3-surface validation · [x] CI green · [x] merged · [x] roadmap updated
 
 ### Wave 1 — additive read-time identity (+ Dockyard v1.8 bump) · one PR
-**Status:** NOT STARTED
+**Status:** IN PROGRESS (ae1 implemented on `feat/ae-wave-1`; ae2 pending)
 Depends on **W0** (ae1 reuses ae6's filter).
-- [ ] **ae1** — read-time `Scope.Agent` (read-path only, inert on writes); `dockyard v1.7.3→v1.8.0` + `server.RequestMeta`; creates the `topic_views` junction + `TopicViewStore` at migration 0013; `agent_id` field on SDK+HTTP, `_meta.agent_id` on MCP · D‑135/D‑146(shape per D‑151)
+- [x] **ae1** — read-time `Scope.Agent` (read-path only, inert on writes); `dockyard v1.7.3→v1.8.0` + `server.RequestMeta`; creates the `topic_views` junction + `TopicViewStore` at migration 0013; `agent_id` field on SDK+HTTP, `_meta.agent_id` on MCP · D‑135/D‑146(shape per D‑151)
 - [ ] **ae2** — additive `_meta` intake (`user`/`session`/`agent`); `metaElseArg` (`_meta` wins); tenant credential-only, `_meta.tenant` mismatch fails closed; session → relevance sink not `Scope.Session` · D‑138 (impl D‑137)
 - [ ] Dual adversarial review · [ ] live 3-surface validation · [ ] CI green · [ ] merged · [ ] roadmap updated
 

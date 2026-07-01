@@ -31,6 +31,14 @@ type Scope struct {
 	Project string
 	User    string
 	Session string
+	// Agent is the calling agent identity, set ONLY on the read path (from
+	// _meta.agent_id on MCP, or an explicit agent_id field on HTTP/SDK). It is a
+	// READ-TIME identity/filter dimension (D-135): it is NEVER persisted, NEVER a
+	// column on any of the 12 scope tables, and NEVER referenced by a scope-WHERE
+	// builder or an INSERT. It drives only the read-time agent→topic filter
+	// (internal/retrieval), which can only SUBTRACT from the caller's own-scope
+	// results (P3 preserved, fails open per D-139).
+	Agent string
 }
 
 // String returns the canonical slash-separated form, omitting empty trailing
