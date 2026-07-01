@@ -8,6 +8,7 @@ import (
 
 	"github.com/hurtener/stowage/eval/gain"
 	"github.com/hurtener/stowage/internal/gateway"
+	"github.com/hurtener/stowage/internal/retrieval"
 )
 
 // seqGateway returns queued JSON responses in order, recording each request so the
@@ -93,7 +94,8 @@ func TestJudgeOnOff_PositiveGain(t *testing.T) {
 		json.RawMessage(`{"verdict":"correct","justification":"matches the gold"}`), // judge ON
 	}}
 	gr, err := judgeOnOff(context.Background(), gw, "gain-pref-01", "preference",
-		"What language does the user prefer?", "TypeScript", []string{"User prefers TypeScript."})
+		"What language does the user prefer?", "TypeScript",
+		[]retrieval.RenderItem{{Content: "User prefers TypeScript."}})
 	if err != nil {
 		t.Fatalf("judgeOnOff: %v", err)
 	}
@@ -153,7 +155,7 @@ func TestJudgeOnOff_NoGain(t *testing.T) {
 		json.RawMessage(`{"answer":"TypeScript"}`),
 		json.RawMessage(`{"verdict":"correct","justification":"ok"}`),
 	}}
-	gr, err := judgeOnOff(context.Background(), gw, "x", "c", "q?", "TypeScript", []string{"ctx"})
+	gr, err := judgeOnOff(context.Background(), gw, "x", "c", "q?", "TypeScript", []retrieval.RenderItem{{Content: "ctx"}})
 	if err != nil {
 		t.Fatalf("judgeOnOff: %v", err)
 	}

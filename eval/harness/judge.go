@@ -136,20 +136,19 @@ func BuildReaderPrompt(question string, questionDate string, items []retrieval.R
 	return system, b.String()
 }
 
-// renderItemsFromContexts wraps a caller-supplied []string context list (the
-// wire shape JudgeQuestion/JudgeQuestionWith have always taken — gain.go,
-// adapt.go, dataset.go, sweep_test.go all pass one) into []retrieval.RenderItem
-// so JudgeQuestionWith can call the typed BuildReaderPrompt without changing its
-// own exported signature.
+// renderItemsFromContexts wraps a caller-supplied []string context list into
+// []retrieval.RenderItem so JudgeQuestionWith can call the typed
+// BuildReaderPrompt without changing its own exported signature.
 //
-// Scope note (ae3, D-141): this wrap does NOT reconstruct Stale/Superseded from
-// a string — doing so would just relocate the banned "[OUTDATED" re-parse this
-// phase removes. Callers that need a CURRENT/SUPERSEDED split (only the judged/
-// full-eval path — dataset.go's opts.Judge and the fullmode sweep — can carry
-// pre-rendered marker text in their []string) get every item treated as
-// current; the CI path (RunCI/TestEvalCI) never calls the judge, so this is
-// inert there. Plumbing typed items further up those call chains is out of
-// scope for ae3 (documented deviation, CLAUDE.md §4.3).
+// This wrap does NOT reconstruct Stale/Superseded from a string — doing so
+// would just relocate the banned "[OUTDATED" re-parse ae3 removed (D-141).
+// Every item is treated as current. It is correct for callers that are
+// genuinely all-current (adapt.go's playbook context, the gain memory-OFF
+// condition, sweep_test.go). Callers backed by a retrieve response that may
+// carry stale companions (dataset.go's judged path, gain.go's memory-ON
+// condition) call JudgeQuestionWithItems directly with the typed items the
+// runner already built, restoring the CURRENT/SUPERSEDED partition on those
+// paths (wave-0 fix, adversarial-review finding).
 func renderItemsFromContexts(contexts []string) []retrieval.RenderItem {
 	items := make([]retrieval.RenderItem, len(contexts))
 	for i, c := range contexts {
@@ -238,8 +237,24 @@ func JudgeQuestion(ctx context.Context, gw gateway.Gateway, question, gold strin
 // overrides (D-100, D-076). The reader answers ONLY from the retrieved context and
 // may abstain; the judge grades that answer against the gold answer semantically.
 // Both calls go through the gateway seam (P5) and are JSON-schema-constrained.
+//
+// This is the []string wrapper for callers that only ever have all-current
+// context (adapt.go's playbook context, the gain memory-OFF condition, and
+// sweep_test.go). Callers that carry the typed CURRENT/SUPERSEDED partition
+// (the retrieve-backed judged/gain paths) call JudgeQuestionWithItems directly
+// (wave-0 fix — restores pre-ae3 partitioning on the judged path, D-141).
 func JudgeQuestionWith(ctx context.Context, gw gateway.Gateway, opts ReaderOpts, category, question, questionDate, gold string, contexts []string) (JudgedResult, error) {
-	rSys, rUser := BuildReaderPrompt(question, questionDate, renderItemsFromContexts(contexts))
+	return JudgeQuestionWithItems(ctx, gw, opts, category, question, questionDate, gold, renderItemsFromContexts(contexts))
+}
+
+// JudgeQuestionWithItems runs the reader then the judge over TYPED render
+// items (Stale, SupersededByContent, SupersededByDate, OccurredAt), so
+// BuildReaderPrompt partitions CURRENT/SUPERSEDED off the typed Stale bool
+// instead of treating every item as current. This is the entry point for any
+// caller that already has the typed items the shared render core built
+// (D-141) — no string re-wrap, no inline "[OUTDATED" re-parse.
+func JudgeQuestionWithItems(ctx context.Context, gw gateway.Gateway, opts ReaderOpts, category, question, questionDate, gold string, items []retrieval.RenderItem) (JudgedResult, error) {
+	rSys, rUser := BuildReaderPrompt(question, questionDate, items)
 	rResp, err := gw.Complete(ctx, gateway.CompleteRequest{
 		System:          rSys,
 		Messages:        []gateway.Message{{Role: "user", Content: rUser}},

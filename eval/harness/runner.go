@@ -334,13 +334,14 @@ func (r *Runner) scoreQuestion(ctx context.Context, q QuestionFixture) (Question
 	hit := AnswerContextHit(result.CurrentOnly, q.Expected.Answer)
 
 	return QuestionResult{
-		QuestionID: q.ID,
-		Category:   q.Category,
-		Query:      q.Text,
-		Expected:   q.Expected.Answer,
-		Hit:        hit,
-		Latency:    latency,
-		Items:      result.Lines,
+		QuestionID:  q.ID,
+		Category:    q.Category,
+		Query:       q.Text,
+		Expected:    q.Expected.Answer,
+		Hit:         hit,
+		Latency:     latency,
+		Items:       result.Lines,
+		RenderItems: renderItems,
 	}, nil
 }
 

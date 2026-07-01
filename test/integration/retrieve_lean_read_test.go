@@ -77,8 +77,20 @@ func uniqueTenant(prefix string) string {
 // backing record's ID.
 func seedLeanReadMemory(t *testing.T, st store.Store, scope identity.Scope, memID, content, episodeID string) string {
 	t.Helper()
+	return seedLeanReadMemoryAt(t, st, scope, memID, content, episodeID, time.Now().UnixMilli())
+}
+
+// seedLeanReadMemoryAt is seedLeanReadMemory with an explicit timestamp
+// (ValidFrom/CreatedAt/UpdatedAt/OccurredAt), so a test that seeds the same
+// logical memory across several surfaces can pin ONE timestamp for all of
+// them. The render date suffix ("| When: YYYY-MM-DD") is daily-granularity,
+// so separate time.Now() calls across seeds can straddle a UTC-midnight
+// boundary and flake a parity assertion (TestRetrieveLeanRead_SurfaceParity) —
+// callers that need byte-identical renders across seeds must share a
+// timestamp.
+func seedLeanReadMemoryAt(t *testing.T, st store.Store, scope identity.Scope, memID, content, episodeID string, now int64) string {
+	t.Helper()
 	ctx := context.Background()
-	now := time.Now().UnixMilli()
 	recID := ulid.Make().String()
 	if err := st.Records().Append(ctx, scope, []store.Record{{
 		ID: recID, TenantID: scope.Tenant, Role: "user", Content: content,
@@ -347,6 +359,11 @@ func TestRetrieveLeanRead_SurfaceParity(t *testing.T) {
 	const content = "The on-call escalation policy pages the secondary after fifteen minutes."
 	const episodeID = "ep-oncall-policy"
 	const query = "on-call escalation policy secondary fifteen minutes"
+	// ONE shared timestamp for all three seeds below: the render date suffix is
+	// daily-granularity, so three independent time.Now() calls could straddle a
+	// UTC-midnight boundary and produce three different "| When:" dates,
+	// flaking this parity assertion (wave-0 fix).
+	seedAt := time.Now().UnixMilli()
 
 	normalize := func(body, citation string) string {
 		return strings.ReplaceAll(body, citation, "<CITE>")
@@ -367,7 +384,7 @@ func TestRetrieveLeanRead_SurfaceParity(t *testing.T) {
 			_ = p.Drain(shutCtx)
 			_ = stk.Close(shutCtx)
 		})
-		seedLeanReadMemory(t, stk.Store, scope, ulid.Make().String(), content, episodeID)
+		seedLeanReadMemoryAt(t, stk.Store, scope, ulid.Make().String(), content, episodeID, seedAt)
 
 		svc := &mcpserver.Services{
 			Store: stk.Store, Retriever: stk.Retriever, PipelineIn: p.In,
@@ -396,7 +413,7 @@ func TestRetrieveLeanRead_SurfaceParity(t *testing.T) {
 			_ = p.Drain(shutCtx)
 			_ = stk.Close(shutCtx)
 		})
-		seedLeanReadMemory(t, stk.Store, scope, ulid.Make().String(), content, episodeID)
+		seedLeanReadMemoryAt(t, stk.Store, scope, ulid.Make().String(), content, episodeID, seedAt)
 
 		srv, err := api.New(&cfg, stk.Store, stk.Log, stk.Metrics)
 		if err != nil {
@@ -460,7 +477,7 @@ func TestRetrieveLeanRead_SurfaceParity(t *testing.T) {
 		if err != nil {
 			t.Fatalf("side store open: %v", err)
 		}
-		seedLeanReadMemory(t, side, scope, ulid.Make().String(), content, episodeID)
+		seedLeanReadMemoryAt(t, side, scope, ulid.Make().String(), content, episodeID, seedAt)
 		_ = side.Close(ctx)
 
 		resp, err := client.Retrieve(ctx, stowage.RetrieveRequest{Query: query, Limit: 5})

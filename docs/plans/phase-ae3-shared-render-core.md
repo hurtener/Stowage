@@ -260,6 +260,24 @@ docs/glossary.md                        # CHANGED — render mode, render item, 
     should thread `[]retrieval.RenderItem` through `JudgeQuestion`/
     `JudgeQuestionWith` and their four external callers — out of scope here to
     keep ae3's blast radius to its stated file list (CLAUDE.md §4.3).
+  - **RESOLVED (wave-0 fix, two adversarial reviews):** the follow-up above
+    landed. `QuestionResult` (`eval/harness/scores.go`) now carries a
+    `RenderItems []retrieval.RenderItem` field alongside `Items []string`,
+    populated by `runner.go`'s `scoreQuestion` from the same typed items it
+    already builds for `retrieval.Render`. A new `JudgeQuestionWithItems`
+    entry point (`judge.go`) calls `BuildReaderPrompt` directly on typed
+    items — no string re-wrap, no marker re-parse. `dataset.go`'s judged path
+    and `gain.go`'s `judgeOnOff` (memory-ON condition) now call
+    `JudgeQuestionWithItems(..., qr.RenderItems)` instead of
+    `JudgeQuestionWith(..., qr.Items)`, restoring the pre-ae3
+    CURRENT/SUPERSEDED partition on the operator-gated judged/gain paths.
+    `JudgeQuestionWith`'s `[]string` signature is preserved unchanged (now a
+    thin delegate to `JudgeQuestionWithItems` via `renderItemsFromContexts`)
+    for the genuinely-all-current callers: `adapt.go`'s playbook context, the
+    gain memory-OFF condition, and the `fullmode`-tagged sweep (which reads a
+    frozen `[]string` JSONL with no typed items available). See
+    `eval/harness/judge_test.go`'s `TestJudgeQuestionWithItems_PartitionsStale`
+    for the pinning test.
 - `TestEvalCI`'s `answer_context_hit` score is confirmed **inherently flaky**
   independent of this change (0.93–0.98 across repeated runs on both the
   pre-ae3 and post-ae3 code, due to async-pipeline timing under load per the

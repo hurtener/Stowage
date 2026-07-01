@@ -166,6 +166,73 @@ func TestJudgeQuestion_SchemaConstrained(t *testing.T) {
 	}
 }
 
+// TestJudgeQuestionWithItems_PartitionsStale proves the wave-0 fix: the judged
+// path threads TYPED render items through to BuildReaderPrompt, so a stale
+// companion item lands in a separate SUPERSEDED section — not inline in
+// CURRENT with a leaked "[OUTDATED" marker, and not silently treated as
+// current (which JudgeQuestionWith's []string wrap would do — the pre-fix
+// regression the two adversarial reviews flagged). We assert on the actual
+// reader prompt the fake gateway received, not just on BuildReaderPrompt in
+// isolation, so this pins the full call path (dataset.go/gain.go's entry
+// point) rather than only the render core ae3 already covers.
+func TestJudgeQuestionWithItems_PartitionsStale(t *testing.T) {
+	fg := &fakeGateway{responses: []json.RawMessage{
+		json.RawMessage(`{"answer":"45 minutes"}`),
+		json.RawMessage(`{"verdict":"correct","justification":"matches current value"}`),
+	}}
+	items := []retrieval.RenderItem{
+		{Content: "Commute is 45 minutes each way."},
+		{Content: "Commute is 30 minutes.", Stale: true, SupersededByContent: "Commute is 45 minutes each way.", SupersededByDate: 1684108800000},
+	}
+	res, err := JudgeQuestionWithItems(context.Background(), fg, ReaderOpts{}, "", "How long is the commute?", "", "45 minutes", items)
+	if err != nil {
+		t.Fatalf("JudgeQuestionWithItems: %v", err)
+	}
+	if res.Answer != "45 minutes" || res.Verdict != "correct" {
+		t.Errorf("unexpected result: %+v", res)
+	}
+	if len(fg.requests) != 2 {
+		t.Fatalf("expected 2 Complete calls, got %d", len(fg.requests))
+	}
+	readerUser := fg.requests[0].Messages[0].Content
+	if !strings.Contains(readerUser, "SUPERSEDED memories") {
+		t.Errorf("reader prompt missing a SUPERSEDED section for the stale item: %q", readerUser)
+	}
+	cur := readerUser[:strings.Index(readerUser, "SUPERSEDED memories")]
+	if !strings.Contains(cur, "45 minutes each way") {
+		t.Errorf("current value not in CURRENT section: %q", cur)
+	}
+	if strings.Contains(cur, "30 minutes.") {
+		t.Errorf("stale value leaked into CURRENT section: %q", cur)
+	}
+	if strings.Contains(readerUser, "[OUTDATED") {
+		t.Errorf("raw [OUTDATED marker leaked into the reader prompt instead of a sectioned split: %q", readerUser)
+	}
+}
+
+// TestJudgeQuestionWith_TreatsEveryContextAsCurrent documents the []string
+// wrapper's known scope (renderItemsFromContexts, judge.go): every context is
+// treated as current, since a plain string carries no Stale bit. This is
+// correct ONLY for genuinely-all-current callers (adapt.go's playbook
+// context, the gain memory-OFF condition); the judged/gain-ON paths were
+// moved OFF this wrapper onto JudgeQuestionWithItems by the wave-0 fix so a
+// stale companion is never silently folded into CURRENT.
+func TestJudgeQuestionWith_TreatsEveryContextAsCurrent(t *testing.T) {
+	fg := &fakeGateway{responses: []json.RawMessage{
+		json.RawMessage(`{"answer":"30 minutes"}`),
+		json.RawMessage(`{"verdict":"incorrect","justification":"stale value"}`),
+	}}
+	_, err := JudgeQuestionWith(context.Background(), fg, ReaderOpts{}, "", "How long is the commute?", "", "45 minutes",
+		[]string{"Commute is 45 minutes each way.", "Commute is 30 minutes."})
+	if err != nil {
+		t.Fatalf("JudgeQuestionWith: %v", err)
+	}
+	readerUser := fg.requests[0].Messages[0].Content
+	if strings.Contains(readerUser, "SUPERSEDED memories") {
+		t.Errorf("the []string wrapper has no Stale bit to partition on — it must not emit a SUPERSEDED section: %q", readerUser)
+	}
+}
+
 // TestJudgeQuestion_VerdictNormalized maps unknown/garbled verdicts to incorrect.
 func TestJudgeQuestion_VerdictNormalized(t *testing.T) {
 	fg := &fakeGateway{responses: []json.RawMessage{
