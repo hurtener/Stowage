@@ -1,37 +1,32 @@
-# Phase ae2b — breaking removal of `project_id`/`user_id` from MCP contracts
+# Phase ae2b — direct removal of `project_id`/`user_id` from MCP contracts
 
 - **Status:** draft
-- **Owning subsystem(s):** `internal/mcpserver` (the 13 tool input contracts + their handler scope-construction sites, the `_meta` intake helper); `internal/config` (a new `mcp.deprecated_args_mode` knob); `docs/` (the sanctioned MCP-vs-HTTP divergence, filed as D-140)
+- **Owning subsystem(s):** `internal/mcpserver` (the 13 tool input contracts + their handler scope-construction sites, the `_meta` intake helper); `docs/` (the sanctioned MCP-vs-HTTP divergence, filed as D-140)
 - **RFC sections:** D-125 (sub-tenant targeting), §9.5 (one logic core, tiered surfaces, D-067/D-073, the sanctioned contract-divergence precedent — `assert`'s deliberate HTTP omission)
-- **Depends on phases:** **ae7** (the JWT verifier — the C4 gate: `auth.Key`/a JWT must carry a verified `user`/`session` before any arg can be retired) and **ae8** (`identity.ResolveReadScope` — the effective-scope resolver that sources identity from `_meta`/JWT without the args). **Hard gate, not a soft ordering preference:** removing the args before ae7+ae8 exist would collapse MCP sub-tenant targeting to tenant-wide with no replacement (the whole risk this phase exists to avoid). Transitively depends on **ae2** (the `_meta` intake helper `readMetaIdentity`/`metaElseArg` this phase extends to read `_meta.project`) and **ae1** (`identity.Scope.Agent`, inert here but load-bearing for the surrounding surface). A deliberately **late** phase (Wave 4).
+- **Depends on phases:** **ae7** (the JWT verifier — the C4 gate: `auth.Key`/a JWT must carry a verified `user`/`session` before any arg can be retired) and **ae8** (`identity.ResolveReadScope` — the effective-scope resolver that sources identity from `_meta`/JWT without the args). **Hard gate, not a soft ordering preference:** removing the args before ae7+ae8 exist would collapse MCP sub-tenant targeting to tenant-wide with no replacement (the whole risk this phase exists to avoid). This is a **correctness** gate, not a compatibility gate — it holds even though there is no backwards-compat obligation to protect (see Findings below). Transitively depends on **ae2** (the `_meta` intake helper `readMetaIdentity`/`metaElseArg` this phase extends to read `_meta.project`) and **ae1** (`identity.Scope.Agent`, inert here but load-bearing for the surrounding surface). A deliberately **late** phase (Wave 4).
 - **Informing briefs:** 02 (CC-memory predecessor — surface-sprawl cautionary tale: the fix is one intake seam extended in place, not a second parallel arg-reading path bolted on beside it), 01 (Python predecessor — the scoping pain point this track closes: identity riding in on model-discretionary arguments; this phase is the point where that pattern is finally retired on MCP, not just supplemented), 04 (CL-Bench — a silent tenant-wide fallback is a precision/recall failure the gain metric punishes; the binding risk here is never letting removal produce that fallback silently).
 
 ## Goal
 
 When this phase is done, the 13 MCP tool input contracts that carry `project_id`/
 `user_id` as the sole D-125 sub-tenant **read/mutate targeting** mechanism no
-longer do so. The retirement happens in two sequential, separately-shippable
-steps, both owned by this plan:
+longer do so. **Stowage is pre-launch with zero external callers**, so there is
+no backwards-compat obligation to protect: this phase is a **single, direct
+removal**, not a phased deprecation. Once ae7 + ae8 have landed (the hard
+correctness gate — see Depends on phases), `ProjectID`/`UserID` are deleted
+from the 13 structs in one change (a breaking JSON-schema change, but there is
+no caller to break), their handler sites stop populating
+`IdentitySources.ArgUser`/`ArgProject`, and identity resolves purely from
+`_meta`/JWT via `identity.ResolveReadScope` for every one of those 13 tools —
+proven by an effective-scope integration test. `project_id`'s final home (M1)
+is settled as **`_meta.project`**; this phase extends ae2's intake helper to
+read it, closing the gap ae2 deliberately left open.
 
-1. **Deprecation window.** The two args stay on the wire (accepted, unmodified
-   JSON schema) and continue to resolve scope exactly as today — through ae8's
-   `IdentitySources.ArgUser`/`ArgProject`, its documented **lowest-precedence**
-   slot — so **no caller's behaviour changes**. Whenever a call's effective scope
-   for a dimension actually comes from the arg (i.e. `_meta`/JWT supplied nothing
-   for that dimension), the handler emits one versioned warning event
-   (`mcp.legacy_scope_arg_used`, schema-versioned via its JSON payload) naming the
-   tool and the still-load-bearing arg(s). A `mcp.deprecated_args_mode` knob
-   (`warn` default | `reject`) lets an operator dry-run the removal — `reject`
-   turns a still-load-bearing arg into an MCP tool error instead of a silent
-   accept — without waiting for a second release.
-2. **Removal.** Once telemetry (or a `reject`-mode bake period) shows no
-   straggler, `ProjectID`/`UserID` are deleted from the 13 structs (a breaking
-   JSON-schema change) and their handler sites stop populating
-   `IdentitySources.ArgUser`/`ArgProject`. Identity now resolves purely from
-   `_meta`/JWT via `identity.ResolveReadScope` for every one of those 13 tools,
-   proven by an effective-scope integration test. `project_id`'s final home
-   (M1) is settled as **`_meta.project`** — this phase extends ae2's intake
-   helper to read it, closing the gap ae2 deliberately left open.
+There is no interim bake-in period during which the retired arguments are
+tolerated-but-inert, no schema-versioned notice event emitted on their use,
+and no operator-facing toggle to dry-run the change ahead of time. None of
+that ceremony has a caller to protect, so it is pure overhead — it is not
+built.
 
 The **MCP-vs-HTTP identity divergence** this phase completes — MCP identity now
 lives in `_meta`/JWT only, HTTP keeps its `?project_id=`/`?user_id=` query-param
@@ -51,37 +46,36 @@ documented contract difference under the one-logic-core rule, not drift.
   MCP (not merely supplemented, as ae2 was) — the args go away, `_meta`/JWT is
   the only remaining channel.
 - **04 (CL-Bench):** a read that silently widens to tenant-wide is exactly the
-  failure the gain metric punishes. The binding constraint on this phase (stated
-  in the charter and restated below) is that removal must never produce that
-  widening silently — hence the `reject`-mode dry-run and the warning telemetry,
-  not a single flag-day cutover.
+  failure the gain metric punishes. The binding constraint on this phase is
+  that removal must never produce that widening silently. With no interim
+  bake-in ceremony to lean on, this is enforced **structurally** instead of by
+  telemetry: the hard ae7+ae8 gate guarantees a non-arg identity source
+  (`_meta`/JWT) exists and is wired through `ResolveReadScope` *before* the
+  args are ever deleted, so there is no window — of any length — in which
+  removal could produce a silent tenant-wide fallback that wasn't already
+  ae8's own defined, documented posture for an absent identity.
 
 ## Findings I'm departing from
 
-- **"Accepted-but-ignored" cannot mean *functionally* ignored during the
-  deprecation window, or the window itself becomes the P3 regression it exists
-  to prevent.** The charter's AC-1 says the deprecation phase is "args
-  accepted-but-ignored, each use emits a versioned warning event." Read
-  literally — the arg parsed off the wire but not applied to scope — a straggler
-  caller who has not yet started injecting `_meta`/using a JWT loses its
-  sub-tenant targeting the moment the deprecation-window PR merges, i.e.
-  **before** anyone had a chance to notice the warning and migrate. That is
-  precisely the "MCP collapses to tenant-wide" regression the binding rules
-  forbid. This plan departs from the literal reading: during the **warn**
-  sub-mode, the arg keeps doing exactly the scope-resolution work it does today
-  (fed into ae8's `IdentitySources.ArgUser`/`ArgProject` as the documented
-  lowest-precedence source — unchanged from ae8's own design). "Ignored" is
-  realized as *deprecated and telemetered*, not *inert*: a golden test pins that
-  a warn-mode call with only the legacy arg (no `_meta`/JWT) resolves to the
-  **same** scope as before this phase, while also emitting the warning — which
-  is exactly what the charter's own AC-1 asks for immediately afterward ("a
-  golden test pins the warning event AND the unchanged behaviour"). The
-  `reject` sub-mode is where an operator can *choose* to make the arg
-  genuinely inert (as a controlled dry-run, opt-in, reversible by a config
-  flip) ahead of the irreversible code-removal step. This departure is what
-  makes AC-1's two clauses ("ignored" + "unchanged behaviour") consistent with
-  each other and with the binding "never tenant-wide" rule; it does not touch
-  the charter's actual constraint (ae2b must not leave a tenant-wide window).
+- **The charter specified a phased migration; the actual state is pre-launch
+  with zero external callers, so the phasing is dropped.** The charter's AC-1
+  described a two-step migration: an interim phase where the args stay on
+  the wire, tolerated but no longer authoritative, each still-load-bearing use
+  emitting a schema-versioned notice event, gated by an operator-configurable
+  mode toggle (proceed-and-notify vs. refuse-and-notify), followed by a
+  separate removal step once telemetry showed no stragglers. That ceremony
+  exists to protect callers who might be depending on the args today. Stowage
+  has no such callers — it has not shipped, so there is nothing to migrate and
+  no bake-in period buys any safety. This plan drops the interim phase, its
+  notice event, its mode toggle, and the detector helper that would have
+  computed "is this arg still load-bearing" entirely, and replaces the
+  two-step structure with **one** direct removal. **What does not change:**
+  the hard ae7+ae8 gate. That gate was never a compatibility mechanism — it is
+  the correctness precondition that a non-arg identity source (`_meta`/JWT via
+  `ResolveReadScope`) exists *before* the only existing source (the arg) is
+  deleted; skipping it would collapse MCP sub-tenant targeting to tenant-wide
+  regardless of whether any external caller exists yet. Pre-launch status
+  removes the compatibility obligation; it does not touch the correctness one.
 - **The charter's "~16 contracts" is not the precise removal set; the precise
   count is 13.** A full audit of `internal/mcpserver/contracts.go` finds
   **16** distinct MCP input-side types carrying a `project_id`/`user_id`-tagged
@@ -152,129 +146,41 @@ documented contract difference under the one-logic-core rule, not drift.
 
 ## Design
 
-### Step 1 — deprecation window (accepted, telemetered, unchanged behaviour)
+### `_meta.project` (M1) — extend the shared intake helper, don't duplicate it
 
-**No contract change in this step.** The 13 structs keep their
-`ProjectID`/`UserID` fields byte-identical. Two additions, both in
-`internal/mcpserver`:
-
-**(a) Extend the shared intake helper, don't duplicate it.** ae2's
-`internal/mcpserver/metaintake.go` (`readMetaIdentity`, `metaIdentity`,
+ae2's `internal/mcpserver/metaintake.go` (`readMetaIdentity`, `metaIdentity`,
 `metaElseArg`) is the one seam every one of the 13 handlers already calls.
 ae2b adds a `Project` field to `metaIdentity` and reads `_meta.project` inside
 `readMetaIdentity` (ae2 deliberately deferred this — "ae2 does not read
 `_meta.project`… its `_meta` home or removal is ae2b"). This closes M1: after
 this phase, `_meta.project` is the only channel for project narrowing on MCP.
 
-**(b) The legacy-arg detector + warning event.** A small helper next to the
-existing intake:
+### Removal
 
-```go
-// legacyArgUse reports, per dimension, whether a call's effective scope value
-// came from the deprecated project_id/user_id arg rather than from _meta/JWT —
-// i.e. whether the arg is still load-bearing for this call. It does not decide
-// what happens next (warn vs reject); callers apply the configured mode.
-type legacyArgUse struct {
-    Project bool // in.ProjectID != "" && mi.Project == "" (and no JWT-claim project — none exists)
-    User    bool // in.UserID != "" && higher-precedence sources supplied nothing
-}
-
-func detectLegacyArgUse(mi metaIdentity, in scopeArgs) legacyArgUse
-```
-
-`scopeArgs` is the small struct each of the 13 handlers already has inline
-(`ProjectID`/`UserID` from `in`). `detectLegacyArgUse` mirrors — does not
-reimplement — ae8's own precedence order (`_meta`/claim beats arg), so the
-"is the arg still doing work" question is answered the same way
-`ResolveReadScope` answers "what wins."
-
-When `detectLegacyArgUse` reports true for either dimension, the handler:
-
-- in **`warn`** mode (`mcp.deprecated_args_mode=warn`, the default): proceeds
-  exactly as it does today (the arg still feeds `IdentitySources.ArgProject`/
-  `ArgUser`, ae8's documented lowest-precedence slot — no resolution change)
-  and emits one event via the existing audit-trail mechanism:
-
-  ```go
-  _ = st.Events().Emit(ctx, scope, store.Event{
-      ID: ulid.Make().String(), TenantID: scope.Tenant,
-      Type: "mcp.legacy_scope_arg_used", SubjectID: toolName,
-      Reason: "project_id/user_id MCP arg still load-bearing; migrate to _meta or a JWT claim before removal (D-140)",
-      Payload: legacyArgUsePayload{SchemaVersion: 1, Tool: toolName, Args: firedArgs}.marshal(),
-      CreatedAt: now,
-  })
-  ```
-
-  This reuses `internal/store.EventStore.Emit` — the RFC §5.8/D-024 audit
-  trail already used by every other mutation/lifecycle event
-  (`memory.pending_review`, `memory.superseded`, …) — **not** a new
-  `internal/events` SSE bus. CLAUDE.md §8 and the repo layout describe a
-  future "versioned, consumable `events/v1`" stream; that package does not
-  exist in this codebase today (confirmed: no `internal/events` directory,
-  no `EventBus`/`Emit` type outside `store.EventStore` and the unrelated
-  Harbor-adapter `harborevents.EventBus`). This plan's "versioned warning
-  event" is realized as a `store.Event` whose `Type` follows the existing
-  dot-namespaced convention (`mcp.legacy_scope_arg_used`, alongside
-  `memory.superseded`, `gateway.call`, …) and whose **payload carries an
-  explicit `schema_version` field** — the versioning the charter asks for,
-  applied to the mechanism that actually exists rather than to one that
-  doesn't. Best-effort emit (`_ =`), matching every other audit-event call
-  site in the codebase — a dropped warning event never blocks a read (P2/D-036
-  spirit: telemetry failure must not fail the call).
-
-- in **`reject`** mode: the handler returns an MCP tool error (mirroring
-  `identity.ErrTenantMismatch`'s style — an HTTP-4xx-class reject, a redacted,
-  value-free reason) *instead of* resolving the read, and still emits the
-  warning event (so `reject` mode's rejections are themselves auditable). This
-  lets an operator flip one config value to see, without a second deploy,
-  exactly which calls would break under removal — the dry-run the charter's
-  own risk section calls for ("the deprecation window + warning telemetry
-  surface stragglers before the breaking step").
-
-Both modes run through **one** shared call site
-(`applyLegacyArgPolicy(ctx, svc, toolName, mi, in) error`) added to
-`metaintake.go`, called by all 13 handlers right after `readMetaIdentity` —
-no per-handler branching, matching ae2's one-seam precedent.
-
-### Step 2 — removal (breaking)
-
-A separate, later PR (this plan governs both, but they ship as two releases
-with a bake period between them, gated on zero `mcp.legacy_scope_arg_used`
-events in `reject`-mode dry-run telemetry):
+Once ae7 + ae8 have landed (the hard gate — see Depends on phases), one
+change:
 
 1. Delete `ProjectID`/`UserID` from the 13 structs listed above.
-2. Delete `detectLegacyArgUse`/`applyLegacyArgPolicy` and the
-   `mcp.deprecated_args_mode` knob (dead code once there is nothing left to
-   detect).
-3. The 13 handler sites stop populating `IdentitySources.ArgProject`/
+2. The 13 handler sites stop populating `IdentitySources.ArgProject`/
    `ArgUser` for these tools (there is no field left to read them from);
    identity resolves purely from `_meta`/JWT via
    `identity.ResolveReadScope`/`resolveScope`.
-4. `project_id` keeps working as a wire concept **via `_meta.project` only**
-   (M1, closed in Step 1(a); no further change needed here).
+3. `project_id` keeps working as a wire concept **via `_meta.project` only**
+   (M1, above; no further change needed here).
 
-**The honest residual risk (stated, not solved away):** `encoding/json`
-silently discards an unknown field on `Unmarshal`. A caller that still sends
-`{"project_id": "p1", ...}` after this PR ships gets **no error** — the field
-is dropped, and the call resolves whatever `_meta`/JWT alone supplies (which,
-for a caller that never migrated, is likely nothing, i.e. tenant-wide). The
-deprecation window's `reject`-mode bake period is the *only* thing standing
-between "no stragglers observed" and "a straggler silently regresses to
-tenant-wide" — there is no way to make an unknown-field removal itself
-fail loud on the wire without inventing a stricter decoder for every MCP tool
-(rejected as disproportionate; see Risks).
+There is no separate deprecation PR, no bake period, and no knob to flip —
+ae7+ae8 landing is the only precondition, because it is the only thing that
+determines whether a non-arg identity source exists to resolve from.
 
-### `mcp.deprecated_args_mode` knob (D-034)
-
-Home: `MCPConfig` (`internal/config/config.go:35-40`), alongside
-`stdio_tenant` — it is an MCP-surface-specific knob, not a `retrieval.*` or
-`identity.*` one (this phase changes no resolution precedence, only whether a
-still-load-bearing legacy arg is tolerated or rejected). This is the
-"deprecation-window-length" knob the punch list anticipates, realized as a
-**mode** rather than a **duration**: a wall-clock cutover would need a clock
-dependency and a scheduled config flip disproportionate to the problem, and
-would still require an operator decision about when it's safe — a mode
-switch gives the operator that same decision without inventing a scheduler.
+**The honest residual note (stated, not solved away):** `encoding/json`
+silently discards an unknown field on `Unmarshal`. If a caller ever sent
+`{"project_id": "p1", ...}` after this PR ships, it would get **no error** —
+the field is dropped, and the call resolves whatever `_meta`/JWT alone
+supplies. Stowage has no such caller today (pre-launch, zero external
+integrations), so this is not a migration risk this phase needs to mitigate —
+it is a permanent property of the removed wire shape that any *future*
+integration must be built against from day one (i.e., against `_meta`/JWT,
+never against `project_id`/`user_id` args, which no longer exist).
 
 ### D-140 filing
 
@@ -311,212 +217,152 @@ that divergence becomes permanent instead of additive.
 ## Files added or changed
 
 ```text
-internal/mcpserver/metaintake.go           # CHANGED (step 1) — metaIdentity gains Project; readMetaIdentity reads _meta.project; NEW detectLegacyArgUse, applyLegacyArgPolicy, legacyArgUsePayload
-internal/mcpserver/metaintake_test.go      # CHANGED (step 1) — _meta.project extraction; legacy-arg detection matrix; warn/reject behaviour; concurrent-reuse (-race)
-internal/mcpserver/handlers.go             # CHANGED (step 1) — all 13 sites call applyLegacyArgPolicy after readMetaIdentity; CHANGED (step 2) — ProjectID/UserID no longer read at those 13 sites
-internal/mcpserver/contracts.go            # CHANGED (step 2, breaking) — delete ProjectID/UserID from RetrieveInput, PlaybookInput, EpisodesInput, CausalInput, VerifyInput, ReviewInput, TraceInput, DrilldownInput, FeedbackInput, BranchInput, GetInput, RollbackInput, ResolveInput (13 structs; IngestRecord/IngestTargetScope/GrantsInput/ProactiveConfigInput are explicitly untouched — see departures)
-internal/config/config.go                  # CHANGED (step 1) — MCPConfig gains DeprecatedArgsMode; allKeys; Defaults; get/set; Validate (enum); CHANGED (step 2) — knob + its Validate branch removed
-internal/config/profiles.go                # CHANGED (step 1) — mcp.deprecated_args_mode=warn effective in every profile
-internal/config/testdata/explain_default.golden  # CHANGED (step 1) — one new key line; CHANGED (step 2) — line removed
-test/integration/legacy_arg_removal_test.go # NEW (step 2, §17 — closes a seam opened by ae7/ae8) — real-driver: pre-removal fixture calls that used to rely on project_id/user_id now resolve identically via _meta/JWT; a genuinely unmigrated caller (no _meta, no JWT claim) is proven to fall back exactly to ae8's compatible/strict posture (never a silent extra-wide read beyond what ae8 already defines) under -race
-test/integration/http_mcp_scope_parity_test.go # NEW (step 1, §17) — the same identity, asserted via MCP _meta and via HTTP query/body params, resolves to the same effective scope and the same store rows, for each of the 13 affected tools' HTTP mirror
+internal/mcpserver/metaintake.go           # CHANGED — metaIdentity gains Project; readMetaIdentity reads _meta.project
+internal/mcpserver/metaintake_test.go      # CHANGED — _meta.project extraction test cases
+internal/mcpserver/handlers.go             # CHANGED — the 13 sites stop reading ProjectID/UserID; identity resolves via resolveScope/ResolveReadScope from _meta/JWT
+internal/mcpserver/contracts.go            # CHANGED (breaking) — delete ProjectID/UserID from RetrieveInput, PlaybookInput, EpisodesInput, CausalInput, VerifyInput, ReviewInput, TraceInput, DrilldownInput, FeedbackInput, BranchInput, GetInput, RollbackInput, ResolveInput (13 structs; IngestRecord/IngestTargetScope/GrantsInput/ProactiveConfigInput are explicitly untouched — see departures)
+test/integration/mcp_effective_scope_test.go   # NEW (§17 — closes a seam opened by ae7/ae8) — real-driver: for each of the 13 tools, a call carrying _meta/a verified JWT claim resolves identity correctly with the args gone; a call with neither behaves exactly as ae8's read_posture already defines for an absent identity, under -race
+test/integration/http_mcp_scope_parity_test.go # NEW (§17) — the same identity, asserted via MCP _meta and via HTTP query/body params, resolves to the same effective scope and the same store rows, for each of the 13 affected tools' HTTP mirror
 scripts/smoke/phase-ae2b.sh                # NEW
 docs/plans/README.md                       # CHANGED — ae-track table / Plans line (ae2b row, draft)
 docs/decisions.md                          # CHANGED — D-140 (filed)
-docs/glossary.md                           # CHANGED — deprecation window, versioned warning event, legacy scope arg, deprecation mode
 ```
 
 ## Config keys added
 
-| Key | Default | Notes |
-|-----|---------|-------|
-| `mcp.deprecated_args_mode` | `warn` | Enum `warn`\|`reject`. `warn`: a still-load-bearing `project_id`/`user_id` on any of the 13 tools resolves exactly as before this phase and emits `mcp.legacy_scope_arg_used`. `reject`: the same detection instead returns an MCP tool error (dry-run of removal, reversible by flipping the knob back). Removed entirely in Step 2 (nothing left to detect once the fields are gone). Home: `MCPConfig` (`internal/config/config.go`), sibling to `mcp.stdio_tenant`. D-034-complete: tuned default (`warn` — zero-config, byte-identical behaviour on upgrade), effective in every profile, documented, `allKeys`/get/set/explain, validated (enum membership), smoke-checked. |
+None. This phase adds no config knob — there is no interim bake-in period to
+make configurable, and the removal itself is not gated by any runtime
+setting (only by ae7+ae8 having landed, a code/deploy-order precondition,
+not a config toggle).
 
 ## Acceptance criteria (binding)
 
-1. **Deprecation phase — unchanged behaviour, telemetered.** For each of the 13
-   tools (`memory_retrieve`, `memory_playbook`, `memory_drilldown`,
-   `memory_get`, `memory_episodes`, `memory_causal`, `memory_trace`,
-   `memory_verify`, `memory_review`, `memory_feedback`, `memory_rollback`,
-   `memory_resolve`, `memory_branch`): a call whose `project_id`/`user_id`
-   arg is still load-bearing (no `_meta`/JWT value for that dimension)
-   resolves to the **same** effective scope it does today (golden/regression
-   test), and emits exactly one `mcp.legacy_scope_arg_used` event
-   (`store.EventStore.Emit`, `Payload.schema_version=1`) naming the tool and
-   the fired arg(s). A call whose dimension is already supplied by `_meta`/JWT
-   emits **no** warning (the arg is not load-bearing there — nothing to warn
-   about).
-2. **`reject` mode dry-runs removal.** With `mcp.deprecated_args_mode=reject`,
-   the same still-load-bearing call is rejected with a redacted,
-   value-free MCP tool error instead of resolving, and still emits the
-   warning event; flipping the knob back to `warn` restores today's
-   behaviour with no code change.
-3. **Removal phase — the 13 contracts drop the args; identity still
-   resolves.** `ProjectID`/`UserID` no longer appear on `RetrieveInput`,
-   `PlaybookInput`, `EpisodesInput`, `CausalInput`, `VerifyInput`,
-   `ReviewInput`, `TraceInput`, `DrilldownInput`, `FeedbackInput`,
-   `BranchInput`, `GetInput`, `RollbackInput`, `ResolveInput` (grep-asserted).
-   An effective-scope integration test (`test/integration/legacy_arg_removal_test.go`)
-   proves that for every one of those 13 tools, a call carrying `_meta`/a
-   verified JWT claim resolves to the identical scope it resolved to
-   pre-removal via the arg, with real drivers, under `-race`. A call with
-   neither `_meta` nor a JWT claim behaves exactly as ae8's
+1. **Hard gate honored.** This phase's code changes ship only once ae7 (the
+   JWT verifier) and ae8 (`identity.ResolveReadScope`) have landed; the plan
+   and its PR description say so explicitly (process-asserted, not
+   mechanically gated — there is no code to land before then).
+2. **The 13 contracts drop the args; identity still resolves.**
+   `ProjectID`/`UserID` no longer appear on `RetrieveInput`, `PlaybookInput`,
+   `EpisodesInput`, `CausalInput`, `VerifyInput`, `ReviewInput`, `TraceInput`,
+   `DrilldownInput`, `FeedbackInput`, `BranchInput`, `GetInput`,
+   `RollbackInput`, `ResolveInput` (grep-asserted). An effective-scope
+   integration test (`test/integration/mcp_effective_scope_test.go`) proves
+   that for every one of those 13 tools, a call carrying `_meta`/a verified
+   JWT claim resolves to the correct scope, with real drivers, under `-race`.
+   A call with neither `_meta` nor a JWT claim behaves exactly as ae8's
    `retrieval.read_posture` already defines for an absent identity
-   (`compatible` ⇒ tenant-wide, unchanged from ae8; `strict` ⇒
-   `ErrIdentityRequired`) — this phase introduces **no third fallback
-   behaviour** of its own.
-4. **The 3 out-of-scope lookalikes are provably untouched.** `IngestRecord`,
+   (`compatible` ⇒ tenant-wide; `strict` ⇒ `ErrIdentityRequired`) — this phase
+   introduces **no third fallback behaviour** of its own.
+3. **The out-of-scope lookalikes are provably untouched.** `IngestRecord`,
    `IngestTargetScope`, `GrantsInput`, and `ProactiveConfigInput` still carry
-   their `project_id`/`user_id`(or `project`/`user`) fields unchanged after
-   both steps (grep/diff-asserted) — this phase's removal set is exactly the
+   their `project_id`/`user_id` (or `project`/`user`) fields unchanged after
+   this phase (grep/diff-asserted) — this phase's removal set is exactly the
    13 structs named above, never the full 16-or-more lookalikes.
-5. **`project_id`'s M1 resolution lands in code.** `_meta.project` is read by
+4. **`project_id`'s M1 resolution lands in code.** `_meta.project` is read by
    `readMetaIdentity` (extends ae2's `metaIdentity`) and reaches
-   `IdentitySources.MetaProject` for every one of the 13 tools; after Step 2,
-   `_meta.project` is the *only* MCP channel for project narrowing (the arg
-   is gone). A test exercises a `_meta.project`-only call narrowing correctly.
-6. **D-140 filed and honored.** The MCP-vs-HTTP divergence is documented (this
+   `IdentitySources.MetaProject` for every one of the 13 tools; after
+   removal, `_meta.project` is the *only* MCP channel for project narrowing
+   (the arg is gone). A test exercises a `_meta.project`-only call narrowing
+   correctly.
+5. **D-140 filed and honored.** The MCP-vs-HTTP divergence is documented (this
    plan + the returned decision text); HTTP's `scopeFromRequest` and every
    POST handler's `project_id`/`user_id` body field are byte-unchanged by
    this phase (grep/diff-asserted against `internal/api`); a behavioural
    parity test (`http_mcp_scope_parity_test.go`) proves the same identity
    resolves to the same scope and the same rows via MCP `_meta` and via
    HTTP's query/body projection, for each of the 13 tools' HTTP mirror.
-7. **No unscoped read introduced (P3).** ae2b adds no `internal/store` query
+6. **No unscoped read introduced (P3).** ae2b adds no `internal/store` query
    method and no new store predicate (grep-asserted, mirroring ae8's AC-4);
    the three existing scope predicates
    (`buildScopeWhere`/`buildExactScopeWhere`/`vectorStore.Scan`) remain the
    only read filter and still fail closed on an empty tenant.
-8. **Knob D-034-complete (Step 1); cleanly removed (Step 2).**
-   `mcp.deprecated_args_mode` ships with a tuned default (`warn`), is present
-   in every profile's effective config, is documented, appears in
-   `allKeys`/get/set/explain, is validated (enum membership), and is
-   smoke-checked; Step 2's PR removes the knob and its Validate branch in the
-   same PR that removes the fields (no dangling dead config).
-9. **Parity + smoke same-PR.** Both steps ship a `scripts/smoke/phase-ae2b.sh`
-   check (extended, not duplicated, across the two PRs); prior phases' smoke
-   (ae1/ae2/ae7/ae8 in particular) still passes after each step.
+7. **No config knob added.** `internal/config` gains no new key for this
+   phase (grep-asserted: no `deprecated`/`legacy` key appears in
+   `internal/config/config.go` after this phase).
+8. **Parity + smoke same-PR.** This phase ships `scripts/smoke/phase-ae2b.sh`
+   in the same PR as the contract change; prior phases' smoke (ae1/ae2/ae7/
+   ae8 in particular) still passes.
 
 ## Smoke script
 
 `scripts/smoke/phase-ae2b.sh` — SKIPs gracefully until the surface is built
 (today: unconditionally, since ae1/ae2/ae7/ae8 are all unbuilt); then, once
-Step 1 lands:
-- assert `mcp.deprecated_args_mode` is registered in config with default `warn`
-  (`stowage config get mcp.deprecated_args_mode`).
-- assert `internal/mcpserver/metaintake.go` defines `detectLegacyArgUse` and
-  `applyLegacyArgPolicy`, and `metaIdentity` carries a `Project` field.
-- assert `go test ./internal/mcpserver/ -run LegacyArg` passes (warn/reject
-  behaviour + unchanged-scope regression).
-Once Step 2 lands (superseding the Step-1-only checks above):
+this phase lands:
 - assert none of the 13 structs (grep by name in `contracts.go`) declares a
   `project_id`/`user_id` json tag.
-- assert `mcp.deprecated_args_mode` is **absent** from config (fully retired).
 - assert `IngestRecord`/`IngestTargetScope`/`GrantsInput` still declare
   `project_id`/`user_id` (the exclusion list untouched).
-- `go test ./test/integration/ -run LegacyArgRemoval|HTTPMCPScopeParity` passes.
+- assert `internal/mcpserver/metaintake.go`'s `metaIdentity` carries a
+  `Project` field (M1).
+- assert HTTP's `scopeFromRequest` still projects `?project_id=`/`?user_id=`
+  (D-140, unchanged).
+- assert no new `internal/store` files/methods (P3 — diffed against the
+  base of this phase's branch).
+- assert no deprecation/legacy config key exists in `internal/config`.
+- `go test ./test/integration/ -run 'MCPEffectiveScope|HTTPMCPScopeParity'`
+  passes.
 - `OK ≥ count(criteria)`, `FAIL = 0`.
 
 ## Test plan
 
 - **Unit (`metaintake_test.go`):** `_meta.project` extraction (present/absent/
-  non-string, mirroring the existing `user`/`session`/`agent_id` cases);
-  `detectLegacyArgUse` truth table (arg-only, `_meta`-only, both, neither) ×
-  the 13 tools; `applyLegacyArgPolicy` in `warn` (proceeds + emits) and
-  `reject` (rejects + still emits) modes; a concurrent-reuse test under
-  `-race`.
-- **Golden/regression (per tool, Step 1):** a fixture call using only the
-  legacy arg resolves to the identical scope and downstream call as the
-  pre-ae2b fixture (byte-for-byte, proving "unchanged behaviour"); a fixture
-  call using only `_meta`/a JWT claim emits no warning.
-- **Integration (`legacy_arg_removal_test.go`, real drivers — sqlite +
-  postgres, §17, Step 2, `-race`):** seed memories under distinct
-  `{tenant,user}` pairs; for each of the 13 tools, a `_meta`/JWT-narrowed
-  call post-removal returns the same rows a pre-removal arg-narrowed call
-  returned; a no-identity call matches ae8's configured posture exactly
-  (the ≥1 failure mode: `strict` posture refuses).
-- **Integration (`http_mcp_scope_parity_test.go`, real drivers, §17, Step 1):**
+  non-string, mirroring the existing `user`/`session`/`agent_id` cases).
+- **Integration (`mcp_effective_scope_test.go`, real drivers — sqlite +
+  postgres, §17, `-race`):** seed memories under distinct `{tenant,user}`
+  pairs; for each of the 13 tools, a `_meta`/JWT-narrowed call resolves to
+  the correct rows; a no-identity call matches ae8's configured posture
+  exactly (the ≥1 failure mode: `strict` posture refuses).
+- **Integration (`http_mcp_scope_parity_test.go`, real drivers, §17):**
   the same seeded identity, asserted via MCP `_meta` and via HTTP
   `?project_id=`/`?user_id=`, resolves to the same scope and the same rows,
   for each of the 13 tools' HTTP mirror endpoint.
 - **Regression:** ae1/ae2/ae3/ae4a/ae5/ae6/ae7/ae8/ae9's existing tests and
-  smoke scripts pass unchanged after both steps (checkpoint-audit discipline,
+  smoke scripts pass unchanged after this phase (checkpoint-audit discipline,
   §17).
 - **No new fuzz target.** ae2b removes a wire field (a schema *contraction*);
   it adds no new parse/decode surface. `encoding/json`'s existing
-  unknown-field-tolerant `Unmarshal` is the surface that changes behaviour on
-  legacy input — noted under Risks, not fuzzed (there is no invariant to
-  assert beyond "no panic," which the existing decode path already proves).
+  unknown-field-tolerant `Unmarshal` is the surface whose behaviour on a
+  hypothetical legacy caller changes — noted under Design as an honest
+  residual note, not fuzzed (there is no invariant to assert beyond "no
+  panic," which the existing decode path already proves, and there is no
+  such caller pre-launch to construct a fuzz seed from).
 
 ## Risks & mitigations
 
-- **A caller still depending on the args at removal (the charter's named
-  risk).** Mitigated in two layers: (1) the deprecation window's warning
-  telemetry surfaces stragglers while behaviour is still unchanged (Finding:
-  "accepted-but-ignored" departure); (2) the `reject`-mode dry-run lets an
-  operator verify zero stragglers *before* the breaking PR ships, without
-  waiting for a second release cycle. **Stated plainly, not solved away:**
-  `encoding/json`'s silent unknown-field drop means a caller who never ran
-  against `reject` mode and never fixed the warning will silently regress to
-  whatever `_meta`/JWT alone supplies (typically tenant-wide under the
-  `compatible` posture) the moment Step 2 ships — there is no wire-level way
-  to make that caller's request fail loud without a stricter decoder this
-  plan deliberately does not add (disproportionate to a two-field
-  deprecation). The bake-period discipline (documented in the plan, enforced
-  operationally, not mechanically) is the real mitigation.
 - **Cross-surface confusion (MCP moves, HTTP doesn't).** Mitigated by the
   explicit, decision-backed (D-140) divergence, the untouched-HTTP grep
-  assertion (AC-6), and the behavioural (not contractual) parity test.
+  assertion (AC-5), and the behavioural (not contractual) parity test.
   Documented in the tool docs so an operator migrating MCP callers does not
   also try to migrate HTTP callers that were never asked to change.
 - **Over-scoping the removal to the full 16 (or 14, including
   `ProactiveConfigInput`) lookalikes.** Mitigated by the departures section's
-  precise 13-struct audit and AC-4's grep pinning the 3 (4) exclusions —
+  precise 13-struct audit and AC-3's grep pinning the 3 (4) exclusions —
   a future implementor tempted to "clean up the rest while they're in there"
   would be quietly expanding a read-side-identity phase into an ingest/
   grants/admin-contract change with a different risk profile.
-- **`mcp.deprecated_args_mode` becoming permanent scope creep.** Mitigated by
-  AC-8's requirement that Step 2 removes the knob in the same PR that removes
-  the fields — there is nothing left to warn about or reject once the args
-  are gone, so the knob has a defined end of life, unlike most D-034 knobs.
 - **Blocking on ae1/ae2/ae7/ae8, all unbuilt at authoring time.** Mitigated
   the way ae8 handled the same situation (D-148): this plan is written
   against ae2's and ae8's *specified* seams (`readMetaIdentity`,
   `IdentitySources`, `ResolveReadScope`) rather than against code that
   exists yet; the hard dependency (ae7+ae8 must land first) is structural,
-  not just a nice-to-have ordering — attempting Step 1 before ae8 lands has
-  no `IdentitySources.ArgProject`/`ArgUser` slot to keep the arg
-  load-bearing in, and attempting it before ae7 lands has no verified
-  `user`/`session` claim to fall back to, which is exactly the charter's C3/
-  C4 finding restated.
+  not just a nice-to-have ordering — attempting removal before ae8 lands has
+  no `IdentitySources.ArgProject`/`ArgUser` slot to fall back from, and
+  attempting it before ae7 lands has no verified `user`/`session` claim to
+  fall back to, which is exactly the charter's C3/C4 finding restated. This
+  gate is unaffected by the pre-launch simplification above — it protects
+  correctness (no silent tenant-wide widening), not compatibility.
 
 ## Glossary additions
 
-- **Deprecation window** — the period, on the MCP surface, during which a
-  soon-to-be-removed argument (here, `project_id`/`user_id`) is still
-  accepted and still resolves scope exactly as before, while its use is
-  telemetered (a versioned warning event) and optionally made rejectable
-  (`mcp.deprecated_args_mode=reject`) as a dry-run of the eventual breaking
-  removal. Distinct from simply "ignoring" the argument, which would
-  reproduce the exact tenant-wide regression the window exists to prevent.
-- **Versioned warning event** — a `store.Event` (the existing RFC §5.8/D-024
-  audit-trail mechanism, `internal/store.EventStore.Emit`) whose `Payload`
-  JSON carries an explicit `schema_version` field, used to signal a
-  deprecated-but-still-functioning code path without requiring the
-  not-yet-built `internal/events` SSE stream. The `Type` string follows the
-  existing dot-namespaced convention (e.g. `mcp.legacy_scope_arg_used`).
-- **Legacy scope arg** — a `project_id`/`user_id` MCP tool argument once it
-  has an `_meta`/JWT-borne replacement source (ae2/ae7/ae8); "still
-  load-bearing" means the argument is, for a given call, the *only* source
-  supplying that scope dimension (no higher-precedence `_meta`/JWT value
-  exists for it).
-- **Deprecation mode** — the `mcp.deprecated_args_mode` knob (`warn`|
-  `reject`) governing what happens when a legacy scope arg is detected as
-  still load-bearing: proceed-and-telemeter, or refuse-and-telemeter. Retired
-  in the same PR that removes the underlying arguments.
+None. The vocabulary the charter anticipated for a phased-removal mechanism
+(the interim tolerance period, its notice event, and its operator mode
+toggle) is dropped along with the mechanism it named — there is no ceremony
+left to name a term for.
 
 ## Decisions filed
 
 - **D-140** — MCP-vs-HTTP identity divergence is a sanctioned contract
   divergence (filed in `docs/decisions.md`). Removal of the args is hard-gated
-  on ae7 (verified claim) + ae8 (effective-scope resolver).
+  on ae7 (verified claim) + ae8 (effective-scope resolver); removal itself is
+  direct, with no interim bake-in period, because Stowage is pre-launch with
+  zero external callers.
