@@ -106,10 +106,10 @@ Depends on **W0** (ae1 reuses ae6's filter).
 - [x] Dual adversarial review · [x] live 3-surface validation · [x] CI green · [x] merged · [x] roadmap updated
 
 ### Wave 2 — auth foundation · one PR
-**Status:** NOT STARTED
+**Status:** MERGED (PR #96, 9b4ea24)
 Independent of W1; the C4 gate that unblocks W4.
-- [ ] **ae7** — Harbor-aligned JWT verifier (verify-never-mint; asymmetric-only + `WithValidMethods`; issuer exact-match; audience containment D‑136; JWKS fail-loud boot / fail-closed max-stale D‑147; keyring = zero-config default; test signer test-only) · D‑136/D‑147
-- [ ] Dual adversarial review · [ ] live 3-surface validation · [ ] CI green · [ ] merged · [ ] roadmap updated
+- [x] **ae7** — Harbor-aligned JWT verifier (verify-never-mint; asymmetric-only + `WithValidMethods`; issuer exact-match; audience containment D‑136; JWKS fail-loud boot / fail-closed max-stale D‑147; keyring = zero-config default; test signer test-only) · D‑136/D‑147
+- [x] Dual adversarial review · [x] live 3-surface validation · [x] CI green · [x] merged · [x] roadmap updated
 
 ### Wave 3 — curation & enrichment built on identity · one PR
 **Status:** NOT STARTED
@@ -134,3 +134,4 @@ Depends on **W2 + W3**. Pre-launch ⇒ **direct removal, no deprecation window**
 
 - Wave 0 merged as PR #92 (1a10f57), 2026-07-01; live 3-surface validation: pass (real OpenRouter/Bifrost — ae4a lean read/drill, ae5 browse, ae6 topic filter verified on SDK+HTTP+MCP). Dual adversarial review + fixes: mcpserver browse coverage (78.7→81.0%), judged-path CURRENT/SUPERSEDED partitioning restored, harbor-adapter fakeClient.Browse, phase-29/29c smoke fix-forward.
 - Wave 1 merged as PR #94 (2dfa7ec), 2026-07-01; live 3-surface validation: pass (real gateway — ae1 agent→topic narrowing 4→2 with SDK/HTTP/MCP parity; ae2 `_meta.user` narrow + `_meta.tenant` fail-closed). Dual adversarial review + fixes: `PutAgentPolicy` empty-allow/deny footgun rejected at store layer, `json:"-"` on `Scope.Agent` (pipeline golden), RFC §8.1 amended for `topic_views`, `memory_proactive_config` get-arm `Scope.Agent`, SA5011 lint fix-forward, live-harness topic-snapshot race hardened.
+- Wave 2 merged as PR #96 (9b4ea24), 2026-07-01; live JWT-auth validation: pass (real gateway — ingest→extract→retrieve JWT-gated on HTTP/MCP-over-HTTP/SDK-over-HTTP, rendered bodies match; negatives: no-token 401, expired 401/403, cross-tenant 0 items). Dual adversarial review (security/crypto + tests/config/parity): no auth-bypass/fail-open; fixed JWKS negative-kid refresh amplification (min-refresh window) + RSA exponent bound.
