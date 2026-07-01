@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/hurtener/stowage/internal/gateway"
+	"github.com/hurtener/stowage/internal/retrieval"
 )
 
 // fakeGateway is a deterministic in-test gateway.Gateway: Complete pops the next
@@ -42,7 +43,7 @@ func (f *fakeGateway) Rerank(context.Context, gateway.RerankRequest) (gateway.Re
 // TestReaderPrompt_Golden pins the reader prompt assembly (deterministic).
 func TestReaderPrompt_Golden(t *testing.T) {
 	sys, user := BuildReaderPrompt("How many mugs did the user buy?", "",
-		[]string{"User spent $60 on coffee mugs.", "  The mugs cost $12 each.  "})
+		[]retrieval.RenderItem{{Content: "User spent $60 on coffee mugs."}, {Content: "  The mugs cost $12 each.  "}})
 	if !strings.Contains(sys, "ONLY the retrieved context") {
 		t.Errorf("reader system prompt missing context-only instruction: %q", sys)
 	}
@@ -60,7 +61,7 @@ func TestReaderPrompt_Golden(t *testing.T) {
 // guidance (counting/preference/comparative/date-diff) is present in the system prompt.
 func TestReaderPrompt_QuestionDateAndShapeRules(t *testing.T) {
 	sys, user := BuildReaderPrompt("How many days since my last museum visit?", "2023-06-01",
-		[]string{"Visited the Science Museum. | When: 2023-05-15"})
+		[]retrieval.RenderItem{{Content: "Visited the Science Museum. | When: 2023-05-15"}})
 	if !strings.Contains(user, "Question Date: 2023-06-01") {
 		t.Errorf("reader user prompt missing Question Date anchor: %q", user)
 	}
@@ -106,7 +107,10 @@ func TestReaderPrompt_NoContext(t *testing.T) {
 // SUPERSEDED section (history only), not inline among current memories (D-105).
 func TestReaderPrompt_SupersededSection(t *testing.T) {
 	_, user := BuildReaderPrompt("How long is the commute?", "",
-		[]string{"Commute is 45 minutes each way.", "[OUTDATED — the user later changed this] Commute is 30 minutes."})
+		[]retrieval.RenderItem{
+			{Content: "Commute is 45 minutes each way."},
+			{Content: "Commute is 30 minutes.", Stale: true},
+		})
 	if !strings.Contains(user, "CURRENT memories") || !strings.Contains(user, "SUPERSEDED memories") {
 		t.Errorf("prompt missing current/superseded sections: %q", user)
 	}

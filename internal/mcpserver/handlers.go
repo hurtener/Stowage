@@ -199,23 +199,28 @@ func makeRetrieveHandler(svc *Services) tool.Handler[RetrieveInput, RetrieveOutp
 			return tool.Result[RetrieveOutput]{}, fmt.Errorf("memory_retrieve: %w", err)
 		}
 
+		// Build the shared render-input projection (D-141) so the mapper is
+		// exercised on the server path too — its Citation/EpisodeID slots are
+		// wired but inert this phase (ae4a activates them for RenderMCP).
+		renderItems := retrieval.RenderItemsFromMemoryItems(resp.Items)
+
 		items := make([]RetrieveItem, len(resp.Items))
 		for i, it := range resp.Items {
 			ri := RetrieveItem{
 				ID:       it.Memory.ID,
 				Kind:     it.Memory.Kind,
-				Content:  it.Memory.Content,
+				Content:  renderItems[i].Content,
 				Context:  it.Memory.Context,
 				Score:    it.Score,
-				Citation: it.Citation,
+				Citation: renderItems[i].Citation,
 			}
 			if it.Stale {
 				ri.Stale = true
 				ri.SupersededBy = it.Memory.SupersededByID
-				ri.SupersededByContent = it.SupersededByContent
-				ri.SupersededByDate = it.SupersededByDate
+				ri.SupersededByContent = renderItems[i].SupersededByContent
+				ri.SupersededByDate = renderItems[i].SupersededByDate
 			}
-			ri.OccurredAt = it.Memory.ValidFrom
+			ri.OccurredAt = renderItems[i].OccurredAt
 			if in.IncludeLanes {
 				ri.Lanes = it.Lanes
 			}

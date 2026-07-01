@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"net/url"
 	"time"
+
+	"github.com/hurtener/stowage/internal/retrieval"
 )
 
 // RunConfig configures a CI eval run.
@@ -312,39 +314,24 @@ func (r *Runner) scoreQuestion(ctx context.Context, q QuestionFixture) (Question
 		items = filterByLane(items, r.cfg.DisableLane)
 	}
 
-	// withDate appends the assertion (conversation) date so the reader can do temporal
-	// reasoning and date-resolve stale values itself (D-109, mirroring what frontier
-	// memory-RAG systems inject). Daily granularity matches the dataset.
-	withDate := func(content string, occ int64) string {
-		if occ <= 0 {
-			return content
+	// Build the render-input projection (D-141 shared render core) — no inline
+	// marker is built here anymore; Render builds it once from the typed Stale
+	// bool.
+	renderItems := make([]retrieval.RenderItem, len(items))
+	for i, item := range items {
+		renderItems[i] = retrieval.RenderItem{
+			Content:             item.Content,
+			OccurredAt:          item.OccurredAt,
+			Stale:               item.Stale,
+			SupersededByContent: item.SupersededByContent,
+			SupersededByDate:    item.SupersededByDate,
 		}
-		return content + " | When: " + time.UnixMilli(occ).UTC().Format("2006-01-02")
 	}
-
-	contents := make([]string, 0, len(items))
-	currentOnly := make([]string, 0, len(items))
-	for _, item := range items {
-		c := withDate(item.Content, item.OccurredAt)
-		if item.Stale {
-			// Dual-visibility (D-105) + self-contained successor (D-114, Idea 1): mark the
-			// retired value AND name what replaced it and when, so even a client without a
-			// prompt section knows the current value.
-			tag := "[OUTDATED — the user later changed this; prefer the current value, use only as history"
-			if item.SupersededByContent != "" {
-				tag += "; superseded by: " + withDate(item.SupersededByContent, item.SupersededByDate)
-			}
-			tag += "] "
-			contents = append(contents, tag+c)
-			continue
-		}
-		contents = append(contents, c)
-		currentOnly = append(currentOnly, item.Content) // raw content for the substring hit metric (no date suffix)
-	}
+	result := retrieval.Render(retrieval.RenderEval, renderItems)
 
 	// answer_context_hit measures whether the gold (the CURRENT value) is retrievable —
 	// computed over current items only so a stale companion can't create a phantom hit.
-	hit := AnswerContextHit(currentOnly, q.Expected.Answer)
+	hit := AnswerContextHit(result.CurrentOnly, q.Expected.Answer)
 
 	return QuestionResult{
 		QuestionID: q.ID,
@@ -353,7 +340,7 @@ func (r *Runner) scoreQuestion(ctx context.Context, q QuestionFixture) (Question
 		Expected:   q.Expected.Answer,
 		Hit:        hit,
 		Latency:    latency,
-		Items:      contents,
+		Items:      result.Lines,
 	}, nil
 }
 

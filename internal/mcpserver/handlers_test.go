@@ -7,6 +7,7 @@ package mcpserver
 
 import (
 	"context"
+	"fmt"
 	"github.com/hurtener/stowage/internal/auth"
 	"io"
 	"log/slog"
@@ -342,6 +343,27 @@ func TestHandlerRetrieve_WithSessionAndProfile(t *testing.T) {
 		t.Fatalf("retrieve with session: %v", err)
 	}
 	_ = result.Structured
+}
+
+// TestHandlerRetrieve_TextCountOnly pins the retrieve handler's count-only Text
+// shape (D-141/ae3): "Retrieved %d item(s); response_id=%s". This phase builds
+// the item projection via the shared retrieval.RenderItemsFromMemoryItems
+// mapper but leaves Text byte-unchanged — ae4a is the phase that flips Text to
+// the rendered markdown body (D-142). This test makes that future flip a
+// visible, intentional diff rather than a silent regression.
+func TestHandlerRetrieve_TextCountOnly(t *testing.T) {
+	svc := newFullServices(t)
+	h := makeRetrieveHandler(svc)
+	ctx := context.Background()
+
+	result, err := h(ctx, RetrieveInput{Query: "test query", ResponseID: "resp-fixed"})
+	if err != nil {
+		t.Fatalf("retrieve: %v", err)
+	}
+	want := fmt.Sprintf("Retrieved %d item(s); response_id=resp-fixed", len(result.Structured.Items))
+	if result.Text != want {
+		t.Errorf("Text = %q, want %q (count-only shape must stay byte-unchanged until ae4a)", result.Text, want)
+	}
 }
 
 // ── memory_playbook ───────────────────────────────────────────────────────────
