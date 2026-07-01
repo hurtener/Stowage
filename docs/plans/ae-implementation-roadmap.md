@@ -90,13 +90,13 @@ Legend: `- [ ]` not done · `- [x]` done. Wave **Status:** `NOT STARTED` →
 `IN PROGRESS` → `MERGED (PR #NN, <sha>)`.
 
 ### Wave 0 — ship-now (no auth, no scope-table migration) · one PR
-**Status:** NOT STARTED
+**Status:** MERGED (PR #92, 1a10f57)
 Internal order: **ae3 → ae4a**; ae5 and ae6 independent (ae6 is the filter keystone ae1/ae9 reuse).
-- [ ] **ae3** — shared render core (`RenderMode`; eval byte-frozen; inert `RenderMCP` superset) · D‑141
-- [ ] **ae4a** — lean MCP read (`Text` markdown, episode hook, drill = citation ULID; no new store code) · D‑142
-- [ ] **ae5** — browse (`ListByScopeRecent` inverted keyset, both drivers + conformance; superseded reuses `ListByStatus`) · D‑143
-- [ ] **ae6** — own-scope topic filter (discrete `MemoriesTopics` pre-`scoringK`-trim; **fail-open**; `topic_filter_scoring_k`) · D‑144/D‑139
-- [ ] Dual adversarial review complete · [ ] live 3-surface validation · [ ] CI green · [ ] merged · [ ] roadmap updated
+- [x] **ae3** — shared render core (`RenderMode`; eval byte-frozen; inert `RenderMCP` superset) · D‑141
+- [x] **ae4a** — lean MCP read (`Text` markdown, episode hook, drill = citation ULID; no new store code) · D‑142
+- [x] **ae5** — browse (`ListByScopeRecent` inverted keyset, both drivers + conformance; superseded reuses `ListByStatus`) · D‑143
+- [x] **ae6** — own-scope topic filter (discrete `MemoriesTopics` pre-`scoringK`-trim; **fail-open**; `topic_filter_scoring_k`) · D‑144/D‑139
+- [x] Dual adversarial review complete · [x] live 3-surface validation · [x] CI green · [x] merged · [x] roadmap updated
 
 ### Wave 1 — additive read-time identity (+ Dockyard v1.8 bump) · one PR
 **Status:** NOT STARTED
@@ -132,4 +132,4 @@ Depends on **W2 + W3**. Pre-launch ⇒ **direct removal, no deprecation window**
 
 ## Progress log (orchestrator appends one line per wave merge)
 
-_(none yet — append: `Wave N merged as PR #NN (<sha>), <date>; live 3-surface validation: pass`)_
+- Wave 0 merged as PR #92 (1a10f57), 2026-07-01; live 3-surface validation: pass (real OpenRouter/Bifrost — ae4a lean read/drill, ae5 browse, ae6 topic filter verified on SDK+HTTP+MCP). Dual adversarial review + fixes: mcpserver browse coverage (78.7→81.0%), judged-path CURRENT/SUPERSEDED partitioning restored, harbor-adapter fakeClient.Browse, phase-29/29c smoke fix-forward.
