@@ -42,6 +42,24 @@
     },
     "profile": {
       "type": "string"
+    },
+    "include_topics": {
+      "type": [
+        "null",
+        "array"
+      ],
+      "items": {
+        "type": "string"
+      }
+    },
+    "exclude_topics": {
+      "type": [
+        "null",
+        "array"
+      ],
+      "items": {
+        "type": "string"
+      }
     }
   },
   "required": [

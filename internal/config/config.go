@@ -77,6 +77,15 @@ type RetrievalConfig struct {
 	// via Defaults(). Bounded 1..100 (Validate); inert when the caller passes an
 	// explicit limit, so zero-config start is unchanged.
 	BrowseDefaultLimit int `yaml:"browse_default_limit"`
+	// TopicFilterScoringK is the candidate-window floor (D-144, ae6) applied to
+	// scoringK (and laneK via the existing floor rule) ONLY when a retrieve request
+	// carries include_topics/exclude_topics — so the fused candidate pool the
+	// own-scope topic filter runs over is wide enough to hold >= limit on-topic
+	// candidates. Default 100. A flat scalar (cross-cutting, like
+	// BrowseDefaultLimit), not per-profile. Inert when no topic filter is requested,
+	// so zero-config start is unchanged. Bounded 1..maxLimit (100, retrieval's hard
+	// result cap).
+	TopicFilterScoringK int `yaml:"topic_filter_scoring_k"`
 }
 
 // ProfileTuning overrides one retrieval profile's candidate windows. A zero field
@@ -234,6 +243,7 @@ var allKeys = []string{
 	"retrieval.broad.default_limit",
 	"retrieval.include_superseded",
 	"retrieval.browse_default_limit",
+	"retrieval.topic_filter_scoring_k",
 }
 
 // secretKeyPaths is the set of keys that hold env.VAR_NAME references.
@@ -336,8 +346,9 @@ func Defaults() *Config {
 			StdioTenant: "default",
 		},
 		Retrieval: RetrievalConfig{
-			IncludeSuperseded:  true, // dual-visibility default (§6c, D-105)
-			BrowseDefaultLimit: 30,   // ae5 browse page size (D-143)
+			IncludeSuperseded:   true, // dual-visibility default (§6c, D-105)
+			BrowseDefaultLimit:  30,   // ae5 browse page size (D-143)
+			TopicFilterScoringK: 100,  // ae6 topic-filter candidate window (D-144)
 		},
 		prov: make(Provenance),
 	}
@@ -450,6 +461,13 @@ func (c *Config) FillZeroDefaults() {
 	// parity lens).
 	if c.Retrieval.BrowseDefaultLimit == 0 {
 		c.Retrieval.BrowseDefaultLimit = d.Retrieval.BrowseDefaultLimit
+	}
+	// retrieval.topic_filter_scoring_k (ae6, D-144): same flat-scalar reasoning as
+	// BrowseDefaultLimit above — its tuned default belongs in every effective
+	// config, embedded included, so the SDK's topic filter widens the candidate
+	// window the same way the server does (D-069 parity lens).
+	if c.Retrieval.TopicFilterScoringK == 0 {
+		c.Retrieval.TopicFilterScoringK = d.Retrieval.TopicFilterScoringK
 	}
 }
 
@@ -635,6 +653,14 @@ func (c *Config) Validate() error {
 		errs = append(errs, fmt.Errorf("config.retrieval.browse_default_limit: %d must be > 0", c.Retrieval.BrowseDefaultLimit))
 	} else if c.Retrieval.BrowseDefaultLimit > 100 {
 		errs = append(errs, fmt.Errorf("config.retrieval.browse_default_limit: %d exceeds the hard browse page cap (100)", c.Retrieval.BrowseDefaultLimit))
+	}
+
+	// retrieval.topic_filter_scoring_k (ae6, D-144): must be positive, bounded by
+	// retrieval's hard result cap (maxLimit=100, internal/retrieval/retrieval.go).
+	if c.Retrieval.TopicFilterScoringK <= 0 {
+		errs = append(errs, fmt.Errorf("config.retrieval.topic_filter_scoring_k: %d must be > 0", c.Retrieval.TopicFilterScoringK))
+	} else if c.Retrieval.TopicFilterScoringK > 100 {
+		errs = append(errs, fmt.Errorf("config.retrieval.topic_filter_scoring_k: %d exceeds the hard result cap (100)", c.Retrieval.TopicFilterScoringK))
 	}
 
 	return errors.Join(errs...)
@@ -829,6 +855,8 @@ func (c *Config) getByPath(path string) string {
 		return strconv.FormatBool(c.Retrieval.IncludeSuperseded)
 	case "retrieval.browse_default_limit":
 		return strconv.Itoa(c.Retrieval.BrowseDefaultLimit)
+	case "retrieval.topic_filter_scoring_k":
+		return strconv.Itoa(c.Retrieval.TopicFilterScoringK)
 	default:
 		return ""
 	}
@@ -968,6 +996,12 @@ func (c *Config) setByPath(path, value string) error {
 			return fmt.Errorf("config.%s: %w", path, err)
 		}
 		c.Retrieval.BrowseDefaultLimit = n
+	case "retrieval.topic_filter_scoring_k":
+		n, err := strconv.Atoi(value)
+		if err != nil {
+			return fmt.Errorf("config.%s: %w", path, err)
+		}
+		c.Retrieval.TopicFilterScoringK = n
 	default:
 		return fmt.Errorf("config: unknown key path %q", path)
 	}

@@ -277,15 +277,17 @@ func (c *embeddedClient) Retrieve(ctx context.Context, req RetrieveRequest) (Ret
 	// tenant-wide (back-compat). The store hard-isolates to this scope.
 	scope := c.callScope(req.ProjectID, req.UserID)
 	resp, err := c.stack.Retriever.Retrieve(ctx, scope, retrieval.Request{
-		Query:        req.Query,
-		Limit:        req.Limit,
-		Window:       store.Window{From: req.From, Until: req.Until},
-		Kinds:        req.Kinds,
-		IncludeLanes: req.IncludeLanes,
-		SessionID:    req.SessionID,
-		Debug:        req.Debug,
-		ResponseID:   req.ResponseID,
-		Profile:      req.Profile,
+		Query:         req.Query,
+		Limit:         req.Limit,
+		Window:        store.Window{From: req.From, Until: req.Until},
+		Kinds:         req.Kinds,
+		IncludeLanes:  req.IncludeLanes,
+		SessionID:     req.SessionID,
+		Debug:         req.Debug,
+		ResponseID:    req.ResponseID,
+		Profile:       req.Profile,
+		IncludeTopics: req.IncludeTopics,
+		ExcludeTopics: req.ExcludeTopics,
 	})
 	if err != nil {
 		return RetrieveResponse{}, fmt.Errorf("sdk: retrieve: %w", err)
@@ -336,14 +338,15 @@ func (c *embeddedClient) Retrieve(ctx context.Context, req RetrieveRequest) (Ret
 	}
 
 	return RetrieveResponse{
-		ResponseID:     resp.ResponseID,
-		Items:          items,
-		Support:        sup,
-		Degraded:       resp.Degraded,
-		DegradedRerank: resp.DegradedRerank,
-		CacheHit:       resp.CacheHit,
-		API:            resp.API,
-		Rendered:       retrieval.RenderReadBody(resp.Items),
+		ResponseID:          resp.ResponseID,
+		Items:               items,
+		Support:             sup,
+		Degraded:            resp.Degraded,
+		DegradedRerank:      resp.DegradedRerank,
+		DegradedTopicFilter: resp.DegradedTopicFilter,
+		CacheHit:            resp.CacheHit,
+		API:                 resp.API,
+		Rendered:            retrieval.RenderReadBody(resp.Items),
 	}, nil
 }
 

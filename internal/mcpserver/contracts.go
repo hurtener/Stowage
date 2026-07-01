@@ -74,6 +74,11 @@ type RetrieveInput struct {
 	Debug      bool   `json:"debug,omitempty"`
 	ResponseID string `json:"response_id,omitempty"`
 	Profile    string `json:"profile,omitempty"`
+	// IncludeTopics/ExcludeTopics narrow the caller's own-scope results to topic-tagged
+	// memories (ae6, D-144). Own-scope only (P3); fails open on a topic-store error
+	// (D-139, see RetrieveOutput.DegradedTopicFilter). Empty = no constraint.
+	IncludeTopics []string `json:"include_topics,omitempty"`
+	ExcludeTopics []string `json:"exclude_topics,omitempty"`
 }
 
 // RetrieveItem is one result in the memory_retrieve output.
@@ -112,8 +117,12 @@ type RetrieveOutput struct {
 	Support        RetrieveSupport `json:"support"`
 	Degraded       bool            `json:"degraded"`
 	DegradedRerank bool            `json:"degraded_rerank,omitempty"`
-	CacheHit       bool            `json:"cache_hit,omitempty"`
-	API            string          `json:"api"`
+	// DegradedTopicFilter is true when include_topics/exclude_topics were requested
+	// but the topic store failed, so the caller's own UNFILTERED results were
+	// returned instead (fail-open, D-139, ae6).
+	DegradedTopicFilter bool   `json:"degraded_topic_filter,omitempty"`
+	CacheHit            bool   `json:"cache_hit,omitempty"`
+	API                 string `json:"api"`
 }
 
 // ─── memory_playbook (D-072) ───────────────────────────────────────────────────

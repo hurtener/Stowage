@@ -77,6 +77,13 @@ type Request struct {
 	// Profile selects a named retrieval preset: "precise", "balanced" (default),
 	// or "broad". Invalid values are rejected by the handler (D-034).
 	Profile string
+
+	// IncludeTopics keeps only memories tagged with ≥1 of these topic keys (empty = no
+	// include constraint). ExcludeTopics drops any memory tagged with one of these.
+	// Own-scope only: this NARROWS the caller's own results; it never widens scope (P3).
+	// Applied via the fail-open filterByTopicOwnScope (D-139, ae6).
+	IncludeTopics []string
+	ExcludeTopics []string
 }
 
 // MemoryItem is one retrieval result.
@@ -108,6 +115,10 @@ type Response struct {
 	API            string  // "v1" (Phase 11)
 	CacheHit       bool    // true when the result was served from the result cache (Phase 12)
 	DegradedRerank bool    // true when the rerank pass failed and Phase-10 order was preserved (Phase 12)
+	// DegradedTopicFilter is true when a topic filter was requested but MemoriesTopics
+	// failed, so the caller's own UNFILTERED results were returned instead (fail-open,
+	// D-139, ae6). False when no topic filter was requested or the filter applied cleanly.
+	DegradedTopicFilter bool
 }
 
 // Retriever executes the four-lane retrieval and returns fused + scored results.
@@ -127,6 +138,10 @@ type Retriever struct {
 	grantsSt          store.GrantStore   // nil when grants are not wired (Phase 15, D-060)
 	profiles          map[string]Profile // config-overridden presets; nil ⇒ built-in defaults (D-103)
 	includeSuperseded bool               // D-105: surface superseded predecessors flagged stale (dual-visibility, §6c)
+	// topicFilterScoringK is the candidate-window floor applied to scoringK (and laneK via
+	// the existing floor rule) ONLY when a request carries a topic filter (D-144, ae6).
+	// <= 0 falls back to defaultTopicFilterScoringK.
+	topicFilterScoringK int
 }
 
 // New creates a Retriever wired to the given dependencies.
@@ -171,6 +186,21 @@ func (r *Retriever) WithIncludeSuperseded(on bool) *Retriever {
 	r.includeSuperseded = on
 	return r
 }
+
+// WithTopicFilterScoringK sets the candidate-window floor (D-144, ae6) applied to
+// scoringK (and laneK, via the existing floor rule) when a request carries a topic
+// filter. <= 0 falls back to defaultTopicFilterScoringK. Call after New, before
+// serving; not safe to call concurrently with Retrieve.
+func (r *Retriever) WithTopicFilterScoringK(k int) *Retriever {
+	r.topicFilterScoringK = k
+	return r
+}
+
+// defaultTopicFilterScoringK mirrors config.RetrievalConfig's tuned default (100,
+// D-144) so a Retriever constructed without WithTopicFilterScoringK (e.g. a unit
+// test, or any caller that hasn't wired config) still widens the candidate window
+// sanely when a topic filter is requested.
+const defaultTopicFilterScoringK = 100
 
 // maxStaleCompanions bounds how many superseded predecessors are attached per response
 // (across all returned items) so dual-visibility can never blow up the context size.
@@ -338,6 +368,20 @@ func (r *Retriever) Retrieve(ctx context.Context, scope identity.Scope, req Requ
 	if limit > scoringK {
 		scoringK = limit
 	}
+	// Topic-filter candidate-window widening (D-144, ae6): a topic filter subtracts
+	// from the FUSED pool before the scoringK trim (below), so when one is requested,
+	// floor scoringK up to topicFilterScoringK — which floors laneK via the rule right
+	// after — so the fused pool is wide enough to still hold >= limit on-topic
+	// candidates after filtering. Inert (no-op) when no topic filter is requested.
+	if hasTopicFilter(req) {
+		tfk := r.topicFilterScoringK
+		if tfk <= 0 {
+			tfk = defaultTopicFilterScoringK
+		}
+		if tfk > scoringK {
+			scoringK = tfk
+		}
+	}
 	laneK := prof.LaneK
 	if scoringK > laneK {
 		laneK = scoringK
@@ -364,7 +408,11 @@ func (r *Retriever) Retrieve(ctx context.Context, scope identity.Scope, req Requ
 	// data and must be freshly computed). Session ID is part of the key because it
 	// affects the utility score (write-echo cooldown).
 	// Multi-scope requests are NOT cached: revocation must be effective immediately (D-060).
-	if !req.Debug && !multiScope {
+	// Topic-filtered requests are NOT cached (ae6): the cache key does not carry
+	// IncludeTopics/ExcludeTopics, so caching would risk serving another topic filter's
+	// (or no filter's) result set. Mirrors the debug/multiScope bypass precedent rather
+	// than widening the cache key for an own-scope curation lens.
+	if !req.Debug && !multiScope && !hasTopicFilter(req) {
 		if cachedItems, cachedSup, ok := r.cache.Get(scope, querySig, req.Profile, req.SessionID, req.Window.From, req.Window.Until, req.Kinds, req.IncludeLanes, limit); ok {
 			return &Response{
 				ResponseID: responseID,
@@ -503,6 +551,31 @@ func (r *Retriever) Retrieve(ctx context.Context, scope identity.Scope, req Requ
 	// Fuse — use a wider window before scoring to give scoring room to rerank.
 	fused := rrf(lanes)
 
+	// Own-scope topic filter (D-144, ae6): filter the FUSED (laneK-wide) pool BEFORE
+	// the scoringK trim below, so on-topic candidates have the full candidate window
+	// rather than the already-truncated one (the no-underfill AC). Fails OPEN (D-139):
+	// on a MemoriesTopics error the full unfiltered fused pool rides through, flagged.
+	var degradedTopicFilter bool
+	if hasTopicFilter(req) {
+		ids := make([]string, len(fused))
+		for i, h := range fused {
+			ids[i] = h.MemoryID
+		}
+		kept, tfDegraded := r.filterByTopicOwnScope(ctx, scope, ids, req.IncludeTopics, req.ExcludeTopics)
+		degradedTopicFilter = tfDegraded
+		keptSet := make(map[string]bool, len(kept))
+		for _, id := range kept {
+			keptSet[id] = true
+		}
+		onTopic := make([]FusedHit, 0, len(fused))
+		for _, h := range fused {
+			if keptSet[h.MemoryID] {
+				onTopic = append(onTopic, h)
+			}
+		}
+		fused = onTopic
+	}
+
 	// Trim to scoringK (≥ requested limit, see above) before scoring to bound the
 	// GetMany call while still feeding the reranker the full requested window.
 	if len(fused) > scoringK {
@@ -510,7 +583,10 @@ func (r *Retriever) Retrieve(ctx context.Context, scope identity.Scope, req Requ
 	}
 
 	if len(fused) == 0 {
-		return &Response{ResponseID: responseID, Support: Support{Strength: "weak"}, Degraded: degraded, API: "v1"}, nil
+		return &Response{
+			ResponseID: responseID, Support: Support{Strength: "weak"}, Degraded: degraded, API: "v1",
+			DegradedTopicFilter: degradedTopicFilter,
+		}, nil
 	}
 
 	// Bulk-fetch the top memories.
@@ -730,7 +806,8 @@ func (r *Retriever) Retrieve(ctx context.Context, scope identity.Scope, req Requ
 	// Store result in the cache for subsequent identical queries (Phase 12).
 	// Debug requests are not cached (breakdowns are diagnostic and one-time).
 	// Multi-scope requests are not cached (revocation must be live, D-060).
-	if !req.Debug && !multiScope {
+	// Topic-filtered requests are not cached (ae6, see the Get-side note above).
+	if !req.Debug && !multiScope && !hasTopicFilter(req) {
 		r.cache.Put(scope, querySig, req.Profile, req.SessionID, req.Window.From, req.Window.Until, req.Kinds, req.IncludeLanes, limit, items, sup)
 	}
 
@@ -778,13 +855,20 @@ func (r *Retriever) Retrieve(ctx context.Context, scope identity.Scope, req Requ
 	}
 
 	return &Response{
-		ResponseID:     responseID,
-		Items:          items,
-		Support:        sup,
-		Degraded:       degraded,
-		API:            "v1",
-		DegradedRerank: degradedRerank,
+		ResponseID:          responseID,
+		Items:               items,
+		Support:             sup,
+		Degraded:            degraded,
+		API:                 "v1",
+		DegradedRerank:      degradedRerank,
+		DegradedTopicFilter: degradedTopicFilter,
 	}, nil
+}
+
+// hasTopicFilter reports whether req carries an own-scope topic include/exclude
+// constraint (D-144, ae6). Both empty ⇒ no filter, the additive no-op case.
+func hasTopicFilter(req Request) bool {
+	return len(req.IncludeTopics) > 0 || len(req.ExcludeTopics) > 0
 }
 
 // SimilarNarratives finds the scope's past episodes most similar to query by

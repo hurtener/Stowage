@@ -185,15 +185,17 @@ func makeRetrieveHandler(svc *Services) tool.Handler[RetrieveInput, RetrieveOutp
 		}
 
 		resp, err := svc.Retriever.Retrieve(ctx, scope, retrieval.Request{
-			Query:        in.Query,
-			Limit:        in.Limit,
-			Window:       store.Window{From: in.From, Until: in.Until},
-			Kinds:        in.Kinds,
-			IncludeLanes: in.IncludeLanes,
-			SessionID:    in.SessionID,
-			Debug:        in.Debug,
-			ResponseID:   in.ResponseID,
-			Profile:      in.Profile,
+			Query:         in.Query,
+			Limit:         in.Limit,
+			Window:        store.Window{From: in.From, Until: in.Until},
+			Kinds:         in.Kinds,
+			IncludeLanes:  in.IncludeLanes,
+			SessionID:     in.SessionID,
+			Debug:         in.Debug,
+			ResponseID:    in.ResponseID,
+			Profile:       in.Profile,
+			IncludeTopics: in.IncludeTopics,
+			ExcludeTopics: in.ExcludeTopics,
 		})
 		if err != nil {
 			return tool.Result[RetrieveOutput]{}, fmt.Errorf("memory_retrieve: %w", err)
@@ -240,10 +242,11 @@ func makeRetrieveHandler(svc *Services) tool.Handler[RetrieveInput, RetrieveOutp
 				TopScore:  resp.Support.TopScore,
 				Conflicts: conflicts,
 			},
-			Degraded:       resp.Degraded,
-			DegradedRerank: resp.DegradedRerank,
-			CacheHit:       resp.CacheHit,
-			API:            resp.API,
+			Degraded:            resp.Degraded,
+			DegradedRerank:      resp.DegradedRerank,
+			DegradedTopicFilter: resp.DegradedTopicFilter,
+			CacheHit:            resp.CacheHit,
+			API:                 resp.API,
 		}
 		// Lean MCP read (D-142, ae4a): the model-facing Text is the rendered
 		// markdown body — episode hooks + per-item [cite:…] drill handles — not

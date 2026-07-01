@@ -1,6 +1,6 @@
 # Phase ae6 — request-level topic filter (own-scope, fail-open, lane-aware)
 
-- **Status:** draft
+- **Status:** implemented (see "As-built deviations" below)
 - **Owning subsystem(s):** `internal/retrieval` (a new `filterByTopicOwnScope` + the candidate-window widening); the three retrieve surfaces (`internal/mcpserver`, `internal/api`, `sdk/stowage`); `internal/config` (one knob). **No new table** — reuses `memory_topics` (migration 0011, D-089) and the scope-required `Store.MemoriesTopics` batch reader.
 - **RFC sections:** §4.2 (lanes/fusion), §5.3 (scopes — P3), §5.4 (topics), §9.5 (one logic core, D-067/D-073)
 - **Depends on phases:** the shipped retrieval lanes/scoring path; the topics phase (`memory_topics` + `MemoriesTopics`, D-089). No in-track dependency (Wave 0). **ae1 and ae9 reuse this filter** — it is the single own-scope fail-open mechanism the read-time agent filter and the topic views are layered on.
@@ -221,6 +221,54 @@ test/integration/retrieve_topicfilter_test.go  # NEW — real-driver no-underfil
 - **`DegradedTopicFilter`** — a retrieve-response marker that the topic filter could not
   be applied (topic-store error) and unfiltered own-scope results were returned (D-036
   fail-open transparency).
+
+## As-built deviations
+
+- **The Retriever carries a built-in `defaultTopicFilterScoringK = 100` fallback,
+  not just the config-supplied value.** The plan's config knob (default `100`)
+  covers the production boot path (`internal/boot/boot.go` calls
+  `WithTopicFilterScoringK(cfg.Retrieval.TopicFilterScoringK)`), but a `Retriever`
+  built directly via `New`/`NewWithInjections` without that call (unit tests, or
+  any future caller that skips config wiring) would otherwise widen by `0` —
+  silently defeating the no-underfill guarantee. `Retrieve` now falls back to the
+  same tuned default (`100`) when `topicFilterScoringK <= 0`. Purely additive
+  safety net; the config knob is still the single source of truth for production.
+- **Topic-filtered requests bypass the result cache (`ResultCache`).** The cache
+  key (`Get`/`Put` in `retrieval.go`) does not carry `IncludeTopics`/`ExcludeTopics`.
+  Rather than widen the key (more cache-key surface, more invalidation paths), a
+  request with a topic filter is excluded from both the cache read and write —
+  mirroring the existing `!req.Debug && !multiScope` bypass precedent exactly (one
+  more `&& !hasTopicFilter(req)` clause on both gates). Undocumented in the
+  original design section but necessary for correctness: without it, two requests
+  differing only in topic filter (same scope/querySig/profile/session/window/
+  kinds/includeLanes/limit) could serve each other's cached result set.
+- **Test-function naming uses a `TopicFilter*`/`Test*_TopicFilter*` convention**
+  (e.g. `TestTopicFilterOwnScope_IncludeOnly`, not `TestFilterByTopicOwnScope_...`)
+  so `go test ./internal/retrieval/... -run TopicFilter` (the smoke script's and
+  this PR's own verification command) catches every new unit test, not just the
+  three whose names happened to contain "TopicFilter". A purely cosmetic choice,
+  called out because it deviates from mirroring the private function name
+  (`filterByTopicOwnScope`) verbatim.
+- **The AC-2 no-underfill regression is proven twice, not once.** The plan's Test
+  plan section lists the no-underfill fixture under Integration only; this PR adds
+  a second, self-contained proof at the `internal/retrieval` package level
+  (`TestTopicFilter_NoUnderfill_PinsPreTrimPlacement`) that independently replays
+  the REJECTED naive "filter the scoringK-trimmed pool" approach over the same raw
+  lane data (via `retrieval.ExportRRF`) and asserts it would yield zero on-topic
+  survivors, before asserting the real (pinned) `Retrieve` call fills `limit`. This
+  makes the contrast the plan describes ("must FAIL the naive approach and PASS
+  the pinned approach") an executable assertion, not just a design narrative.
+- **The integration fail-open test covers HTTP + MCP, not the embedded SDK.** SDK
+  parity for the SUCCESS path (no-underfill, exclude, additive no-op) is proven on
+  all three surfaces. The FAIL-OPEN fault-injection sub-test
+  (`TestTopicFilter_FailsOpen_HTTPAndMCP`) covers HTTP and MCP only: the embedded
+  SDK's `stowage.NewEmbedded` always constructs its own `*retrieval.Retriever`
+  inside `boot.Open` with no exposed seam to swap in a fault-injecting
+  `store.MemoryStore` from a test. The fail-open `Retrieve` behavior itself
+  (the load-bearing correctness property) is proven directly and unconditionally
+  at the `internal/retrieval` package level
+  (`TestRetrieve_TopicFilterFailsOpen_DegradedMarker`), so this is a coverage gap
+  in surface-wiring redundancy only, not in the property being tested.
 
 ## Decisions filed
 
