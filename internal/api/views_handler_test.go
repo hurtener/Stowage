@@ -14,6 +14,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -166,6 +167,132 @@ func TestViews_CRUD(t *testing.T) {
 	drainClose(delAgainResp.Body)
 	if delAgainResp.StatusCode != http.StatusNotFound {
 		t.Errorf("double DELETE: got %d want 404", delAgainResp.StatusCode)
+	}
+}
+
+// TestViews_CreateNilService proves 503 on POST when no views service is
+// wired (mirrors TestViews_NilService, which only covers GET).
+func TestViews_CreateNilService(t *testing.T) {
+	t.Parallel()
+	_, ts, st := newTestServer(t)
+	_, pt := mustCreateAgentKey(t, st, "tenant-nilv-post")
+
+	resp := doJSON(t, "POST", ts.URL+"/v1/scopes/views", pt, map[string]interface{}{
+		"subject_kind": "agent", "subject_id": "a1", "allow_topics": []string{"x"},
+	})
+	drainClose(resp.Body)
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Errorf("create, nil views service: got %d want 503", resp.StatusCode)
+	}
+}
+
+// TestViews_UpdateNilService proves 503 on PUT when no views service is wired.
+func TestViews_UpdateNilService(t *testing.T) {
+	t.Parallel()
+	_, ts, st := newTestServer(t)
+	_, pt := mustCreateAgentKey(t, st, "tenant-nilv-put")
+
+	resp := doJSON(t, "PUT", ts.URL+"/v1/scopes/views", pt, map[string]interface{}{
+		"subject_kind": "agent", "subject_id": "a1", "allow_topics": []string{"x"},
+	})
+	drainClose(resp.Body)
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Errorf("update, nil views service: got %d want 503", resp.StatusCode)
+	}
+}
+
+// TestViews_DeleteNilService proves 503 on DELETE when no views service is wired.
+func TestViews_DeleteNilService(t *testing.T) {
+	t.Parallel()
+	_, ts, st := newTestServer(t)
+	_, pt := mustCreateAgentKey(t, st, "tenant-nilv-del")
+
+	resp := doJSON(t, "DELETE", ts.URL+"/v1/scopes/views/agent/a1/default", pt, nil)
+	drainClose(resp.Body)
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Errorf("delete, nil views service: got %d want 503", resp.StatusCode)
+	}
+}
+
+// TestViews_CreateWrongContentType covers the requireJSON path in handleCreateView.
+func TestViews_CreateWrongContentType(t *testing.T) {
+	t.Parallel()
+	srv, ts, st := newTestServer(t)
+	setViewsService(t, srv, st)
+	_, pt := mustCreateAgentKey(t, st, "tenant-views-ct")
+
+	req, _ := http.NewRequest("POST", ts.URL+"/v1/scopes/views",
+		strings.NewReader(`{"subject_kind":"agent","subject_id":"a1","allow_topics":["x"]}`))
+	req.Header.Set("Authorization", "Bearer "+pt)
+	req.Header.Set("Content-Type", "text/plain")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("POST wrong content-type: %v", err)
+	}
+	drainClose(resp.Body)
+	if resp.StatusCode != http.StatusUnsupportedMediaType {
+		t.Errorf("create wrong content-type: got %d want 415", resp.StatusCode)
+	}
+}
+
+// TestViews_UpdateWrongContentType covers the requireJSON path in handleUpdateView.
+func TestViews_UpdateWrongContentType(t *testing.T) {
+	t.Parallel()
+	srv, ts, st := newTestServer(t)
+	setViewsService(t, srv, st)
+	_, pt := mustCreateAgentKey(t, st, "tenant-views-ct2")
+
+	req, _ := http.NewRequest("PUT", ts.URL+"/v1/scopes/views",
+		strings.NewReader(`{"subject_kind":"agent","subject_id":"a1","allow_topics":["x"]}`))
+	req.Header.Set("Authorization", "Bearer "+pt)
+	req.Header.Set("Content-Type", "text/plain")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("PUT wrong content-type: %v", err)
+	}
+	drainClose(resp.Body)
+	if resp.StatusCode != http.StatusUnsupportedMediaType {
+		t.Errorf("update wrong content-type: got %d want 415", resp.StatusCode)
+	}
+}
+
+// TestViews_CreateMalformedJSON covers the decode-error path in handleCreateView.
+func TestViews_CreateMalformedJSON(t *testing.T) {
+	t.Parallel()
+	srv, ts, st := newTestServer(t)
+	setViewsService(t, srv, st)
+	_, pt := mustCreateAgentKey(t, st, "tenant-views-mj")
+
+	req, _ := http.NewRequest("POST", ts.URL+"/v1/scopes/views", strings.NewReader(`{not json`))
+	req.Header.Set("Authorization", "Bearer "+pt)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("POST malformed json: %v", err)
+	}
+	drainClose(resp.Body)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("create malformed json: got %d want 400", resp.StatusCode)
+	}
+}
+
+// TestViews_UpdateMalformedJSON covers the decode-error path in handleUpdateView.
+func TestViews_UpdateMalformedJSON(t *testing.T) {
+	t.Parallel()
+	srv, ts, st := newTestServer(t)
+	setViewsService(t, srv, st)
+	_, pt := mustCreateAgentKey(t, st, "tenant-views-mj2")
+
+	req, _ := http.NewRequest("PUT", ts.URL+"/v1/scopes/views", strings.NewReader(`{not json`))
+	req.Header.Set("Authorization", "Bearer "+pt)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("PUT malformed json: %v", err)
+	}
+	drainClose(resp.Body)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("update malformed json: got %d want 400", resp.StatusCode)
 	}
 }
 

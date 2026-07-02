@@ -54,19 +54,46 @@ fi
 if grep -Eq 'read_posture[[:space:]]*=[[:space:]]*compatible' internal/config/testdata/explain_default.golden; then
   ok "AC-10: read_posture defaults to compatible (explain golden)"
 else
-  skip "AC-10: read_posture default not yet in explain golden"
+  failc "AC-10: read_posture default missing/stale in explain golden (regenerate it)"
 fi
 if grep -Eq 'identity.multiplexing[[:space:]]*=[[:space:]]*false' internal/config/testdata/explain_default.golden; then
   ok "AC-10: identity.multiplexing defaults to false (explain golden)"
 else
-  skip "AC-10: identity.multiplexing default not yet in explain golden"
+  failc "AC-10: identity.multiplexing default missing/stale in explain golden (regenerate it)"
 fi
 
-# ── AC-4: no new store read path; the three scope predicates still fail closed ──
-if git diff --name-only main...HEAD 2>/dev/null | grep -q '^internal/store/'; then
-  failc "AC-4: ae8 changed internal/store — it must add NO store predicate/method"
-else
-  ok "AC-4: internal/store untouched by ae8 (no new read path)"
+# ── AC-4: the ae8 RESOLVER (and its surface adapters) add no store query/WHERE ──
+# Intent: the ae8 resolver stays store-free — ResolveReadScope does NO I/O
+# (per its own godoc) and its HTTP/MCP adapters call EXISTING store accessors,
+# never define a new one. This is scoped to the resolver + its two adapters,
+# NOT a whole-branch internal/store diff — a sibling phase (e.g. ae9's view
+# CRUD store additions) legitimately touches internal/store on the same
+# branch and must not false-fail this gate.
+store_clean=1
+RESOLVER_ADAPTERS="internal/mcpserver/scope.go internal/api/auth.go"
+if grep -q '"github.com/hurtener/stowage/internal/store"' "$RES" 2>/dev/null; then
+  failc "AC-4: $RES imports internal/store — the resolver must stay store-free (no I/O)"
+  store_clean=0
+fi
+if grep -qiE '\b(SELECT|INSERT INTO|UPDATE .* SET|DELETE FROM)\b' "$RES" 2>/dev/null; then
+  failc "AC-4: $RES contains a raw SQL literal — the resolver must stay store-free"
+  store_clean=0
+fi
+for f in $RESOLVER_ADAPTERS; do
+  if [ ! -f "$f" ]; then
+    continue
+  fi
+  if grep -q '"github.com/hurtener/stowage/internal/store"' "$f"; then
+    failc "AC-4: $f imports internal/store — a resolver adapter must call EXISTING store accessors only, never define a new store query"
+    store_clean=0
+  fi
+  if grep -qiE '\b(SELECT|INSERT INTO|UPDATE .* SET|DELETE FROM)\b' "$f"; then
+    failc "AC-4: $f contains a raw SQL literal — a resolver adapter must not add a store query/WHERE"
+    store_clean=0
+  fi
+done
+if [ "$store_clean" -eq 1 ]; then
+  ok "AC-4: the ae8 resolver + its HTTP/MCP adapters add no store query/WHERE (internal/store additions by sibling phases are out of scope for this gate)"
 fi
 pred_ok=1
 for f in internal/store/pgstore/scope.go internal/store/sqlitestore/scope.go; do

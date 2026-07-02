@@ -440,6 +440,9 @@ var envKeys = []struct {
 	{"STOWAGE_AUTH_JWKS_MAX_STALE", "auth.jwks.max_stale"},
 	{"STOWAGE_RETRIEVAL_READ_POSTURE", "retrieval.read_posture"},
 	{"STOWAGE_IDENTITY_MULTIPLEXING", "identity.multiplexing"},
+	{"STOWAGE_RETRIEVAL_AGENT_VIEWS_ENABLED", "retrieval.agent_views.enabled"},
+	{"STOWAGE_RETRIEVAL_AGENT_VIEWS_ON_POLICY_ERROR", "retrieval.agent_views.on_policy_error"},
+	{"STOWAGE_RETRIEVAL_AGENT_VIEWS_SUBJECT_PRECEDENCE", "retrieval.agent_views.subject_precedence"},
 }
 
 // Defaults returns a fully working Config with no file or env input. (AC-1)

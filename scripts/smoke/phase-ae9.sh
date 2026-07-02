@@ -95,7 +95,7 @@ if go test ./internal/retrieval/ -run View -count=1 >/dev/null 2>&1; then
 else
   failc "AC-1/4: retrieval view unit tests fail"
 fi
-if go test ./internal/store/... -run TopicView -count=1 >/dev/null 2>&1; then
+if go test ./internal/store/... -run 'TestConformance/TopicView' -count=1 >/dev/null 2>&1; then
   ok "AC-6: TopicViewStore conformance passes on both drivers"
 else
   failc "AC-6: TopicViewStore conformance fails"

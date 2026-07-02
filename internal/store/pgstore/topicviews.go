@@ -9,15 +9,37 @@ package pgstore
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/oklog/ulid/v2"
 
 	"github.com/hurtener/stowage/internal/identity"
 	"github.com/hurtener/stowage/internal/store"
 )
+
+// pgSerializationFailure is the PostgreSQL SQLSTATE code for a SERIALIZABLE
+// transaction aborted by a detected read-write dependency cycle (write skew /
+// phantom read) at commit time.
+const pgSerializationFailure = "40001"
+
+// pgIsSerializationFailure reports whether err is a PostgreSQL SERIALIZABLE
+// isolation abort — the signal that a concurrent transaction raced this one
+// on an overlapping predicate (used by CreateView/UpdateView below, which run
+// under pgx.Serializable specifically to close the natural-key TOCTOU: two
+// concurrent CreateView calls for the SAME natural key but DISJOINT
+// topic_key sets would each pass the row's existence pre-check and would NOT
+// collide on the per-key UNIQUE index — see viewRowsExist's doc comment —
+// so the per-key UNIQUE constraint alone cannot catch this race; SERIALIZABLE
+// isolation makes PostgreSQL detect the rw-antidependency on the natural-key
+// range scan and abort one of the two transactions with this SQLSTATE).
+func pgIsSerializationFailure(err error) bool {
+	var pgErr *pgconn.PgError
+	return err != nil && errors.As(err, &pgErr) && pgErr.Code == pgSerializationFailure
+}
 
 type topicViewStore struct{ s *pgStore }
 
@@ -255,7 +277,16 @@ func insertViewRows(ctx context.Context, tx pgx.Tx, tenant, subjectKind, subject
 // for the natural key (tenant_id, subject_kind, subject_id, view_name) — the
 // pre-check runs inside the same transaction as the insert (existence, not
 // just the per-key UNIQUE index, since two non-overlapping topic-key sets for
-// the same natural key would not otherwise collide on that index).
+// the same natural key would not otherwise collide on that index). The
+// transaction runs under SERIALIZABLE isolation (not the default READ
+// COMMITTED) specifically to close that gap: two concurrent CreateView calls
+// for the SAME natural key with DISJOINT topic keys would both pass the
+// existence pre-check under READ COMMITTED (each in-flight, neither
+// committed yet) and neither insert would collide on the per-key UNIQUE
+// index, silently merging two "creates" into one multi-writer view.
+// SERIALIZABLE makes PostgreSQL detect that rw-antidependency and abort one
+// transaction with SQLSTATE 40001 at commit — mapped to store.ErrConflict
+// here, matching the ordinary pre-check conflict the caller already handles.
 func (t *topicViewStore) CreateView(ctx context.Context, scope identity.Scope, v store.TopicView) error {
 	if scope.Tenant == "" {
 		return store.ErrScopeRequired
@@ -263,7 +294,7 @@ func (t *topicViewStore) CreateView(ctx context.Context, scope identity.Scope, v
 	if err := v.Validate(); err != nil {
 		return err
 	}
-	tx, err := t.s.pool.Begin(ctx)
+	tx, err := t.s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.Serializable})
 	if err != nil {
 		return err
 	}
@@ -283,12 +314,26 @@ func (t *topicViewStore) CreateView(ctx context.Context, scope identity.Scope, v
 		}
 		return fmt.Errorf("pgstore: CreateView insert: %w", err)
 	}
-	return tx.Commit(ctx)
+	if err := tx.Commit(ctx); err != nil {
+		if pgIsSerializationFailure(err) {
+			// A concurrent CreateView for the same natural key committed first
+			// (the TOCTOU race the pre-check alone cannot close); surface it
+			// exactly as the ordinary pre-check conflict.
+			return store.ErrConflict
+		}
+		return fmt.Errorf("pgstore: CreateView commit: %w", err)
+	}
+	return nil
 }
 
 // UpdateView atomically replaces an existing view's AllowTopics/DenyTopics
 // (delete-then-insert, matching PutAgentPolicy's precedent) — the end row set
 // always matches v's lists exactly. ErrNotFound when the view does not exist.
+// Runs under the same SERIALIZABLE isolation as CreateView (see its comment)
+// so a concurrent CreateView/UpdateView/DeleteView racing the same natural
+// key aborts one side with SQLSTATE 40001 instead of silently interleaving
+// deletes/inserts; mapped to store.ErrConflict — the caller's existing
+// "retry, something changed concurrently" signal.
 func (t *topicViewStore) UpdateView(ctx context.Context, scope identity.Scope, v store.TopicView) error {
 	if scope.Tenant == "" {
 		return store.ErrScopeRequired
@@ -296,7 +341,7 @@ func (t *topicViewStore) UpdateView(ctx context.Context, scope identity.Scope, v
 	if err := v.Validate(); err != nil {
 		return err
 	}
-	tx, err := t.s.pool.Begin(ctx)
+	tx, err := t.s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.Serializable})
 	if err != nil {
 		return err
 	}
@@ -320,7 +365,13 @@ func (t *topicViewStore) UpdateView(ctx context.Context, scope identity.Scope, v
 	if err := insertViewRows(ctx, tx, scope.Tenant, v.SubjectKind, v.SubjectID, v.ViewName, v.AllowTopics, v.DenyTopics, now); err != nil {
 		return fmt.Errorf("pgstore: UpdateView insert: %w", err)
 	}
-	return tx.Commit(ctx)
+	if err := tx.Commit(ctx); err != nil {
+		if pgIsSerializationFailure(err) {
+			return store.ErrConflict
+		}
+		return fmt.Errorf("pgstore: UpdateView commit: %w", err)
+	}
+	return nil
 }
 
 // DeleteView removes every row for a view's natural key. ErrNotFound when absent.

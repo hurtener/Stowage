@@ -527,3 +527,21 @@ docs/glossary.md                          # CHANGED — effective read scope, re
    one-core intent applied to every read surface. `memory_proactive_config`'s
    write (`set`) arm keeps its arg-only scope per the ae2 D-138 caveat (built
    field-by-field so it is not a resolver-bypass under AC-9).
+4. **`identity.multiplexing`/`ErrUserConflict` are unreachable via a real
+   HTTP+JWT request — intentional, not a gap.** `internal/api/auth.go`'s
+   `authMiddleware` sets `ClaimUser = verified.User`, which is the SAME value
+   as `CredUser` (both come from the one verified JWT `user` claim — a JWT
+   doesn't carry a separate on-behalf-of assertion, D-137 evidence). So in
+   `resolveScope`, `IdentitySources.ClaimUser` and `.CredUser` are always
+   equal on HTTP+JWT, and `ResolveReadScope`'s step 5 `asserted == src.CredUser`
+   branch always wins — the `assertable`/multiplexing branch and
+   `ErrUserConflict` can never fire from a real HTTP+JWT request; a
+   disagreeing `user_id` request arg is simply outranked by the pinned claim
+   and silently dropped (P3-safe: the resolved scope always narrows to the
+   JWT's own user, never widens). Both sentinels are exercised as direct unit
+   tests instead (`internal/api/auth_test.go`, `TestRespondScopeError`) since
+   Harbor has no per-request user-reassignment mechanism to source a
+   disagreeing assertion from on this transport. `identity.multiplexing`
+   remains meaningful on the `_meta`/MCP and keyring-args paths (ae2's
+   `_meta.user_id`, and a bare keyring key's `user_id` arg), where the
+   asserted user is a genuinely separate source from the credential.

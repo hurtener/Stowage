@@ -670,23 +670,30 @@ func (r *Retriever) Retrieve(ctx context.Context, scope identity.Scope, req Requ
 	// the no-underfill property and composes as a further intersection (request
 	// filter ∩ agent filter ∩ view). Inert (no-op) when the feature is disabled,
 	// no TopicViewStore is wired, or the request's subject (scope.Agent, else
-	// CredentialKeyID) is unbound for the named view.
-	viewIDs := make([]string, len(fused))
-	for i, h := range fused {
-		viewIDs[i] = h.MemoryID
-	}
-	keptView, degradedView := r.resolveAndApplyView(ctx, scope, req, viewIDs)
-	keptViewSet := make(map[string]bool, len(keptView))
-	for _, id := range keptView {
-		keptViewSet[id] = true
-	}
-	onView := make([]FusedHit, 0, len(fused))
-	for _, h := range fused {
-		if keptViewSet[h.MemoryID] {
-			onView = append(onView, h)
+	// CredentialKeyID) is unbound for the named view. Guarded HERE (not just
+	// inside resolveAndApplyView, which would still allocate/rebuild fused as a
+	// no-op) so a config-inert view pass allocates nothing — matching the
+	// hasTopicFilter(req)/active guards on the two passes above.
+	var degradedView bool
+	if r.agentFilterOn && r.viewSt != nil {
+		viewIDs := make([]string, len(fused))
+		for i, h := range fused {
+			viewIDs[i] = h.MemoryID
 		}
+		var keptView []string
+		keptView, degradedView = r.resolveAndApplyView(ctx, scope, req, viewIDs)
+		keptViewSet := make(map[string]bool, len(keptView))
+		for _, id := range keptView {
+			keptViewSet[id] = true
+		}
+		onView := make([]FusedHit, 0, len(fused))
+		for _, h := range fused {
+			if keptViewSet[h.MemoryID] {
+				onView = append(onView, h)
+			}
+		}
+		fused = onView
 	}
-	fused = onView
 
 	// Trim to scoringK (≥ requested limit, see above) before scoring to bound the
 	// GetMany call while still feeding the reranker the full requested window.
