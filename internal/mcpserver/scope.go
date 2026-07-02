@@ -65,7 +65,7 @@ func resolveScope(svc *Services, ctx context.Context, arg scopeArgs) (identity.S
 		MetaUser:     metaString(m, "user"),
 		MetaSession:  metaString(m, "session"),
 		MetaAgent:    metaString(m, "agent_id"),
-		MetaProject:  metaString(m, "project_id"),
+		MetaProject:  metaString(m, "project"), // ae2b, M1: project's permanent home is _meta.project
 		ArgUser:      arg.User,
 		ArgSession:   arg.Session,
 		ArgProject:   arg.Project,

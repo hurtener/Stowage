@@ -12,12 +12,6 @@
     },
     "parent_branch_id": {
       "type": "string"
-    },
-    "project_id": {
-      "type": "string"
-    },
-    "user_id": {
-      "type": "string"
     }
   },
   "required": [

@@ -10,7 +10,7 @@
 #   AC-2  the 13 structs have dropped project_id/user_id; identity resolves
 #         from _meta/JWT.
 #   AC-3  the out-of-scope lookalikes (IngestRecord/IngestTargetScope/
-#         GrantsInput) are untouched — the removal set is exactly 13, not 16.
+#         GrantsInput) are untouched — the removal set is 14 (13 named + BrowseInput/ae5), not 16.
 #   AC-4  _meta.project (M1) is read by readMetaIdentity.
 #   AC-5  HTTP's scopeFromRequest / body project_id/user_id fields are
 #         byte-unchanged (the sanctioned D-140 divergence).
@@ -33,7 +33,7 @@ if [ ! -f "$INTAKE" ]; then
   exit "$fails"
 fi
 
-REMOVED_STRUCTS=(RetrieveInput PlaybookInput EpisodesInput CausalInput VerifyInput ReviewInput TraceInput DrilldownInput FeedbackInput BranchInput GetInput RollbackInput ResolveInput)
+REMOVED_STRUCTS=(RetrieveInput PlaybookInput EpisodesInput CausalInput VerifyInput ReviewInput TraceInput DrilldownInput FeedbackInput BranchInput GetInput RollbackInput ResolveInput BrowseInput)
 struct_has_field() {
   # $1 = struct name, matches a project_id/user_id json tag within its block
   awk -v pat="type ${1} struct" 'index($0,pat){f=1} f&&/^}/{exit} f&&/json:"(project_id|user_id)/{found=1} END{exit !found}' "$CONTRACTS"
@@ -49,9 +49,9 @@ if [ -f "$CONTRACTS" ]; then
     fi
   done
   if [ "$removal_done" -eq 1 ]; then
-    ok "AC-2: all 13 D-125 sub-tenant-targeting structs have dropped project_id/user_id"
+    ok "AC-2: all 14 D-125 sub-tenant-targeting read structs have dropped project_id/user_id"
   else
-    skip "AC-2: removal not landed yet (at least one of the 13 structs still carries project_id/user_id)"
+    skip "AC-2: removal not landed yet (at least one of the 14 structs still carries project_id/user_id)"
   fi
 else
   skip "AC-2: $CONTRACTS not found"

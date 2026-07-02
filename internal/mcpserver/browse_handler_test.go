@@ -11,6 +11,8 @@ import (
 	"context"
 	"testing"
 
+	"github.com/hurtener/dockyard/runtime/server"
+
 	"github.com/hurtener/stowage/internal/identity"
 	"github.com/hurtener/stowage/internal/store"
 )
@@ -179,9 +181,11 @@ func TestHandlerBrowse_ProjectUserScopeNarrowing(t *testing.T) {
 		t.Fatalf("seed user memory: %v", err)
 	}
 
-	// Narrowing to proj-a alone (no user) is hierarchical — it sees every
-	// memory scoped under proj-a, including the user-scoped one.
-	res, err := h(ctx, BrowseInput{ProjectID: "proj-a"})
+	// ae2b: project/user identity now arrives via _meta (the project_id/user_id
+	// args were removed), resolved by resolveScope → ResolveReadScope. Narrowing
+	// to proj-a alone (no user) is hierarchical — it sees every memory scoped
+	// under proj-a, including the user-scoped one.
+	res, err := h(server.WithRequestMeta(ctx, map[string]any{"project": "proj-a"}), BrowseInput{})
 	if err != nil {
 		t.Fatalf("browse project scope: %v", err)
 	}
@@ -192,7 +196,7 @@ func TestHandlerBrowse_ProjectUserScopeNarrowing(t *testing.T) {
 	// Narrowing to proj-a + user-a must see only the user-scoped memory —
 	// the project-scoped-only memory (User="") is a sibling, not an ancestor,
 	// so it stays invisible to the narrower walk.
-	res2, err := h(ctx, BrowseInput{ProjectID: "proj-a", UserID: "user-a"})
+	res2, err := h(server.WithRequestMeta(ctx, map[string]any{"project": "proj-a", "user": "user-a"}), BrowseInput{})
 	if err != nil {
 		t.Fatalf("browse user scope: %v", err)
 	}
@@ -201,7 +205,7 @@ func TestHandlerBrowse_ProjectUserScopeNarrowing(t *testing.T) {
 	}
 
 	// A different project must not see proj-a's memories at all.
-	res3, err := h(ctx, BrowseInput{ProjectID: "proj-b"})
+	res3, err := h(server.WithRequestMeta(ctx, map[string]any{"project": "proj-b"}), BrowseInput{})
 	if err != nil {
 		t.Fatalf("browse other project scope: %v", err)
 	}

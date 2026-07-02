@@ -177,7 +177,7 @@ func makeRetrieveHandler(svc *Services) tool.Handler[RetrieveInput, RetrieveOutp
 		// ONE cross-surface resolver (ae8, D-148/D-067/D-073), which applies the
 		// D-137 precedence (verified JWT claims > _meta > args) and the D-138
 		// tenant guard. Empty = tenant-wide (back-compat).
-		scope, effSession, err := resolveScope(svc, ctx, scopeArgs{Project: in.ProjectID, User: in.UserID, Session: in.SessionID})
+		scope, effSession, err := resolveScope(svc, ctx, scopeArgs{Session: in.SessionID})
 		if err != nil {
 			return tool.Result[RetrieveOutput]{}, fmt.Errorf("memory_retrieve: %w", err)
 		}
@@ -281,7 +281,7 @@ func makeRetrieveHandler(svc *Services) tool.Handler[RetrieveInput, RetrieveOutp
 
 func makePlaybookHandler(svc *Services) tool.Handler[PlaybookInput, PlaybookOutput] {
 	return func(ctx context.Context, in PlaybookInput) (tool.Result[PlaybookOutput], error) {
-		scope, effSession, err := resolveScope(svc, ctx, scopeArgs{Project: in.ProjectID, User: in.UserID, Session: in.SessionID})
+		scope, effSession, err := resolveScope(svc, ctx, scopeArgs{Session: in.SessionID})
 		if err != nil {
 			return tool.Result[PlaybookOutput]{}, fmt.Errorf("memory_playbook: %w", err)
 		}
@@ -337,7 +337,7 @@ func playbookToOutput(pb *playbook.Playbook) PlaybookOutput {
 
 func makeDrilldownHandler(svc *Services) tool.Handler[DrilldownInput, DrilldownOutput] {
 	return func(ctx context.Context, in DrilldownInput) (tool.Result[DrilldownOutput], error) {
-		scope, _, err := resolveScope(svc, ctx, scopeArgs{Project: in.ProjectID, User: in.UserID})
+		scope, _, err := resolveScope(svc, ctx, scopeArgs{})
 		if err != nil {
 			return tool.Result[DrilldownOutput]{}, fmt.Errorf("memory_drilldown: %w", err)
 		}
@@ -421,7 +421,7 @@ func makeDrilldownHandler(svc *Services) tool.Handler[DrilldownInput, DrilldownO
 
 func makeFeedbackHandler(svc *Services) tool.Handler[FeedbackInput, FeedbackOutput] {
 	return func(ctx context.Context, in FeedbackInput) (tool.Result[FeedbackOutput], error) {
-		scope, _, err := resolveScope(svc, ctx, scopeArgs{Project: in.ProjectID, User: in.UserID})
+		scope, _, err := resolveScope(svc, ctx, scopeArgs{})
 		if err != nil {
 			return tool.Result[FeedbackOutput]{}, fmt.Errorf("memory_feedback: %w", err)
 		}
@@ -580,7 +580,7 @@ func memoryToRecord(m store.Memory) MemoryRecord {
 
 func makeGetHandler(svc *Services) tool.Handler[GetInput, GetOutput] {
 	return func(ctx context.Context, in GetInput) (tool.Result[GetOutput], error) {
-		scope, _, err := resolveScope(svc, ctx, scopeArgs{Project: in.ProjectID, User: in.UserID})
+		scope, _, err := resolveScope(svc, ctx, scopeArgs{})
 		if err != nil {
 			return tool.Result[GetOutput]{}, fmt.Errorf("memory_get: %w", err)
 		}
@@ -612,7 +612,7 @@ func makeGetHandler(svc *Services) tool.Handler[GetInput, GetOutput] {
 
 func makeRollbackHandler(svc *Services) tool.Handler[RollbackInput, RollbackOutput] {
 	return func(ctx context.Context, in RollbackInput) (tool.Result[RollbackOutput], error) {
-		scope, _, err := resolveScope(svc, ctx, scopeArgs{Project: in.ProjectID, User: in.UserID})
+		scope, _, err := resolveScope(svc, ctx, scopeArgs{})
 		if err != nil {
 			return tool.Result[RollbackOutput]{}, fmt.Errorf("memory_rollback: %w", err)
 		}
@@ -639,7 +639,7 @@ func makeRollbackHandler(svc *Services) tool.Handler[RollbackInput, RollbackOutp
 
 func makeResolveHandler(svc *Services) tool.Handler[ResolveInput, ResolveOutput] {
 	return func(ctx context.Context, in ResolveInput) (tool.Result[ResolveOutput], error) {
-		scope, _, err := resolveScope(svc, ctx, scopeArgs{Project: in.ProjectID, User: in.UserID})
+		scope, _, err := resolveScope(svc, ctx, scopeArgs{})
 		if err != nil {
 			return tool.Result[ResolveOutput]{}, fmt.Errorf("memory_resolve: %w", err)
 		}
@@ -790,7 +790,7 @@ func makeFlushHandler(svc *Services) tool.Handler[FlushInput, FlushOutput] {
 
 func makeBranchHandler(svc *Services) tool.Handler[BranchInput, BranchOutput] {
 	return func(ctx context.Context, in BranchInput) (tool.Result[BranchOutput], error) {
-		scope, effSession, err := resolveScope(svc, ctx, scopeArgs{Project: in.ProjectID, User: in.UserID, Session: in.SessionID})
+		scope, effSession, err := resolveScope(svc, ctx, scopeArgs{Session: in.SessionID})
 		if err != nil {
 			return tool.Result[BranchOutput]{}, fmt.Errorf("memory_branch: %w", err)
 		}
@@ -1165,7 +1165,7 @@ func viewsResult(out ViewsOutput, text string) tool.Result[ViewsOutput] {
 // session/window. Scope resolved via svc.ScopeFn.
 func makeEpisodesHandler(svc *Services) tool.Handler[EpisodesInput, EpisodesOutput] {
 	return func(ctx context.Context, in EpisodesInput) (tool.Result[EpisodesOutput], error) {
-		scope, effSession, err := resolveScope(svc, ctx, scopeArgs{Project: in.ProjectID, User: in.UserID, Session: in.SessionID})
+		scope, effSession, err := resolveScope(svc, ctx, scopeArgs{Session: in.SessionID})
 		if err != nil {
 			return tool.Result[EpisodesOutput]{}, fmt.Errorf("memory_episodes: %w", err)
 		}
@@ -1244,9 +1244,9 @@ func episodeToItem(v episodes.EpisodeView) EpisodeItem {
 // (D-125).
 func makeBrowseHandler(svc *Services) tool.Handler[BrowseInput, BrowseOutput] {
 	return func(ctx context.Context, in BrowseInput) (tool.Result[BrowseOutput], error) {
-		// BrowseOptions has no session dimension (ae5), so scopeArgs.Session is
-		// left zero.
-		scope, _, err := resolveScope(svc, ctx, scopeArgs{Project: in.ProjectID, User: in.UserID})
+		// BrowseOptions has no session dimension (ae5); project_id/user_id args
+		// removed (ae2b) — identity resolves from _meta/JWT via resolveScope.
+		scope, _, err := resolveScope(svc, ctx, scopeArgs{})
 		if err != nil {
 			return tool.Result[BrowseOutput]{}, fmt.Errorf("memory_browse: %w", err)
 		}
@@ -1293,7 +1293,7 @@ func memoryToBrowseItem(m *store.Memory) BrowseMemoryItem {
 // SDK Causal). Scope resolved via svc.ScopeFn.
 func makeCausalHandler(svc *Services) tool.Handler[CausalInput, CausalOutput] {
 	return func(ctx context.Context, in CausalInput) (tool.Result[CausalOutput], error) {
-		scope, _, err := resolveScope(svc, ctx, scopeArgs{Project: in.ProjectID, User: in.UserID})
+		scope, _, err := resolveScope(svc, ctx, scopeArgs{})
 		if err != nil {
 			return tool.Result[CausalOutput]{}, fmt.Errorf("memory_causal: %w", err)
 		}
@@ -1335,7 +1335,7 @@ func causalGraphToOutput(g causal.Graph) CausalOutput {
 // when the gateway is unreachable (D-036). Mirrors POST /v1/verify + SDK Verify.
 func makeVerifyHandler(svc *Services) tool.Handler[VerifyInput, VerifyOutput] {
 	return func(ctx context.Context, in VerifyInput) (tool.Result[VerifyOutput], error) {
-		scope, _, err := resolveScope(svc, ctx, scopeArgs{Project: in.ProjectID, User: in.UserID})
+		scope, _, err := resolveScope(svc, ctx, scopeArgs{})
 		if err != nil {
 			return tool.Result[VerifyOutput]{}, fmt.Errorf("memory_verify: %w", err)
 		}
@@ -1358,7 +1358,7 @@ func makeVerifyHandler(svc *Services) tool.Handler[VerifyInput, VerifyOutput] {
 // memories or approve/reject one. Mirrors GET /v1/review + POST /v1/review/{id} + SDK Review.
 func makeReviewHandler(svc *Services) tool.Handler[ReviewInput, ReviewOutput] {
 	return func(ctx context.Context, in ReviewInput) (tool.Result[ReviewOutput], error) {
-		scope, _, err := resolveScope(svc, ctx, scopeArgs{Project: in.ProjectID, User: in.UserID})
+		scope, _, err := resolveScope(svc, ctx, scopeArgs{})
 		if err != nil {
 			return tool.Result[ReviewOutput]{}, fmt.Errorf("memory_review: %w", err)
 		}
@@ -1398,7 +1398,7 @@ func makeReviewHandler(svc *Services) tool.Handler[ReviewInput, ReviewOutput] {
 // ed25519-signed bundle. Mirrors GET /v1/traces/{response_id} + SDK Trace.
 func makeTraceHandler(svc *Services) tool.Handler[TraceInput, traces.Bundle] {
 	return func(ctx context.Context, in TraceInput) (tool.Result[traces.Bundle], error) {
-		scope, _, err := resolveScope(svc, ctx, scopeArgs{Project: in.ProjectID, User: in.UserID})
+		scope, _, err := resolveScope(svc, ctx, scopeArgs{})
 		if err != nil {
 			return tool.Result[traces.Bundle]{}, fmt.Errorf("memory_trace: %w", err)
 		}

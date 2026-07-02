@@ -35,7 +35,17 @@ has 'json:"project_id"' internal/api/retrieve_handler.go "HTTP retrieve request 
 has "scope := c.callScope(req.ProjectID, req.UserID)" sdk/stowage/embedded.go "SDK retrieve scopes by project/user (via callScope)"
 has 'ProjectID  string `json:"project_id,omitempty"`' sdk/stowage/types.go "SDK RetrieveRequest has project_id"
 has "Project: in.ProjectID, User: in.UserID" internal/mcpserver/handlers.go "MCP retrieve scopes by project/user"
-has 'ProjectID  string `json:"project_id,omitempty"`' internal/mcpserver/contracts.go "MCP RetrieveInput has project_id"
+# ae2b (D-140/M1, docs/plans/phase-ae2b-contract-removal.md) is the NAMED, later
+# phase that retires RetrieveInput's project_id/user_id args in favor of
+# _meta/JWT-only MCP identity — this specific check is superseded by design,
+# not a regression; asserting the field's ABSENCE (post-ae2b) instead of its
+# presence keeps this line a real drift-catcher rather than a stale assertion.
+if grep -q 'type RetrieveInput struct' internal/mcpserver/contracts.go && \
+   ! awk '/type RetrieveInput struct/{f=1} f&&/^}/{exit} f' internal/mcpserver/contracts.go | grep -q 'json:"project_id\|json:"user_id'; then
+  ok "MCP RetrieveInput has no project_id/user_id (ae2b, D-140 — _meta/JWT only)"
+else
+  failc "MCP RetrieveInput project_id/user_id state does not match ae2b (internal/mcpserver/contracts.go)"
+fi
 
 # B3 — the OTHER single-user read+mutate surfaces scope by project/user (HTTP/MCP/SDK).
 has "func scopeFromRequest" internal/api/auth.go "HTTP shared query-param scope helper (B3)"
