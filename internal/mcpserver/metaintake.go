@@ -20,6 +20,7 @@ type metaIdentity struct {
 	User    string // _meta.user
 	Session string // _meta.session
 	Agent   string // _meta.agent_id (read-path only; ae1's Scope.Agent)
+	Project string // _meta.project (ae2b, M1: project's permanent home)
 }
 
 // readMetaIdentity reads the host-injected _meta (dockyard v1.8 server.RequestMeta)
@@ -57,6 +58,7 @@ func readMetaIdentity(ctx context.Context, credTenant string) (metaIdentity, err
 		User:    metaString(m, "user"),
 		Session: metaString(m, "session"),
 		Agent:   metaString(m, "agent_id"),
+		Project: metaString(m, "project"), // ae2b, M1: project's permanent home is _meta.project
 	}, nil
 }
 

@@ -65,21 +65,49 @@ func TestMetaIntake_TenantMismatchIsRedacted(t *testing.T) {
 	}
 }
 
-// TestMetaIntake_Extraction covers clean extraction of user/session/agent_id,
-// and defensive handling of a missing or non-string value (each falls back to
-// "" rather than erroring — only tenant fails closed).
+// TestMetaIntake_Extraction covers clean extraction of user/session/agent_id/
+// project, and defensive handling of a missing or non-string value (each
+// falls back to "" rather than erroring — only tenant fails closed).
 func TestMetaIntake_Extraction(t *testing.T) {
 	ctx := server.WithRequestMeta(context.Background(), map[string]any{
 		"user":     "u1",
 		"session":  "s1",
 		"agent_id": "a1",
+		"project":  "p1",
 	})
 	mi, err := readMetaIdentity(ctx, "acme")
 	if err != nil {
 		t.Fatalf("readMetaIdentity: %v", err)
 	}
-	if mi.User != "u1" || mi.Session != "s1" || mi.Agent != "a1" {
-		t.Errorf("got %+v, want User=u1 Session=s1 Agent=a1", mi)
+	if mi.User != "u1" || mi.Session != "s1" || mi.Agent != "a1" || mi.Project != "p1" {
+		t.Errorf("got %+v, want User=u1 Session=s1 Agent=a1 Project=p1", mi)
+	}
+}
+
+// TestMetaIntake_ProjectExtraction covers ae2b's M1 addition in isolation:
+// _meta.project present, absent, and non-string (present/absent/non-string,
+// mirroring the existing user/session/agent_id cases).
+func TestMetaIntake_ProjectExtraction(t *testing.T) {
+	tests := []struct {
+		name string
+		meta map[string]any
+		want string
+	}{
+		{"present", map[string]any{"project": "p1"}, "p1"},
+		{"absent", map[string]any{"user": "u1"}, ""},
+		{"non-string", map[string]any{"project": 123}, ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := server.WithRequestMeta(context.Background(), tt.meta)
+			mi, err := readMetaIdentity(ctx, "acme")
+			if err != nil {
+				t.Fatalf("readMetaIdentity: %v", err)
+			}
+			if mi.Project != tt.want {
+				t.Errorf("mi.Project = %q, want %q", mi.Project, tt.want)
+			}
+		})
 	}
 }
 
@@ -87,6 +115,7 @@ func TestMetaIntake_ExtractionDefensive(t *testing.T) {
 	ctx := server.WithRequestMeta(context.Background(), map[string]any{
 		"user":     42,  // non-string
 		"agent_id": nil, // nil value
+		"project":  7,   // non-string
 		// session key absent entirely
 	})
 	mi, err := readMetaIdentity(ctx, "acme")

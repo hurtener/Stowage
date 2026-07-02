@@ -25,12 +25,6 @@
     "include_lanes": {
       "type": "boolean"
     },
-    "project_id": {
-      "type": "string"
-    },
-    "user_id": {
-      "type": "string"
-    },
     "session_id": {
       "type": "string"
     },

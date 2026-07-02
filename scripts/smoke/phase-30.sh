@@ -32,20 +32,30 @@ has "scopeCacheKey(scope)" internal/retrieval/hotset.go "hotset uses non-lossy s
 # D-125 — read: retrieve builds the scope from caller-supplied project/user across all surfaces.
 has "Project: req.ProjectID, User: req.UserID" internal/api/retrieve_handler.go "HTTP retrieve scopes by project/user"
 has 'json:"project_id"' internal/api/retrieve_handler.go "HTTP retrieve request has project_id"
-has "scope := c.callScope(req.ProjectID, req.UserID)" sdk/stowage/embedded.go "SDK retrieve scopes by project/user (via callScope)"
+has "c.callScope(req.ProjectID, req.UserID," sdk/stowage/embedded.go "SDK retrieve scopes by project/user (via callScope -> ResolveReadScope, ae8)"
 has 'ProjectID  string `json:"project_id,omitempty"`' sdk/stowage/types.go "SDK RetrieveRequest has project_id"
-has "Project: in.ProjectID, User: in.UserID" internal/mcpserver/handlers.go "MCP retrieve scopes by project/user"
-has 'ProjectID  string `json:"project_id,omitempty"`' internal/mcpserver/contracts.go "MCP RetrieveInput has project_id"
+has "resolveScope(svc, ctx, scopeArgs{Session: in.SessionID})" internal/mcpserver/handlers.go "MCP retrieve scopes by identity (via resolveScope; project/user from _meta/JWT since ae2b)"
+# ae2b (D-140/M1, docs/plans/phase-ae2b-contract-removal.md) is the NAMED, later
+# phase that retires RetrieveInput's project_id/user_id args in favor of
+# _meta/JWT-only MCP identity — this specific check is superseded by design,
+# not a regression; asserting the field's ABSENCE (post-ae2b) instead of its
+# presence keeps this line a real drift-catcher rather than a stale assertion.
+if grep -q 'type RetrieveInput struct' internal/mcpserver/contracts.go && \
+   ! awk '/type RetrieveInput struct/{f=1} f&&/^}/{exit} f' internal/mcpserver/contracts.go | grep -q 'json:"project_id\|json:"user_id'; then
+  ok "MCP RetrieveInput has no project_id/user_id (ae2b, D-140 — _meta/JWT only)"
+else
+  failc "MCP RetrieveInput project_id/user_id state does not match ae2b (internal/mcpserver/contracts.go)"
+fi
 
 # B3 — the OTHER single-user read+mutate surfaces scope by project/user (HTTP/MCP/SDK).
-has "func scopeFromRequest" internal/api/auth.go "HTTP shared query-param scope helper (B3)"
-has "scope := scopeFromRequest(r)" internal/api/playbook_handler.go "HTTP playbook scoped (B3)"
-has "scope := scopeFromRequest(r)" internal/api/episodes_handler.go "HTTP episodes scoped (B3)"
+has "func (s \*Server) scopeFromRequest" internal/api/auth.go "HTTP shared query-param scope helper (B3; ae8 method on *Server)"
+has "s.resolveScope(r, identityArgs" internal/api/playbook_handler.go "HTTP playbook scoped (B3; via resolveScope, ae8)"
+has "s.resolveScope(r, identityArgs" internal/api/episodes_handler.go "HTTP episodes scoped (B3; via resolveScope, ae8)"
 has "Project: req.ProjectID, User: req.UserID" internal/api/review_handler.go "HTTP review resolve scoped — MUTATE (B3)"
 has "func (c \*embeddedClient) callScope" sdk/stowage/embedded.go "SDK per-call scope helper (B3)"
 has "func WithUser" sdk/stowage/http.go "SDK WithUser construction option (B3)"
 has "func (c \*httpClient) effScope" sdk/stowage/http.go "SDK HTTP client honors construction scope (B-1)"
-has "scope = identity.Scope{Tenant: scope.Tenant, Project: in.ProjectID, User: in.UserID}" internal/mcpserver/handlers.go "MCP handlers merge per-request project/user (B3)"
+has "resolveScope(svc, ctx, scopeArgs" internal/mcpserver/handlers.go "MCP handlers scope per-request via resolveScope (B3; project/user from _meta/JWT since ae2b)"
 # Fail-closed hnsw sub-scope filter (Finding 3 hardening) + rollup owner-scope (Finding 4).
 has "Fail CLOSED for isolation" internal/vindex/hnsw/driver.go "hnsw filter fails closed on missing meta"
 has "ownerScope := identity.Scope{Tenant: scope.Tenant" internal/lifecycle/rollup.go "rollup digest inherits session owner scope"

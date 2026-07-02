@@ -118,7 +118,11 @@ func scopeReviewHTTP(t *testing.T, cfg config.Config, req stowage.ReviewRequest)
 	return resp
 }
 
-func scopeReviewMCP(t *testing.T, cfg config.Config, in mcpserver.ReviewInput) stowage.ReviewResponse {
+// scopeReviewMCP calls memory_review, narrowing identity via _meta.user (ae2b,
+// D-140/M1) — ReviewInput no longer carries a UserID arg, so the caller's
+// user is asserted the same way every other MCP identity dimension is:
+// through the host-injected _meta, never a wire argument.
+func scopeReviewMCP(t *testing.T, cfg config.Config, in mcpserver.ReviewInput, user string) stowage.ReviewResponse {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
@@ -143,7 +147,11 @@ func scopeReviewMCP(t *testing.T, cfg config.Config, in mcpserver.ReviewInput) s
 		t.Fatalf("mcp connect: %v", err)
 	}
 	defer func() { _ = session.Close() }()
-	res, err := session.CallTool(ctx, &mcpsdk.CallToolParams{Name: "memory_review", Arguments: in})
+	params := &mcpsdk.CallToolParams{Name: "memory_review", Arguments: in}
+	if user != "" {
+		params.Meta = mcpsdk.Meta(map[string]any{"user": user})
+	}
+	res, err := session.CallTool(ctx, params)
 	if err != nil {
 		t.Fatalf("CallTool memory_review: %v", err)
 	}
@@ -169,7 +177,7 @@ func TestScopeParity_ReviewList_AllSurfaces(t *testing.T) {
 
 	emb := scopeReviewEmbedded(t, cfg, stowage.ReviewRequest{Action: "list", UserID: "alice"})
 	htp := scopeReviewHTTP(t, cfg, stowage.ReviewRequest{Action: "list", UserID: "alice"})
-	mcp := scopeReviewMCP(t, cfg, mcpserver.ReviewInput{Action: "list", UserID: "alice"})
+	mcp := scopeReviewMCP(t, cfg, mcpserver.ReviewInput{Action: "list"}, "alice")
 
 	// Each surface returns exactly alice's memory, never bob's.
 	for name, resp := range map[string]stowage.ReviewResponse{"embedded": emb, "http": htp, "mcp": mcp} {
@@ -329,7 +337,9 @@ func attemptApproveMCP(t *testing.T, cfg config.Config, memID string) error {
 	}
 	defer func() { _ = session.Close() }()
 	res, err := session.CallTool(ctx, &mcpsdk.CallToolParams{
-		Name: "memory_review", Arguments: mcpserver.ReviewInput{Action: "approve", ID: memID, UserID: "alice"},
+		Name:      "memory_review",
+		Arguments: mcpserver.ReviewInput{Action: "approve", ID: memID},
+		Meta:      mcpsdk.Meta(map[string]any{"user": "alice"}),
 	})
 	if err != nil {
 		return err

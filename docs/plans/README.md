@@ -492,14 +492,15 @@ multiplexing-vs-strict default is **STRICT** with two orthogonal opt-in knobs (D
 | ae8 | Effective-scope resolution + read-side enforcement | `internal/identity`, `internal/store`, `internal/retrieval`, `internal/config` | P3/§6, §5, §9.5 | ae2, ae7 | D-137 |
 | ae9 | Per-agent / per-key topic views (read-time curation) | `internal/retrieval`, `internal/identity`, `internal/store`, surfaces | §5.3, §6, §9.5 | ae1, ae6 | D-139 |
 | ae4b | *(deferred)* Causal hook (batch links-exist) + positional drilldown | `internal/store` (+ drivers + conformance), `internal/reconcile`/`internal/episodes`, `internal/retrieval`, `internal/mcpserver` | §5.6, §5.7, §4.2, §8.1 | ae4a | D-145 (on promotion) |
-| ae2b | Breaking removal of `project_id`/`user_id` from MCP contracts | `internal/mcpserver`, `sdk/stowage`, `docs/` | D-125, §9.5 | ae7, ae8 | D-140 |
+| ae2b | Breaking removal of `project_id`/`user_id` from MCP contracts (HTTP/SDK unchanged, D-140) | `internal/mcpserver`, `docs/` | D-125, §9.5 | ae7, ae8 | D-140 |
 | ae10 | *(deferred)* `layer`/`intent` read-shaping argument | `internal/retrieval`, surfaces | §6 | ae2, ae3 | — |
 
 Plans (all **draft** unless noted): `phase-ae3-shared-render-core.md`,
 `phase-ae4a-lean-mcp-render.md`, `phase-ae5-browse.md`, `phase-ae6-topic-filter.md`,
 `phase-ae1-read-time-agent.md`, `phase-ae2-meta-intake.md`, `phase-ae7-jwt-verifier.md`,
 `phase-ae8-effective-scope.md`, `phase-ae9-topic-views.md`,
-`phase-ae2b-contract-removal.md`; `phase-ae4b-causal-hook.md`,
+`phase-ae2b-contract-removal.md` (**implemented** — Wave 4, the track's final
+phase); `phase-ae4b-causal-hook.md`,
 `phase-ae10-read-shaping.md` (**deferred**). Wave-authoring checkpoint reconciliations
 are recorded as D-150 (session never filters and never ranks a read — cross-session
 recall preserved) and D-151 (ae1↔ae9 converge on one `topic_views` table /

@@ -6,12 +6,6 @@
     },
     "citation": {
       "type": "string"
-    },
-    "project_id": {
-      "type": "string"
-    },
-    "user_id": {
-      "type": "string"
     }
   },
   "additionalProperties": false

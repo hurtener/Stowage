@@ -10,7 +10,16 @@
 #   AC-10  go.mod pins dockyard v1.8.0 so server.RequestMeta compiles.
 #   AC-4   no handler sources Scope.Tenant from _meta.
 #   AC-6   no read handler writes _meta session into Scope.Session.
-#   AC-8   _meta.project is not read (project_id keeps its arg home, M1).
+#   AC-8   _meta.project is not read outside the canonical intake seam. As of
+#          ae2, _meta.project was not read at all (project_id kept its arg
+#          home, M1 undecided). ae2b (docs/plans/phase-ae2b-contract-removal.md)
+#          is the NAMED, by-design phase that settles M1 as _meta.project and
+#          extends this SAME seam (metaintake.go's readMetaIdentity,
+#          scope.go's resolveScope) to read it — see ae2b's Design section
+#          ("ae2 deliberately deferred this... its _meta home or removal is
+#          ae2b"). So this check now allows _meta.project to be read, but only
+#          from those two canonical files; a THIRD site would be the surface-
+#          sprawl regression ae2's AC-9 (single intake seam) guards against.
 #   AC-1/2/3 unit + identity tests pass.
 set -uo pipefail
 cd "$(dirname "$0")/../.."
@@ -69,12 +78,24 @@ else
   ok "AC-6: no handler writes _meta session into Scope.Session"
 fi
 
-# ── AC-8: project keeps its arg home — _meta.project is not read ─────────────────
-if grep -REq 'RequestMeta\([^)]*\)\["project"\]|mi\.Project|metaString\([^,]*, *"project"' internal/mcpserver; then
-  failc "AC-8: _meta.project is read (project_id should keep its arg home in ae2)"
-else
-  ok "AC-8: _meta.project not read (project_id arg home preserved)"
-fi
+# ── AC-8: _meta.project, if read at all, stays confined to the canonical seam ───
+# (ae2: not read anywhere -> OK. ae2b: read, but ONLY from metaintake.go's
+# readMetaIdentity and scope.go's resolveScope -> OK, by design. Any OTHER
+# file reading it would be a second, ad hoc _meta-project path — the exact
+# surface-sprawl regression AC-9's single-RequestMeta-call-site check exists
+# to catch, restated here for the project dimension specifically.)
+PROJECT_META_HITS=$(grep -RlE 'RequestMeta\([^)]*\)\["project"\]|mi\.Project|metaString\([^,]*, *"project"' internal/mcpserver 2>/dev/null | grep -v '_test\.go$')
+case "$PROJECT_META_HITS" in
+  "")
+    ok "AC-8: _meta.project not read (project_id arg home preserved, pre-ae2b state)"
+    ;;
+  "internal/mcpserver/metaintake.go"|"internal/mcpserver/scope.go"|$'internal/mcpserver/metaintake.go\ninternal/mcpserver/scope.go'|$'internal/mcpserver/scope.go\ninternal/mcpserver/metaintake.go')
+    ok "AC-8: _meta.project read only via the canonical seam (ae2b M1, metaintake.go/scope.go)"
+    ;;
+  *)
+    failc "AC-8: _meta.project read outside the canonical seam (surface sprawl): $PROJECT_META_HITS"
+    ;;
+esac
 
 # ── AC-1/2/3: tests ─────────────────────────────────────────────────────────────
 if go test ./internal/mcpserver/ -run MetaIntake -count=1 >/dev/null 2>&1; then

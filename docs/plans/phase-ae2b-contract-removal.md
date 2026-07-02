@@ -1,6 +1,6 @@
 # Phase ae2b — direct removal of `project_id`/`user_id` from MCP contracts
 
-- **Status:** draft
+- **Status:** implemented (see "As-built deviations" below)
 - **Owning subsystem(s):** `internal/mcpserver` (the 13 tool input contracts + their handler scope-construction sites, the `_meta` intake helper); `docs/` (the sanctioned MCP-vs-HTTP divergence, filed as D-140)
 - **RFC sections:** D-125 (sub-tenant targeting), §9.5 (one logic core, tiered surfaces, D-067/D-073, the sanctioned contract-divergence precedent — `assert`'s deliberate HTTP omission)
 - **Depends on phases:** **ae7** (the JWT verifier — the C4 gate: `auth.Key`/a JWT must carry a verified `user`/`session` before any arg can be retired) and **ae8** (`identity.ResolveReadScope` — the effective-scope resolver that sources identity from `_meta`/JWT without the args). **Hard gate, not a soft ordering preference:** removing the args before ae7+ae8 exist would collapse MCP sub-tenant targeting to tenant-wide with no replacement (the whole risk this phase exists to avoid). This is a **correctness** gate, not a compatibility gate — it holds even though there is no backwards-compat obligation to protect (see Findings below). Transitively depends on **ae2** (the `_meta` intake helper `readMetaIdentity`/`metaElseArg` this phase extends to read `_meta.project`) and **ae1** (`identity.Scope.Agent`, inert here but load-bearing for the surrounding surface). A deliberately **late** phase (Wave 4).
@@ -358,6 +358,73 @@ None. The vocabulary the charter anticipated for a phased-removal mechanism
 (the interim tolerance period, its notice event, and its operator mode
 toggle) is dropped along with the mechanism it named — there is no ceremony
 left to name a term for.
+
+## As-built deviations
+
+- **The `_meta.project` wire key: reconciled to `"project"`, not
+  `"project_id"`.** ae8 (landed ahead of this phase, Wave 3) already added
+  `identity.IdentitySources.MetaProject` and wired `scope.go`'s
+  `resolveScope` to populate it — but from `metaString(m, "project_id")`, an
+  ae8-authoring-time guess at the eventual M1 key. This plan's own Design
+  section is explicit that `_meta.project`'s key is `"project"` (the M1
+  resolution: *"`project_id`'s M1 resolution lands in code... `_meta.project`
+  is read by `readMetaIdentity`"*), matching the charter's identity-model
+  table cited in "Findings I'm departing from". This is not a new decision —
+  the plan already settled it — so this phase corrects `scope.go` to
+  `metaString(m, "project")`, matching `metaintake.go`'s `readMetaIdentity`
+  (also newly reading `_meta.project` in this phase). Both canonical call
+  sites now agree on `"project"`; no third site reads it (grep-verified,
+  `scripts/smoke/phase-ae2.sh` AC-8, updated below).
+- **The removal set is 14, not the plan's literal 13: `BrowseInput` (ae5/D-143,
+  Wave 0) is included (orchestrator decision).** `BrowseInput` matches the removed
+  pattern EXACTLY — `ProjectID`/`UserID` fields, the identical "scope the read to
+  a sub-tenant identity (P3, D-125); empty = tenant-wide" comment, and the same
+  `resolveScope(svc, ctx, scopeArgs{Project: in.ProjectID, User: in.UserID})`
+  shape at `makeBrowseHandler` — but the plan's enumerated 13 predates it (ae5
+  landed in Wave 0, PR #92, AFTER this plan was authored in PR #89). This is the
+  same "plans authored ahead of their dependencies" situation D-148 handled — the
+  plan's **Goal** ("retire the MCP targeting args … the sole D-125 sub-tenant
+  targeting mechanism") describes BrowseInput exactly; it was simply absent from
+  the enumeration. Shipping the phase with `memory_browse` still taking model-
+  filled `project_id`/`user_id` args while every other read tool drops them would
+  leave a surface inconsistency that directly undercuts the phase's own claim
+  ("MCP identity now lives in `_meta`/JWT only") and re-introduces, for one tool,
+  the exact D-125 model-discretionary-targeting problem the whole track closes.
+  So `BrowseInput.ProjectID`/`.UserID` are removed here too (its handler uses
+  `scopeArgs{}`, its schema golden regenerated, its unit test converted to inject
+  identity via `_meta`, AND a §17 real-driver subtest `TestMCPEffectiveScope_Browse`
+  proving `_meta.user`/`_meta.project` narrowing with the args gone — so BrowseInput
+  now has the same integration coverage as the other 13), and the removal set /
+  smoke / AC-2 are updated to 14. A reasonable plan deviation (CLAUDE.md §4.3) — the
+  plan is updated in the same PR, not silently diverged from. The other exclusions
+  (`IngestRecord`, `IngestTargetScope`, `GrantsInput`, `ProactiveConfigInput`) are
+  unchanged: they are write/contribute/admin targeting, not the D-125 read pattern.
+- **AC-5 HTTP↔MCP parity is proven for the two HTTP identity wire shapes, not
+  per-tool (documented narrowing).** `test/integration/http_mcp_scope_parity_test.go`
+  asserts the same-scope/same-rows bar via `TestHTTPMCPScopeParity_Retrieve`
+  (POST-body projection) and `_Get` (GET query-param projection) — HTTP has exactly
+  these two identity-carrying wire shapes, so covering both proves the D-140
+  behavioural-parity mechanism the same way for every tool that mirrors either
+  shape. The plan's AC-5/Test-Plan text ("for each of the … tools' HTTP mirror") is
+  narrowed here to those two representative shapes rather than 14 near-identical
+  per-tool copies; recorded as a deviation so it is not a silent scope cut.
+- **`scripts/smoke/phase-ae2.sh` AC-8 updated (not just `phase-ae2b.sh`
+  authored).** ae2's own smoke script asserted `_meta.project` is never read
+  — true as of ae2, and by ae2's own Design text explicitly deferred to this
+  phase ("ae2 does not read `_meta.project`... its `_meta` home or removal is
+  ae2b"). Landing this phase makes that specific ae2 assertion stale by
+  design, not by regression; AC-8 was updated in this PR to assert
+  `_meta.project`, if read at all, is confined to the two canonical files
+  (`metaintake.go`, `scope.go`) — preserving its real purpose (catch a
+  second, ad hoc `_meta.project` intake path / surface sprawl) instead of
+  asserting a now-superseded "never read" invariant. Documented in
+  `docs/plans/phase-ae2-meta-intake.md`'s own As-built deviations too (cross-
+  referenced there), per the "update whichever artifact is wrong" rule
+  (CLAUDE.md, header).
+- No other deviations from the Design; the 8 acceptance criteria are met as
+  specified (see the smoke script and the verification tails in the PR),
+  scoped to the literal 13-struct removal set named in the plan's Goal/Design/
+  departures text.
 
 ## Decisions filed
 

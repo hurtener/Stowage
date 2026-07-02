@@ -9,12 +9,6 @@
     },
     "depth": {
       "type": "integer"
-    },
-    "project_id": {
-      "type": "string"
-    },
-    "user_id": {
-      "type": "string"
     }
   },
   "required": [

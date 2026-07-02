@@ -437,6 +437,19 @@ docs/glossary.md                        # CHANGED — _meta identity intake, ten
   — `go.mod`/`identity.Scope.Agent` were reused as-is.
 - No other deviations from the Design; all 11 acceptance criteria are met as
   specified (see the smoke script and the verification tails in the PR).
+- **AC-8 ("`_meta.project` is not read") is superseded, by design, by ae2b.**
+  As of ae2, `_meta.project` was correctly not read anywhere — `project_id`
+  kept its arg home, and M1 was left open. `docs/plans/phase-ae2b-contract-
+  removal.md` is the NAMED, planned phase that settles M1 as `_meta.project`
+  and extends this SAME seam (`metaintake.go`'s `readMetaIdentity`,
+  `scope.go`'s `resolveScope`) to read it — this was anticipated in ae2's own
+  Design text ("ae2 does not read `_meta.project`... its `_meta` home or
+  removal is ae2b") and is not a regression. `scripts/smoke/phase-ae2.sh`'s
+  AC-8 check was updated in the ae2b PR to match: it now asserts
+  `_meta.project`, if read at all, is read ONLY from those two canonical
+  files — preserving the check's real purpose (catch a second, ad hoc
+  `_meta.project` intake path) instead of asserting a now-superseded
+  "never read" invariant.
 
 ## Decisions filed
 
