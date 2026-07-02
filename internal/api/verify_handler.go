@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"net/http"
 
-	"github.com/hurtener/stowage/internal/identity"
 	"github.com/hurtener/stowage/internal/trust"
 )
 
@@ -33,7 +32,6 @@ func (s *Server) handleVerify(w http.ResponseWriter, r *http.Request) {
 	if !requireJSON(w, r) {
 		return
 	}
-	authKey := keyFromContext(r.Context())
 
 	var req verifyRequestJSON
 	dec := json.NewDecoder(r.Body)
@@ -46,7 +44,11 @@ func (s *Server) handleVerify(w http.ResponseWriter, r *http.Request) {
 		respondJSON(w, http.StatusBadRequest, errBody("claim must be set"))
 		return
 	}
-	scope := identity.Scope{Tenant: authKey.TenantID, Project: req.ProjectID, User: req.UserID}
+	scope, _, err := s.resolveScope(r, identityArgs{Project: req.ProjectID, User: req.UserID})
+	if err != nil {
+		respondScopeError(w, err)
+		return
+	}
 	v, err := trust.VerifyClaim(r.Context(), s.st, s.gw, scope, req.Claim, req.Citations)
 	if err != nil {
 		s.log.ErrorContext(r.Context(), "api: verify failed", "err", err)

@@ -168,8 +168,11 @@ func TestAuthJWT_ValidToken_NarrowsToTenantScope(t *testing.T) {
 
 	const acmeMemID = "01AE7ACMEAAAAAAAAAAAAAAAAA"
 	const betaMemID = "01AE7BETAAAAAAAAAAAAAAAAAA"
-	seedTenantMemory(t, stk.Store, identity.Scope{Tenant: "ae7-acme"}, acmeMemID)
-	seedTenantMemory(t, stk.Store, identity.Scope{Tenant: "ae7-beta"}, betaMemID)
+	// Seed under the token's USER — ae8 makes the JWT `user` claim narrow reads
+	// (the read-side gap closure, D-148): acmeToken carries user=alice, betaToken
+	// user=bob, so a user-scoped memory is what each token now resolves to.
+	seedTenantMemory(t, stk.Store, identity.Scope{Tenant: "ae7-acme", User: "alice"}, acmeMemID)
+	seedTenantMemory(t, stk.Store, identity.Scope{Tenant: "ae7-beta", User: "bob"}, betaMemID)
 
 	srv, err := api.New(&cfg, stk.Store, stk.Log, stk.Metrics)
 	if err != nil {
@@ -417,7 +420,8 @@ func TestAuthJWT_Parity_APIAndMCP_SameScope(t *testing.T) {
 	})
 
 	const memID = "01AE7PARITYAAAAAAAAAAAAAAA"
-	seedTenantMemory(t, stk.Store, identity.Scope{Tenant: "ae7-parity"}, memID)
+	// Parity token carries user=alice; ae8 narrows the read to that user (D-148).
+	seedTenantMemory(t, stk.Store, identity.Scope{Tenant: "ae7-parity", User: "alice"}, memID)
 
 	v, err := auth.NewValidator(mustJWKS(t, ts.URL, 3600), auth.WithIssuer("harbor"), auth.WithAudience("stowage"))
 	if err != nil {

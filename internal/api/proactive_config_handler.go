@@ -31,9 +31,12 @@ type proactiveConfigPatchJSON struct {
 // handleGetProactiveConfig implements GET /v1/admin/proactive (admin tier). It
 // returns the effective governance for the scope (?user=&project= refine it).
 func (s *Server) handleGetProactiveConfig(w http.ResponseWriter, r *http.Request) {
-	authKey := keyFromContext(r.Context())
 	q := r.URL.Query()
-	scope := identity.Scope{Tenant: authKey.TenantID, User: q.Get("user"), Project: q.Get("project")}
+	scope, _, err := s.resolveScope(r, identityArgs{User: q.Get("user"), Project: q.Get("project")})
+	if err != nil {
+		respondScopeError(w, err)
+		return
+	}
 
 	cfg, err := proactive.Resolve(r.Context(), s.st.ScopeSettings(), scope, proactiveDefault(s.profile))
 	if err != nil {

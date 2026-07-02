@@ -52,22 +52,47 @@ type embeddedClient struct {
 	// enqueues onto pl.In; pl.Stage is retained for the flush/branch control
 	// verbs Wave B surfaces on the SDK. Safe for concurrent use after construction.
 	pl *boot.Pipeline
+	// resolveOpts carries the ae8 (D-148/D-137) read-scope resolution knobs
+	// (retrieval.read_posture, identity.multiplexing), threaded from cfg at
+	// construction — never a per-call argument. The zero value
+	// (PostureCompatible, Multiplexing:false) is the byte-identical default.
+	resolveOpts identity.ResolveOptions
 }
 
 // callScope returns the per-call read/mutate scope: the client's construction-time
 // scope (c.scope — set via WithTenantID/WithProject/WithUser) with the project/user
-// dimensions overridden by any non-empty per-call request values (P3, D-125). Empty
-// per-call values inherit the construction default; the tenant is always the client's.
-// This is the SDK analogue of the HTTP/MCP per-request project_id/user_id (D-067 parity).
-func (c *embeddedClient) callScope(project, user string) identity.Scope {
-	s := c.scope
-	if project != "" {
-		s.Project = project
+// dimensions overridden by any non-empty per-call request value (P3, D-125), and
+// agent (when the calling request shape carries one, e.g. Retrieve) stamped onto
+// the read scope (D-135). Empty per-call project/user values inherit the
+// construction default. This is the SDK analogue of the HTTP/MCP per-request
+// project_id/user_id (D-067 parity), routed through the ONE cross-surface
+// resolver, identity.ResolveReadScope (ae8, D-148/D-067/D-073).
+//
+// The embedded SDK has no separate credential identity distinct from its
+// construction-time scope — the embedding host IS the trusted caller (there is
+// no _meta/JWT channel to source a distinct assertion from), so CredUser is
+// always "" and the per-call user is taken freely whenever set, exactly as
+// before ae8 (fully back-compat, identical to the pre-ae8 override-if-nonempty
+// logic). The only NEW failure mode is retrieval.read_posture=strict with
+// neither a resolved user nor an agent (identity.ErrIdentityRequired) — an
+// explicit opt-in; a construction-time-scoped caller must supply one to keep
+// calling under strict posture.
+func (c *embeddedClient) callScope(project, user, agent string) (identity.Scope, error) {
+	argProject := project
+	if argProject == "" {
+		argProject = c.scope.Project
 	}
-	if user != "" {
-		s.User = user
+	argUser := user
+	if argUser == "" {
+		argUser = c.scope.User
 	}
-	return s
+	scope, _, err := identity.ResolveReadScope(identity.IdentitySources{
+		Tenant:     c.scope.Tenant,
+		ArgUser:    argUser,
+		ArgProject: argProject,
+		MetaAgent:  agent,
+	}, c.resolveOpts)
+	return scope, err
 }
 
 // trySend sends item to the pipeline channel in a non-blocking, panic-safe way.
@@ -173,6 +198,10 @@ func NewEmbedded(parentCtx context.Context, cfg config.Config, opts ...Option) (
 		profile:            cfg.Profile,
 		browseDefaultLimit: cfg.Retrieval.BrowseDefaultLimit,
 		pl:                 p,
+		resolveOpts: identity.ResolveOptions{
+			Posture:      identity.ParsePosture(cfg.Retrieval.ReadPosture),
+			Multiplexing: cfg.Identity.Multiplexing,
+		},
 	}
 
 	closer := func(ctx context.Context) error {
@@ -272,13 +301,16 @@ func (c *embeddedClient) Retrieve(ctx context.Context, req RetrieveRequest) (Ret
 		return RetrieveResponse{}, errors.New("sdk: retrieve: query must not be empty")
 	}
 
-	// Tenant is the client's auth boundary; project/user are per-call read sub-scopes (P3, D-125)
-	// over the construction default (WithProject/WithUser). Empty = inherit default, then
-	// tenant-wide (back-compat). The store hard-isolates to this scope.
-	scope := c.callScope(req.ProjectID, req.UserID)
+	// Tenant is the client's auth boundary; project/user/agent are per-call read
+	// sub-scopes (P3, D-125) over the construction default (WithProject/
+	// WithUser), resolved through the ONE cross-surface resolver (ae8,
+	// D-148/D-067/D-073). Empty = inherit default, then tenant-wide (back-compat).
 	// AgentID is the D-140-sanctioned SDK intake for the calling agent identity —
 	// stamped onto the read scope only, never persisted (D-135).
-	scope.Agent = req.AgentID
+	scope, err := c.callScope(req.ProjectID, req.UserID, req.AgentID)
+	if err != nil {
+		return RetrieveResponse{}, fmt.Errorf("sdk: retrieve: %w", err)
+	}
 	resp, err := c.stack.Retriever.Retrieve(ctx, scope, retrieval.Request{
 		Query:         req.Query,
 		Limit:         req.Limit,
@@ -356,7 +388,10 @@ func (c *embeddedClient) Retrieve(ctx context.Context, req RetrieveRequest) (Ret
 
 // Drilldown implements Client.
 func (c *embeddedClient) Drilldown(ctx context.Context, req DrilldownRequest) (DrilldownResponse, error) {
-	scope := c.callScope(req.ProjectID, req.UserID)
+	scope, err := c.callScope(req.ProjectID, req.UserID, "")
+	if err != nil {
+		return DrilldownResponse{}, fmt.Errorf("sdk: drilldown: %w", err)
+	}
 	if req.MemoryID == "" && req.Citation == "" {
 		return DrilldownResponse{}, errors.New("sdk: drilldown: one of memory_id or citation must be set")
 	}
@@ -420,7 +455,10 @@ func (c *embeddedClient) Drilldown(ctx context.Context, req DrilldownRequest) (D
 
 // Feedback implements Client.
 func (c *embeddedClient) Feedback(ctx context.Context, req FeedbackRequest) (FeedbackResponse, error) {
-	scope := c.callScope(req.ProjectID, req.UserID)
+	scope, err := c.callScope(req.ProjectID, req.UserID, "")
+	if err != nil {
+		return FeedbackResponse{}, fmt.Errorf("sdk: feedback: %w", err)
+	}
 	if req.Signal == "" {
 		return FeedbackResponse{}, errors.New("sdk: feedback: signal must be set")
 	}
@@ -466,7 +504,10 @@ func (c *embeddedClient) Feedback(ctx context.Context, req FeedbackRequest) (Fee
 
 // ResolveCitations implements Client.
 func (c *embeddedClient) ResolveCitations(ctx context.Context, req ResolveCitationsRequest) (ResolveCitationsResponse, error) {
-	scope := c.callScope(req.ProjectID, req.UserID)
+	scope, err := c.callScope(req.ProjectID, req.UserID, "")
+	if err != nil {
+		return ResolveCitationsResponse{}, fmt.Errorf("sdk: resolve_citations: %w", err)
+	}
 	if len(req.Citations) == 0 {
 		return ResolveCitationsResponse{}, errors.New("sdk: resolve_citations: citations must not be empty")
 	}
@@ -584,7 +625,10 @@ func (c *embeddedClient) Topics(ctx context.Context) (TopicsResponse, error) {
 // The token budget is profile-internal (config.PlaybookBudgetForProfile); the
 // assembly never calls the gateway.
 func (c *embeddedClient) Playbook(ctx context.Context, req PlaybookRequest) (PlaybookResponse, error) {
-	scope := c.callScope(req.ProjectID, req.UserID)
+	scope, err := c.callScope(req.ProjectID, req.UserID, "")
+	if err != nil {
+		return PlaybookResponse{}, fmt.Errorf("sdk: playbook: %w", err)
+	}
 	pb, err := playbook.Assemble(ctx, c.stack.Store, scope, playbook.Options{
 		SessionID:   req.SessionID,
 		TokenBudget: config.PlaybookBudgetForProfile(c.profile),
@@ -598,7 +642,10 @@ func (c *embeddedClient) Playbook(ctx context.Context, req PlaybookRequest) (Pla
 // Browse implements Client via the deterministic, gateway-free retrieval.Browse
 // core (ae5, D-143).
 func (c *embeddedClient) Browse(ctx context.Context, req BrowseRequest) (BrowseResponse, error) {
-	scope := c.callScope(req.ProjectID, req.UserID)
+	scope, err := c.callScope(req.ProjectID, req.UserID, "")
+	if err != nil {
+		return BrowseResponse{}, fmt.Errorf("sdk: browse: %w", err)
+	}
 	mode, err := retrieval.ParseBrowseMode(req.Mode)
 	if err != nil {
 		return BrowseResponse{}, fmt.Errorf("sdk: browse: %w", err)
@@ -618,7 +665,10 @@ func (c *embeddedClient) Browse(ctx context.Context, req BrowseRequest) (BrowseR
 
 // Episodes implements Client via the LLM-free episodic-retrieval core (D-080).
 func (c *embeddedClient) Episodes(ctx context.Context, req EpisodesRequest) (EpisodesResponse, error) {
-	scope := c.callScope(req.ProjectID, req.UserID)
+	scope, err := c.callScope(req.ProjectID, req.UserID, "")
+	if err != nil {
+		return EpisodesResponse{}, fmt.Errorf("sdk: episodes: %w", err)
+	}
 	if req.ID != "" {
 		v, err := episodes.Get(ctx, c.stack.Store, scope, req.ID)
 		if errors.Is(err, store.ErrNotFound) {
@@ -683,7 +733,10 @@ func (c *embeddedClient) Causal(ctx context.Context, req CausalRequest) (CausalR
 	if req.MemoryID == "" {
 		return CausalResponse{}, errors.New("sdk: causal: memory_id must not be empty")
 	}
-	scope := c.callScope(req.ProjectID, req.UserID)
+	scope, err := c.callScope(req.ProjectID, req.UserID, "")
+	if err != nil {
+		return CausalResponse{}, fmt.Errorf("sdk: causal: %w", err)
+	}
 	g, err := causal.Traverse(ctx, c.stack.Store, scope, req.MemoryID, causal.Direction(req.Direction), req.Depth)
 	if err != nil {
 		return CausalResponse{}, fmt.Errorf("sdk: causal: %w", err)
@@ -767,7 +820,10 @@ func (c *embeddedClient) Rollback(ctx context.Context, req RollbackRequest) (Mem
 	if req.MemoryID == "" {
 		return Memory{}, errors.New("sdk: rollback: memory_id must not be empty")
 	}
-	scope := c.callScope(req.ProjectID, req.UserID)
+	scope, err := c.callScope(req.ProjectID, req.UserID, "")
+	if err != nil {
+		return Memory{}, fmt.Errorf("sdk: rollback: %w", err)
+	}
 	res, err := reconcile.Rollback(ctx, c.stack.Store, scope, req.MemoryID, c.scopeInvalidator())
 	if err != nil {
 		return Memory{}, fmt.Errorf("sdk: rollback: %w", err)
@@ -788,7 +844,10 @@ func (c *embeddedClient) ResolveMemory(ctx context.Context, req ResolveRequest) 
 	if req.Action != string(reconcile.ConfirmActionConfirm) && req.Action != string(reconcile.ConfirmActionReject) {
 		return ResolveResponse{}, errors.New("sdk: resolve_memory: action must be confirm or reject")
 	}
-	scope := c.callScope(req.ProjectID, req.UserID)
+	scope, err := c.callScope(req.ProjectID, req.UserID, "")
+	if err != nil {
+		return ResolveResponse{}, fmt.Errorf("sdk: resolve_memory: %w", err)
+	}
 	res, err := reconcile.Resolve(ctx, c.stack.Store, scope, req.MemoryID, reconcile.ConfirmAction(req.Action), c.scopeInvalidator())
 	if err != nil {
 		return ResolveResponse{}, fmt.Errorf("sdk: resolve_memory: %w", err)
@@ -851,7 +910,11 @@ func (c *embeddedClient) Flush(ctx context.Context, req FlushRequest) (FlushResp
 
 // ForkBranch implements Client via the shared pipeline branch core (D-029/D-071).
 func (c *embeddedClient) ForkBranch(ctx context.Context, req ForkBranchRequest) (ForkBranchResponse, error) {
-	id, err := pipeline.ForkBranch(ctx, c.stack.Store, c.callScope(req.ProjectID, req.UserID), req.SessionID, req.ParentBranchID)
+	scope, err := c.callScope(req.ProjectID, req.UserID, "")
+	if err != nil {
+		return ForkBranchResponse{}, fmt.Errorf("sdk: fork_branch: %w", err)
+	}
+	id, err := pipeline.ForkBranch(ctx, c.stack.Store, scope, req.SessionID, req.ParentBranchID)
 	if err != nil {
 		return ForkBranchResponse{}, fmt.Errorf("sdk: fork_branch: %w", err)
 	}
@@ -902,7 +965,10 @@ func (c *embeddedClient) Verify(ctx context.Context, req VerifyRequest) (VerifyR
 	if req.Claim == "" {
 		return VerifyResponse{}, errors.New("sdk: verify: claim must not be empty")
 	}
-	scope := c.callScope(req.ProjectID, req.UserID)
+	scope, err := c.callScope(req.ProjectID, req.UserID, "")
+	if err != nil {
+		return VerifyResponse{}, fmt.Errorf("sdk: verify: %w", err)
+	}
 	v, err := trust.VerifyClaim(ctx, c.stack.Store, c.stack.Gateway, scope, req.Claim, req.Citations)
 	if err != nil {
 		return VerifyResponse{}, fmt.Errorf("sdk: verify: %w", err)
@@ -912,7 +978,10 @@ func (c *embeddedClient) Verify(ctx context.Context, req VerifyRequest) (VerifyR
 
 // Review implements Client via the trust review-queue core (D-084).
 func (c *embeddedClient) Review(ctx context.Context, req ReviewRequest) (ReviewResponse, error) {
-	scope := c.callScope(req.ProjectID, req.UserID)
+	scope, err := c.callScope(req.ProjectID, req.UserID, "")
+	if err != nil {
+		return ReviewResponse{}, fmt.Errorf("sdk: review: %w", err)
+	}
 	switch req.Action {
 	case "list":
 		mems, next, err := trust.ListPending(ctx, c.stack.Store, scope, req.Limit, req.Cursor)
@@ -943,7 +1012,10 @@ func (c *embeddedClient) Trace(ctx context.Context, req TraceRequest) (TraceResp
 	if req.ResponseID == "" {
 		return TraceResponse{}, errors.New("sdk: trace: response_id must not be empty")
 	}
-	scope := c.callScope(req.ProjectID, req.UserID)
+	scope, err := c.callScope(req.ProjectID, req.UserID, "")
+	if err != nil {
+		return TraceResponse{}, fmt.Errorf("sdk: trace: %w", err)
+	}
 	tr, err := traces.Reconstruct(ctx, c.stack.Store, scope, req.ResponseID, time.Now().UnixMilli())
 	if err != nil {
 		return TraceResponse{}, fmt.Errorf("sdk: trace: %w", err)

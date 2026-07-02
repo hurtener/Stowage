@@ -52,8 +52,27 @@ type Config struct {
 	Trace     TraceConfig     `yaml:"trace"`
 	Retrieval RetrievalConfig `yaml:"retrieval"`
 	Auth      AuthConfig      `yaml:"auth"`
+	Identity  IdentityConfig  `yaml:"identity"`
 
 	prov Provenance
+}
+
+// IdentityConfig groups the ae8 (D-148) identity-resolution knobs that are
+// not naturally part of RetrievalConfig. There is no AuthConfig-owned
+// per-credential capability yet (that lands with a later phase's
+// IdentitySources.CanAssertUser wiring), so this is a new top-level section —
+// homed here rather than nested under Auth, matching the plan's explicit
+// "new IdentityConfig on Config" design (D-148).
+type IdentityConfig struct {
+	// Multiplexing is the global interim form of the D-137 "may a connection
+	// assert a user that disagrees with the credential-pinned user" knob.
+	// Default false: a disagreeing assertion is rejected
+	// (identity.ErrUserConflict). Post-ae7, the per-credential
+	// IdentitySources.CanAssertUser (JWT scope memory:assert-user / a keyring
+	// flag) grants the same capability without this global flag. Inert when
+	// the credential pins no user (the pre-ae7 keyring world), so zero-config
+	// behaviour is unchanged.
+	Multiplexing bool `yaml:"multiplexing"`
 }
 
 // AuthConfig selects and tunes the request-authentication mode (ae7,
@@ -158,6 +177,15 @@ type RetrievalConfig struct {
 	// the two above) because ae9 adds on_policy_error/subject_precedence here
 	// alongside Enabled — no new table, migration, or master switch.
 	AgentViews AgentViewsConfig `yaml:"agent_views"`
+	// ReadPosture is the ae8 (D-148/D-137) resolve-time presence gate:
+	// "compatible" (default) preserves today's behaviour — a read that
+	// resolves to no user AND no agent falls back to a tenant-wide scope.
+	// "strict" refuses that read (identity.ErrIdentityRequired) BEFORE any
+	// store call. A flat scalar (cross-cutting, like BrowseDefaultLimit), not
+	// per-profile. It does not add a store WHERE — buildScopeWhere already
+	// treats an empty Scope.User as tenant-wide either way; this knob decides
+	// whether the resolver ALLOWS that or refuses it upstream.
+	ReadPosture string `yaml:"read_posture"`
 }
 
 // AgentViewsConfig groups the read-time agent->topic filter knobs (ae1,
@@ -329,6 +357,8 @@ var allKeys = []string{
 	"retrieval.browse_default_limit",
 	"retrieval.topic_filter_scoring_k",
 	"retrieval.agent_views.enabled",
+	"retrieval.read_posture",
+	"identity.multiplexing",
 	"auth.mode",
 	"auth.issuer",
 	"auth.audience",
@@ -392,6 +422,8 @@ var envKeys = []struct {
 	{"STOWAGE_AUTH_JWKS_URL", "auth.jwks.url"},
 	{"STOWAGE_AUTH_JWKS_FILE", "auth.jwks.file"},
 	{"STOWAGE_AUTH_JWKS_MAX_STALE", "auth.jwks.max_stale"},
+	{"STOWAGE_RETRIEVAL_READ_POSTURE", "retrieval.read_posture"},
+	{"STOWAGE_IDENTITY_MULTIPLEXING", "identity.multiplexing"},
 }
 
 // Defaults returns a fully working Config with no file or env input. (AC-1)
@@ -449,6 +481,10 @@ func Defaults() *Config {
 			BrowseDefaultLimit:  30,                               // ae5 browse page size (D-143)
 			TopicFilterScoringK: 100,                              // ae6 topic-filter candidate window (D-144)
 			AgentViews:          AgentViewsConfig{Enabled: false}, // ae1 agent filter master switch (D-135/D-146/D-151), off by default
+			ReadPosture:         "compatible",                     // ae8 resolve-time presence gate (D-137/D-148), byte-identical default
+		},
+		Identity: IdentityConfig{
+			Multiplexing: false, // ae8 global interim knob (D-137/D-148), off by default
 		},
 		Auth: AuthConfig{
 			Mode:       "keyring", // zero-config default — boot unchanged (D-147)
@@ -579,6 +615,13 @@ func (c *Config) FillZeroDefaults() {
 	// window the same way the server does (D-069 parity lens).
 	if c.Retrieval.TopicFilterScoringK == 0 {
 		c.Retrieval.TopicFilterScoringK = d.Retrieval.TopicFilterScoringK
+	}
+	// retrieval.read_posture (ae8, D-137/D-148) is a closed-enum string like
+	// auth.mode below — an empty value would fail Validate(), so a zero field
+	// is filled to the byte-identical "compatible" default (parity with the
+	// server's Load path).
+	if c.Retrieval.ReadPosture == "" {
+		c.Retrieval.ReadPosture = d.Retrieval.ReadPosture
 	}
 
 	// auth.mode (ae7): the embedded SDK path performs no HTTP bearer auth at
@@ -784,6 +827,12 @@ func (c *Config) Validate() error {
 		errs = append(errs, fmt.Errorf("config.retrieval.topic_filter_scoring_k: %d must be > 0", c.Retrieval.TopicFilterScoringK))
 	} else if c.Retrieval.TopicFilterScoringK > 100 {
 		errs = append(errs, fmt.Errorf("config.retrieval.topic_filter_scoring_k: %d exceeds the hard result cap (100)", c.Retrieval.TopicFilterScoringK))
+	}
+
+	// retrieval.read_posture (ae8, D-137/D-148): closed-enum, compatible|strict.
+	validReadPostures := map[string]bool{"compatible": true, "strict": true}
+	if !validReadPostures[c.Retrieval.ReadPosture] {
+		errs = append(errs, fmt.Errorf("config.retrieval.read_posture: unknown posture %q (valid: compatible, strict)", c.Retrieval.ReadPosture))
 	}
 
 	// auth.* (ae7, D-136/D-147): mode is closed-enum; jwt mode requires
@@ -1005,6 +1054,10 @@ func (c *Config) getByPath(path string) string {
 		return strconv.Itoa(c.Retrieval.TopicFilterScoringK)
 	case "retrieval.agent_views.enabled":
 		return strconv.FormatBool(c.Retrieval.AgentViews.Enabled)
+	case "retrieval.read_posture":
+		return c.Retrieval.ReadPosture
+	case "identity.multiplexing":
+		return strconv.FormatBool(c.Identity.Multiplexing)
 	case "auth.mode":
 		return c.Auth.Mode
 	case "auth.issuer":
@@ -1170,6 +1223,14 @@ func (c *Config) setByPath(path, value string) error {
 			return fmt.Errorf("config.%s: %w", path, err)
 		}
 		c.Retrieval.AgentViews.Enabled = b
+	case "retrieval.read_posture":
+		c.Retrieval.ReadPosture = value
+	case "identity.multiplexing":
+		b, err := strconv.ParseBool(value)
+		if err != nil {
+			return fmt.Errorf("config.%s: %w", path, err)
+		}
+		c.Identity.Multiplexing = b
 	case "auth.mode":
 		c.Auth.Mode = value
 	case "auth.issuer":

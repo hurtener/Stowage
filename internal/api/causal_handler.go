@@ -40,7 +40,11 @@ type causalResponseJSON struct {
 // gateway-free why-traversal of the caused_by/led_to graph from `memory_id`.
 // `direction` ∈ {backward (default), forward, both}; `depth` bounds the hops.
 func (s *Server) handleCausal(w http.ResponseWriter, r *http.Request) {
-	scope := scopeFromRequest(r)
+	scope, err := s.scopeFromRequest(r)
+	if err != nil {
+		respondScopeError(w, err)
+		return
+	}
 	q := r.URL.Query()
 
 	memID := q.Get("memory_id")

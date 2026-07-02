@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"net/http"
 
-	"github.com/hurtener/stowage/internal/identity"
 	"github.com/hurtener/stowage/internal/retrieval"
 	"github.com/hurtener/stowage/internal/scoring"
 	"github.com/hurtener/stowage/internal/store"
@@ -153,10 +152,17 @@ func (s *Server) handleRetrieve(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	authKey := keyFromContext(r.Context())
-	// Tenant is the auth boundary (the key); project/user are caller-supplied read sub-scopes
-	// (D-125). The store hard-isolates to this scope; grants may widen it (EffectiveScopes).
-	scope := identity.Scope{Tenant: authKey.TenantID, Project: req.ProjectID, User: req.UserID, Agent: req.AgentID}
+	// Tenant is the auth boundary; project/user/session are resolved through the
+	// ONE cross-surface resolver (ae8, D-148/D-067/D-073), which applies the
+	// D-137 precedence (verified JWT claims > args — HTTP has no _meta, D-140).
+	// The store hard-isolates to this scope; grants may widen it (EffectiveScopes).
+	scope, effSession, err := s.resolveScope(r, identityArgs{
+		Project: req.ProjectID, User: req.UserID, Session: req.SessionID, Agent: req.AgentID,
+	})
+	if err != nil {
+		respondScopeError(w, err)
+		return
+	}
 
 	if s.retriever == nil {
 		respondJSON(w, http.StatusServiceUnavailable, errBody("retrieval not available"))
@@ -164,12 +170,15 @@ func (s *Server) handleRetrieve(w http.ResponseWriter, r *http.Request) {
 	}
 
 	resp, err := s.retriever.Retrieve(r.Context(), scope, retrieval.Request{
-		Query:         req.Query,
-		Limit:         req.Limit,
-		Window:        store.Window{From: req.From, Until: req.Until},
-		Kinds:         req.Kinds,
-		IncludeLanes:  req.IncludeLanes,
-		SessionID:     req.SessionID,
+		Query:        req.Query,
+		Limit:        req.Limit,
+		Window:       store.Window{From: req.From, Until: req.Until},
+		Kinds:        req.Kinds,
+		IncludeLanes: req.IncludeLanes,
+		// Session-REPLACE (D-137/D-150): the effective session (claim > arg —
+		// HTTP has no _meta, D-140) fed to this EXISTING relevance sink, never
+		// onto Scope.Session (D-150).
+		SessionID:     effSession,
 		Debug:         req.Debug,
 		ResponseID:    req.ResponseID,
 		Profile:       req.Profile,

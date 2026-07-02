@@ -27,6 +27,7 @@ import (
 	"github.com/hurtener/stowage/internal/config"
 	"github.com/hurtener/stowage/internal/gateway"
 	"github.com/hurtener/stowage/internal/grants"
+	"github.com/hurtener/stowage/internal/identity"
 	"github.com/hurtener/stowage/internal/pipeline"
 	"github.com/hurtener/stowage/internal/retrieval"
 	"github.com/hurtener/stowage/internal/store"
@@ -94,6 +95,12 @@ type Server struct {
 	// (jwt mode's JWKS fetch happens there, at boot — never lazily here).
 	authn *auth.Authenticator
 
+	// resolveOpts carries the ae8 (D-148/D-137) read-scope resolution knobs
+	// (retrieval.read_posture, identity.multiplexing), threaded from config at
+	// construction — never a per-request argument. The zero value
+	// (PostureCompatible, Multiplexing:false) is the byte-identical default.
+	resolveOpts identity.ResolveOptions
+
 	// Prometheus metrics.
 	ingestTotal   prometheus.Counter
 	pipelineDrops prometheus.Counter
@@ -124,6 +131,10 @@ func New(cfg *config.Config, st store.Store, log *slog.Logger, reg *prometheus.R
 		ingestTotal:        ingestTotal,
 		pipelineDrops:      pipelineDrops,
 		authn:              auth.NewKeyringAuthenticator(st.Keys()), // zero-config default (ae7); SetAuthenticator overrides in jwt mode
+		resolveOpts: identity.ResolveOptions{
+			Posture:      identity.ParsePosture(cfg.Retrieval.ReadPosture),
+			Multiplexing: cfg.Identity.Multiplexing,
+		},
 	}
 	// Default the ingest sink to the server-owned channel; serve overrides it
 	// with the boot.StartPipeline-owned channel via SetPipelineIn.

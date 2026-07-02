@@ -53,10 +53,17 @@ type playbookResponseJSON struct {
 // only — no gateway. The token budget is profile-internal (D-034/D-042); the
 // optional ?session_id= query param narrows assembly to one session.
 func (s *Server) handlePlaybook(w http.ResponseWriter, r *http.Request) {
-	scope := scopeFromRequest(r)
+	q := r.URL.Query()
+	scope, effSession, err := s.resolveScope(r, identityArgs{Project: q.Get("project_id"), User: q.Get("user_id"), Session: q.Get("session_id")})
+	if err != nil {
+		respondScopeError(w, err)
+		return
+	}
 
 	pb, err := playbook.Assemble(r.Context(), s.st, scope, playbook.Options{
-		SessionID:   r.URL.Query().Get("session_id"),
+		// Session-REPLACE (D-137/D-150): the effective session (claim > arg —
+		// HTTP has no _meta, D-140) fed to this EXISTING sink, never Scope.Session.
+		SessionID:   effSession,
 		TokenBudget: config.PlaybookBudgetForProfile(s.profile),
 	})
 	if err != nil {

@@ -53,6 +53,11 @@ type Services struct {
 	// limit. Threaded from cfg.Retrieval.BrowseDefaultLimit at construction
 	// (main.go); 0 is safe (retrieval.Browse clamps to its hard page cap).
 	BrowseDefaultLimit int
+	// ResolveOpts carries the ae8 (D-148/D-137) read-scope resolution knobs
+	// (retrieval.read_posture, identity.multiplexing), threaded from config at
+	// construction (main.go) — never a per-request argument. The zero value
+	// (PostureCompatible, Multiplexing:false) is the byte-identical default.
+	ResolveOpts identity.ResolveOptions
 }
 
 // StdioScopeFn returns a ScopeFn that always resolves to a tenant-only scope

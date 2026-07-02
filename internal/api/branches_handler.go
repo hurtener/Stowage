@@ -5,7 +5,6 @@ import (
 	"errors"
 	"net/http"
 
-	"github.com/hurtener/stowage/internal/identity"
 	"github.com/hurtener/stowage/internal/pipeline"
 	"github.com/hurtener/stowage/internal/store"
 )
@@ -43,8 +42,11 @@ func (s *Server) handleBranches(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	authKey := keyFromContext(r.Context())
-	scope := identity.Scope{Tenant: authKey.TenantID, Project: req.ProjectID, User: req.UserID}
+	scope, effSession, err := s.resolveScope(r, identityArgs{Project: req.ProjectID, User: req.UserID, Session: req.SessionID})
+	if err != nil {
+		respondScopeError(w, err)
+		return
+	}
 
 	// All three actions route through the shared pipeline branch core (D-071) so
 	// the HTTP, MCP, and SDK surfaces cannot drift; discard sets SkipPromotion via
@@ -55,7 +57,9 @@ func (s *Server) handleBranches(w http.ResponseWriter, r *http.Request) {
 			respondJSON(w, http.StatusBadRequest, errBody("session_id is required for fork"))
 			return
 		}
-		id, err := pipeline.ForkBranch(r.Context(), s.st, scope, req.SessionID, req.ParentBranchID)
+		// Session-REPLACE (D-137/D-150): the effective session (claim > arg — HTTP
+		// has no _meta, D-140), never Scope.Session.
+		id, err := pipeline.ForkBranch(r.Context(), s.st, scope, effSession, req.ParentBranchID)
 		if err != nil {
 			s.log.ErrorContext(r.Context(), "api: branches: fork failed", "err", err)
 			respondJSON(w, http.StatusInternalServerError, errBody("store error"))

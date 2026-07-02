@@ -23,7 +23,11 @@ type browseResponseJSON struct {
 // narrow the scope (P3, D-125). Thin caller over retrieval.Browse — the one
 // core (D-067/D-073).
 func (s *Server) handleBrowseMemories(w http.ResponseWriter, r *http.Request) {
-	scope := scopeFromRequest(r)
+	scope, err := s.scopeFromRequest(r)
+	if err != nil {
+		respondScopeError(w, err)
+		return
+	}
 	q := r.URL.Query()
 
 	mode, err := retrieval.ParseBrowseMode(q.Get("mode"))

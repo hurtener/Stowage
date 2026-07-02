@@ -27,6 +27,7 @@ import (
 	"github.com/hurtener/stowage/internal/auth"
 	"github.com/hurtener/stowage/internal/boot"
 	"github.com/hurtener/stowage/internal/config"
+	"github.com/hurtener/stowage/internal/identity"
 	"github.com/hurtener/stowage/internal/mcpserver"
 	"github.com/hurtener/stowage/internal/store"
 	"github.com/hurtener/stowage/internal/store/migrations"
@@ -475,6 +476,10 @@ func runMCP(args []string) {
 		ScopeFn:            scopeFn,
 		Profile:            cfg.Profile,
 		BrowseDefaultLimit: cfg.Retrieval.BrowseDefaultLimit,
+		ResolveOpts: identity.ResolveOptions{
+			Posture:      identity.ParsePosture(cfg.Retrieval.ReadPosture),
+			Multiplexing: cfg.Identity.Multiplexing,
+		},
 	}
 
 	srv, err := mcpserver.New(server.Info{
@@ -742,6 +747,10 @@ func runServe(args []string) {
 			ScopeFn:            mcpserver.CtxScopeFn(), // tenant from the authenticated key
 			Profile:            cfg.Profile,
 			BrowseDefaultLimit: cfg.Retrieval.BrowseDefaultLimit,
+			ResolveOpts: identity.ResolveOptions{
+				Posture:      identity.ParsePosture(cfg.Retrieval.ReadPosture),
+				Multiplexing: cfg.Identity.Multiplexing,
+			},
 		}
 		mcpSrv, mcpErr := mcpserver.New(server.Info{
 			Name:    "stowage",
