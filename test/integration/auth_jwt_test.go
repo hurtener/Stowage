@@ -552,3 +552,97 @@ func (c *authJWTClock) now() time.Time {
 	defer c.mu.Unlock()
 	return c.t
 }
+
+// TestAuthJWT_MCP_UserIsolation is the negative cross-surface assertion ae8's
+// AC-9 parity requires and TestAuthJWT_Parity_APIAndMCP_SameScope lacked: a JWT
+// verified for user=alice, calling memory_browse over MCP-over-HTTP, must see
+// alice's own memory and must NOT see bob's — proving ae8's read-side gap closure
+// pins the read scope to the credential's verified user on the MCP surface, not
+// just HTTP (the resolveScope CredUser fix). Before that fix this test fails with
+// a within-tenant cross-user leak.
+func TestAuthJWT_MCP_UserIsolation(t *testing.T) {
+	key := newAuthJWTKey(t)
+	jwks := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write(key.jwksJSON())
+	}))
+	defer jwks.Close()
+
+	cfg := baseConfig(t)
+	cfg.Auth = configAuthJWT(jwks.URL, 3600)
+	stk, p := startStack(t, cfg)
+	t.Cleanup(func() {
+		shutCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		_ = p.Drain(shutCtx)
+		_ = stk.Close(shutCtx)
+	})
+
+	const aliceID = "01AE8ISOALICEAAAAAAAAAAAAAA"
+	const bobID = "01AE8ISOBOBBBBBBBBBBBBBBBBB"
+	seedTenantMemory(t, stk.Store, identity.Scope{Tenant: "ae8-iso", User: "alice"}, aliceID)
+	seedTenantMemory(t, stk.Store, identity.Scope{Tenant: "ae8-iso", User: "bob"}, bobID)
+
+	v, err := auth.NewValidator(mustJWKS(t, jwks.URL, 3600), auth.WithIssuer("harbor"), auth.WithAudience("stowage"))
+	if err != nil {
+		t.Fatalf("NewValidator: %v", err)
+	}
+	authn := auth.NewJWTAuthenticator(v)
+
+	mcpSrv, err := mcpserver.New(server.Info{Name: "stowage", Version: "test"}, &mcpserver.Services{
+		Store: stk.Store, Retriever: stk.Retriever, TopicSvc: stk.TopicSvc, PipelineIn: p.In,
+		Log: stk.Log, ScopeFn: mcpserver.CtxScopeFn(), Profile: cfg.Profile,
+	})
+	if err != nil {
+		t.Fatalf("mcpserver.New: %v", err)
+	}
+	mcpHandler, err := mcpSrv.HTTPHandler(nil)
+	if err != nil {
+		t.Fatalf("HTTPHandler: %v", err)
+	}
+	mcpHTTP := httptest.NewServer(mcpserver.AuthMiddleware(authn, mcpHandler))
+	t.Cleanup(mcpHTTP.Close)
+
+	token := key.mint(t, "ae8-iso", "alice", "s1", time.Now().Add(time.Hour), []string{"read"})
+
+	ctx := context.Background()
+	transport := &mcpsdk.StreamableClientTransport{
+		Endpoint:             mcpHTTP.URL,
+		HTTPClient:           &http.Client{Transport: jwtBearerRT{base: http.DefaultTransport, token: token}},
+		MaxRetries:           -1,
+		DisableStandaloneSSE: true,
+	}
+	client := mcpsdk.NewClient(&mcpsdk.Implementation{Name: "ae8-iso-client", Version: "0.0.0"}, nil)
+	session, err := client.Connect(ctx, transport, nil)
+	if err != nil {
+		t.Fatalf("mcp connect: %v", err)
+	}
+	t.Cleanup(func() { _ = session.Close() })
+
+	res, err := session.CallTool(ctx, &mcpsdk.CallToolParams{Name: "memory_browse", Arguments: mcpserver.BrowseInput{}})
+	if err != nil {
+		t.Fatalf("CallTool memory_browse: %v", err)
+	}
+	if res.IsError {
+		t.Fatalf("memory_browse returned IsError: %+v", res.Content)
+	}
+	b, _ := json.Marshal(res.StructuredContent)
+	var out mcpserver.BrowseOutput
+	if err := json.Unmarshal(b, &out); err != nil {
+		t.Fatalf("decode MCP browse: %v", err)
+	}
+	var sawAlice, sawBob bool
+	for _, m := range out.Memories {
+		if m.ID == aliceID {
+			sawAlice = true
+		}
+		if m.ID == bobID {
+			sawBob = true
+		}
+	}
+	if !sawAlice {
+		t.Error("alice's JWT must see alice's OWN memory on the MCP surface")
+	}
+	if sawBob {
+		t.Error("P3 LEAK — alice's JWT saw bob's memory on the MCP surface (ae8 MCP user-pinning gap)")
+	}
+}

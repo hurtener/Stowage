@@ -34,9 +34,18 @@ type scopeArgs struct {
 // resolveScope resolves the credential scope (svc.ScopeFn), reads the
 // host-injected _meta (ae2's server.RequestMeta), and merges both with arg
 // through the ONE cross-surface resolver, identity.ResolveReadScope (ae8,
-// D-148/D-067/D-073). CanAssertUser is always false today — the pre-ae7 MCP
-// keyring pins no user; a later phase populates it from a per-credential
-// capability without touching the resolver.
+// D-148/D-067/D-073).
+//
+// The credential (svc.ScopeFn → CtxScopeFn → identity.FromContext) carries the
+// FULL verified Scope AuthMiddleware placed on context: in auth.mode=jwt that
+// includes the token's `user`/`session` claims. We MUST feed cred.User/Session
+// into CredUser/ClaimUser/ClaimSession — mirroring internal/api/auth.go — so a
+// JWT-verified MCP read pins to the credential's own user (the read-side gap
+// closure, D-148). Omitting this leaves the resolver on its "nothing pinned"
+// branch and a JWT for user A would read tenant-wide (a within-tenant cross-user
+// leak). This is inert for stdio (StdioScopeFn → User="") and keyring mode
+// (authenticateKeyring → Scope{Tenant} only), so it only starts pinning when a
+// real JWT user claim is present — zero-config-safe.
 //
 // Returns the resolved read Scope and the effective session (D-150: NEVER
 // placed on the returned Scope — route it to the caller's own relevance sink,
@@ -48,15 +57,18 @@ func resolveScope(svc *Services, ctx context.Context, arg scopeArgs) (identity.S
 	}
 	m := requestMeta(ctx) // ae2's single _meta seam (metaintake.go); nil when unsent
 	src := identity.IdentitySources{
-		Tenant:      cred.Tenant,
-		MetaTenant:  metaString(m, "tenant"),
-		MetaUser:    metaString(m, "user"),
-		MetaSession: metaString(m, "session"),
-		MetaAgent:   metaString(m, "agent_id"),
-		MetaProject: metaString(m, "project_id"),
-		ArgUser:     arg.User,
-		ArgSession:  arg.Session,
-		ArgProject:  arg.Project,
+		Tenant:       cred.Tenant,
+		CredUser:     cred.User, // JWT-verified user (jwt mode); "" for keyring/stdio — pins the read scope
+		ClaimUser:    cred.User,
+		ClaimSession: cred.Session,
+		MetaTenant:   metaString(m, "tenant"),
+		MetaUser:     metaString(m, "user"),
+		MetaSession:  metaString(m, "session"),
+		MetaAgent:    metaString(m, "agent_id"),
+		MetaProject:  metaString(m, "project_id"),
+		ArgUser:      arg.User,
+		ArgSession:   arg.Session,
+		ArgProject:   arg.Project,
 	}
 	return identity.ResolveReadScope(src, svc.ResolveOpts)
 }
