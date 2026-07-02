@@ -20,6 +20,7 @@ import (
 	"github.com/hurtener/stowage/internal/store"
 	"github.com/hurtener/stowage/internal/topics"
 	"github.com/hurtener/stowage/internal/traces"
+	"github.com/hurtener/stowage/internal/views"
 )
 
 // ScopeFn resolves an identity.Scope from the request context. In stdio mode
@@ -34,6 +35,9 @@ type Services struct {
 	Retriever *retrieval.Retriever
 	TopicSvc  *topics.Service
 	GrantsSvc *grants.Service
+	// ViewsSvc is the ae9 (D-149/D-151) named-view admin core. May be nil in
+	// tests; the makeViewsHandler thin caller returns an error when unwired.
+	ViewsSvc *views.Service
 	// Gateway is the intelligence seam, used by memory_verify (claim entailment,
 	// Phase 25). May be nil — verify then degrades to unclear (D-036).
 	Gateway gateway.Gateway
@@ -69,14 +73,15 @@ func StdioScopeFn(tenant string) ScopeFn {
 	}
 }
 
-// New creates a Dockyard *server.Server with all 22 Stowage MCP tools registered:
+// New creates a Dockyard *server.Server with all 23 Stowage MCP tools registered:
 // the original seven, the D-070 reversibility trio (memory_get, memory_rollback,
 // memory_resolve), the D-071 Tier control verbs (memory_flush, memory_branch, and the
 // Tier-B memory_grants), the episodic reads (memory_episodes, memory_causal), the
 // deterministic scope walk (memory_browse, ae5/D-143), the
 // §6c trust verbs (memory_verify, memory_review), the §6c trace export (memory_trace),
-// the §6d proactive verbs (memory_suggestions, memory_proactive_config), and the
-// read-time agent-policy admin (memory_agent_policy, ae1, D-135/D-146/D-151).
+// the §6d proactive verbs (memory_suggestions, memory_proactive_config), the
+// read-time agent-policy admin (memory_agent_policy, ae1, D-135/D-146/D-151), and the
+// named per-agent/per-key topic-view admin (memory_views, ae9, D-149/D-151).
 // It returns an error when any tool fails to register (type mismatch, missing
 // handler) — the caller must handle the error and exit non-zero (AGENTS.md §5).
 func New(info server.Info, svc *Services) (*server.Server, error) {
@@ -252,13 +257,25 @@ func New(info server.Info, svc *Services) (*server.Server, error) {
 		return nil, err
 	}
 
+	// Phase ae9: named per-agent/per-key topic-view admin (D-149/D-151) — view-admin
+	// tier; deliberately ABSENT from the single-user SDK (D-067), matching
+	// memory_grants/memory_agent_policy's tiering.
+	if err := tool.New[ViewsInput, ViewsOutput]("memory_views").
+		Describe("Manage named topic VIEWS: action=create_view|update_view|delete_view|list_views a (subject_kind, subject_id, view_name) -> {allow_topics, deny_topics} curation lens that narrows (never isolates, D-139) the subject's own-scope memory_retrieve results when applied via view_name (mirrors HTTP /v1/scopes/views; ae9, D-149/D-151). Generalizes memory_agent_policy's single binding — that binding IS the (\"agent\", …, \"default\") view.").
+		Handler(makeViewsHandler(svc)).
+		Register(srv); err != nil {
+		return nil, err
+	}
+
 	return srv, nil
 }
 
 // AuthMiddleware authenticates HTTP MCP requests via a (D-067)
 // *auth.Authenticator — keyring (Verify) or JWT (Validator), depending on how
-// a was constructed — and injects the resolved Scope for CtxScopeFn. Never
-// logs credentials (CLAUDE.md §7).
+// a was constructed — and injects the resolved Scope for CtxScopeFn, plus the
+// verified credential's key id (ae9, D-149 — stashed via keyIDContextKey so
+// KeyIDFromContext can expose it to the retrieve handler; empty in ModeJWT,
+// where there is no stored *auth.Key). Never logs credentials (CLAUDE.md §7).
 //
 // A missing/malformed Authorization header (auth.ErrTokenMissing) is a 401;
 // any other rejection (bad/revoked/unknown credential, expired token, stale
@@ -269,7 +286,7 @@ func New(info server.Info, svc *Services) (*server.Server, error) {
 func AuthMiddleware(a *auth.Authenticator, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		hdr := r.Header.Get("Authorization")
-		scope, _, err := a.Authenticate(r.Context(), hdr, r.Header.Get(auth.SessionHeader))
+		scope, _, keyID, err := a.Authenticate(r.Context(), hdr, r.Header.Get(auth.SessionHeader))
 		if err != nil {
 			if errors.Is(err, auth.ErrTokenMissing) {
 				http.Error(w, "authorization required", http.StatusUnauthorized)
@@ -284,6 +301,7 @@ func AuthMiddleware(a *auth.Authenticator, next http.Handler) http.Handler {
 		// gate review) and kept plaintext keys in config. In ModeJWT, scope
 		// also carries the verified User/Session (ae7's core deliverable).
 		ctx := identity.WithScope(r.Context(), scope)
+		ctx = withKeyID(ctx, keyID)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }
@@ -291,7 +309,9 @@ func AuthMiddleware(a *auth.Authenticator, next http.Handler) http.Handler {
 // KeyringMiddleware authenticates HTTP MCP requests against the store
 // keyring (auth.Verify — constant-time, runtime-rotatable keys, D-030). A
 // thin back-compat wrapper around AuthMiddleware with a keyring-only
-// Authenticator (ae7, D-067) — there is no second verify implementation.
+// Authenticator (ae7, D-067) — there is no second verify implementation. Also
+// stashes the verified key id on the request context (ae9, D-149) via
+// AuthMiddleware — see KeyIDFromContext.
 func KeyringMiddleware(kr auth.Keyring, next http.Handler) http.Handler {
 	return AuthMiddleware(auth.NewKeyringAuthenticator(kr), next)
 }
@@ -305,4 +325,24 @@ func CtxScopeFn() ScopeFn {
 		}
 		return sc, nil
 	}
+}
+
+// keyIDContextKey is the context key AuthMiddleware stashes the verified
+// credential's key id under (ae9, D-149).
+type keyIDContextKey struct{}
+
+// withKeyID returns a new context carrying keyID (may be "").
+func withKeyID(ctx context.Context, keyID string) context.Context {
+	return context.WithValue(ctx, keyIDContextKey{}, keyID)
+}
+
+// KeyIDFromContext resolves the verified credential's key id injected by
+// AuthMiddleware/KeyringMiddleware (ae9, D-149) — the "key" topic-view subject
+// fallback used when a request carries no scope.Agent. Returns "" when unset
+// (stdio mode, where there is no per-request key, or ModeJWT, where there is
+// no stored *auth.Key) — the retrieve handler treats an empty key id exactly
+// like an absent one (the key view subject simply does not resolve).
+func KeyIDFromContext(ctx context.Context) string {
+	id, _ := ctx.Value(keyIDContextKey{}).(string)
+	return id
 }

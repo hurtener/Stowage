@@ -1134,3 +1134,131 @@ func TestAuthConfig_ExplainShowsAllSevenKeys(t *testing.T) {
 		}
 	}
 }
+
+// TestAgentViewsDefaults verifies the ae9 (D-149) knob defaults: enabled=false
+// (zero-config, D-151 shared with ae1), on_policy_error="open" (D-139-aligned),
+// subject_precedence="agent,key" (agent wins).
+func TestAgentViewsDefaults(t *testing.T) {
+	clearStowageEnv(t)
+	d := config.Defaults()
+	if d.Retrieval.AgentViews.Enabled {
+		t.Errorf("retrieval.agent_views.enabled default = true, want false")
+	}
+	if d.Retrieval.AgentViews.OnPolicyError != "open" {
+		t.Errorf("retrieval.agent_views.on_policy_error default = %q, want %q", d.Retrieval.AgentViews.OnPolicyError, "open")
+	}
+	if d.Retrieval.AgentViews.SubjectPrecedence != "agent,key" {
+		t.Errorf("retrieval.agent_views.subject_precedence default = %q, want %q", d.Retrieval.AgentViews.SubjectPrecedence, "agent,key")
+	}
+	if err := d.Validate(); err != nil {
+		t.Errorf("Validate() on defaults: %v", err)
+	}
+}
+
+// TestAgentViewsOverride verifies the three ae9/ae1 knobs are file-overridable
+// and round-trip through Validate.
+func TestAgentViewsOverride(t *testing.T) {
+	clearStowageEnv(t)
+	tmp := writeTmpFile(t, []byte("retrieval:\n  agent_views:\n    enabled: true\n    on_policy_error: closed\n    subject_precedence: key,agent\n"))
+	cfg, err := config.Load(context.Background(), tmp)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !cfg.Retrieval.AgentViews.Enabled {
+		t.Errorf("agent_views.enabled override did not take")
+	}
+	if cfg.Retrieval.AgentViews.OnPolicyError != "closed" {
+		t.Errorf("agent_views.on_policy_error = %q, want closed", cfg.Retrieval.AgentViews.OnPolicyError)
+	}
+	if cfg.Retrieval.AgentViews.SubjectPrecedence != "key,agent" {
+		t.Errorf("agent_views.subject_precedence = %q, want key,agent", cfg.Retrieval.AgentViews.SubjectPrecedence)
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Errorf("Validate() with agent_views override: %v", err)
+	}
+}
+
+// TestAgentViewsOnPolicyErrorUnknownFails and
+// TestAgentViewsSubjectPrecedenceUnknownFails prove the two closed-enum knobs
+// fail loud on an unrecognized value (D-034).
+func TestAgentViewsOnPolicyErrorUnknownFails(t *testing.T) {
+	clearStowageEnv(t)
+	cfg := config.Defaults()
+	cfg.Retrieval.AgentViews.OnPolicyError = "bogus"
+	if err := cfg.Validate(); err == nil {
+		t.Errorf("Validate() = nil, want error for unknown on_policy_error")
+	}
+}
+
+func TestAgentViewsSubjectPrecedenceUnknownFails(t *testing.T) {
+	clearStowageEnv(t)
+	cfg := config.Defaults()
+	cfg.Retrieval.AgentViews.SubjectPrecedence = "bogus"
+	if err := cfg.Validate(); err == nil {
+		t.Errorf("Validate() = nil, want error for unknown subject_precedence")
+	}
+}
+
+// TestAgentViewsPresentInEveryProfile verifies D-034: the three agent_views.*
+// defaults hold across all three profiles (none overrides them), matching the
+// auth.* precedent (TestAuthConfig_PresentInEveryProfile).
+func TestAgentViewsPresentInEveryProfile(t *testing.T) {
+	clearStowageEnv(t)
+	for _, profile := range []string{"assistant", "coding-agent", "fleet"} {
+		yaml := []byte("profile: " + profile + "\n")
+		tmp := writeTmpFile(t, yaml)
+		cfg, err := config.Load(context.Background(), tmp)
+		if err != nil {
+			t.Fatalf("Load(%s): %v", profile, err)
+		}
+		if cfg.Retrieval.AgentViews.Enabled {
+			t.Errorf("profile %s: AgentViews.Enabled = true, want false", profile)
+		}
+		if cfg.Retrieval.AgentViews.OnPolicyError != "open" {
+			t.Errorf("profile %s: AgentViews.OnPolicyError = %q, want open", profile, cfg.Retrieval.AgentViews.OnPolicyError)
+		}
+		if cfg.Retrieval.AgentViews.SubjectPrecedence != "agent,key" {
+			t.Errorf("profile %s: AgentViews.SubjectPrecedence = %q, want agent,key", profile, cfg.Retrieval.AgentViews.SubjectPrecedence)
+		}
+	}
+}
+
+// TestAgentViewsExplainShowsAllThreeKeys verifies the three agent_views.* keys
+// appear in Explain output (the ae9 smoke script's grep contract).
+func TestAgentViewsExplainShowsAllThreeKeys(t *testing.T) {
+	clearStowageEnv(t)
+	cfg := config.Defaults()
+	var buf bytes.Buffer
+	if err := cfg.Explain(&buf); err != nil {
+		t.Fatalf("explain: %v", err)
+	}
+	out := buf.String()
+	for _, key := range []string{
+		"retrieval.agent_views.enabled",
+		"retrieval.agent_views.on_policy_error",
+		"retrieval.agent_views.subject_precedence",
+	} {
+		if !strings.Contains(out, key) {
+			t.Errorf("Explain output missing key %q", key)
+		}
+	}
+}
+
+// TestAgentViewsGetSetByPath verifies the two ae9 knobs round-trip through the
+// CLI `config get`/`config set` paths (getByPath/setByPath, exercised via
+// Explain-read + file-load-write, since those helpers are unexported).
+func TestAgentViewsGetSetByPath(t *testing.T) {
+	clearStowageEnv(t)
+	tmp := writeTmpFile(t, []byte("retrieval:\n  agent_views:\n    on_policy_error: closed\n"))
+	cfg, err := config.Load(context.Background(), tmp)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Retrieval.AgentViews.OnPolicyError != "closed" {
+		t.Errorf("on_policy_error via file = %q, want closed", cfg.Retrieval.AgentViews.OnPolicyError)
+	}
+	// subject_precedence was not set in the file — must fall back to the default.
+	if cfg.Retrieval.AgentViews.SubjectPrecedence != "agent,key" {
+		t.Errorf("subject_precedence fallback = %q, want agent,key", cfg.Retrieval.AgentViews.SubjectPrecedence)
+	}
+}

@@ -115,6 +115,9 @@
     "degraded_agent_filter": {
       "type": "boolean"
     },
+    "degraded_view": {
+      "type": "boolean"
+    },
     "cache_hit": {
       "type": "boolean"
     },

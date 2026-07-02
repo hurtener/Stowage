@@ -323,6 +323,11 @@ func (c *embeddedClient) Retrieve(ctx context.Context, req RetrieveRequest) (Ret
 		Profile:       req.Profile,
 		IncludeTopics: req.IncludeTopics,
 		ExcludeTopics: req.ExcludeTopics,
+		ViewName:      req.ViewName,
+		// CredentialKeyID (ae9, D-149) stays unset for the embedded/in-process
+		// path: there is no HTTP key here, and an in-process caller is already
+		// trusted and scope-bounded — only the "agent" subject (req.AgentID,
+		// via callScope below) applies. The "key" view subject is unused.
 	})
 	if err != nil {
 		return RetrieveResponse{}, fmt.Errorf("sdk: retrieve: %w", err)
@@ -380,6 +385,7 @@ func (c *embeddedClient) Retrieve(ctx context.Context, req RetrieveRequest) (Ret
 		DegradedRerank:      resp.DegradedRerank,
 		DegradedTopicFilter: resp.DegradedTopicFilter,
 		DegradedAgentFilter: resp.DegradedAgentFilter,
+		DegradedView:        resp.DegradedView,
 		CacheHit:            resp.CacheHit,
 		API:                 resp.API,
 		Rendered:            retrieval.RenderReadBody(resp.Items),

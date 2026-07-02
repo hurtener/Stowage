@@ -205,6 +205,14 @@ func makeRetrieveHandler(svc *Services) tool.Handler[RetrieveInput, RetrieveOutp
 			Profile:       in.Profile,
 			IncludeTopics: in.IncludeTopics,
 			ExcludeTopics: in.ExcludeTopics,
+			ViewName:      in.ViewName,
+			// CredentialKeyID (ae9, D-149): the "key" topic-view subject fallback,
+			// SERVER-INJECTED from the verified credential via the new
+			// KeyIDFromContext plumbing (AuthMiddleware/KeyringMiddleware) — never
+			// a wire field on RetrieveInput, so a caller can never spoof another
+			// key's views. "" in stdio mode (no per-request key — agent views
+			// still resolve via scope.Agent) and in ModeJWT (no stored *auth.Key).
+			CredentialKeyID: KeyIDFromContext(ctx),
 		})
 		if err != nil {
 			return tool.Result[RetrieveOutput]{}, fmt.Errorf("memory_retrieve: %w", err)
@@ -255,6 +263,7 @@ func makeRetrieveHandler(svc *Services) tool.Handler[RetrieveInput, RetrieveOutp
 			DegradedRerank:      resp.DegradedRerank,
 			DegradedTopicFilter: resp.DegradedTopicFilter,
 			DegradedAgentFilter: resp.DegradedAgentFilter,
+			DegradedView:        resp.DegradedView,
 			CacheHit:            resp.CacheHit,
 			API:                 resp.API,
 		}
@@ -1056,6 +1065,98 @@ func makeAgentPolicyHandler(svc *Services) tool.Handler[AgentPolicyInput, AgentP
 
 func agentPolicyResult(out AgentPolicyOutput, text string) tool.Result[AgentPolicyOutput] {
 	return tool.Result[AgentPolicyOutput]{Text: text, Structured: out}
+}
+
+// ─── memory_views (Phase ae9 — D-149/D-151) ────────────────────────────────────
+
+func viewToWire(v store.TopicView) ViewRecord {
+	return ViewRecord{
+		SubjectKind: v.SubjectKind, SubjectID: v.SubjectID, ViewName: v.ViewName,
+		AllowTopics: v.AllowTopics, DenyTopics: v.DenyTopics,
+		CreatedAt: v.CreatedAt, UpdatedAt: v.UpdatedAt,
+	}
+}
+
+// makeViewsHandler implements memory_views: op-dispatched
+// (create_view|update_view|delete_view|list_views) admin over named topic
+// views (D-149/D-151). View-admin tier (mirrors makeGrantsHandler/
+// makeAgentPolicyHandler): reachable on {HTTP, MCP} only, never the
+// single-user SDK (D-067). The CORE is svc.ViewsSvc.* — validation
+// ((store.TopicView).Validate) and the governance audit-event emission live
+// there, ONCE, so this handler is a thin caller and NEVER emits an event
+// itself (D-067/D-073 — grep-enforced by scripts/smoke/phase-ae9.sh).
+func makeViewsHandler(svc *Services) tool.Handler[ViewsInput, ViewsOutput] {
+	return func(ctx context.Context, in ViewsInput) (tool.Result[ViewsOutput], error) {
+		scope, err := svc.ScopeFn(ctx)
+		if err != nil {
+			return tool.Result[ViewsOutput]{}, fmt.Errorf("memory_views: resolve scope: %w", err)
+		}
+		// D-138 tenant guard (admin verb, tenant-scoped like memory_grants/
+		// memory_agent_policy; identity discarded).
+		if _, err := readMetaIdentity(ctx, scope.Tenant); err != nil {
+			return tool.Result[ViewsOutput]{}, fmt.Errorf("memory_views: %w", err)
+		}
+		if svc.ViewsSvc == nil {
+			return tool.Result[ViewsOutput]{}, fmt.Errorf("memory_views: views service not available")
+		}
+		tenantScope := identity.Scope{Tenant: scope.Tenant}
+
+		switch in.Action {
+		case "create_view":
+			v, err := svc.ViewsSvc.CreateView(ctx, tenantScope, store.TopicView{
+				SubjectKind: in.SubjectKind, SubjectID: in.SubjectID, ViewName: in.ViewName,
+				AllowTopics: in.AllowTopics, DenyTopics: in.DenyTopics,
+			})
+			if err != nil {
+				return tool.Result[ViewsOutput]{}, fmt.Errorf("memory_views: create_view: %w", err)
+			}
+			wire := viewToWire(*v)
+			return viewsResult(ViewsOutput{View: &wire}, fmt.Sprintf("Created view %s/%s/%s", wire.SubjectKind, wire.SubjectID, wire.ViewName)), nil
+
+		case "update_view":
+			v, err := svc.ViewsSvc.UpdateView(ctx, tenantScope, store.TopicView{
+				SubjectKind: in.SubjectKind, SubjectID: in.SubjectID, ViewName: in.ViewName,
+				AllowTopics: in.AllowTopics, DenyTopics: in.DenyTopics,
+			})
+			if err != nil {
+				return tool.Result[ViewsOutput]{}, fmt.Errorf("memory_views: update_view: %w", err)
+			}
+			wire := viewToWire(*v)
+			return viewsResult(ViewsOutput{View: &wire}, fmt.Sprintf("Updated view %s/%s/%s", wire.SubjectKind, wire.SubjectID, wire.ViewName)), nil
+
+		case "delete_view":
+			if in.SubjectKind == "" || in.SubjectID == "" {
+				return tool.Result[ViewsOutput]{}, fmt.Errorf("memory_views: subject_kind and subject_id are required for delete_view")
+			}
+			viewName := in.ViewName
+			if viewName == "" {
+				viewName = "default"
+			}
+			if err := svc.ViewsSvc.DeleteView(ctx, tenantScope, in.SubjectKind, in.SubjectID, viewName); err != nil {
+				return tool.Result[ViewsOutput]{}, fmt.Errorf("memory_views: delete_view: %w", err)
+			}
+			id := in.SubjectKind + "/" + in.SubjectID + "/" + viewName
+			return viewsResult(ViewsOutput{Deleted: id}, fmt.Sprintf("Deleted view %s", id)), nil
+
+		case "list_views":
+			list, err := svc.ViewsSvc.ListViews(ctx, tenantScope, in.SubjectKind, in.SubjectID)
+			if err != nil {
+				return tool.Result[ViewsOutput]{}, fmt.Errorf("memory_views: list_views: %w", err)
+			}
+			out := ViewsOutput{Views: make([]ViewRecord, len(list))}
+			for i, v := range list {
+				out.Views[i] = viewToWire(v)
+			}
+			return viewsResult(out, fmt.Sprintf("Listed %d view(s)", len(out.Views))), nil
+
+		default:
+			return tool.Result[ViewsOutput]{}, fmt.Errorf("memory_views: unknown action %q (want create_view|update_view|delete_view|list_views)", in.Action)
+		}
+	}
+}
+
+func viewsResult(out ViewsOutput, text string) tool.Result[ViewsOutput] {
+	return tool.Result[ViewsOutput]{Text: text, Structured: out}
 }
 
 // makeEpisodesHandler implements memory_episodes (RFC §6b, D-080): the

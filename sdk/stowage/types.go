@@ -64,6 +64,14 @@ type RetrieveRequest struct {
 	// Read-time only: stamped onto Scope.Agent in-process (embedded) or ridden by
 	// the JSON tag (HTTP), never persisted. Empty = no agent filtering.
 	AgentID string `json:"agent_id,omitempty"`
+	// ViewName selects a named topic VIEW to apply (ae9, D-149) — a curation
+	// lens bound to the CALLER'S OWN subject (AgentID above, or in HTTP mode
+	// the verified credential key id server-injected by the API — never a
+	// wire field on ANY surface, see RetrieveResponse.DegradedView). Empty ⇒
+	// "default" (== ae1's single binding). Apply-only: view ADMIN is
+	// deliberately absent from the SDK (D-067 tiering — matches memory_grants/
+	// memory_agent_policy).
+	ViewName string `json:"view_name,omitempty"`
 }
 
 // RetrieveBreakdown is the per-item scoring breakdown (present when Debug:true).
@@ -130,9 +138,15 @@ type RetrieveResponse struct {
 	// DegradedAgentFilter is true when AgentID was bound to a policy but the
 	// agent-policy store failed, so the caller's own UNFILTERED results were
 	// returned instead (fail-open, D-139/D-036, ae1).
-	DegradedAgentFilter bool   `json:"degraded_agent_filter,omitempty"`
-	CacheHit            bool   `json:"cache_hit,omitempty"`
-	API                 string `json:"api"`
+	DegradedAgentFilter bool `json:"degraded_agent_filter,omitempty"`
+	// DegradedView is true when the caller's topic-view subject was bound to a
+	// named view but the views store failed, so the caller's own UNFILTERED
+	// results were returned instead — unless agent_views.on_policy_error=closed,
+	// in which case no results are returned (still DegradedView=true; fail-open
+	// by default, D-139/D-036, ae9).
+	DegradedView bool   `json:"degraded_view,omitempty"`
+	CacheHit     bool   `json:"cache_hit,omitempty"`
+	API          string `json:"api"`
 	// Rendered is the identical lean markdown reader body the MCP Text block and
 	// HTTP `rendered` field carry (D-142, ae4a) — the same retrieval.RenderReadBody
 	// call, so all three single-user read surfaces stay byte-identical (D-067/

@@ -79,6 +79,12 @@ type RetrieveInput struct {
 	// (D-139, see RetrieveOutput.DegradedTopicFilter). Empty = no constraint.
 	IncludeTopics []string `json:"include_topics,omitempty"`
 	ExcludeTopics []string `json:"exclude_topics,omitempty"`
+	// ViewName selects a named topic VIEW to apply (ae9, D-149) — a curation
+	// lens bound to the CALLER'S OWN subject (its agent identity from _meta, or
+	// else its verified credential key id — never a wire argument, see
+	// KeyIDFromContext). Empty ⇒ "default" (== ae1's single binding). Fails
+	// open on a views-store error (D-139, see RetrieveOutput.DegradedView).
+	ViewName string `json:"view_name,omitempty"`
 }
 
 // RetrieveItem is one result in the memory_retrieve output.
@@ -124,9 +130,15 @@ type RetrieveOutput struct {
 	// DegradedAgentFilter is true when the caller's agent identity (_meta.agent_id)
 	// was bound to a policy but the agent-policy store failed, so the caller's own
 	// UNFILTERED results were returned instead (fail-open, D-139/D-036, ae1).
-	DegradedAgentFilter bool   `json:"degraded_agent_filter,omitempty"`
-	CacheHit            bool   `json:"cache_hit,omitempty"`
-	API                 string `json:"api"`
+	DegradedAgentFilter bool `json:"degraded_agent_filter,omitempty"`
+	// DegradedView is true when the caller's topic-view subject was bound to a
+	// named view but the views store failed, so the caller's own UNFILTERED
+	// results were returned instead — unless agent_views.on_policy_error=closed,
+	// in which case no results are returned (still DegradedView=true; fail-open
+	// by default, D-139/D-036, ae9).
+	DegradedView bool   `json:"degraded_view,omitempty"`
+	CacheHit     bool   `json:"cache_hit,omitempty"`
+	API          string `json:"api"`
 }
 
 // ─── memory_playbook (D-072) ───────────────────────────────────────────────────
@@ -624,6 +636,46 @@ type AgentPolicyOutput struct {
 	Policy   *AgentPolicyRecord  `json:"policy,omitempty"`
 	Policies []AgentPolicyRecord `json:"policies,omitempty"`
 	Deleted  string              `json:"deleted,omitempty"`
+}
+
+// ─── memory_views (Phase ae9 — D-149/D-151) ────────────────────────────────────
+
+// ViewsInput is the action-tagged memory_views tool input. action ∈
+// {create_view, update_view, delete_view, list_views}. View-admin tier:
+// reachable on {HTTP, MCP} only, never the single-user SDK (D-067), matching
+// memory_grants'/memory_agent_policy's tiering. subject_kind/subject_id/
+// view_name identify the natural key (subject_kind ∈ {agent,key}; view_name
+// defaults "default" when empty). allow_topics/deny_topics are the view's
+// curation lens, written by create_view/update_view (a full replace on
+// update_view, mirroring memory_agent_policy's create semantics).
+// list_views optionally narrows by subject_kind+subject_id (both set, or both
+// empty for every tenant view).
+type ViewsInput struct {
+	Action      string   `json:"action"`
+	SubjectKind string   `json:"subject_kind,omitempty"`
+	SubjectID   string   `json:"subject_id,omitempty"`
+	ViewName    string   `json:"view_name,omitempty"`
+	AllowTopics []string `json:"allow_topics,omitempty"`
+	DenyTopics  []string `json:"deny_topics,omitempty"`
+}
+
+// ViewRecord mirrors the store.TopicView wire shape.
+type ViewRecord struct {
+	SubjectKind string   `json:"subject_kind"`
+	SubjectID   string   `json:"subject_id"`
+	ViewName    string   `json:"view_name"`
+	AllowTopics []string `json:"allow_topics,omitempty"`
+	DenyTopics  []string `json:"deny_topics,omitempty"`
+	CreatedAt   int64    `json:"created_at,omitempty"`
+	UpdatedAt   int64    `json:"updated_at,omitempty"`
+}
+
+// ViewsOutput is the memory_views tool output; only the fields relevant to the
+// requested action are populated.
+type ViewsOutput struct {
+	View    *ViewRecord  `json:"view,omitempty"`
+	Views   []ViewRecord `json:"views,omitempty"`
+	Deleted string       `json:"deleted,omitempty"`
 }
 
 // ─── memory reversibility tools (D-070) ───────────────────────────────────────

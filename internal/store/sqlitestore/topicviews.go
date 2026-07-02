@@ -200,3 +200,248 @@ func (t *topicViewStore) DeleteAgentPolicy(ctx context.Context, scope identity.S
 		return nil
 	})
 }
+
+// --- ae9 (D-149/D-151): named-view admin CRUD over the SAME junction rows ---
+
+// viewID synthesizes a readable, deterministic domain-level identifier for a
+// view — the junction table has no single row that owns a view's identity (a
+// view is a SET of per-key rows), so this is informational only; every
+// CreateView/UpdateView/DeleteView/GetView/ListViews call still addresses a
+// view by its natural key, never by this string.
+func viewID(subjectKind, subjectID, viewName string) string {
+	return subjectKind + "/" + subjectID + "/" + viewName
+}
+
+// viewRowsExistTx reports whether any row exists for the given natural key,
+// within tx. Used by CreateView (conflict check) and UpdateView (existence
+// check); sqlite's single-writer serialization (s.exec) makes the check+write
+// atomic relative to other writes.
+func viewRowsExistTx(tx *sql.Tx, tenant, subjectKind, subjectID, viewName string) (bool, error) {
+	var n int
+	err := tx.QueryRow(`
+		SELECT count(*) FROM topic_views
+		WHERE tenant_id=? AND subject_kind=? AND subject_id=? AND view_name=?`,
+		tenant, subjectKind, subjectID, viewName,
+	).Scan(&n)
+	return n > 0, err
+}
+
+// insertViewRowsTx inserts one row per allow/deny topic key, within tx.
+func insertViewRowsTx(tx *sql.Tx, tenant, subjectKind, subjectID, viewName string, allow, deny []string, now int64) error {
+	insert := func(topicKey, effect string) error {
+		_, err := tx.Exec(`
+			INSERT INTO topic_views
+				(id, tenant_id, subject_kind, subject_id, view_name, topic_key, effect, created_at, updated_at)
+			VALUES (?,?,?,?,?,?,?,?,?)`,
+			ulid.Make().String(), tenant, subjectKind, subjectID, viewName,
+			topicKey, effect, now, now,
+		)
+		return err
+	}
+	for _, k := range allow {
+		if err := insert(k, "allow"); err != nil {
+			return err
+		}
+	}
+	for _, k := range deny {
+		if err := insert(k, "deny"); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// CreateView inserts a new named view. ErrConflict when a view already exists
+// for the natural key (tenant_id, subject_kind, subject_id, view_name) — the
+// pre-check runs inside the same write transaction as the insert (existence,
+// not just the per-key UNIQUE index, since two non-overlapping topic-key sets
+// for the same natural key would not otherwise collide on that index).
+func (t *topicViewStore) CreateView(ctx context.Context, scope identity.Scope, v store.TopicView) error {
+	if scope.Tenant == "" {
+		return store.ErrScopeRequired
+	}
+	if err := v.Validate(); err != nil {
+		return err
+	}
+	return t.s.exec(ctx, func(tx *sql.Tx) error {
+		exists, err := viewRowsExistTx(tx, scope.Tenant, v.SubjectKind, v.SubjectID, v.ViewName)
+		if err != nil {
+			return fmt.Errorf("sqlitestore: CreateView exists check: %w", err)
+		}
+		if exists {
+			return store.ErrConflict
+		}
+		now := time.Now().UnixMilli()
+		if err := insertViewRowsTx(tx, scope.Tenant, v.SubjectKind, v.SubjectID, v.ViewName, v.AllowTopics, v.DenyTopics, now); err != nil {
+			if sqliteIsUnique(err) {
+				return store.ErrConflict
+			}
+			return fmt.Errorf("sqlitestore: CreateView insert: %w", err)
+		}
+		return nil
+	})
+}
+
+// UpdateView atomically replaces an existing view's AllowTopics/DenyTopics
+// (delete-then-insert, matching PutAgentPolicy's precedent) — the end row set
+// always matches v's lists exactly. ErrNotFound when the view does not exist.
+func (t *topicViewStore) UpdateView(ctx context.Context, scope identity.Scope, v store.TopicView) error {
+	if scope.Tenant == "" {
+		return store.ErrScopeRequired
+	}
+	if err := v.Validate(); err != nil {
+		return err
+	}
+	return t.s.exec(ctx, func(tx *sql.Tx) error {
+		exists, err := viewRowsExistTx(tx, scope.Tenant, v.SubjectKind, v.SubjectID, v.ViewName)
+		if err != nil {
+			return fmt.Errorf("sqlitestore: UpdateView exists check: %w", err)
+		}
+		if !exists {
+			return store.ErrNotFound
+		}
+		if _, err := tx.Exec(`
+			DELETE FROM topic_views
+			WHERE tenant_id=? AND subject_kind=? AND subject_id=? AND view_name=?`,
+			scope.Tenant, v.SubjectKind, v.SubjectID, v.ViewName,
+		); err != nil {
+			return fmt.Errorf("sqlitestore: UpdateView delete: %w", err)
+		}
+		now := time.Now().UnixMilli()
+		if err := insertViewRowsTx(tx, scope.Tenant, v.SubjectKind, v.SubjectID, v.ViewName, v.AllowTopics, v.DenyTopics, now); err != nil {
+			return fmt.Errorf("sqlitestore: UpdateView insert: %w", err)
+		}
+		return nil
+	})
+}
+
+// DeleteView removes every row for a view's natural key. ErrNotFound when absent.
+func (t *topicViewStore) DeleteView(ctx context.Context, scope identity.Scope, subjectKind, subjectID, viewName string) error {
+	if scope.Tenant == "" {
+		return store.ErrScopeRequired
+	}
+	return t.s.exec(ctx, func(tx *sql.Tx) error {
+		res, err := tx.Exec(`
+			DELETE FROM topic_views
+			WHERE tenant_id=? AND subject_kind=? AND subject_id=? AND view_name=?`,
+			scope.Tenant, subjectKind, subjectID, viewName,
+		)
+		if err != nil {
+			return err
+		}
+		n, _ := res.RowsAffected()
+		if n == 0 {
+			return store.ErrNotFound
+		}
+		return nil
+	})
+}
+
+// ListViews returns all views for the tenant, optionally narrowed to one
+// subject (subjectKind/subjectID both non-empty), ordered by CREATED_AT
+// ascending (the earliest row of the earliest-created view appears first;
+// see the row-order aggregation note on aggregateViewRows).
+func (t *topicViewStore) ListViews(ctx context.Context, scope identity.Scope, subjectKind, subjectID string) ([]store.TopicView, error) {
+	if scope.Tenant == "" {
+		return nil, store.ErrScopeRequired
+	}
+	var rows *sql.Rows
+	var err error
+	if subjectKind != "" && subjectID != "" {
+		rows, err = t.s.rdb.QueryContext(ctx, `
+			SELECT subject_kind, subject_id, view_name, topic_key, effect, created_at, updated_at
+			FROM topic_views
+			WHERE tenant_id=? AND subject_kind=? AND subject_id=?
+			ORDER BY created_at ASC, subject_kind ASC, subject_id ASC, view_name ASC, topic_key ASC`,
+			scope.Tenant, subjectKind, subjectID,
+		)
+	} else {
+		rows, err = t.s.rdb.QueryContext(ctx, `
+			SELECT subject_kind, subject_id, view_name, topic_key, effect, created_at, updated_at
+			FROM topic_views
+			WHERE tenant_id=?
+			ORDER BY created_at ASC, subject_kind ASC, subject_id ASC, view_name ASC, topic_key ASC`,
+			scope.Tenant,
+		)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("sqlitestore: ListViews: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	return aggregateViewRows(scope.Tenant, rows)
+}
+
+// aggregateViewRows groups (subject_kind, subject_id, view_name, topic_key,
+// effect) rows into []store.TopicView, aggregating AllowTopics/DenyTopics and
+// the CreatedAt/UpdatedAt bounds per view, preserving the row stream's
+// first-seen order per distinct natural key (the caller's SQL ORDER BY
+// created_at ASC makes that also the correct view-level CreatedAt ordering).
+func aggregateViewRows(tenant string, rows *sql.Rows) ([]store.TopicView, error) {
+	byKey := make(map[string]*store.TopicView)
+	var order []string
+	for rows.Next() {
+		var subjectKind, subjectID, viewName, topicKey, effect string
+		var createdAt, updatedAt int64
+		if err := rows.Scan(&subjectKind, &subjectID, &viewName, &topicKey, &effect, &createdAt, &updatedAt); err != nil {
+			return nil, err
+		}
+		key := subjectKind + "\x00" + subjectID + "\x00" + viewName
+		v, ok := byKey[key]
+		if !ok {
+			v = &store.TopicView{
+				ID: viewID(subjectKind, subjectID, viewName), TenantID: tenant,
+				SubjectKind: subjectKind, SubjectID: subjectID, ViewName: viewName,
+				CreatedAt: createdAt, UpdatedAt: updatedAt,
+			}
+			byKey[key] = v
+			order = append(order, key)
+		}
+		if createdAt < v.CreatedAt {
+			v.CreatedAt = createdAt
+		}
+		if updatedAt > v.UpdatedAt {
+			v.UpdatedAt = updatedAt
+		}
+		switch effect {
+		case "allow":
+			v.AllowTopics = append(v.AllowTopics, topicKey)
+		case "deny":
+			v.DenyTopics = append(v.DenyTopics, topicKey)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	out := make([]store.TopicView, 0, len(order))
+	for _, k := range order {
+		out = append(out, *byKey[k])
+	}
+	return out, nil
+}
+
+// GetView resolves one view by natural key, aggregating its junction rows.
+// ErrNotFound when no rows exist for the natural key.
+func (t *topicViewStore) GetView(ctx context.Context, scope identity.Scope, subjectKind, subjectID, viewName string) (*store.TopicView, error) {
+	if scope.Tenant == "" {
+		return nil, store.ErrScopeRequired
+	}
+	rows, err := t.s.rdb.QueryContext(ctx, `
+		SELECT subject_kind, subject_id, view_name, topic_key, effect, created_at, updated_at
+		FROM topic_views
+		WHERE tenant_id=? AND subject_kind=? AND subject_id=? AND view_name=?
+		ORDER BY topic_key ASC`,
+		scope.Tenant, subjectKind, subjectID, viewName,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("sqlitestore: GetView: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	views, err := aggregateViewRows(scope.Tenant, rows)
+	if err != nil {
+		return nil, err
+	}
+	if len(views) == 0 {
+		return nil, store.ErrNotFound
+	}
+	return &views[0], nil
+}

@@ -189,7 +189,7 @@ type RetrievalConfig struct {
 }
 
 // AgentViewsConfig groups the read-time agent->topic filter knobs (ae1,
-// D-135/D-146/D-151).
+// D-135/D-146/D-151) and the ae9 named-view apply knobs (D-149).
 type AgentViewsConfig struct {
 	// Enabled is the master switch for the read-time agent->topic filter (D-151:
 	// the one shared enable knob for the topic_views table, introduced by ae1,
@@ -198,6 +198,20 @@ type AgentViewsConfig struct {
 	// operator opts in. Fail-open behaviour on a policy-store error is hardwired
 	// per D-139 (not a knob).
 	Enabled bool `yaml:"enabled"`
+	// OnPolicyError (ae9, D-149) is the fail posture on a VIEWS-STORE error (not
+	// on "view not found", which is always an unbound pass-through regardless of
+	// this knob). "open" (default) returns the caller's full own-scope results
+	// with DegradedView=true — the D-139-aligned value and the only one that
+	// keeps a view a curation lens. "closed" drops results on error (a
+	// defense-in-depth operator override that re-tiers the view toward
+	// isolation — the tenant boundary is unaffected either way). Enum
+	// {open,closed}, validated.
+	OnPolicyError string `yaml:"on_policy_error"`
+	// SubjectPrecedence (ae9, D-149) is the order in which the topic-view
+	// subject is resolved when both an agent id and a verified key id are
+	// present. "agent,key" (default) ⇒ the agent view wins; "key,agent" flips
+	// it. Enum {"agent,key","key,agent"}, validated.
+	SubjectPrecedence string `yaml:"subject_precedence"`
 }
 
 // ProfileTuning overrides one retrieval profile's candidate windows. A zero field
@@ -357,6 +371,8 @@ var allKeys = []string{
 	"retrieval.browse_default_limit",
 	"retrieval.topic_filter_scoring_k",
 	"retrieval.agent_views.enabled",
+	"retrieval.agent_views.on_policy_error",
+	"retrieval.agent_views.subject_precedence",
 	"retrieval.read_posture",
 	"identity.multiplexing",
 	"auth.mode",
@@ -477,11 +493,15 @@ func Defaults() *Config {
 			StdioTenant: "default",
 		},
 		Retrieval: RetrievalConfig{
-			IncludeSuperseded:   true,                             // dual-visibility default (§6c, D-105)
-			BrowseDefaultLimit:  30,                               // ae5 browse page size (D-143)
-			TopicFilterScoringK: 100,                              // ae6 topic-filter candidate window (D-144)
-			AgentViews:          AgentViewsConfig{Enabled: false}, // ae1 agent filter master switch (D-135/D-146/D-151), off by default
-			ReadPosture:         "compatible",                     // ae8 resolve-time presence gate (D-137/D-148), byte-identical default
+			IncludeSuperseded:   true, // dual-visibility default (§6c, D-105)
+			BrowseDefaultLimit:  30,   // ae5 browse page size (D-143)
+			TopicFilterScoringK: 100,  // ae6 topic-filter candidate window (D-144)
+			AgentViews: AgentViewsConfig{
+				Enabled:           false,       // ae1 agent filter master switch (D-135/D-146/D-151), off by default
+				OnPolicyError:     "open",      // ae9 D-139-aligned fail-open default (D-149)
+				SubjectPrecedence: "agent,key", // ae9 agent wins when both an agent id and a key id are present (D-149)
+			},
+			ReadPosture: "compatible", // ae8 resolve-time presence gate (D-137/D-148), byte-identical default
 		},
 		Identity: IdentityConfig{
 			Multiplexing: false, // ae8 global interim knob (D-137/D-148), off by default
@@ -615,6 +635,17 @@ func (c *Config) FillZeroDefaults() {
 	// window the same way the server does (D-069 parity lens).
 	if c.Retrieval.TopicFilterScoringK == 0 {
 		c.Retrieval.TopicFilterScoringK = d.Retrieval.TopicFilterScoringK
+	}
+	// retrieval.agent_views.{on_policy_error,subject_precedence} (ae9, D-149) are
+	// closed-enum strings like read_posture below — an empty value would fail
+	// Validate(), so a zero field is filled to its byte-identical default
+	// (parity with the server's Load path). Enabled stays a bare bool zero-fill
+	// (false == the default; no fill needed).
+	if c.Retrieval.AgentViews.OnPolicyError == "" {
+		c.Retrieval.AgentViews.OnPolicyError = d.Retrieval.AgentViews.OnPolicyError
+	}
+	if c.Retrieval.AgentViews.SubjectPrecedence == "" {
+		c.Retrieval.AgentViews.SubjectPrecedence = d.Retrieval.AgentViews.SubjectPrecedence
 	}
 	// retrieval.read_posture (ae8, D-137/D-148) is a closed-enum string like
 	// auth.mode below — an empty value would fail Validate(), so a zero field
@@ -827,6 +858,17 @@ func (c *Config) Validate() error {
 		errs = append(errs, fmt.Errorf("config.retrieval.topic_filter_scoring_k: %d must be > 0", c.Retrieval.TopicFilterScoringK))
 	} else if c.Retrieval.TopicFilterScoringK > 100 {
 		errs = append(errs, fmt.Errorf("config.retrieval.topic_filter_scoring_k: %d exceeds the hard result cap (100)", c.Retrieval.TopicFilterScoringK))
+	}
+
+	// retrieval.agent_views.on_policy_error (ae9, D-149): closed-enum, open|closed.
+	validOnPolicyErrors := map[string]bool{"open": true, "closed": true}
+	if !validOnPolicyErrors[c.Retrieval.AgentViews.OnPolicyError] {
+		errs = append(errs, fmt.Errorf("config.retrieval.agent_views.on_policy_error: unknown value %q (valid: open, closed)", c.Retrieval.AgentViews.OnPolicyError))
+	}
+	// retrieval.agent_views.subject_precedence (ae9, D-149): closed-enum, the two permutations.
+	validPrecedences := map[string]bool{"agent,key": true, "key,agent": true}
+	if !validPrecedences[c.Retrieval.AgentViews.SubjectPrecedence] {
+		errs = append(errs, fmt.Errorf("config.retrieval.agent_views.subject_precedence: unknown value %q (valid: agent,key, key,agent)", c.Retrieval.AgentViews.SubjectPrecedence))
 	}
 
 	// retrieval.read_posture (ae8, D-137/D-148): closed-enum, compatible|strict.
@@ -1054,6 +1096,10 @@ func (c *Config) getByPath(path string) string {
 		return strconv.Itoa(c.Retrieval.TopicFilterScoringK)
 	case "retrieval.agent_views.enabled":
 		return strconv.FormatBool(c.Retrieval.AgentViews.Enabled)
+	case "retrieval.agent_views.on_policy_error":
+		return c.Retrieval.AgentViews.OnPolicyError
+	case "retrieval.agent_views.subject_precedence":
+		return c.Retrieval.AgentViews.SubjectPrecedence
 	case "retrieval.read_posture":
 		return c.Retrieval.ReadPosture
 	case "identity.multiplexing":
@@ -1223,6 +1269,10 @@ func (c *Config) setByPath(path, value string) error {
 			return fmt.Errorf("config.%s: %w", path, err)
 		}
 		c.Retrieval.AgentViews.Enabled = b
+	case "retrieval.agent_views.on_policy_error":
+		c.Retrieval.AgentViews.OnPolicyError = value
+	case "retrieval.agent_views.subject_precedence":
+		c.Retrieval.AgentViews.SubjectPrecedence = value
 	case "retrieval.read_posture":
 		c.Retrieval.ReadPosture = value
 	case "identity.multiplexing":

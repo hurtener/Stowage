@@ -23,7 +23,7 @@ type authKeyCtxKey struct{}
 func (s *Server) authMiddleware(next http.HandlerFunc, requireAdmin bool) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		hdr := r.Header.Get("Authorization")
-		scope, role, err := s.authn.Authenticate(r.Context(), hdr, r.Header.Get(auth.SessionHeader))
+		scope, role, keyID, err := s.authn.Authenticate(r.Context(), hdr, r.Header.Get(auth.SessionHeader))
 		if err != nil {
 			respondJSON(w, http.StatusUnauthorized, errBody("authentication failed: "+auth.ReasonForWire(err)))
 			return
@@ -36,8 +36,10 @@ func (s *Server) authMiddleware(next http.HandlerFunc, requireAdmin bool) http.H
 
 		// Back-compat: synthesize a *auth.Key so keyFromContext/scopeFromRequest
 		// keep compiling and behaving on BOTH modes. In ModeJWT this is a
-		// synthetic view over the verified Scope, not a real stored key.
-		key := &auth.Key{TenantID: scope.Tenant, Role: role}
+		// synthetic view over the verified Scope, not a real stored key — ID
+		// stays "" there (ae9, D-149: the "key" topic-view subject fallback
+		// simply never resolves for a JWT-mode caller; see auth.Authenticate).
+		key := &auth.Key{TenantID: scope.Tenant, Role: role, ID: keyID}
 		ctx := context.WithValue(r.Context(), authKeyCtxKey{}, key)
 		// The FULL verified Scope (Tenant/User/Session in ModeJWT) is set
 		// alongside (P3) — ae7's core deliverable; ae8 wires read handlers to

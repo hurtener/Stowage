@@ -32,6 +32,7 @@ import (
 	"github.com/hurtener/stowage/internal/retrieval"
 	"github.com/hurtener/stowage/internal/store"
 	"github.com/hurtener/stowage/internal/topics"
+	"github.com/hurtener/stowage/internal/views"
 )
 
 // pipelineCap is the bounded pipeline channel capacity.
@@ -76,6 +77,10 @@ type Server struct {
 	// grantsSvc provides group and grant management (Phase 15).
 	// Set via SetGrantsService before calling ListenAndServe.
 	grantsSvc *grants.Service
+
+	// viewsSvc provides named topic-view admin (Phase ae9, D-149/D-151).
+	// Set via SetViewsService before calling ListenAndServe.
+	viewsSvc *views.Service
 
 	// gw is the intelligence seam, used by POST /v1/verify (claim entailment,
 	// Phase 25). Set via SetGateway. May be nil — verify then degrades to unclear.
@@ -229,6 +234,16 @@ func New(cfg *config.Config, st store.Store, log *slog.Logger, reg *prometheus.R
 	mux.HandleFunc("GET /v1/scopes/agent-policies/{agent_id}", srv.authMiddleware(srv.handleGetAgentPolicy, false))
 	mux.HandleFunc("DELETE /v1/scopes/agent-policies/{agent_id}", srv.authMiddleware(srv.handleDeleteAgentPolicy, false))
 
+	// ae9: named per-agent/per-key topic-view admin (agent or admin key) —
+	// D-149/D-151. Registered before the {subject_kind}/{subject_id}/{view_name}
+	// path so the more-specific pattern still wins (matches the ae1
+	// agent-policies precedent — net/http picks the longest match; ordering
+	// here is documentation, not a correctness requirement).
+	mux.HandleFunc("GET /v1/scopes/views", srv.authMiddleware(srv.handleListViews, false))
+	mux.HandleFunc("POST /v1/scopes/views", srv.authMiddleware(srv.handleCreateView, false))
+	mux.HandleFunc("PUT /v1/scopes/views", srv.authMiddleware(srv.handleUpdateView, false))
+	mux.HandleFunc("DELETE /v1/scopes/views/{subject_kind}/{subject_id}/{view_name}", srv.authMiddleware(srv.handleDeleteView, false))
+
 	// ae5: deterministic, gateway-free scoped browse (D-143). Registered before
 	// the {id} path so ServeMux's more-specific pattern still wins for
 	// /v1/memories/{id}; net/http's mux picks the longest match, so ordering
@@ -291,6 +306,12 @@ func (s *Server) SetRetriever(r *retrieval.Retriever) {
 // endpoints (Phase 15). Must be called before ListenAndServe.
 func (s *Server) SetGrantsService(svc *grants.Service) {
 	s.grantsSvc = svc
+}
+
+// SetViewsService wires the views.Service used by the /v1/scopes/views
+// endpoints (Phase ae9, D-149/D-151). Must be called before ListenAndServe.
+func (s *Server) SetViewsService(svc *views.Service) {
+	s.viewsSvc = svc
 }
 
 // SetAuthenticator overrides the default keyring-only Authenticator (ae7,

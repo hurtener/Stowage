@@ -130,6 +130,55 @@ type AgentPolicy struct {
 	UpdatedAt   int64    // unix millis
 }
 
+// TopicView is a named read-time curation lens bound to a subject, resolved
+// (aggregated) from ae1's topic_views junction table — one row per topic key —
+// never stored as a JSON blob (D-151, ae9). It generalizes AgentPolicy: ae1's
+// row is exactly (SubjectKind="agent", ViewName="default") with a single-key
+// row. Applying a view can only SUBTRACT from the caller's own-scope results
+// (curation, never isolation — D-139); the tenant from the verified credential
+// remains the sole P3 boundary.
+type TopicView struct {
+	ID          string   // ULID (domain-level view identity; not a single junction row)
+	TenantID    string   // == scope.Tenant (the only P3 boundary)
+	SubjectKind string   // "agent" | "key"
+	SubjectID   string   // agent_id (ae1, from _meta) OR auth.Key.ID
+	ViewName    string   // "default" when unnamed (== ae1's binding)
+	AllowTopics []string // aggregated from junction rows with effect='allow' (empty = no include constraint)
+	DenyTopics  []string // aggregated from junction rows with effect='deny'
+	CreatedAt   int64    // unix millis
+	UpdatedAt   int64    // unix millis
+}
+
+// Validate normalizes the natural key and rejects a malformed TopicView BEFORE
+// either driver's CreateView/UpdateView writes a row — validation lives here
+// (the core) so no surface can bypass it (D-067/D-073). SubjectKind must be
+// "agent" or "key"; SubjectID is required; an empty ViewName defaults to
+// "default" (== ae1's single binding).
+//
+// Also rejects an empty view (both AllowTopics and DenyTopics empty) with
+// ErrEmptyPolicy — the SAME footgun PutAgentPolicy guards against (D-146):
+// the junction table represents a view purely as a set of per-key rows, so a
+// view with zero keys has NO durable representation at all — it is
+// indistinguishable from "no view exists" (GetView would 404 it, ListViews
+// would never enumerate it, and a duplicate CreateView would not be caught as
+// ErrConflict). An operator that wants to clear every constraint must
+// DeleteView instead.
+func (v *TopicView) Validate() error {
+	if v.SubjectKind != "agent" && v.SubjectKind != "key" {
+		return ErrInvalidSubjectKind
+	}
+	if v.SubjectID == "" {
+		return ErrSubjectIDRequired
+	}
+	if v.ViewName == "" {
+		v.ViewName = "default"
+	}
+	if len(v.AllowTopics) == 0 && len(v.DenyTopics) == 0 {
+		return ErrEmptyPolicy
+	}
+	return nil
+}
+
 // BufferItem is an item in a multi-agent accumulation buffer (RFC §4.1, D-007).
 type BufferItem struct {
 	ID            string

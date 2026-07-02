@@ -49,32 +49,41 @@ func NewJWTAuthenticator(v Validator) *Authenticator {
 }
 
 // Authenticate turns the raw Authorization header value and the optional
-// X-Harbor-Session header value into the request Scope + Role. Never logs
+// X-Harbor-Session header value into the request Scope + Role + the verified
+// credential's key id (ae9, D-149 — the "key" topic-view subject fallback;
+// added alongside Role rather than as a separate lookup, since both modes
+// already resolve the full credential in one pass here). Never logs
 // credentials (CLAUDE.md §7).
 //
-//   - ModeKeyring: Verify(keyring, token) -> Scope{Tenant}, Role from Key.Role.
+//   - ModeKeyring: Verify(keyring, token) -> Scope{Tenant}, Role from Key.Role,
+//     keyID from Key.ID.
 //   - ModeJWT: validator.Validate(ctx, token) -> Scope{Tenant,User,Session};
 //     a non-empty sessionHdr REPLACES the token's session claim (D-137);
 //     Role = RoleAdmin iff the verified scopes contain "admin", else RoleAgent
-//     (plan §Findings I'm departing from, departure #4).
-func (a *Authenticator) Authenticate(ctx context.Context, authz, sessionHdr string) (identity.Scope, Role, error) {
+//     (plan §Findings I'm departing from, departure #4). keyID is always ""
+//     in ModeJWT — a verified JWT is not a stored *auth.Key, so the "key" view
+//     subject simply never resolves for a JWT-mode caller (the "agent"
+//     subject, sourced from _meta/claims independent of auth mode, still
+//     works).
+func (a *Authenticator) Authenticate(ctx context.Context, authz, sessionHdr string) (identity.Scope, Role, string, error) {
 	token, ok := strings.CutPrefix(authz, "Bearer ")
 	if !ok || token == "" {
-		return identity.Scope{}, "", ErrTokenMissing
+		return identity.Scope{}, "", "", ErrTokenMissing
 	}
 
 	if a.mode == ModeJWT {
-		return a.authenticateJWT(ctx, token, sessionHdr)
+		scope, role, err := a.authenticateJWT(ctx, token, sessionHdr)
+		return scope, role, "", err
 	}
 	return a.authenticateKeyring(token)
 }
 
-func (a *Authenticator) authenticateKeyring(token string) (identity.Scope, Role, error) {
+func (a *Authenticator) authenticateKeyring(token string) (identity.Scope, Role, string, error) {
 	key, err := Verify(a.keyring, token)
 	if err != nil {
-		return identity.Scope{}, "", err
+		return identity.Scope{}, "", "", err
 	}
-	return identity.Scope{Tenant: key.TenantID}, key.Role, nil
+	return identity.Scope{Tenant: key.TenantID}, key.Role, key.ID, nil
 }
 
 func (a *Authenticator) authenticateJWT(ctx context.Context, token, sessionHdr string) (identity.Scope, Role, error) {

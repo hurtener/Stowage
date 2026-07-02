@@ -131,6 +131,39 @@ func TestTenantMismatchSentinel(t *testing.T) {
 	}
 }
 
+// TestResolveViewSubject covers the ae9 (D-149) read-time topic-VIEW subject
+// resolver: agent-only, key-only, both-with-precedence in both orders, and
+// none→unbound. A pure function — no I/O, no Retriever needed.
+func TestResolveViewSubject(t *testing.T) {
+	cases := []struct {
+		name       string
+		agentID    string
+		keyID      string
+		precedence string
+		wantKind   string
+		wantID     string
+		wantOK     bool
+	}{
+		{"agent only", "agent-1", "", "agent,key", "agent", "agent-1", true},
+		{"key only", "", "sk_1", "agent,key", "key", "sk_1", true},
+		{"neither → unbound", "", "", "agent,key", "", "", false},
+		{"both, default precedence agent,key → agent wins", "agent-1", "sk_1", "agent,key", "agent", "agent-1", true},
+		{"both, flipped precedence key,agent → key wins", "agent-1", "sk_1", "key,agent", "key", "sk_1", true},
+		{"both, empty precedence falls back to agent,key default", "agent-1", "sk_1", "", "agent", "agent-1", true},
+		{"both, unrecognized precedence falls back to agent,key default", "agent-1", "sk_1", "bogus", "agent", "agent-1", true},
+		{"key only, unrecognized precedence still resolves key (only one present)", "", "sk_1", "bogus", "key", "sk_1", true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			kind, id, ok := identity.ResolveViewSubject(tc.agentID, tc.keyID, tc.precedence)
+			if kind != tc.wantKind || id != tc.wantID || ok != tc.wantOK {
+				t.Errorf("ResolveViewSubject(%q,%q,%q) = (%q,%q,%v), want (%q,%q,%v)",
+					tc.agentID, tc.keyID, tc.precedence, kind, id, ok, tc.wantKind, tc.wantID, tc.wantOK)
+			}
+		})
+	}
+}
+
 // TestContextOverwrite verifies inner scope shadows outer scope.
 func TestContextOverwrite(t *testing.T) {
 	outer := identity.Scope{Tenant: "outer"}

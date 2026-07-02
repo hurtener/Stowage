@@ -84,6 +84,21 @@ type Request struct {
 	// Applied via the fail-open filterByTopicOwnScope (D-139, ae6).
 	IncludeTopics []string
 	ExcludeTopics []string
+
+	// ViewName selects a named topic VIEW to apply (ae9, D-149) — a curation
+	// lens bound to the request's subject (scope.Agent, or else the verified
+	// credential key id). Empty ⇒ "default" (== ae1's single binding). A wire
+	// field: callers name a view, but never the subject it is bound to (that
+	// is always identity-derived, P3-honest — see CredentialKeyID below).
+	ViewName string
+
+	// CredentialKeyID is the verified credential's key id, used ONLY as the
+	// "key" view subject fallback when the request carries no scope.Agent
+	// (ae9, D-149). Populated SERVER-SIDE from the authenticated request
+	// context (HTTP: keyFromContext; MCP: the new KeyIDFromContext plumbing) —
+	// it is NEVER a JSON wire field on any input contract, so a client can
+	// never spoof another key's views.
+	CredentialKeyID string
 }
 
 // MemoryItem is one retrieval result.
@@ -124,6 +139,14 @@ type Response struct {
 	// returned instead (fail-open, D-139/D-036, ae1). False when no agent filter was
 	// active (disabled, no agent, or an UNBOUND agent) or the filter applied cleanly.
 	DegradedAgentFilter bool
+	// DegradedView is true when the request's topic-view subject was bound to a
+	// named view but the views store errored, so the caller's own UNFILTERED
+	// results were returned instead (fail-open, D-139/D-036, ae9) — unless
+	// retrieval.agent_views.on_policy_error=closed, in which case no results are
+	// returned at all (still DegradedView=true). False when no view was active
+	// (disabled, no subject, or the subject is UNBOUND for that view name) or
+	// the view applied cleanly.
+	DegradedView bool
 }
 
 // Retriever executes the four-lane retrieval and returns fused + scored results.
@@ -153,6 +176,22 @@ type Retriever struct {
 	// agentFilterOn mirrors retrieval.agent_views.enabled (D-034); default false ⇒
 	// zero-config start is byte-identical even when a host injects scope.Agent.
 	agentFilterOn bool
+	// viewSt is the named-view read-path resolver (ae9, D-149) — a raw
+	// store.TopicViewStore handle (NOT the internal/views admin service; the hot
+	// retrieve path stays a direct store read, gateway-free, D-036). nil ⇒
+	// resolveAndApplyView is fully inert regardless of agentFilterOn (wired via
+	// SetTopicViews). Reuses the SAME agent_views.enabled master switch as ae1's
+	// agentPolSt (D-151: one shared enable knob).
+	viewSt store.TopicViewStore
+	// onPolicyErrorClosed mirrors retrieval.agent_views.on_policy_error=="closed"
+	// (D-149) — the operator override that re-tiers a views-store fault from
+	// fail-OPEN (default) to fail-CLOSED (drop results). Default false (open),
+	// the D-139-aligned, zero-config value.
+	onPolicyErrorClosed bool
+	// subjectPrecedence mirrors retrieval.agent_views.subject_precedence
+	// (D-149): "agent,key" (default) or "key,agent". Empty behaves as the
+	// default (identity.ResolveViewSubject falls back on any unrecognized value).
+	subjectPrecedence string
 }
 
 // New creates a Retriever wired to the given dependencies.
@@ -423,7 +462,14 @@ func (r *Retriever) Retrieve(ctx context.Context, scope identity.Scope, req Requ
 	// IncludeTopics/ExcludeTopics, so caching would risk serving another topic filter's
 	// (or no filter's) result set. Mirrors the debug/multiScope bypass precedent rather
 	// than widening the cache key for an own-scope curation lens.
-	if !req.Debug && !multiScope && !hasTopicFilter(req) {
+	// View-eligible requests are ALSO not cached (ae9, D-149): unlike the
+	// resolveAgentTopics filter (whose own-scope key is fully captured by
+	// scope.Agent, already the 5th cache-key dimension, D-135), ViewName is a
+	// per-request wire field and the "key" subject's CredentialKeyID is not part
+	// of the cache key at all — hasViewApply bypasses caching whenever a subject
+	// (agent or key) is actually present, the same "skip caching" choice ae6 made
+	// rather than widening the key.
+	if !req.Debug && !multiScope && !hasTopicFilter(req) && !r.hasViewApply(scope, req) {
 		if cachedItems, cachedSup, ok := r.cache.Get(scope, querySig, req.Profile, req.SessionID, req.Window.From, req.Window.Until, req.Kinds, req.IncludeLanes, limit); ok {
 			return &Response{
 				ResponseID: responseID,
@@ -618,6 +664,30 @@ func (r *Retriever) Retrieve(ctx context.Context, scope identity.Scope, req Requ
 		fused = onAgentTopic
 	}
 
+	// Named topic VIEW (ae9, D-149/D-151): a THIRD, independently fail-open pass
+	// over ae6's EXISTING filterByTopicOwnScope — the SAME post-RRF-fusion /
+	// pre-scoringK-trim point, running AFTER both passes above so it inherits
+	// the no-underfill property and composes as a further intersection (request
+	// filter ∩ agent filter ∩ view). Inert (no-op) when the feature is disabled,
+	// no TopicViewStore is wired, or the request's subject (scope.Agent, else
+	// CredentialKeyID) is unbound for the named view.
+	viewIDs := make([]string, len(fused))
+	for i, h := range fused {
+		viewIDs[i] = h.MemoryID
+	}
+	keptView, degradedView := r.resolveAndApplyView(ctx, scope, req, viewIDs)
+	keptViewSet := make(map[string]bool, len(keptView))
+	for _, id := range keptView {
+		keptViewSet[id] = true
+	}
+	onView := make([]FusedHit, 0, len(fused))
+	for _, h := range fused {
+		if keptViewSet[h.MemoryID] {
+			onView = append(onView, h)
+		}
+	}
+	fused = onView
+
 	// Trim to scoringK (≥ requested limit, see above) before scoring to bound the
 	// GetMany call while still feeding the reranker the full requested window.
 	if len(fused) > scoringK {
@@ -628,6 +698,7 @@ func (r *Retriever) Retrieve(ctx context.Context, scope identity.Scope, req Requ
 		return &Response{
 			ResponseID: responseID, Support: Support{Strength: "weak"}, Degraded: degraded, API: "v1",
 			DegradedTopicFilter: degradedTopicFilter,
+			DegradedView:        degradedView,
 			DegradedAgentFilter: degradedAgentFilter,
 		}, nil
 	}
@@ -850,7 +921,7 @@ func (r *Retriever) Retrieve(ctx context.Context, scope identity.Scope, req Requ
 	// Debug requests are not cached (breakdowns are diagnostic and one-time).
 	// Multi-scope requests are not cached (revocation must be live, D-060).
 	// Topic-filtered requests are not cached (ae6, see the Get-side note above).
-	if !req.Debug && !multiScope && !hasTopicFilter(req) {
+	if !req.Debug && !multiScope && !hasTopicFilter(req) && !r.hasViewApply(scope, req) {
 		r.cache.Put(scope, querySig, req.Profile, req.SessionID, req.Window.From, req.Window.Until, req.Kinds, req.IncludeLanes, limit, items, sup)
 	}
 
@@ -906,6 +977,7 @@ func (r *Retriever) Retrieve(ctx context.Context, scope identity.Scope, req Requ
 		DegradedRerank:      degradedRerank,
 		DegradedTopicFilter: degradedTopicFilter,
 		DegradedAgentFilter: degradedAgentFilter,
+		DegradedView:        degradedView,
 	}, nil
 }
 

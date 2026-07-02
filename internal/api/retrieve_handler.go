@@ -38,6 +38,12 @@ type retrieveRequest struct {
 	// D-135). Read-time only: stamped onto Scope.Agent, never persisted. Empty =
 	// no agent filtering.
 	AgentID string `json:"agent_id"`
+	// ViewName selects a named topic VIEW to apply (ae9, D-149) — a curation
+	// lens bound to the CALLER'S OWN subject (Scope.Agent if set, else the
+	// verified credential key id via keyFromContext — never a wire field, see
+	// handleRetrieve). Empty ⇒ "default" (== ae1's single binding). Fails open
+	// on a views-store error (D-139, see retrieveResponse.DegradedView).
+	ViewName string `json:"view_name"`
 }
 
 // retrieveBreakdown is the wire format for a per-item scoring breakdown.
@@ -106,9 +112,15 @@ type retrieveResponse struct {
 	// DegradedAgentFilter is true when agent_id was bound to a policy but the
 	// agent-policy store failed, so the caller's own UNFILTERED results were
 	// returned instead (fail-open, D-139/D-036, ae1).
-	DegradedAgentFilter bool   `json:"degraded_agent_filter,omitempty"`
-	CacheHit            bool   `json:"cache_hit,omitempty"` // true when served from the hot–warm cache (Phase 12)
-	API                 string `json:"api"`                 // "v1"
+	DegradedAgentFilter bool `json:"degraded_agent_filter,omitempty"`
+	// DegradedView is true when the caller's topic-view subject was bound to a
+	// named view but the views store failed, so the caller's own UNFILTERED
+	// results were returned instead — unless agent_views.on_policy_error=closed,
+	// in which case no results are returned (still DegradedView=true; fail-open
+	// by default, D-139/D-036, ae9).
+	DegradedView bool   `json:"degraded_view,omitempty"`
+	CacheHit     bool   `json:"cache_hit,omitempty"` // true when served from the hot–warm cache (Phase 12)
+	API          string `json:"api"`                 // "v1"
 	// Rendered is the identical lean markdown reader body the MCP Text block and
 	// SDK Rendered field carry (D-142, ae4a) — the same retrieval.RenderReadBody
 	// call, so all three single-user read surfaces stay byte-identical (D-067/
@@ -184,6 +196,12 @@ func (s *Server) handleRetrieve(w http.ResponseWriter, r *http.Request) {
 		Profile:       req.Profile,
 		IncludeTopics: req.IncludeTopics,
 		ExcludeTopics: req.ExcludeTopics,
+		ViewName:      req.ViewName,
+		// CredentialKeyID (ae9, D-149): the "key" topic-view subject fallback,
+		// SERVER-INJECTED from the verified credential already on context
+		// (authMiddleware) — never a JSON wire field, so a caller can never
+		// spoof another key's views. "" in ModeJWT (no stored *auth.Key).
+		CredentialKeyID: keyFromContext(r.Context()).ID,
 	})
 	if err != nil {
 		s.log.ErrorContext(r.Context(), "api: retrieve failed", "err", err)
@@ -234,6 +252,7 @@ func (s *Server) handleRetrieve(w http.ResponseWriter, r *http.Request) {
 		DegradedRerank:      resp.DegradedRerank,
 		DegradedTopicFilter: resp.DegradedTopicFilter,
 		DegradedAgentFilter: resp.DegradedAgentFilter,
+		DegradedView:        resp.DegradedView,
 		CacheHit:            resp.CacheHit,
 		API:                 resp.API,
 		Rendered:            retrieval.RenderReadBody(resp.Items),

@@ -41,5 +41,6 @@
   "github.com/hurtener/stowage/internal/vindex/hnsw": 85,
   "github.com/hurtener/stowage/internal/episodes": 80,
   "github.com/hurtener/stowage/internal/excerpt": 90,
-  "github.com/hurtener/stowage/internal/proactive": 80
+  "github.com/hurtener/stowage/internal/proactive": 80,
+  "github.com/hurtener/stowage/internal/views": 80
 }

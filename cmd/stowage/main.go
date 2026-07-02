@@ -468,6 +468,7 @@ func runMCP(args []string) {
 		Retriever:          stk.Retriever,
 		TopicSvc:           stk.TopicSvc,
 		GrantsSvc:          stk.GrantsSvc,
+		ViewsSvc:           stk.ViewsSvc,
 		Gateway:            stk.Gateway,
 		TraceSigner:        stk.TraceSigner,
 		PipelineIn:         p.In,
@@ -719,6 +720,7 @@ func runServe(args []string) {
 	srv.SetTopicService(stk.TopicSvc)
 	srv.SetRetriever(stk.Retriever)
 	srv.SetGrantsService(stk.GrantsSvc)
+	srv.SetViewsService(stk.ViewsSvc)   // ae9: /v1/scopes/views admin (D-149/D-151)
 	srv.SetGateway(stk.Gateway)         // POST /v1/verify (Phase 25)
 	srv.SetTraceSigner(stk.TraceSigner) // GET /v1/traces (Phase 26)
 
@@ -739,6 +741,7 @@ func runServe(args []string) {
 			Retriever:          stk.Retriever,
 			TopicSvc:           stk.TopicSvc,
 			GrantsSvc:          stk.GrantsSvc,
+			ViewsSvc:           stk.ViewsSvc,
 			Gateway:            stk.Gateway,
 			TraceSigner:        stk.TraceSigner,
 			PipelineIn:         p.In,    // SAME ingest channel as the HTTP API

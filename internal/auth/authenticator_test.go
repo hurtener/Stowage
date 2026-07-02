@@ -22,7 +22,7 @@ func TestAuthenticator_Keyring_Valid(t *testing.T) {
 	}
 
 	a := NewKeyringAuthenticator(kr)
-	scope, role, err := a.Authenticate(context.Background(), "Bearer "+plaintext, "")
+	scope, role, keyID, err := a.Authenticate(context.Background(), "Bearer "+plaintext, "")
 	if err != nil {
 		t.Fatalf("Authenticate: %v", err)
 	}
@@ -32,13 +32,18 @@ func TestAuthenticator_Keyring_Valid(t *testing.T) {
 	if role != RoleAdmin {
 		t.Errorf("Role = %q, want admin", role)
 	}
+	// ae9 (D-149): the verified credential's key id is the "key" topic-view
+	// subject fallback — ModeKeyring must surface the real *auth.Key.ID.
+	if keyID != key.ID {
+		t.Errorf("keyID = %q, want %q (the verified Key.ID)", keyID, key.ID)
+	}
 }
 
 func TestAuthenticator_Keyring_MissingBearer(t *testing.T) {
 	a := NewKeyringAuthenticator(NewMemKeyring())
 
 	for _, hdr := range []string{"", "Token abc", "Bearer "} {
-		_, _, err := a.Authenticate(context.Background(), hdr, "")
+		_, _, _, err := a.Authenticate(context.Background(), hdr, "")
 		if !errors.Is(err, ErrTokenMissing) {
 			t.Errorf("Authenticate(%q): err = %v, want ErrTokenMissing", hdr, err)
 		}
@@ -47,7 +52,7 @@ func TestAuthenticator_Keyring_MissingBearer(t *testing.T) {
 
 func TestAuthenticator_Keyring_BadCredential(t *testing.T) {
 	a := NewKeyringAuthenticator(NewMemKeyring())
-	_, _, err := a.Authenticate(context.Background(), "Bearer sk_bogus", "")
+	_, _, _, err := a.Authenticate(context.Background(), "Bearer sk_bogus", "")
 	if err == nil {
 		t.Fatal("Authenticate(bogus key): err = nil, want a rejection")
 	}
@@ -70,7 +75,7 @@ func TestAuthenticator_JWT_Valid(t *testing.T) {
 	a, signer, now := jwtAuthenticatorFixture(t)
 	token := signer.sign(t, validClaims(now))
 
-	scope, role, err := a.Authenticate(context.Background(), "Bearer "+token, "")
+	scope, role, keyID, err := a.Authenticate(context.Background(), "Bearer "+token, "")
 	if err != nil {
 		t.Fatalf("Authenticate: %v", err)
 	}
@@ -81,6 +86,11 @@ func TestAuthenticator_JWT_Valid(t *testing.T) {
 	if role != RoleAgent {
 		t.Errorf("Role = %q, want agent (scopes=[read] has no admin)", role)
 	}
+	// ae9 (D-149): ModeJWT has no stored *auth.Key — the "key" topic-view
+	// subject never resolves for a JWT-mode caller.
+	if keyID != "" {
+		t.Errorf("keyID = %q, want \"\" (ModeJWT never surfaces a key id)", keyID)
+	}
 }
 
 // TestAuthenticator_JWT_SessionHeaderReplace pins D-137: a non-empty
@@ -90,7 +100,7 @@ func TestAuthenticator_JWT_SessionHeaderReplace(t *testing.T) {
 	a, signer, now := jwtAuthenticatorFixture(t)
 	token := signer.sign(t, validClaims(now)) // session claim = "s1"
 
-	scope, _, err := a.Authenticate(context.Background(), "Bearer "+token, "s2-per-call")
+	scope, _, _, err := a.Authenticate(context.Background(), "Bearer "+token, "s2-per-call")
 	if err != nil {
 		t.Fatalf("Authenticate: %v", err)
 	}
@@ -106,7 +116,7 @@ func TestAuthenticator_JWT_SessionHeaderEmpty_KeepsTokenClaim(t *testing.T) {
 	a, signer, now := jwtAuthenticatorFixture(t)
 	token := signer.sign(t, validClaims(now))
 
-	scope, _, err := a.Authenticate(context.Background(), "Bearer "+token, "")
+	scope, _, _, err := a.Authenticate(context.Background(), "Bearer "+token, "")
 	if err != nil {
 		t.Fatalf("Authenticate: %v", err)
 	}
@@ -135,7 +145,7 @@ func TestAuthenticator_JWT_RoleMapping(t *testing.T) {
 			claims["scopes"] = tc.scopes
 			token := signer.sign(t, claims)
 
-			_, role, err := a.Authenticate(context.Background(), "Bearer "+token, "")
+			_, role, _, err := a.Authenticate(context.Background(), "Bearer "+token, "")
 			if err != nil {
 				t.Fatalf("Authenticate: %v", err)
 			}
@@ -152,7 +162,7 @@ func TestAuthenticator_JWT_InvalidTokenPropagates(t *testing.T) {
 	claims["exp"] = now.Add(-time.Hour).Unix()
 	token := signer.sign(t, claims)
 
-	_, _, err := a.Authenticate(context.Background(), "Bearer "+token, "")
+	_, _, _, err := a.Authenticate(context.Background(), "Bearer "+token, "")
 	if !errors.Is(err, ErrTokenExpired) {
 		t.Errorf("Authenticate(expired): err = %v, want ErrTokenExpired", err)
 	}
@@ -160,7 +170,7 @@ func TestAuthenticator_JWT_InvalidTokenPropagates(t *testing.T) {
 
 func TestAuthenticator_JWT_MissingBearer(t *testing.T) {
 	a, _, _ := jwtAuthenticatorFixture(t)
-	_, _, err := a.Authenticate(context.Background(), "", "")
+	_, _, _, err := a.Authenticate(context.Background(), "", "")
 	if !errors.Is(err, ErrTokenMissing) {
 		t.Errorf("Authenticate(no header): err = %v, want ErrTokenMissing", err)
 	}
@@ -188,9 +198,9 @@ func TestAuthenticator_ConcurrentReuse(t *testing.T) {
 		go func(i int) {
 			defer func() { done <- struct{}{} }()
 			if i%2 == 0 {
-				_, _, _ = keyringAuth.Authenticate(context.Background(), "Bearer "+plaintext, "")
+				_, _, _, _ = keyringAuth.Authenticate(context.Background(), "Bearer "+plaintext, "")
 			} else {
-				_, _, _ = jwtAuth.Authenticate(context.Background(), "Bearer "+token, "")
+				_, _, _, _ = jwtAuth.Authenticate(context.Background(), "Bearer "+token, "")
 			}
 		}(i)
 	}

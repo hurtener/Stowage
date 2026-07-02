@@ -420,6 +420,30 @@ type TopicViewStore interface {
 	// DeleteAgentPolicy removes the binding for (scope.Tenant, agentID).
 	// Returns ErrNotFound when absent.
 	DeleteAgentPolicy(ctx context.Context, scope identity.Scope, agentID string) error
+
+	// --- ae9 (D-149/D-151): named-view admin CRUD over the SAME junction rows ---
+
+	// CreateView inserts a view (one row per allow/deny topic key). ErrConflict
+	// on a duplicate natural key (tenant_id, subject_kind, subject_id,
+	// view_name). Calls (TopicView).Validate() first. Scope-required.
+	CreateView(ctx context.Context, scope identity.Scope, v TopicView) error
+	// UpdateView replaces AllowTopics/DenyTopics on an existing view (by the
+	// natural key): inserts rows for newly-added keys, deletes rows for keys no
+	// longer present — one row per key, never a merge. ErrNotFound when the
+	// view does not exist. Calls (TopicView).Validate() first. Scope-required.
+	UpdateView(ctx context.Context, scope identity.Scope, v TopicView) error
+	// DeleteView removes every row for a view's natural key. ErrNotFound when
+	// absent. Scope-required.
+	DeleteView(ctx context.Context, scope identity.Scope, subjectKind, subjectID, viewName string) error
+	// ListViews returns all views for the tenant, optionally narrowed to a
+	// subject (subjectKind/subjectID both non-empty), ordered by created_at
+	// ASC. Scope-required.
+	ListViews(ctx context.Context, scope identity.Scope, subjectKind, subjectID string) ([]TopicView, error)
+	// GetView resolves one view by natural key, aggregating its junction rows.
+	// ErrNotFound when absent — the read-path resolver
+	// (retrieval.resolveAndApplyView) treats this as an UNBOUND subject:
+	// unfiltered pass-through, not degraded. Scope-required.
+	GetView(ctx context.Context, scope identity.Scope, subjectKind, subjectID, viewName string) (*TopicView, error)
 }
 
 // BufferStore manages multi-agent accumulation buffers (RFC §4.1, D-007).

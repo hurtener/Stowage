@@ -199,6 +199,8 @@ func Run(t *testing.T, factory Factory) {
 	t.Run("DSARDeleteUserDataScopeRequired", func(t *testing.T) { testDSARDeleteUserDataScopeRequired(t, factory) })
 	// Phase ae1 — TopicViewStore: the agent->topic policy binding (D-135/D-146/D-151)
 	RunAgentPolicy(t, factory)
+	// Phase ae9 — TopicViewStore: named-view admin CRUD over the SAME table (D-149/D-151)
+	RunTopicViews(t, factory)
 }
 
 // --- helpers ----------------------------------------------------------------
