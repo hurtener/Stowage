@@ -35,8 +35,17 @@ type metaIdentity struct {
 //   - _meta.tenant present and different, or non-string -> reject. The error
 //     carries no tenant values (neither the injected nor the real one) — a
 //     redacted reason.
+//
+// requestMeta is the SINGLE place internal/mcpserver calls dockyard's inbound
+// server.RequestMeta (ae2 AC-9: no per-handler open-coding). Both the write/admin
+// guard path (readMetaIdentity, below) and the ae8 read-scope adapter
+// (resolveScope, scope.go) read the host-injected _meta through this one wrapper.
+func requestMeta(ctx context.Context) map[string]any {
+	return server.RequestMeta(ctx) // nil when no _meta was sent
+}
+
 func readMetaIdentity(ctx context.Context, credTenant string) (metaIdentity, error) {
-	m := server.RequestMeta(ctx) // nil when no _meta was sent
+	m := requestMeta(ctx) // nil when no _meta was sent
 	if v, ok := m["tenant"]; ok {
 		s, isStr := v.(string)
 		if !isStr || s != credTenant {

@@ -53,6 +53,7 @@ import (
 	"github.com/hurtener/stowage/internal/telemetry"
 	"github.com/hurtener/stowage/internal/topics"
 	"github.com/hurtener/stowage/internal/traces"
+	"github.com/hurtener/stowage/internal/views"
 	"github.com/hurtener/stowage/internal/vindex"
 )
 
@@ -75,6 +76,8 @@ type Stack struct {
 	Retriever *retrieval.Retriever
 	TopicSvc  *topics.Service
 	GrantsSvc *grants.Service
+	// ViewsSvc is the ae9 (D-149/D-151) named-view admin core.
+	ViewsSvc *views.Service
 
 	// TraceSigner is the ed25519 key for signing reasoning-trace exports (Phase 26,
 	// D-086). nil when trace.signing_key is unset (bundles returned unsigned).
@@ -209,6 +212,14 @@ func Open(ctx context.Context, cfg *config.Config) (*Stack, error) {
 	// retrieval.agent_views.enabled (default false — zero-config start
 	// unaffected even when a host injects an agent identity).
 	s.Retriever.WithAgentPolicy(s.Store.TopicViews(), cfg.Retrieval.AgentViews.Enabled)
+	// ae9 (D-149/D-151): the read-time named-view apply path, sharing ae1's
+	// TopicViewStore + agent_views.enabled master switch (D-151: one shared
+	// enable knob) — adds only the two apply-time knobs (on_policy_error,
+	// subject_precedence).
+	s.Retriever.SetTopicViews(s.Store.TopicViews(),
+		cfg.Retrieval.AgentViews.OnPolicyError == "closed",
+		cfg.Retrieval.AgentViews.SubjectPrecedence,
+	)
 	s.Retriever.WithEventCapture(s.Store.Events()) // Phase 26: async retrieve.query trace capture
 	s.Retriever.SetGrants(s.Store.Grants())
 	s.closers = append(s.closers, func(context.Context) error {
@@ -221,6 +232,12 @@ func Open(ctx context.Context, cfg *config.Config) (*Stack, error) {
 
 	// 8. Grants service — group/grant management and zone-ceiling enforcement.
 	s.GrantsSvc = grants.New(s.Store.Grants(), s.Store.Events(), s.Log)
+
+	// 8a. Views service — ae9 (D-149/D-151) named-view admin core (validation +
+	// governance event emission, D-067/D-073). The retriever's OWN TopicViews
+	// wiring above is a separate, direct store handle (the hot read path stays
+	// gateway-free and does not route through this admin-shaped service).
+	s.ViewsSvc = views.New(s.Store.TopicViews(), s.Store.Events(), s.Log)
 
 	// 9. Trace signing key (Phase 26, D-086). Optional: empty ⇒ unsigned exports.
 	// When set, the config holds an env.VAR ref to a base64 ed25519 seed (D-030);

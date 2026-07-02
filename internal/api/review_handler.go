@@ -5,7 +5,6 @@ import (
 	"errors"
 	"net/http"
 
-	"github.com/hurtener/stowage/internal/identity"
 	"github.com/hurtener/stowage/internal/reconcile"
 	"github.com/hurtener/stowage/internal/store"
 	"github.com/hurtener/stowage/internal/trust"
@@ -45,7 +44,11 @@ type reviewResolveResponseJSON struct {
 // handleReviewList implements GET /v1/review (RFC §6c, D-084): list the scope's
 // pending_review memories.
 func (s *Server) handleReviewList(w http.ResponseWriter, r *http.Request) {
-	scope := scopeFromRequest(r)
+	scope, err := s.scopeFromRequest(r)
+	if err != nil {
+		respondScopeError(w, err)
+		return
+	}
 	q := r.URL.Query()
 
 	mems, next, err := trust.ListPending(r.Context(), s.st, scope, atoiDefault(q.Get("limit"), 0), q.Get("cursor"))
@@ -67,7 +70,6 @@ func (s *Server) handleReviewResolve(w http.ResponseWriter, r *http.Request) {
 	if !requireJSON(w, r) {
 		return
 	}
-	authKey := keyFromContext(r.Context())
 	id := r.PathValue("id")
 	if id == "" {
 		respondJSON(w, http.StatusBadRequest, errBody("memory id required"))
@@ -80,7 +82,11 @@ func (s *Server) handleReviewResolve(w http.ResponseWriter, r *http.Request) {
 		respondJSON(w, http.StatusBadRequest, errBody("decode: "+sanitizeDecodeErr(err)))
 		return
 	}
-	scope := identity.Scope{Tenant: authKey.TenantID, Project: req.ProjectID, User: req.UserID}
+	scope, _, err := s.resolveScope(r, identityArgs{Project: req.ProjectID, User: req.UserID})
+	if err != nil {
+		respondScopeError(w, err)
+		return
+	}
 	if req.Action != string(trust.ReviewApprove) && req.Action != string(trust.ReviewReject) {
 		respondJSON(w, http.StatusBadRequest, errBody("action must be approve or reject"))
 		return

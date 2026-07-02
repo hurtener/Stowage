@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/hurtener/stowage/internal/config"
-	"github.com/hurtener/stowage/internal/identity"
 	"github.com/hurtener/stowage/internal/proactive"
 	"github.com/hurtener/stowage/internal/store"
 )
@@ -49,10 +48,12 @@ type resolveSuggestionRequestJSON struct {
 // newly worth surfacing this turn. Degrades to an empty+degraded envelope when the
 // gateway-dependent similar_episode class cannot embed.
 func (s *Server) handleSuggestions(w http.ResponseWriter, r *http.Request) {
-	authKey := keyFromContext(r.Context())
 	q := r.URL.Query()
-	scope := identity.Scope{Tenant: authKey.TenantID, User: q.Get("user"), Project: q.Get("project")}
-	sessionID := q.Get("session_id")
+	scope, sessionID, err := s.resolveScope(r, identityArgs{User: q.Get("user"), Project: q.Get("project"), Session: q.Get("session_id")})
+	if err != nil {
+		respondScopeError(w, err)
+		return
+	}
 	query := q.Get("query")
 
 	cfg, err := proactive.Resolve(r.Context(), s.st.ScopeSettings(), scope, proactiveDefault(s.profile))
@@ -80,9 +81,12 @@ func (s *Server) handleSuggestions(w http.ResponseWriter, r *http.Request) {
 // feed the per-(scope,trigger_class) confidence multiplier. Resolving a
 // non-pending (or absent) offer is a 404 — byte-identical across surfaces.
 func (s *Server) handleResolveSuggestion(w http.ResponseWriter, r *http.Request) {
-	authKey := keyFromContext(r.Context())
 	q := r.URL.Query()
-	scope := identity.Scope{Tenant: authKey.TenantID, User: q.Get("user"), Project: q.Get("project")}
+	scope, _, err := s.resolveScope(r, identityArgs{User: q.Get("user"), Project: q.Get("project")})
+	if err != nil {
+		respondScopeError(w, err)
+		return
+	}
 	id := r.PathValue("id")
 
 	var body resolveSuggestionRequestJSON

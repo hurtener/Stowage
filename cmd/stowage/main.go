@@ -27,6 +27,7 @@ import (
 	"github.com/hurtener/stowage/internal/auth"
 	"github.com/hurtener/stowage/internal/boot"
 	"github.com/hurtener/stowage/internal/config"
+	"github.com/hurtener/stowage/internal/identity"
 	"github.com/hurtener/stowage/internal/mcpserver"
 	"github.com/hurtener/stowage/internal/store"
 	"github.com/hurtener/stowage/internal/store/migrations"
@@ -467,6 +468,7 @@ func runMCP(args []string) {
 		Retriever:          stk.Retriever,
 		TopicSvc:           stk.TopicSvc,
 		GrantsSvc:          stk.GrantsSvc,
+		ViewsSvc:           stk.ViewsSvc,
 		Gateway:            stk.Gateway,
 		TraceSigner:        stk.TraceSigner,
 		PipelineIn:         p.In,
@@ -475,6 +477,10 @@ func runMCP(args []string) {
 		ScopeFn:            scopeFn,
 		Profile:            cfg.Profile,
 		BrowseDefaultLimit: cfg.Retrieval.BrowseDefaultLimit,
+		ResolveOpts: identity.ResolveOptions{
+			Posture:      identity.ParsePosture(cfg.Retrieval.ReadPosture),
+			Multiplexing: cfg.Identity.Multiplexing,
+		},
 	}
 
 	srv, err := mcpserver.New(server.Info{
@@ -714,6 +720,7 @@ func runServe(args []string) {
 	srv.SetTopicService(stk.TopicSvc)
 	srv.SetRetriever(stk.Retriever)
 	srv.SetGrantsService(stk.GrantsSvc)
+	srv.SetViewsService(stk.ViewsSvc)   // ae9: /v1/scopes/views admin (D-149/D-151)
 	srv.SetGateway(stk.Gateway)         // POST /v1/verify (Phase 25)
 	srv.SetTraceSigner(stk.TraceSigner) // GET /v1/traces (Phase 26)
 
@@ -734,6 +741,7 @@ func runServe(args []string) {
 			Retriever:          stk.Retriever,
 			TopicSvc:           stk.TopicSvc,
 			GrantsSvc:          stk.GrantsSvc,
+			ViewsSvc:           stk.ViewsSvc,
 			Gateway:            stk.Gateway,
 			TraceSigner:        stk.TraceSigner,
 			PipelineIn:         p.In,    // SAME ingest channel as the HTTP API
@@ -742,6 +750,10 @@ func runServe(args []string) {
 			ScopeFn:            mcpserver.CtxScopeFn(), // tenant from the authenticated key
 			Profile:            cfg.Profile,
 			BrowseDefaultLimit: cfg.Retrieval.BrowseDefaultLimit,
+			ResolveOpts: identity.ResolveOptions{
+				Posture:      identity.ParsePosture(cfg.Retrieval.ReadPosture),
+				Multiplexing: cfg.Identity.Multiplexing,
+			},
 		}
 		mcpSrv, mcpErr := mcpserver.New(server.Info{
 			Name:    "stowage",

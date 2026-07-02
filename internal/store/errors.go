@@ -45,3 +45,11 @@ var ErrNotPending = errors.New("store: suggestion is not pending")
 // existing binding and then read back as ErrNotFound (ae1, D-146). To remove a
 // binding, use DeleteAgentPolicy.
 var ErrEmptyPolicy = errors.New("store: agent policy must have at least one allow or deny topic")
+
+// ErrInvalidSubjectKind is returned by (TopicView).Validate when SubjectKind is
+// neither "agent" nor "key" (ae9, D-149/D-151).
+var ErrInvalidSubjectKind = errors.New(`store: topic view subject_kind must be "agent" or "key"`)
+
+// ErrSubjectIDRequired is returned by (TopicView).Validate when SubjectID is
+// empty (ae9, D-149/D-151).
+var ErrSubjectIDRequired = errors.New("store: topic view subject_id is required")

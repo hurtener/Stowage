@@ -1,0 +1,106 @@
+{
+  "type": "object",
+  "properties": {
+    "view": {
+      "type": [
+        "null",
+        "object"
+      ],
+      "properties": {
+        "subject_kind": {
+          "type": "string"
+        },
+        "subject_id": {
+          "type": "string"
+        },
+        "view_name": {
+          "type": "string"
+        },
+        "allow_topics": {
+          "type": [
+            "null",
+            "array"
+          ],
+          "items": {
+            "type": "string"
+          }
+        },
+        "deny_topics": {
+          "type": [
+            "null",
+            "array"
+          ],
+          "items": {
+            "type": "string"
+          }
+        },
+        "created_at": {
+          "type": "integer"
+        },
+        "updated_at": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "subject_kind",
+        "subject_id",
+        "view_name"
+      ],
+      "additionalProperties": false
+    },
+    "views": {
+      "type": [
+        "null",
+        "array"
+      ],
+      "items": {
+        "type": "object",
+        "properties": {
+          "subject_kind": {
+            "type": "string"
+          },
+          "subject_id": {
+            "type": "string"
+          },
+          "view_name": {
+            "type": "string"
+          },
+          "allow_topics": {
+            "type": [
+              "null",
+              "array"
+            ],
+            "items": {
+              "type": "string"
+            }
+          },
+          "deny_topics": {
+            "type": [
+              "null",
+              "array"
+            ],
+            "items": {
+              "type": "string"
+            }
+          },
+          "created_at": {
+            "type": "integer"
+          },
+          "updated_at": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "subject_kind",
+          "subject_id",
+          "view_name"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "deleted": {
+      "type": "string"
+    }
+  },
+  "additionalProperties": false
+}

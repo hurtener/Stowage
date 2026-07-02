@@ -85,3 +85,17 @@ func (r *Retriever) ExportResolveAgentTopics(
 ) (allow, deny []string, active, degraded bool) {
 	return r.resolveAgentTopics(ctx, scope)
 }
+
+// ExportResolveAndApplyView exposes resolveAndApplyView (ae9, D-149/D-151) for
+// testing the fail-open named-view apply path directly.
+func (r *Retriever) ExportResolveAndApplyView(
+	ctx context.Context, scope identity.Scope, req Request, ids []string,
+) (kept []string, degraded bool) {
+	return r.resolveAndApplyView(ctx, scope, req, ids)
+}
+
+// ExportHasViewApply exposes hasViewApply (ae9, D-149) for testing the
+// result-cache bypass predicate directly.
+func (r *Retriever) ExportHasViewApply(scope identity.Scope, req Request) bool {
+	return r.hasViewApply(scope, req)
+}

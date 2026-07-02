@@ -1,6 +1,6 @@
 # Phase ae8 — effective-scope resolution + read-side enforcement
 
-- **Status:** draft
+- **Status:** implemented (feat/ae-wave-3)
 - **Owning subsystem(s):** `internal/identity` (the single resolver + its two knobs' types); `internal/config` (the `retrieval.read_posture` and `identity.multiplexing` knobs); `internal/api`, `internal/mcpserver`, `sdk/stowage` (the thin per-surface source-gathering adapters that call the one resolver); `internal/store`, `internal/retrieval` (**consumers only — no change to the store WHERE**)
 - **RFC sections:** P3 (§5.3 — scopes enforced in the store layer, no unscoped query), §5 (identity & scopes), §6 (retrieval), §9.5 (one logic core, D-067/D-073)
 - **Depends on phases:** **ae2** (the `_meta` intake source — `user`/`session`/`agent`/`project` from the inbound `_meta` map) and **ae7** (the verified-JWT-claim source). **Transitively ae1** (its read-only `identity.Scope.Agent` field and the `agent_id` `_meta` read the resolver routes) — see *Findings I'm departing from*. Wave 3.
@@ -501,3 +501,47 @@ docs/glossary.md                          # CHANGED — effective read scope, re
   (`metaElseArg`) — no reversal, no follow-up needed. Amended by **D-150**: the
   resolver's read `Scope.Session` stays empty; the resolved session value routes
   to the relevance sink instead (cross-session recall preserved).
+
+## As-built deviations
+
+1. **`ResolveReadScope` signature is `(Scope, string, error)`** — the plan's Design
+   snippet declared `(Scope, error)` but step 2 requires the effective session
+   returned **out-of-band** (D-150: never on the read `Scope`). The second return is
+   the effective session; every surface adapter routes it to the relevance sink
+   (`Request.SessionID`), leaving `Scope.Session` empty.
+2. **JWT `user` claim now narrows reads — the read-side gap closure (the phase's
+   point).** ae7 verified `tenant`/`user`/`session` but the handlers consumed only
+   `tenant`; ae8's HTTP adapter sets `IdentitySources.CredUser = verified.User`, so a
+   JWT read now resolves `Scope.User` from the token and the store narrows to that
+   user (both postures — `compatible`/`strict` differ only on the *no-identity*
+   case). This is intended, but it **changes JWT-mode read visibility**: ae7's
+   `auth_jwt_test.go` fixtures were seeding tenant-only memory with a user-bearing
+   token; they now seed under the token's user (`alice`/`bob`) to match. The keyring
+   path (`CredUser==""`) stays byte-identical. Flagged prominently because it is a
+   behavior change for existing JWT deployments (a deployment relying on tenant-wide
+   JWT reads must mint tokens without a `user` claim, or seed memory under the
+   token's user).
+3. **Broad handler consolidation.** ~17 `internal/api` read handlers and the MCP
+   read handlers route through the one resolver adapter (`resolveScope` /
+   `scopeFromRequest`), beyond the plan's illustrative shortlist — the D-067
+   one-core intent applied to every read surface. `memory_proactive_config`'s
+   write (`set`) arm keeps its arg-only scope per the ae2 D-138 caveat (built
+   field-by-field so it is not a resolver-bypass under AC-9).
+4. **`identity.multiplexing`/`ErrUserConflict` are unreachable via a real
+   HTTP+JWT request — intentional, not a gap.** `internal/api/auth.go`'s
+   `authMiddleware` sets `ClaimUser = verified.User`, which is the SAME value
+   as `CredUser` (both come from the one verified JWT `user` claim — a JWT
+   doesn't carry a separate on-behalf-of assertion, D-137 evidence). So in
+   `resolveScope`, `IdentitySources.ClaimUser` and `.CredUser` are always
+   equal on HTTP+JWT, and `ResolveReadScope`'s step 5 `asserted == src.CredUser`
+   branch always wins — the `assertable`/multiplexing branch and
+   `ErrUserConflict` can never fire from a real HTTP+JWT request; a
+   disagreeing `user_id` request arg is simply outranked by the pinned claim
+   and silently dropped (P3-safe: the resolved scope always narrows to the
+   JWT's own user, never widens). Both sentinels are exercised as direct unit
+   tests instead (`internal/api/auth_test.go`, `TestRespondScopeError`) since
+   Harbor has no per-request user-reassignment mechanism to source a
+   disagreeing assertion from on this transport. `identity.multiplexing`
+   remains meaningful on the `_meta`/MCP and keyring-args paths (ae2's
+   `_meta.user_id`, and a bare keyring key's `user_id` arg), where the
+   asserted user is a genuinely separate source from the credential.

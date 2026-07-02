@@ -52,8 +52,27 @@ type Config struct {
 	Trace     TraceConfig     `yaml:"trace"`
 	Retrieval RetrievalConfig `yaml:"retrieval"`
 	Auth      AuthConfig      `yaml:"auth"`
+	Identity  IdentityConfig  `yaml:"identity"`
 
 	prov Provenance
+}
+
+// IdentityConfig groups the ae8 (D-148) identity-resolution knobs that are
+// not naturally part of RetrievalConfig. There is no AuthConfig-owned
+// per-credential capability yet (that lands with a later phase's
+// IdentitySources.CanAssertUser wiring), so this is a new top-level section —
+// homed here rather than nested under Auth, matching the plan's explicit
+// "new IdentityConfig on Config" design (D-148).
+type IdentityConfig struct {
+	// Multiplexing is the global interim form of the D-137 "may a connection
+	// assert a user that disagrees with the credential-pinned user" knob.
+	// Default false: a disagreeing assertion is rejected
+	// (identity.ErrUserConflict). Post-ae7, the per-credential
+	// IdentitySources.CanAssertUser (JWT scope memory:assert-user / a keyring
+	// flag) grants the same capability without this global flag. Inert when
+	// the credential pins no user (the pre-ae7 keyring world), so zero-config
+	// behaviour is unchanged.
+	Multiplexing bool `yaml:"multiplexing"`
 }
 
 // AuthConfig selects and tunes the request-authentication mode (ae7,
@@ -158,10 +177,19 @@ type RetrievalConfig struct {
 	// the two above) because ae9 adds on_policy_error/subject_precedence here
 	// alongside Enabled — no new table, migration, or master switch.
 	AgentViews AgentViewsConfig `yaml:"agent_views"`
+	// ReadPosture is the ae8 (D-148/D-137) resolve-time presence gate:
+	// "compatible" (default) preserves today's behaviour — a read that
+	// resolves to no user AND no agent falls back to a tenant-wide scope.
+	// "strict" refuses that read (identity.ErrIdentityRequired) BEFORE any
+	// store call. A flat scalar (cross-cutting, like BrowseDefaultLimit), not
+	// per-profile. It does not add a store WHERE — buildScopeWhere already
+	// treats an empty Scope.User as tenant-wide either way; this knob decides
+	// whether the resolver ALLOWS that or refuses it upstream.
+	ReadPosture string `yaml:"read_posture"`
 }
 
 // AgentViewsConfig groups the read-time agent->topic filter knobs (ae1,
-// D-135/D-146/D-151).
+// D-135/D-146/D-151) and the ae9 named-view apply knobs (D-149).
 type AgentViewsConfig struct {
 	// Enabled is the master switch for the read-time agent->topic filter (D-151:
 	// the one shared enable knob for the topic_views table, introduced by ae1,
@@ -170,6 +198,20 @@ type AgentViewsConfig struct {
 	// operator opts in. Fail-open behaviour on a policy-store error is hardwired
 	// per D-139 (not a knob).
 	Enabled bool `yaml:"enabled"`
+	// OnPolicyError (ae9, D-149) is the fail posture on a VIEWS-STORE error (not
+	// on "view not found", which is always an unbound pass-through regardless of
+	// this knob). "open" (default) returns the caller's full own-scope results
+	// with DegradedView=true — the D-139-aligned value and the only one that
+	// keeps a view a curation lens. "closed" drops results on error (a
+	// defense-in-depth operator override that re-tiers the view toward
+	// isolation — the tenant boundary is unaffected either way). Enum
+	// {open,closed}, validated.
+	OnPolicyError string `yaml:"on_policy_error"`
+	// SubjectPrecedence (ae9, D-149) is the order in which the topic-view
+	// subject is resolved when both an agent id and a verified key id are
+	// present. "agent,key" (default) ⇒ the agent view wins; "key,agent" flips
+	// it. Enum {"agent,key","key,agent"}, validated.
+	SubjectPrecedence string `yaml:"subject_precedence"`
 }
 
 // ProfileTuning overrides one retrieval profile's candidate windows. A zero field
@@ -329,6 +371,10 @@ var allKeys = []string{
 	"retrieval.browse_default_limit",
 	"retrieval.topic_filter_scoring_k",
 	"retrieval.agent_views.enabled",
+	"retrieval.agent_views.on_policy_error",
+	"retrieval.agent_views.subject_precedence",
+	"retrieval.read_posture",
+	"identity.multiplexing",
 	"auth.mode",
 	"auth.issuer",
 	"auth.audience",
@@ -392,6 +438,11 @@ var envKeys = []struct {
 	{"STOWAGE_AUTH_JWKS_URL", "auth.jwks.url"},
 	{"STOWAGE_AUTH_JWKS_FILE", "auth.jwks.file"},
 	{"STOWAGE_AUTH_JWKS_MAX_STALE", "auth.jwks.max_stale"},
+	{"STOWAGE_RETRIEVAL_READ_POSTURE", "retrieval.read_posture"},
+	{"STOWAGE_IDENTITY_MULTIPLEXING", "identity.multiplexing"},
+	{"STOWAGE_RETRIEVAL_AGENT_VIEWS_ENABLED", "retrieval.agent_views.enabled"},
+	{"STOWAGE_RETRIEVAL_AGENT_VIEWS_ON_POLICY_ERROR", "retrieval.agent_views.on_policy_error"},
+	{"STOWAGE_RETRIEVAL_AGENT_VIEWS_SUBJECT_PRECEDENCE", "retrieval.agent_views.subject_precedence"},
 }
 
 // Defaults returns a fully working Config with no file or env input. (AC-1)
@@ -445,10 +496,18 @@ func Defaults() *Config {
 			StdioTenant: "default",
 		},
 		Retrieval: RetrievalConfig{
-			IncludeSuperseded:   true,                             // dual-visibility default (§6c, D-105)
-			BrowseDefaultLimit:  30,                               // ae5 browse page size (D-143)
-			TopicFilterScoringK: 100,                              // ae6 topic-filter candidate window (D-144)
-			AgentViews:          AgentViewsConfig{Enabled: false}, // ae1 agent filter master switch (D-135/D-146/D-151), off by default
+			IncludeSuperseded:   true, // dual-visibility default (§6c, D-105)
+			BrowseDefaultLimit:  30,   // ae5 browse page size (D-143)
+			TopicFilterScoringK: 100,  // ae6 topic-filter candidate window (D-144)
+			AgentViews: AgentViewsConfig{
+				Enabled:           false,       // ae1 agent filter master switch (D-135/D-146/D-151), off by default
+				OnPolicyError:     "open",      // ae9 D-139-aligned fail-open default (D-149)
+				SubjectPrecedence: "agent,key", // ae9 agent wins when both an agent id and a key id are present (D-149)
+			},
+			ReadPosture: "compatible", // ae8 resolve-time presence gate (D-137/D-148), byte-identical default
+		},
+		Identity: IdentityConfig{
+			Multiplexing: false, // ae8 global interim knob (D-137/D-148), off by default
 		},
 		Auth: AuthConfig{
 			Mode:       "keyring", // zero-config default — boot unchanged (D-147)
@@ -579,6 +638,24 @@ func (c *Config) FillZeroDefaults() {
 	// window the same way the server does (D-069 parity lens).
 	if c.Retrieval.TopicFilterScoringK == 0 {
 		c.Retrieval.TopicFilterScoringK = d.Retrieval.TopicFilterScoringK
+	}
+	// retrieval.agent_views.{on_policy_error,subject_precedence} (ae9, D-149) are
+	// closed-enum strings like read_posture below — an empty value would fail
+	// Validate(), so a zero field is filled to its byte-identical default
+	// (parity with the server's Load path). Enabled stays a bare bool zero-fill
+	// (false == the default; no fill needed).
+	if c.Retrieval.AgentViews.OnPolicyError == "" {
+		c.Retrieval.AgentViews.OnPolicyError = d.Retrieval.AgentViews.OnPolicyError
+	}
+	if c.Retrieval.AgentViews.SubjectPrecedence == "" {
+		c.Retrieval.AgentViews.SubjectPrecedence = d.Retrieval.AgentViews.SubjectPrecedence
+	}
+	// retrieval.read_posture (ae8, D-137/D-148) is a closed-enum string like
+	// auth.mode below — an empty value would fail Validate(), so a zero field
+	// is filled to the byte-identical "compatible" default (parity with the
+	// server's Load path).
+	if c.Retrieval.ReadPosture == "" {
+		c.Retrieval.ReadPosture = d.Retrieval.ReadPosture
 	}
 
 	// auth.mode (ae7): the embedded SDK path performs no HTTP bearer auth at
@@ -784,6 +861,23 @@ func (c *Config) Validate() error {
 		errs = append(errs, fmt.Errorf("config.retrieval.topic_filter_scoring_k: %d must be > 0", c.Retrieval.TopicFilterScoringK))
 	} else if c.Retrieval.TopicFilterScoringK > 100 {
 		errs = append(errs, fmt.Errorf("config.retrieval.topic_filter_scoring_k: %d exceeds the hard result cap (100)", c.Retrieval.TopicFilterScoringK))
+	}
+
+	// retrieval.agent_views.on_policy_error (ae9, D-149): closed-enum, open|closed.
+	validOnPolicyErrors := map[string]bool{"open": true, "closed": true}
+	if !validOnPolicyErrors[c.Retrieval.AgentViews.OnPolicyError] {
+		errs = append(errs, fmt.Errorf("config.retrieval.agent_views.on_policy_error: unknown value %q (valid: open, closed)", c.Retrieval.AgentViews.OnPolicyError))
+	}
+	// retrieval.agent_views.subject_precedence (ae9, D-149): closed-enum, the two permutations.
+	validPrecedences := map[string]bool{"agent,key": true, "key,agent": true}
+	if !validPrecedences[c.Retrieval.AgentViews.SubjectPrecedence] {
+		errs = append(errs, fmt.Errorf("config.retrieval.agent_views.subject_precedence: unknown value %q (valid: agent,key, key,agent)", c.Retrieval.AgentViews.SubjectPrecedence))
+	}
+
+	// retrieval.read_posture (ae8, D-137/D-148): closed-enum, compatible|strict.
+	validReadPostures := map[string]bool{"compatible": true, "strict": true}
+	if !validReadPostures[c.Retrieval.ReadPosture] {
+		errs = append(errs, fmt.Errorf("config.retrieval.read_posture: unknown posture %q (valid: compatible, strict)", c.Retrieval.ReadPosture))
 	}
 
 	// auth.* (ae7, D-136/D-147): mode is closed-enum; jwt mode requires
@@ -1005,6 +1099,14 @@ func (c *Config) getByPath(path string) string {
 		return strconv.Itoa(c.Retrieval.TopicFilterScoringK)
 	case "retrieval.agent_views.enabled":
 		return strconv.FormatBool(c.Retrieval.AgentViews.Enabled)
+	case "retrieval.agent_views.on_policy_error":
+		return c.Retrieval.AgentViews.OnPolicyError
+	case "retrieval.agent_views.subject_precedence":
+		return c.Retrieval.AgentViews.SubjectPrecedence
+	case "retrieval.read_posture":
+		return c.Retrieval.ReadPosture
+	case "identity.multiplexing":
+		return strconv.FormatBool(c.Identity.Multiplexing)
 	case "auth.mode":
 		return c.Auth.Mode
 	case "auth.issuer":
@@ -1170,6 +1272,18 @@ func (c *Config) setByPath(path, value string) error {
 			return fmt.Errorf("config.%s: %w", path, err)
 		}
 		c.Retrieval.AgentViews.Enabled = b
+	case "retrieval.agent_views.on_policy_error":
+		c.Retrieval.AgentViews.OnPolicyError = value
+	case "retrieval.agent_views.subject_precedence":
+		c.Retrieval.AgentViews.SubjectPrecedence = value
+	case "retrieval.read_posture":
+		c.Retrieval.ReadPosture = value
+	case "identity.multiplexing":
+		b, err := strconv.ParseBool(value)
+		if err != nil {
+			return fmt.Errorf("config.%s: %w", path, err)
+		}
+		c.Identity.Multiplexing = b
 	case "auth.mode":
 		c.Auth.Mode = value
 	case "auth.issuer":

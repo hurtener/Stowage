@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"net/http"
 
-	"github.com/hurtener/stowage/internal/identity"
 	"github.com/hurtener/stowage/internal/retrieval"
 	"github.com/hurtener/stowage/internal/store"
 )
@@ -65,8 +64,11 @@ func (s *Server) handleDrilldown(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	authKey := keyFromContext(r.Context())
-	scope := identity.Scope{Tenant: authKey.TenantID, Project: req.ProjectID, User: req.UserID}
+	scope, _, err := s.resolveScope(r, identityArgs{Project: req.ProjectID, User: req.UserID})
+	if err != nil {
+		respondScopeError(w, err)
+		return
+	}
 
 	memoryID := req.MemoryID
 

@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"net/http"
 
-	"github.com/hurtener/stowage/internal/identity"
 	"github.com/hurtener/stowage/internal/retrieval"
 	"github.com/hurtener/stowage/internal/scoring"
 	"github.com/hurtener/stowage/internal/store"
@@ -39,6 +38,12 @@ type retrieveRequest struct {
 	// D-135). Read-time only: stamped onto Scope.Agent, never persisted. Empty =
 	// no agent filtering.
 	AgentID string `json:"agent_id"`
+	// ViewName selects a named topic VIEW to apply (ae9, D-149) — a curation
+	// lens bound to the CALLER'S OWN subject (Scope.Agent if set, else the
+	// verified credential key id via keyFromContext — never a wire field, see
+	// handleRetrieve). Empty ⇒ "default" (== ae1's single binding). Fails open
+	// on a views-store error (D-139, see retrieveResponse.DegradedView).
+	ViewName string `json:"view_name"`
 }
 
 // retrieveBreakdown is the wire format for a per-item scoring breakdown.
@@ -107,9 +112,15 @@ type retrieveResponse struct {
 	// DegradedAgentFilter is true when agent_id was bound to a policy but the
 	// agent-policy store failed, so the caller's own UNFILTERED results were
 	// returned instead (fail-open, D-139/D-036, ae1).
-	DegradedAgentFilter bool   `json:"degraded_agent_filter,omitempty"`
-	CacheHit            bool   `json:"cache_hit,omitempty"` // true when served from the hot–warm cache (Phase 12)
-	API                 string `json:"api"`                 // "v1"
+	DegradedAgentFilter bool `json:"degraded_agent_filter,omitempty"`
+	// DegradedView is true when the caller's topic-view subject was bound to a
+	// named view but the views store failed, so the caller's own UNFILTERED
+	// results were returned instead — unless agent_views.on_policy_error=closed,
+	// in which case no results are returned (still DegradedView=true; fail-open
+	// by default, D-139/D-036, ae9).
+	DegradedView bool   `json:"degraded_view,omitempty"`
+	CacheHit     bool   `json:"cache_hit,omitempty"` // true when served from the hot–warm cache (Phase 12)
+	API          string `json:"api"`                 // "v1"
 	// Rendered is the identical lean markdown reader body the MCP Text block and
 	// SDK Rendered field carry (D-142, ae4a) — the same retrieval.RenderReadBody
 	// call, so all three single-user read surfaces stay byte-identical (D-067/
@@ -153,10 +164,17 @@ func (s *Server) handleRetrieve(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	authKey := keyFromContext(r.Context())
-	// Tenant is the auth boundary (the key); project/user are caller-supplied read sub-scopes
-	// (D-125). The store hard-isolates to this scope; grants may widen it (EffectiveScopes).
-	scope := identity.Scope{Tenant: authKey.TenantID, Project: req.ProjectID, User: req.UserID, Agent: req.AgentID}
+	// Tenant is the auth boundary; project/user/session are resolved through the
+	// ONE cross-surface resolver (ae8, D-148/D-067/D-073), which applies the
+	// D-137 precedence (verified JWT claims > args — HTTP has no _meta, D-140).
+	// The store hard-isolates to this scope; grants may widen it (EffectiveScopes).
+	scope, effSession, err := s.resolveScope(r, identityArgs{
+		Project: req.ProjectID, User: req.UserID, Session: req.SessionID, Agent: req.AgentID,
+	})
+	if err != nil {
+		respondScopeError(w, err)
+		return
+	}
 
 	if s.retriever == nil {
 		respondJSON(w, http.StatusServiceUnavailable, errBody("retrieval not available"))
@@ -164,17 +182,26 @@ func (s *Server) handleRetrieve(w http.ResponseWriter, r *http.Request) {
 	}
 
 	resp, err := s.retriever.Retrieve(r.Context(), scope, retrieval.Request{
-		Query:         req.Query,
-		Limit:         req.Limit,
-		Window:        store.Window{From: req.From, Until: req.Until},
-		Kinds:         req.Kinds,
-		IncludeLanes:  req.IncludeLanes,
-		SessionID:     req.SessionID,
+		Query:        req.Query,
+		Limit:        req.Limit,
+		Window:       store.Window{From: req.From, Until: req.Until},
+		Kinds:        req.Kinds,
+		IncludeLanes: req.IncludeLanes,
+		// Session-REPLACE (D-137/D-150): the effective session (claim > arg —
+		// HTTP has no _meta, D-140) fed to this EXISTING relevance sink, never
+		// onto Scope.Session (D-150).
+		SessionID:     effSession,
 		Debug:         req.Debug,
 		ResponseID:    req.ResponseID,
 		Profile:       req.Profile,
 		IncludeTopics: req.IncludeTopics,
 		ExcludeTopics: req.ExcludeTopics,
+		ViewName:      req.ViewName,
+		// CredentialKeyID (ae9, D-149): the "key" topic-view subject fallback,
+		// SERVER-INJECTED from the verified credential already on context
+		// (authMiddleware) — never a JSON wire field, so a caller can never
+		// spoof another key's views. "" in ModeJWT (no stored *auth.Key).
+		CredentialKeyID: keyFromContext(r.Context()).ID,
 	})
 	if err != nil {
 		s.log.ErrorContext(r.Context(), "api: retrieve failed", "err", err)
@@ -225,6 +252,7 @@ func (s *Server) handleRetrieve(w http.ResponseWriter, r *http.Request) {
 		DegradedRerank:      resp.DegradedRerank,
 		DegradedTopicFilter: resp.DegradedTopicFilter,
 		DegradedAgentFilter: resp.DegradedAgentFilter,
+		DegradedView:        resp.DegradedView,
 		CacheHit:            resp.CacheHit,
 		API:                 resp.API,
 		Rendered:            retrieval.RenderReadBody(resp.Items),

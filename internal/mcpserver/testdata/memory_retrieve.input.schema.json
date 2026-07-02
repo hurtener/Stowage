@@ -60,6 +60,9 @@
       "items": {
         "type": "string"
       }
+    },
+    "view_name": {
+      "type": "string"
     }
   },
   "required": [

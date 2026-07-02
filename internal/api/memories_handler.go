@@ -19,7 +19,6 @@ import (
 	"errors"
 	"net/http"
 
-	"github.com/hurtener/stowage/internal/identity"
 	"github.com/hurtener/stowage/internal/reconcile"
 	"github.com/hurtener/stowage/internal/store"
 )
@@ -91,7 +90,11 @@ func (s *Server) handleGetMemory(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	scope := scopeFromRequest(r)
+	scope, err := s.scopeFromRequest(r)
+	if err != nil {
+		respondScopeError(w, err)
+		return
+	}
 	ctx := r.Context()
 
 	view, err := reconcile.GetMemory(ctx, s.st, scope, id)
@@ -132,7 +135,11 @@ func (s *Server) handleRollbackMemory(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	scope := scopeFromRequest(r)
+	scope, err := s.scopeFromRequest(r)
+	if err != nil {
+		respondScopeError(w, err)
+		return
+	}
 	ctx := r.Context()
 
 	res, err := reconcile.Rollback(ctx, s.st, scope, id, s.scopeInvalidator())
@@ -177,8 +184,11 @@ func (s *Server) handlePatchMemory(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	authKey := keyFromContext(r.Context())
-	scope := identity.Scope{Tenant: authKey.TenantID, Project: req.ProjectID, User: req.UserID}
+	scope, _, err := s.resolveScope(r, identityArgs{Project: req.ProjectID, User: req.UserID})
+	if err != nil {
+		respondScopeError(w, err)
+		return
+	}
 	ctx := r.Context()
 
 	res, err := reconcile.Resolve(ctx, s.st, scope, id, reconcile.ConfirmAction(req.Action), s.scopeInvalidator())

@@ -4,8 +4,6 @@ import (
 	"encoding/json"
 	"net/http"
 	"strings"
-
-	"github.com/hurtener/stowage/internal/identity"
 )
 
 // resolveRequest is the wire format for POST /v1/citations/resolve.
@@ -75,8 +73,11 @@ func (s *Server) handleCitationsResolve(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	authKey := keyFromContext(r.Context())
-	scope := identity.Scope{Tenant: authKey.TenantID, Project: req.ProjectID, User: req.UserID}
+	scope, _, err := s.resolveScope(r, identityArgs{Project: req.ProjectID, User: req.UserID})
+	if err != nil {
+		respondScopeError(w, err)
+		return
+	}
 
 	// Resolve each citation to its injection, accumulating memory IDs.
 	type resolvedInj struct {

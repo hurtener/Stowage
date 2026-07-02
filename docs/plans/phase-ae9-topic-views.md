@@ -1,6 +1,6 @@
 # Phase ae9 — per-agent / per-key topic views (read-time curation)
 
-- **Status:** draft
+- **Status:** implemented (Wave 3, feat/ae-wave-3). See "As-built deviations" below.
 - **Owning subsystem(s):** `internal/retrieval` (view resolution + apply, reusing ae6's `filterByTopicOwnScope`); `internal/store` (extends ae1's `TopicViewStore` seam + both drivers with admin CRUD + conformance — **no** new table, **no** new migration; ae9 reads/writes ae1's `topic_views` junction table); `internal/identity` (subject resolution helper); the three retrieve surfaces (`internal/mcpserver`, `internal/api`, `sdk/stowage`) for apply-a-view; a new **`internal/views` core service** (`views.Service`, mirroring `grants.Service`) that owns admin CRUD + governance-event emission once, with `internal/mcpserver` + `internal/api` as thin callers for view admin; `internal/config` (the `agent_views` knob group).
 - **RFC sections:** §5.3 (topic-keyed slicing, `memory_topics` reuse), §6 (retrieval, curation), §9.5 (one logic core, D-067/D-073)
 - **Depends on phases:** **ae1** (the read-time optional `identity.Scope.Agent` field populated from `_meta`, the Dockyard v1.8 `server.RequestMeta(ctx)` plumbing, and the `(tenant_id, agent_id) → allow/deny topic-key` policy-binding store+table that ae9 generalizes) and **ae6** (the own-scope, fail-**open**, lane-aware `filterByTopicOwnScope` + its `topic_filter_scoring_k` candidate-window remedy — the single filter ae9 reuses). Both are prerequisites; ae9 builds no filter and no `_meta` plumbing of its own.
@@ -510,6 +510,82 @@ then:
 - **Knob sprawl / accidental default-on.** `enabled=false` default keeps
   zero-config byte-identical; three scalars only, all D-034-complete and
   smoke-checked.
+
+## As-built deviations (implementation notes)
+
+Recorded per CLAUDE.md §4.3 — reasonable deviations discovered during
+implementation, none of which change the design's intent.
+
+1. **The auth surface changed underneath this plan (ae7 landed after this plan
+   was authored).** The plan's "On HTTP the full `*auth.Key` (with `ID`) is on
+   the request context" premise is **stale**: by the time ae9 was implemented,
+   ae7's unified `auth.Authenticator`/`AuthMiddleware`/`authMiddleware` had
+   replaced the old per-surface verify paths, and **both** HTTP and MCP had
+   quietly lost the verified key's `ID` (HTTP synthesized
+   `&auth.Key{TenantID, Role}` with no `ID`; MCP never carried it either). ae9
+   fixes this at the **one shared root** instead of patching each surface:
+   `auth.Authenticator.Authenticate` gains a fourth return, `keyID string`
+   (`""` in `ModeJWT` — a verified JWT is not a stored `*auth.Key`, so the
+   "key" view subject simply never resolves for a JWT-mode caller). Both
+   `internal/api/auth.go`'s `authMiddleware` and
+   `internal/mcpserver/server.go`'s `AuthMiddleware` (which `KeyringMiddleware`
+   wraps) now thread it through — `keyFromContext(ctx).ID` on HTTP, the new
+   `mcpserver.KeyIDFromContext(ctx)` on MCP. This is a **correctness fix**, not
+   scope creep: without it, the "key" topic-view subject could never resolve
+   on either surface, not just MCP as the plan anticipated.
+2. **The `Authenticate` signature change touches every call site** (both
+   middlewares + `internal/auth/authenticator_test.go`'s ~11 call sites) —
+   documented here since it is a wider blast radius than a typical same-package
+   change, but confined to `internal/auth` + the two thin call sites.
+3. **The key-id stash lives in `AuthMiddleware`, not `KeyringMiddleware`
+   specifically** (the plan's naming) — because ae7 unified both modes behind
+   one `AuthMiddleware`, and `KeyringMiddleware` is now a thin wrapper around it
+   (`AuthMiddleware(auth.NewKeyringAuthenticator(kr), next)`). The stash applies
+   uniformly to both auth modes; `ModeJWT` simply always yields `keyID=""`.
+4. **Result-cache bypass for view-eligible requests** (`hasViewApply`,
+   `internal/retrieval/views.go` + the two `!r.hasViewApply(scope, req)` guards
+   in `retrieval.go`'s Get/Put cache blocks) — **not spelled out in the
+   original design**, added for correctness. `ViewName` is a per-request wire
+   field and the "key" subject's `CredentialKeyID` is not part of the cache key
+   at all (unlike `scope.Agent`, ae1's agent filter's own cache-key dimension,
+   D-135); caching a view-eligible response could serve one `view_name`'s (or
+   one key-subject's) result to a different `view_name`/key. Mirrors ae6's own
+   choice for `IncludeTopics`/`ExcludeTopics` — skip caching rather than widen
+   the key. Inert (no bypass) when `agent_views.enabled=false`, preserving the
+   zero-config byte-identical invariant (AC-8).
+5. **`(TopicView).Validate()` also rejects an empty view** (`ErrEmptyPolicy` —
+   reusing ae1's `PutAgentPolicy` sentinel) when both `AllowTopics` and
+   `DenyTopics` are empty. Not explicitly stated in the design's Validate()
+   description, but required by the junction-table representation D-151 pins:
+   a view with zero keys has **no durable row** at all, so it would be
+   indistinguishable from "no view exists" (unfindable via `GetView`, absent
+   from `ListViews`, and a duplicate `CreateView` would not even be caught as
+   `ErrConflict`). Symmetric with `PutAgentPolicy`'s existing guard, since
+   ae1's binding *is* one of these views.
+6. **`CreateView`'s conflict check is an explicit natural-key existence probe**
+   inside the same transaction as the insert, not a bare reliance on the
+   per-key `UNIQUE(tenant_id, subject_kind, subject_id, view_name, topic_key)`
+   index. Two `CreateView` calls for the *same* natural key but *disjoint*
+   topic-key sets would not collide on that index alone; the pre-check makes
+   "a view already exists for this subject/view_name" the correct, tested
+   `ErrConflict` semantics (AC-6).
+7. **`UpdateView` is an atomic delete-then-insert** (not a diff/merge of
+   individual keys) — behaviourally equivalent to the design's "insert new
+   keys, delete removed keys" framing (the *end row set* always matches the
+   new `AllowTopics`/`DenyTopics` exactly either way) and consistent with
+   `PutAgentPolicy`'s existing atomic-replace precedent. One side effect
+   inherited from that precedent: `UpdatedAt`/`CreatedAt` are both refreshed
+   to "now" on every `UpdateView` (ae1's `PutAgentPolicy` has the identical
+   characteristic — the junction table has no single row that owns a
+   view-level `created_at` independent of its per-key rows).
+8. **`TopicView.ID` is a synthesized, informational string**
+   (`subject_kind + "/" + subject_id + "/" + view_name`), never a stored
+   column — the junction table has no single row that owns a view's identity
+   (a view is a *set* of per-key rows, each with its own real primary key).
+   Every CRUD method still addresses a view by its natural key, never by this
+   string; `memory_views`' `delete_view`/HTTP's `DELETE
+   .../{subject_kind}/{subject_id}/{view_name}` use the same natural-key path
+   segments.
 
 ## Glossary additions
 

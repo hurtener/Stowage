@@ -36,8 +36,12 @@ type episodesResponseJSON struct {
 // `?from=&until=` time window (the cross-episode structured summary). Tenant scope
 // from the auth key (a tenant query matches the tenant's episodes).
 func (s *Server) handleEpisodes(w http.ResponseWriter, r *http.Request) {
-	scope := scopeFromRequest(r)
 	q := r.URL.Query()
+	scope, effSession, err := s.resolveScope(r, identityArgs{Project: q.Get("project_id"), User: q.Get("user_id"), Session: q.Get("session_id")})
+	if err != nil {
+		respondScopeError(w, err)
+		return
+	}
 
 	if id := q.Get("id"); id != "" {
 		v, err := episodes.Get(r.Context(), s.st, scope, id)
@@ -96,9 +100,11 @@ func (s *Server) handleEpisodes(w http.ResponseWriter, r *http.Request) {
 	}
 
 	res, err := episodes.List(r.Context(), s.st, scope, episodes.ListOptions{
-		Limit:     atoiDefault(q.Get("limit"), 0),
-		Cursor:    q.Get("cursor"),
-		SessionID: q.Get("session_id"),
+		Limit:  atoiDefault(q.Get("limit"), 0),
+		Cursor: q.Get("cursor"),
+		// Session-REPLACE (D-137/D-150): the effective session (claim > arg —
+		// HTTP has no _meta, D-140), never Scope.Session.
+		SessionID: effSession,
 		From:      atoi64(q.Get("from")),
 		Until:     atoi64(q.Get("until")),
 	})

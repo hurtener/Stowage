@@ -90,6 +90,39 @@ func (s Scope) Validate() error {
 	return nil
 }
 
+// ResolveViewSubject resolves the read-time topic-VIEW subject (ae9, D-149) —
+// an ("agent", agentID) or ("key", keyID) pair — from the request's
+// identity-derived inputs, honouring precedence. It is a pure function: the
+// subject is ALWAYS identity-derived (agent from Scope.Agent, key from the
+// server-injected, never-wire-argument verified credential id), never a wire
+// argument — a caller can only ever apply its own subject's views (P3-honest).
+//
+//   - agentID != "" AND keyID != "" → precedence decides (default "agent,key"
+//     ⇒ agent wins; "key,agent" flips it).
+//   - exactly one of agentID/keyID is set → that one resolves.
+//   - neither is set → (ok=false): no subject, an UNBOUND caller — the view
+//     apply path treats this as an unfiltered pass-through, not an error.
+//
+// precedence is normally one of "agent,key" (default) or "key,agent"
+// (retrieval.agent_views.subject_precedence, D-034); an unrecognized value
+// falls back to the "agent,key" default rather than erroring — the same
+// fail-open spirit as the view-apply path itself (D-139).
+func ResolveViewSubject(agentID, keyID, precedence string) (kind, id string, ok bool) {
+	if agentID != "" && keyID != "" {
+		if precedence == "key,agent" {
+			return "key", keyID, true
+		}
+		return "agent", agentID, true
+	}
+	if agentID != "" {
+		return "agent", agentID, true
+	}
+	if keyID != "" {
+		return "key", keyID, true
+	}
+	return "", "", false
+}
+
 type contextKey struct{}
 
 // WithScope returns a new context carrying s.
