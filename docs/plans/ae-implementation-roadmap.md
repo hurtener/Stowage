@@ -112,11 +112,11 @@ Independent of W1; the C4 gate that unblocks W4.
 - [x] Dual adversarial review · [x] live 3-surface validation · [x] CI green · [x] merged · [x] roadmap updated
 
 ### Wave 3 — curation & enrichment built on identity · one PR
-**Status:** NOT STARTED
+**Status:** MERGED (PR #98, 8fbd534)
 Depends on **W1 + W2** (ae8 ← ae2+ae7; ae9 ← ae1+ae6).
-- [ ] **ae8** — effective-scope resolver (`ResolveReadScope`, precedence JWT > `_meta` > args); the two D‑137 knobs; **adds no store WHERE** (populate/require `Scope.User`); strict refuses tenant-wide; `Scope.Session` empty on read (D‑150) · D‑148 (impl D‑137)
-- [ ] **ae9** — per-agent/per-key topic views on ae1's `topic_views` (no new table/migration/knob); subject = agent_id or verified key id; **fail-open**; view can only subtract · D‑149 (impl D‑139)
-- [ ] Dual adversarial review · [ ] live 3-surface validation · [ ] CI green · [ ] merged · [ ] roadmap updated
+- [x] **ae8** — effective-scope resolver (`ResolveReadScope`, precedence JWT > `_meta` > args); the two D‑137 knobs; **adds no store WHERE** (populate/require `Scope.User`); strict refuses tenant-wide; `Scope.Session` empty on read (D‑150) · D‑148 (impl D‑137)
+- [x] **ae9** — per-agent/per-key topic views on ae1's `topic_views` (no new table/migration/knob); subject = agent_id or verified key id; **fail-open**; view can only subtract · D‑149 (impl D‑139)
+- [x] Dual adversarial review · [x] live 3-surface validation · [x] CI green · [x] merged · [x] roadmap updated
 
 ### Wave 4 — breaking removal (post-ae7/ae8) · one PR
 **Status:** NOT STARTED
@@ -135,3 +135,4 @@ Depends on **W2 + W3**. Pre-launch ⇒ **direct removal, no deprecation window**
 - Wave 0 merged as PR #92 (1a10f57), 2026-07-01; live 3-surface validation: pass (real OpenRouter/Bifrost — ae4a lean read/drill, ae5 browse, ae6 topic filter verified on SDK+HTTP+MCP). Dual adversarial review + fixes: mcpserver browse coverage (78.7→81.0%), judged-path CURRENT/SUPERSEDED partitioning restored, harbor-adapter fakeClient.Browse, phase-29/29c smoke fix-forward.
 - Wave 1 merged as PR #94 (2dfa7ec), 2026-07-01; live 3-surface validation: pass (real gateway — ae1 agent→topic narrowing 4→2 with SDK/HTTP/MCP parity; ae2 `_meta.user` narrow + `_meta.tenant` fail-closed). Dual adversarial review + fixes: `PutAgentPolicy` empty-allow/deny footgun rejected at store layer, `json:"-"` on `Scope.Agent` (pipeline golden), RFC §8.1 amended for `topic_views`, `memory_proactive_config` get-arm `Scope.Agent`, SA5011 lint fix-forward, live-harness topic-snapshot race hardened.
 - Wave 2 merged as PR #96 (9b4ea24), 2026-07-01; live JWT-auth validation: pass (real gateway — ingest→extract→retrieve JWT-gated on HTTP/MCP-over-HTTP/SDK-over-HTTP, rendered bodies match; negatives: no-token 401, expired 401/403, cross-tenant 0 items). Dual adversarial review (security/crypto + tests/config/parity): no auth-bypass/fail-open; fixed JWKS negative-kid refresh amplification (min-refresh window) + RSA exponent bound.
+- Wave 3 merged as PR #98 (8fbd534), 2026-07-02; live 3-surface validation: pass (real gateway — ae8 strict isolation+refusal, ae9 topic-view narrowing 4→2 with SDK/HTTP/MCP parity + unbound pass-through). Dual adversarial review (correctness/P3 + tests/parity/coverage) caught a CRITICAL P3 blocker — MCP+JWT wasn't pinning Scope.User from the verified credential (within-tenant cross-user read leak); fixed + guarded by a negative isolation test. Also: api coverage 77.9→80.4%, two smoke-gate false-green/false-fail bugs, pgstore view-CRUD TOCTOU (SERIALIZABLE→ErrConflict), revive package-comment lint.
