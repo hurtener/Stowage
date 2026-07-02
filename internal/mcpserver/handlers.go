@@ -173,10 +173,12 @@ func makeIngestHandler(svc *Services) tool.Handler[IngestInput, IngestOutput] {
 
 func makeRetrieveHandler(svc *Services) tool.Handler[RetrieveInput, RetrieveOutput] {
 	return func(ctx context.Context, in RetrieveInput) (tool.Result[RetrieveOutput], error) {
-		// Tenant is the auth boundary; project/user/agent are resolved through the
-		// ONE cross-surface resolver (ae8, D-148/D-067/D-073), which applies the
-		// D-137 precedence (verified JWT claims > _meta > args) and the D-138
-		// tenant guard. Empty = tenant-wide (back-compat).
+		// Tenant is the auth boundary; project/user/agent resolve through the ONE
+		// cross-surface resolver (ae8, D-148/D-067/D-073) from _meta/JWT only —
+		// the project_id/user_id args were removed (ae2b, D-140/M1); only
+		// session_id remains an arg. The resolver applies the D-137 precedence
+		// (JWT claim > _meta) and the D-138 tenant guard; an absent project/user
+		// resolves per retrieval.read_posture (compatible ⇒ tenant-wide).
 		scope, effSession, err := resolveScope(svc, ctx, scopeArgs{Session: in.SessionID})
 		if err != nil {
 			return tool.Result[RetrieveOutput]{}, fmt.Errorf("memory_retrieve: %w", err)

@@ -19,8 +19,12 @@
 // _meta alone — proving the args were never needed, without asserting an
 // isolation guarantee the store never provided.
 //
-// Runs under -race. Postgres subtests are gated on STOWAGE_TEST_PG_DSN (the
-// established pattern, pgstore_test.go) — sqlite always runs.
+// Runs under -race on sqlite. The no-identity/read-posture test
+// (TestMCPEffectiveScope_NoIdentity_MatchesReadPosture) is driver-parameterized
+// via leanReadDrivers() and additionally exercises postgres when
+// STOWAGE_TEST_PG_DSN is set (the established pattern, pgstore_test.go); the
+// per-tool _meta-narrowing subtests use sqlite (the store scope predicate they
+// exercise is identical across drivers, proven by the store conformance suite).
 package integration
 
 import (
@@ -136,6 +140,65 @@ func TestMCPEffectiveScope_Retrieve(t *testing.T) {
 	}
 	if ids["01EFFRETU2AAAAAAAAAAAAAAA"] {
 		t.Errorf("P3 LEAK: u2's memory visible under _meta.user=u1, got %+v", out.Items)
+	}
+}
+
+// TestMCPEffectiveScope_Browse (AC-2): memory_browse — the 14th read-targeting
+// struct (BrowseInput, folded into the removal set per the plan's As-built) —
+// resolves sub-tenant identity from _meta alone with project_id/user_id gone.
+// _meta.user isolates to the owner's rows; _meta.project narrows to a project.
+func TestMCPEffectiveScope_Browse(t *testing.T) {
+	cfg := effScopeConfig(t)
+	tenant := uniqueTenant("effscope-browse")
+	ctx := context.Background()
+	st, err := store.Open(ctx, cfg.Store)
+	if err != nil {
+		t.Fatalf("open store for seeding: %v", err)
+	}
+	if err := st.Migrate(ctx); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	seedEffScopeMemory(t, st, identity.Scope{Tenant: tenant, User: "u1"}, "01EFFBRWU1AAAAAAAAAAAAAAAA", "effscope browse u1")
+	seedEffScopeMemory(t, st, identity.Scope{Tenant: tenant, User: "u2"}, "01EFFBRWU2AAAAAAAAAAAAAAAA", "effscope browse u2")
+	seedEffScopeMemory(t, st, identity.Scope{Tenant: tenant, Project: "p1"}, "01EFFBRWP1AAAAAAAAAAAAAAAA", "effscope browse p1")
+	_ = st.Close(ctx)
+
+	// _meta.user=u1 isolates to u1's rows (args gone).
+	res, failed := callEffScope(t, cfg, tenant, "memory_browse",
+		mcpserver.BrowseInput{Limit: 50}, map[string]any{"user": "u1"})
+	if failed {
+		t.Fatalf("memory_browse with _meta.user failed: %+v", res)
+	}
+	var out mcpserver.BrowseOutput
+	decodeStructured(t, res, &out)
+	ids := map[string]bool{}
+	for _, m := range out.Memories {
+		ids[m.ID] = true
+	}
+	if !ids["01EFFBRWU1AAAAAAAAAAAAAAAA"] {
+		t.Errorf("expected u1's memory via _meta.user browse, got %+v", out.Memories)
+	}
+	if ids["01EFFBRWU2AAAAAAAAAAAAAAAA"] || ids["01EFFBRWP1AAAAAAAAAAAAAAAA"] {
+		t.Errorf("P3 LEAK: _meta.user=u1 browse saw a non-u1 memory, got %+v", out.Memories)
+	}
+
+	// _meta.project=p1 narrows to the project-scoped row (M1 _meta.project).
+	res2, failed2 := callEffScope(t, cfg, tenant, "memory_browse",
+		mcpserver.BrowseInput{Limit: 50}, map[string]any{"project": "p1"})
+	if failed2 {
+		t.Fatalf("memory_browse with _meta.project failed: %+v", res2)
+	}
+	var out2 mcpserver.BrowseOutput
+	decodeStructured(t, res2, &out2)
+	pids := map[string]bool{}
+	for _, m := range out2.Memories {
+		pids[m.ID] = true
+	}
+	if !pids["01EFFBRWP1AAAAAAAAAAAAAAAA"] {
+		t.Errorf("expected p1's memory via _meta.project browse, got %+v", out2.Memories)
+	}
+	if pids["01EFFBRWU1AAAAAAAAAAAAAAAA"] || pids["01EFFBRWU2AAAAAAAAAAAAAAAA"] {
+		t.Errorf("P3: _meta.project=p1 browse saw a user-scoped memory, got %+v", out2.Memories)
 	}
 }
 

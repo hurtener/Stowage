@@ -392,11 +392,22 @@ left to name a term for.
   the exact D-125 model-discretionary-targeting problem the whole track closes.
   So `BrowseInput.ProjectID`/`.UserID` are removed here too (its handler uses
   `scopeArgs{}`, its schema golden regenerated, its unit test converted to inject
-  identity via `_meta`), and the removal set / smoke / AC-2 are updated to 14. A
-  reasonable plan deviation (CLAUDE.md §4.3) — the plan is updated in the same PR,
-  not silently diverged from. The other exclusions (`IngestRecord`,
-  `IngestTargetScope`, `GrantsInput`, `ProactiveConfigInput`) are unchanged: they
-  are write/contribute/admin targeting, not the D-125 read pattern.
+  identity via `_meta`, AND a §17 real-driver subtest `TestMCPEffectiveScope_Browse`
+  proving `_meta.user`/`_meta.project` narrowing with the args gone — so BrowseInput
+  now has the same integration coverage as the other 13), and the removal set /
+  smoke / AC-2 are updated to 14. A reasonable plan deviation (CLAUDE.md §4.3) — the
+  plan is updated in the same PR, not silently diverged from. The other exclusions
+  (`IngestRecord`, `IngestTargetScope`, `GrantsInput`, `ProactiveConfigInput`) are
+  unchanged: they are write/contribute/admin targeting, not the D-125 read pattern.
+- **AC-5 HTTP↔MCP parity is proven for the two HTTP identity wire shapes, not
+  per-tool (documented narrowing).** `test/integration/http_mcp_scope_parity_test.go`
+  asserts the same-scope/same-rows bar via `TestHTTPMCPScopeParity_Retrieve`
+  (POST-body projection) and `_Get` (GET query-param projection) — HTTP has exactly
+  these two identity-carrying wire shapes, so covering both proves the D-140
+  behavioural-parity mechanism the same way for every tool that mirrors either
+  shape. The plan's AC-5/Test-Plan text ("for each of the … tools' HTTP mirror") is
+  narrowed here to those two representative shapes rather than 14 near-identical
+  per-tool copies; recorded as a deviation so it is not a silent scope cut.
 - **`scripts/smoke/phase-ae2.sh` AC-8 updated (not just `phase-ae2b.sh`
   authored).** ae2's own smoke script asserted `_meta.project` is never read
   — true as of ae2, and by ae2's own Design text explicitly deferred to this
