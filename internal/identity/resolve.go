@@ -14,6 +14,7 @@
 // this one function via a thin, surface-specific source-gathering adapter
 // (D-067/D-073 one logic core; D-140 sanctions the adapters differing in
 // which fields they populate).
+
 package identity
 
 import "errors"
