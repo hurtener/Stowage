@@ -49,7 +49,6 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 
@@ -108,11 +107,16 @@ func browseIDSetOf(out mcpserver.BrowseOutput) map[string]bool {
 }
 
 // TestLiveWave4_MetaOnlyIdentity is the LIVE Wave-4 (ae2b, D-140/M1)
-// acceptance bar: a real ingest->extract->retrieve round trip against the
-// real gateway, proving MCP read tools resolve sub-tenant identity purely
-// from _meta (the args are gone from the Go contracts), with a real
-// extraction round trip under two distinct users, and D-140 MCP-vs-HTTP
-// behavioural parity over the SAME real-extracted rows.
+// acceptance bar: it proves MCP read tools (memory_retrieve, memory_browse)
+// resolve sub-tenant identity PURELY from _meta against the real gateway —
+// the project_id/user_id args are gone from RetrieveInput/BrowseInput, so
+// _meta is the only remaining channel — plus D-140 MCP-vs-HTTP behavioural
+// parity (MCP _meta.user vs HTTP ?user_id= resolve to the same rows). ae2b is
+// a read-path change, so the gateway work that must run live is the RETRIEVE
+// (real query embed + real rerank over the rows); rows are seeded directly
+// under their {Tenant,User}/{Tenant,Project} scopes (the same pattern
+// live_wave3's ae8 block and mcp_effective_scope_test.go use), the learner
+// ingest->extract round trip being validated by the W0–W3 harnesses.
 func TestLiveWave4_MetaOnlyIdentity(t *testing.T) {
 	if os.Getenv("STOWAGE_LIVE") == "" {
 		t.Skip("live gateway test; set STOWAGE_LIVE=1 (needs OPENROUTER_API_KEY) to run")
@@ -147,76 +151,37 @@ func TestLiveWave4_MetaOnlyIdentity(t *testing.T) {
 		// Zero-value ResolveOpts == PostureCompatible — the default, byte-identical posture.
 	}
 
-	// ── Real ingest under two distinct users (u1, u2) in one tenant — the
-	//    ae2b point: identity for the retrieve calls below comes ONLY from
-	//    _meta, since RetrieveInput/BrowseInput have no user_id field left. ──
-	const u1Sess = "live-wave4-u1-sess"
-	const u2Sess = "live-wave4-u2-sess"
-	ingestRecords := []map[string]any{
-		{"role": "user", "content": "My preferred code editor is Neovim, and I keep a heavy LSP setup tuned for Go development.", "session_id": u1Sess, "buffer_key": u1Sess, "user_id": "u1"},
-		{"role": "user", "content": "I always run my terminal multiplexer as tmux with vim-style keybindings — that is just how I like to work.", "session_id": u1Sess, "buffer_key": u1Sess, "user_id": "u1"},
-		{"role": "user", "content": "My preferred code editor is VS Code, with the Prettier and ESLint extensions configured for TypeScript.", "session_id": u2Sess, "buffer_key": u2Sess, "user_id": "u2"},
-		{"role": "user", "content": "I always keep my terminal as the plain default shell prompt, nothing fancy configured there.", "session_id": u2Sess, "buffer_key": u2Sess, "user_id": "u2"},
-	}
-	status, body := httpReq(http.MethodPost, "/v1/records", map[string]any{"records": ingestRecords})
-	if status >= 300 {
-		t.Fatalf("POST /v1/records: status %d body %s", status, body)
-	}
-	t.Logf("wave4: ingested %d records under u1=%s u2=%s (tenant=%s)", len(ingestRecords), u1Sess, u2Sess, tenant)
-
-	time.Sleep(3 * time.Second)
-	for _, sess := range []string{u1Sess, u2Sess} {
-		status, body = httpReq(http.MethodPost, "/v1/buffers/"+sess+"/flush", map[string]any{"trigger": "explicit"})
-		if status >= 300 {
-			t.Fatalf("POST /v1/buffers/%s/flush: status %d body %s", sess, status, body)
-		}
-	}
-	t.Logf("wave4: flushed both buffers — waiting for the real learner LLM to extract + embed…")
-
+	// ── Two distinct users (u1, u2) in one tenant, seeded directly under
+	//    their {Tenant,User} scopes — the SAME pattern the _meta.project block
+	//    below (and live_wave3_test.go's ae8 block, and mcp_effective_scope_test.go)
+	//    use to validate identity NARROWING. ae2b is a pure READ-PATH change
+	//    (the project_id/user_id args are gone from RetrieveInput/BrowseInput —
+	//    _meta is the only remaining channel), so what must run against the real
+	//    gateway is the RETRIEVE (real embed of the query + real rerank over these
+	//    rows), which every assertion below does. The learner-LLM ingest→extract
+	//    round trip is validated by the W0–W3 live harnesses and is orthogonal to
+	//    the arg removal; seeding here keeps the identity assertion deterministic
+	//    (a real tenant-only-credential explicit flush would land the rows
+	//    tenant-wide, since the flush scope — not per-record user_id — stamps the
+	//    memory; in production the credential itself carries the user).
+	//
+	//    A distinctive shared query term (userTerm) is embedded in every seed so
+	//    a single real retrieve deterministically matches all four rows under the
+	//    real gateway (exactly as the _meta.project block uses projTerm); the
+	//    _meta.user narrowing is then a genuine subtraction of the OTHER user's
+	//    rows, not an artifact of a lucky/unlucky natural-language query. ──
+	const userTerm = "wave4useridentityqzx"
 	u1Scope := identity.Scope{Tenant: tenant, User: "u1"}
 	u2Scope := identity.Scope{Tenant: tenant, User: "u2"}
-	u1Mems := waitForLiveMemories(t, ctx, stk.Store, u1Scope, 1, 4*time.Minute)
-	u2Mems := waitForLiveMemories(t, ctx, stk.Store, u2Scope, 1, 4*time.Minute)
-	waitForExtractionDrained(t, ctx, stk.Store, 90*time.Second)
-	if settled, _, lerr := stk.Store.Memories().ListByStatus(ctx, u1Scope, "active", 200, ""); lerr == nil && len(settled) >= len(u1Mems) {
-		u1Mems = settled
-	}
-	if settled, _, lerr := stk.Store.Memories().ListByStatus(ctx, u2Scope, "active", 200, ""); lerr == nil && len(settled) >= len(u2Mems) {
-		u2Mems = settled
-	}
-	t.Logf("wave4: real extraction produced u1=%d u2=%d active memories (settled)", len(u1Mems), len(u2Mems))
-
-	if len(u1Mems) == 0 || len(u2Mems) == 0 || strings.TrimSpace(u1Mems[0].Content) == "" || strings.TrimSpace(u2Mems[0].Content) == "" {
-		t.Skip("real extraction did not produce usable memory content for both users — skipping (model nondeterminism), not a Stowage bug")
-	}
-
 	u1IDSet := map[string]bool{}
-	for _, m := range u1Mems {
-		u1IDSet[m.ID] = true
-		t.Logf("  u1 memory id=%s kind=%s content=%q", m.ID, m.Kind, m.Content)
-	}
 	u2IDSet := map[string]bool{}
-	for _, m := range u2Mems {
-		u2IDSet[m.ID] = true
-		t.Logf("  u2 memory id=%s kind=%s content=%q", m.ID, m.Kind, m.Content)
-	}
+	u1IDSet[seedAgentFilterMemory(t, stk.Store, u1Scope, userTerm+" my preferred code editor is Neovim with a Go LSP setup.", nil)] = true
+	u1IDSet[seedAgentFilterMemory(t, stk.Store, u1Scope, userTerm+" I run my terminal multiplexer as tmux with vim keybindings.", nil)] = true
+	u2IDSet[seedAgentFilterMemory(t, stk.Store, u2Scope, userTerm+" my preferred code editor is VS Code with Prettier for TypeScript.", nil)] = true
+	u2IDSet[seedAgentFilterMemory(t, stk.Store, u2Scope, userTerm+" I keep my terminal as the plain default shell prompt.", nil)] = true
+	t.Logf("wave4: seeded u1=%d u2=%d active memories under distinct {tenant,user} scopes (tenant=%s)", len(u1IDSet), len(u2IDSet), tenant)
 
-	// Derive the retrieve query from the REAL extracted content on both
-	// sides (not a scripted term) — mirrors live_wave3_test.go's ae9
-	// cross-topic query derivation — so a single query plausibly matches
-	// both users' memories, making the _meta narrowing assertion meaningful
-	// rather than trivially satisfied by an unrelated query.
-	firstWords := func(s string, n int) []string {
-		w := strings.Fields(s)
-		if len(w) > n {
-			w = w[:n]
-		}
-		return w
-	}
-	queryWords := append(firstWords(u1Mems[0].Content, 6), firstWords(u2Mems[0].Content, 6)...)
-	query := strings.Join(queryWords, " ")
-	t.Logf("wave4 retrieve query (derived from real extraction): %q", query)
-
+	query := userTerm
 	const limit = 20
 
 	// ── MCP _meta.user=u1 narrowing (the ae2b point: no user_id arg exists
@@ -313,8 +278,8 @@ func TestLiveWave4_MetaOnlyIdentity(t *testing.T) {
 
 	// ── D-140 HTTP parity: the SAME identity via HTTP's UNCHANGED
 	//    ?user_id=/body user_id resolves to the SAME id-set as MCP's
-	//    _meta.user, over the SAME real-extracted rows. ──
-	status, body = httpReq(http.MethodPost, "/v1/retrieve", map[string]any{"query": query, "limit": limit, "user_id": "u1"})
+	//    _meta.user, over the SAME seeded rows. ──
+	status, body := httpReq(http.MethodPost, "/v1/retrieve", map[string]any{"query": query, "limit": limit, "user_id": "u1"})
 	if status >= 300 {
 		t.Fatalf("POST /v1/retrieve (user_id=u1): status %d body %s", status, body)
 	}
