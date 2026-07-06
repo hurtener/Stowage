@@ -39,6 +39,11 @@ const (
 	TriggerExplicit      = "explicit"
 	TriggerSessionEnd    = "session_end"
 	TriggerBranchDiscard = "branch_discard"
+	// TriggerRunCompletion is the eager flush requested by memory_ingest_run
+	// after a Harbor run-completion transcript is appended (one run = one
+	// buffer, D-153): extraction begins promptly rather than waiting for the
+	// idle age sweep. Best-effort at the call site (a flush error degrades).
+	TriggerRunCompletion = "run_completion"
 )
 
 // stageWorkers is the fixed number of worker goroutines per Stage.
