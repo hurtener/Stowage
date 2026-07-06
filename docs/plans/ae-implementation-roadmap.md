@@ -130,6 +130,9 @@ Depends on **W2 + W3**. Pre-launch ⇒ **direct removal, no deprecation window**
 - [ ] **ae4b** — causal hook (batch `Store.LinksExist`, no N+1) · D‑145 — *deferred; smoke SKIPs*
 - [ ] **ae10** — `layer`/`intent` read-shaping (own-or-drop, M2) · *deferred*
 
+### Post-track follow-up (consumer-driven; single phase, single PR)
+- [ ] **ae11** — method-aware MCP handshake auth: in `auth.mode=jwt` the connect-time handshake (`initialize`/`notifications/initialized`/`ping`/`tools/list` + SSE GET + session DELETE) is served unauthenticated; `tools/call` keeps the per-call bearer, default-deny everywhere else; keyring/stdio unchanged; no new knobs · D‑152 — *motivated by an ecosystem MCP host that attaches user-agnostically and injects per-user bearers per call*
+
 ---
 
 ## Progress log (orchestrator appends one line per wave merge)
