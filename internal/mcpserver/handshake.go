@@ -23,11 +23,22 @@ const handshakePeekLimit = 64 << 10 // 64 KiB
 // DATA, never the tool list), and initialize/initialized/ping carry no scoped
 // data. Anything not in this map is protected — default-deny. Extending it is a
 // conscious one-line change reviewed against D-152.
+//
+// resources/list and prompts/list joined the allowlist as D-152's first
+// conscious extension (2026-07-06): an ecosystem host's MCP driver dials them
+// on the same no-bearer channel as initialize/tools/list during its
+// connection/tool-call lifecycle, and the strict classification made its
+// tool-call path fail on "resources/list: Unauthorized". They are the same
+// static-discovery class as tools/list — Stowage registers no resources or
+// prompts, so they answer identity-free (empty/method-error), never scoped
+// data. The scoped reads (resources/read, prompts/get) stay protected.
 var openMethods = map[string]bool{
 	"initialize":                true,
 	"notifications/initialized": true,
 	"ping":                      true,
 	"tools/list":                true,
+	"resources/list":            true,
+	"prompts/list":              true,
 }
 
 // classifyRequest reports whether r is an identity-free MCP handshake request

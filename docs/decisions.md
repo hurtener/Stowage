@@ -4275,3 +4275,15 @@ the `stowage serve` co-mounted port) therefore build the transport with
 still resolves to `DefaultHTTPSecurity`; the surface is tools-only, so no server-initiated capability
 is lost). In jwt mode no `Mcp-Session-Id` is issued. Keyring mode keeps the stateful default,
 byte-identical to today.
+
+**Amendment (2026-07-06) — first conscious allowlist extension: `resources/list` + `prompts/list`.**
+The motivating host's MCP driver dials `resources/list` and `prompts/list` on the same no-bearer
+channel as `initialize`/`tools/list` as part of its connection/tool-call lifecycle; under the
+original allowlist they classified protected, so the host's tool-call path failed on
+"resources/list: Unauthorized" before the bearer-carrying `tools/call` ever fired. Both methods
+join `openMethods`: they are the same static-discovery class as `tools/list` (identity-free by
+construction — Stowage registers no resources or prompts, so they answer empty/method-error, never
+scoped data). The corresponding READS (`resources/read`, `prompts/get`) remain protected, as does
+everything else — this is exactly the "extending the allowlist is a conscious one-constant change"
+path this entry reserved, exercised once, with a consumer. Isolation is unmoved: the per-call
+bearer still gates `tools/call`, where every scoped operation runs.

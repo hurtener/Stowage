@@ -169,6 +169,30 @@ else
   failc "jwt: bearer-less tools/list missing memory_retrieve (body: ${LIST_BODY})"
 fi
 
+# resources/list + prompts/list are open static discovery (D-152 amendment,
+# 2026-07-06): the motivating host's driver dials them bearer-less as part of
+# its connection/tool-call lifecycle. Stowage registers no resources/prompts,
+# so the SDK answers with an empty result or a JSON-RPC method error — the
+# assertion is that the middleware never 401/403s them.
+for M in resources/list prompts/list; do
+  FRAME=$(printf '{"jsonrpc":"2.0","id":9,"method":"%s","params":{}}' "$M")
+  CODE=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$MCP_URL" -H "$CT" -H "$ACCEPT" -d "$FRAME" 2>/dev/null || true)
+  if [ "$CODE" != "401" ] && [ "$CODE" != "403" ]; then
+    ok "jwt: bearer-less ${M} -> ${CODE} (open static discovery, not 401/403)"
+  else
+    failc "jwt: bearer-less ${M} got HTTP ${CODE} — must not require the bearer"
+  fi
+done
+
+# The corresponding READS stay protected: bearer-less resources/read -> 401.
+RES_READ='{"jsonrpc":"2.0","id":9,"method":"resources/read","params":{"uri":"x://y"}}'
+CODE=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$MCP_URL" -H "$CT" -H "$ACCEPT" -d "$RES_READ" 2>/dev/null || true)
+if [ "$CODE" = "401" ]; then
+  ok "jwt: bearer-less resources/read -> 401 (reads stay protected)"
+else
+  failc "jwt: bearer-less resources/read got HTTP ${CODE}, want 401"
+fi
+
 # ── jwt mode: tools/call keeps requiring the per-call bearer ─────────────────
 TOOLS_CALL='{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"memory_browse","arguments":{}}}'
 CALL=$(curl -s -w '\n%{http_code}' -X POST "$MCP_URL" -H "$CT" -H "$ACCEPT" -d "$TOOLS_CALL" 2>/dev/null || true)
