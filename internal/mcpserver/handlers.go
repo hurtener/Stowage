@@ -75,11 +75,7 @@ func makeIngestHandler(svc *Services) tool.Handler[IngestInput, IngestOutput] {
 		}
 
 		// Stamp and validate each record.
-		type stampedItem struct {
-			rec       records.Record
-			bufferKey string
-		}
-		stamped := make([]stampedItem, 0, len(in.Records))
+		stamped := make([]stampedRecord, 0, len(in.Records))
 		for i, item := range in.Records {
 			if item.Role == "" {
 				item.Role = "user" // sensible default for MCP
@@ -109,56 +105,14 @@ func makeIngestHandler(svc *Services) tool.Handler[IngestInput, IngestOutput] {
 			if err != nil {
 				return tool.Result[IngestOutput]{}, fmt.Errorf("memory_ingest: item[%d]: %w", i, err)
 			}
-			stamped = append(stamped, stampedItem{rec: *rec, bufferKey: item.BufferKey})
+			stamped = append(stamped, stampedRecord{rec: *rec, bufferKey: item.BufferKey})
 		}
 
-		// Build store records.
-		storeRecs := make([]store.Record, len(stamped))
-		for i, si := range stamped {
-			r := si.rec
-			storeRecs[i] = store.Record{
-				ID:            r.ID,
-				TenantID:      r.TenantID,
-				ProjectID:     r.ProjectID,
-				UserID:        r.UserID,
-				SessionID:     r.SessionID,
-				BranchID:      r.BranchID,
-				Role:          r.Role,
-				Content:       r.Content,
-				SourceAgent:   r.SourceAgent,
-				ResponseID:    r.ResponseID,
-				Outcome:       r.Outcome,
-				OutcomeDetail: r.OutcomeDetail,
-				TokenEstimate: r.TokenEstimate,
-				OccurredAt:    r.OccurredAt,
-				CreatedAt:     r.CreatedAt,
-			}
-		}
-
-		if err := svc.Store.Records().Append(ctx, scope, storeRecs); err != nil {
+		// Store-append + pipeline enqueue via the ONE shared stamp-tail (D-067/
+		// D-073: memory_ingest_run reuses this exact path — no second ingest core).
+		ids, allEnqueued, err := appendAndEnqueue(ctx, svc, scope, stamped)
+		if err != nil {
 			return tool.Result[IngestOutput]{}, fmt.Errorf("memory_ingest: store: %w", err)
-		}
-
-		// Non-blocking, panic-safe pipeline enqueue (P2). Uses the shared
-		// pipeline.TrySend so a send racing the shutdown Drain (channel closed)
-		// degrades to Enqueued=false instead of panicking across the MCP boundary
-		// — the same helper the SDK uses (D-067 lens, parity defense-in-depth).
-		allEnqueued := true
-		for _, si := range stamped {
-			if !pipeline.TrySend(svc.PipelineIn, pipeline.Item{
-				RecordID:  si.rec.ID,
-				TenantID:  scope.Tenant,
-				BufferKey: si.bufferKey,
-				SessionID: si.rec.SessionID,
-				BranchID:  si.rec.BranchID,
-			}) {
-				allEnqueued = false
-			}
-		}
-
-		ids := make([]string, len(stamped))
-		for i, si := range stamped {
-			ids[i] = si.rec.ID
 		}
 
 		out := IngestOutput{IDs: ids, Enqueued: allEnqueued}
@@ -167,6 +121,207 @@ func makeIngestHandler(svc *Services) tool.Handler[IngestInput, IngestOutput] {
 			Structured: out,
 		}, nil
 	}
+}
+
+// stampedRecord pairs a stamped verbatim Record with the buffer key its pipeline
+// Item should carry. It is the unit both memory_ingest and memory_ingest_run
+// build and hand to appendAndEnqueue.
+type stampedRecord struct {
+	rec       records.Record
+	bufferKey string
+}
+
+// appendAndEnqueue is the ONE shared stamp-tail for the ingest surfaces (D-067/
+// D-073 one logic core): it projects each stamped Record into a store.Record,
+// performs the D-124 scope-authoritative Append (scope binds the tenant and
+// wins per-dimension where set), then does the non-blocking, panic-safe pipeline
+// enqueue (P2) via the shared pipeline.TrySend — a send racing the shutdown
+// Drain degrades to enqueued=false instead of panicking across the MCP boundary.
+// It returns the record ids (input order preserved) and whether EVERY item
+// enqueued. memory_ingest and memory_ingest_run both call it so the append/
+// enqueue body exists exactly once (D-153 shared-code discipline).
+func appendAndEnqueue(ctx context.Context, svc *Services, scope identity.Scope, stamped []stampedRecord) ([]string, bool, error) {
+	storeRecs := make([]store.Record, len(stamped))
+	for i, si := range stamped {
+		r := si.rec
+		storeRecs[i] = store.Record{
+			ID:            r.ID,
+			TenantID:      r.TenantID,
+			ProjectID:     r.ProjectID,
+			UserID:        r.UserID,
+			SessionID:     r.SessionID,
+			BranchID:      r.BranchID,
+			Role:          r.Role,
+			Content:       r.Content,
+			SourceAgent:   r.SourceAgent,
+			ResponseID:    r.ResponseID,
+			Outcome:       r.Outcome,
+			OutcomeDetail: r.OutcomeDetail,
+			TokenEstimate: r.TokenEstimate,
+			OccurredAt:    r.OccurredAt,
+			CreatedAt:     r.CreatedAt,
+		}
+	}
+
+	if err := svc.Store.Records().Append(ctx, scope, storeRecs); err != nil {
+		return nil, false, err
+	}
+
+	allEnqueued := true
+	for _, si := range stamped {
+		if !pipeline.TrySend(svc.PipelineIn, pipeline.Item{
+			RecordID:  si.rec.ID,
+			TenantID:  scope.Tenant,
+			BufferKey: si.bufferKey,
+			SessionID: si.rec.SessionID,
+			BranchID:  si.rec.BranchID,
+		}) {
+			allEnqueued = false
+		}
+	}
+
+	ids := make([]string, len(stamped))
+	for i, si := range stamped {
+		ids[i] = si.rec.ID
+	}
+	return ids, allEnqueued, nil
+}
+
+// ─── memory_ingest_run (ae12, D-153) ────────────────────────────────────────────
+
+// ErrRunTenantMismatch / ErrRunUserMismatch are the D-153 §2 fail-closed
+// cross-check rejections: the run-completion payload's tenant_id / user_id
+// disagree with the verified per-call credential scope. A disagreeing host is
+// misconfigured; silently honoring either side would be a P3 bug. The errors
+// carry NO identity values (a redacted reason, §7) — neither the payload's nor
+// the credential's tenant/user is quoted.
+var (
+	ErrRunTenantMismatch = errors.New("memory_ingest_run: payload tenant_id does not match the verified credential tenant")
+	ErrRunUserMismatch   = errors.New("memory_ingest_run: payload user_id does not match the verified credential user")
+)
+
+// makeIngestRunHandler is the thin MCP caller for the Harbor run-completion sink
+// (memory_ingest_run, D-153). It:
+//
+//  1. resolves scope from the verified per-call credential (svc.ScopeFn) + the
+//     D-138 _meta tenant guard — byte-identical to makeIngestHandler's opening;
+//  2. cross-checks the payload's tenant_id/user_id against the resolved scope and
+//     fails CLOSED on a mismatch (D-153 §2 — never scope-authoritative, D-140);
+//  3. converts the payload via the surface-agnostic core (records.FromRunCompletion),
+//     stamps each input's tenant from the authoritative scope, and threads
+//     buffer_key = run_id onto every record (one run = one extraction buffer);
+//  4. flows through the SAME appendAndEnqueue stamp-tail memory_ingest uses
+//     (D-124 scope-authoritative Append + P2 enqueue); then
+//  5. requests an eager, best-effort FlushKey so extraction begins promptly — a
+//     flush error (or a nil stage in tests) degrades Flushed to false, never
+//     fails the ACK (records are durable and enqueued; the idle sweep is the
+//     backstop, P2/D-036).
+//
+// There is NO contribute-mode on this tool: agent_id is metadata (SourceAgent),
+// never an isolation key (D-153 §2, matching Harbor's own comment).
+func makeIngestRunHandler(svc *Services) tool.Handler[IngestRunInput, IngestRunOutput] {
+	return func(ctx context.Context, in IngestRunInput) (tool.Result[IngestRunOutput], error) {
+		scope, err := svc.ScopeFn(ctx)
+		if err != nil {
+			return tool.Result[IngestRunOutput]{}, fmt.Errorf("memory_ingest_run: resolve scope: %w", err)
+		}
+		// D-138 tenant guard (write path; identity discarded — the payload carries
+		// its own quad, cross-checked below).
+		if _, err := readMetaIdentity(ctx, scope.Tenant); err != nil {
+			return tool.Result[IngestRunOutput]{}, fmt.Errorf("memory_ingest_run: %w", err)
+		}
+
+		// D-153 §2 identity cross-check, fail closed. The tenant is the auth
+		// boundary: a payload tenant that disagrees with the credential is a
+		// misconfigured host, rejected (never honored — D-138 analog). The user
+		// is only cross-checked when BOTH are present: in jwt mode scope.User is
+		// verified and a divergent payload user is rejected; in keyring mode
+		// scope.User is empty and the payload user fills the record's user
+		// dimension under D-124's fill-empty rule (per-user isolation on this
+		// path is credential-verified only in jwt mode, the motivating deployment).
+		if in.TenantID != "" && in.TenantID != scope.Tenant {
+			return tool.Result[IngestRunOutput]{}, ErrRunTenantMismatch
+		}
+		if in.UserID != "" && scope.User != "" && in.UserID != scope.User {
+			return tool.Result[IngestRunOutput]{}, ErrRunUserMismatch
+		}
+
+		// Convert via the surface-agnostic core (parse/reject lives there, fuzzed).
+		inputs, err := records.FromRunCompletion(records.RunCompletion{
+			FormatVersion:   in.FormatVersion,
+			TenantID:        in.TenantID,
+			UserID:          in.UserID,
+			SessionID:       in.SessionID,
+			RunID:           in.RunID,
+			AgentID:         in.AgentID,
+			Outcome:         in.Outcome,
+			StartedAt:       in.StartedAt,
+			CompletedAt:     in.CompletedAt,
+			DurationMS:      in.DurationMS,
+			StepCount:       in.StepCount,
+			ToolInvocations: in.ToolInvocations,
+			Conversation:    toCoreRunEntries(in.Conversation),
+		})
+		if err != nil {
+			return tool.Result[IngestRunOutput]{}, fmt.Errorf("memory_ingest_run: %w", err)
+		}
+
+		// Stamp each input; the tenant is the authoritative verified scope tenant
+		// (never the payload's — D-124), and every record's buffer key is the
+		// run_id (one run = one extraction buffer).
+		stamped := make([]stampedRecord, 0, len(inputs))
+		for i := range inputs {
+			inputs[i].TenantID = scope.Tenant
+			rec, rerr := records.New(inputs[i])
+			if rerr != nil {
+				return tool.Result[IngestRunOutput]{}, fmt.Errorf("memory_ingest_run: conversation[%d]: %w", i, rerr)
+			}
+			stamped = append(stamped, stampedRecord{rec: *rec, bufferKey: in.RunID})
+		}
+
+		ids, enqueued, err := appendAndEnqueue(ctx, svc, scope, stamped)
+		if err != nil {
+			return tool.Result[IngestRunOutput]{}, fmt.Errorf("memory_ingest_run: store: %w", err)
+		}
+
+		// Eager, best-effort flush (P2/D-036): a flush error — or a nil stage in
+		// tests — degrades Flushed to false; the records are already durable and
+		// enqueued, and the idle age sweep is the backstop. Never a failed call,
+		// never a panic across the MCP boundary.
+		flushed := false
+		if svc.PipelineStage != nil {
+			if ferr := svc.PipelineStage.FlushKey(ctx, scope, in.RunID, pipeline.TriggerRunCompletion); ferr != nil {
+				if svc.Log != nil {
+					svc.Log.WarnContext(ctx, "memory_ingest_run: eager flush degraded (records durable, idle sweep backstop)",
+						"run_id", in.RunID, "err", ferr)
+				}
+			} else {
+				flushed = true
+			}
+		}
+
+		out := IngestRunOutput{IDs: ids, Enqueued: enqueued, Flushed: flushed}
+		return tool.Result[IngestRunOutput]{
+			Text:       fmt.Sprintf("Ingested run %q: %d record(s); enqueued=%v flushed=%v", in.RunID, len(ids), enqueued, flushed),
+			Structured: out,
+		}, nil
+	}
+}
+
+// toCoreRunEntries mirrors the mcpserver wire entries into the surface-agnostic
+// core RunCompletionEntry shape (records has no mcpserver import — criterion 8).
+func toCoreRunEntries(entries []IngestRunEntry) []records.RunCompletionEntry {
+	out := make([]records.RunCompletionEntry, len(entries))
+	for i, e := range entries {
+		out[i] = records.RunCompletionEntry{
+			Role:    e.Role,
+			Kind:    e.Kind,
+			Content: e.Content,
+			Step:    e.Step,
+			At:      e.At,
+		}
+	}
+	return out
 }
 
 // ─── memory_retrieve ──────────────────────────────────────────────────────────

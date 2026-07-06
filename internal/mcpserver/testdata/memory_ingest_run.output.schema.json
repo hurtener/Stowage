@@ -1,0 +1,26 @@
+{
+  "type": "object",
+  "properties": {
+    "ids": {
+      "type": [
+        "null",
+        "array"
+      ],
+      "items": {
+        "type": "string"
+      }
+    },
+    "enqueued": {
+      "type": "boolean"
+    },
+    "flushed": {
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "ids",
+    "enqueued",
+    "flushed"
+  ],
+  "additionalProperties": false
+}

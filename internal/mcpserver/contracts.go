@@ -57,6 +57,57 @@ type IngestOutput struct {
 	Enqueued bool     `json:"enqueued"`
 }
 
+// ─── memory_ingest_run (ae12, D-153) ───────────────────────────────────────────
+
+// IngestRunEntry mirrors Harbor's TranscriptEntry (format_version 1) — ALL FIVE
+// fields (role, kind, content, step, at). Mirroring only role/content would
+// reproduce the exact additionalProperties:false schema failure this tool exists
+// to fix, one level down, on the first entry carrying a kind (D-153). Kind/step
+// are wire-validated for shape fidelity but dropped on the records mapping;
+// at is the per-entry assertion time (RFC3339) when Harbor provides it.
+type IngestRunEntry struct {
+	Role    string `json:"role"`           // "user" | "assistant"
+	Kind    string `json:"kind,omitempty"` // goal/steering/tool/... (accepted, not enum-validated)
+	Content string `json:"content"`
+	Step    int    `json:"step,omitempty"`
+	At      string `json:"at,omitempty"` // RFC3339; per-entry assertion time when present
+}
+
+// IngestRunInput mirrors Harbor's pinned RunCompletionPayload, format_version 1
+// — all 13 top-level keys, field names/types/optionality as Harbor marshals them
+// (time.Time ⇒ RFC3339 strings on the wire). This is the run-completion-sink
+// contract (D-153): a real marshaled Harbor payload validates against the schema
+// generated from this struct. Identity (tenant_id/user_id) rides the payload as
+// Harbor sends it, but is CROSS-CHECKED against the verified per-call credential,
+// never scope-authoritative (D-153 §2 / D-140) — the handler resolves scope from
+// the bearer + _meta exactly like memory_ingest.
+type IngestRunInput struct {
+	FormatVersion   int              `json:"format_version"`
+	TenantID        string           `json:"tenant_id"`
+	UserID          string           `json:"user_id"`
+	SessionID       string           `json:"session_id"`
+	RunID           string           `json:"run_id"`
+	AgentID         string           `json:"agent_id,omitempty"`
+	Outcome         string           `json:"outcome"`
+	StartedAt       string           `json:"started_at"`   // RFC3339
+	CompletedAt     string           `json:"completed_at"` // RFC3339
+	DurationMS      int64            `json:"duration_ms"`
+	StepCount       int              `json:"step_count"`
+	ToolInvocations int              `json:"tool_invocations"`
+	Conversation    []IngestRunEntry `json:"conversation"`
+}
+
+// IngestRunOutput is the memory_ingest_run tool output: the record ids (one per
+// conversation entry, in order), whether the pipeline enqueue succeeded, and
+// whether the eager per-run FlushKey succeeded (best-effort — a flush failure
+// degrades Flushed to false with records durable and enqueued, never fails the
+// ACK; P2/D-036).
+type IngestRunOutput struct {
+	IDs      []string `json:"ids"`
+	Enqueued bool     `json:"enqueued"`
+	Flushed  bool     `json:"flushed"`
+}
+
 // ─── memory_retrieve ──────────────────────────────────────────────────────────
 
 // RetrieveInput is the memory_retrieve tool input (mirrors HTTP POST /v1/retrieve).
