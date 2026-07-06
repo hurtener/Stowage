@@ -37,9 +37,15 @@ func TestClassifyRequest(t *testing.T) {
 		toolsListFrame   = `{"jsonrpc":"2.0","id":3,"method":"tools/list","params":{}}`
 		toolsCallFrame   = `{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"memory_retrieve","arguments":{}}}`
 		batchFrame       = `[{"jsonrpc":"2.0","id":1,"method":"initialize"}]`
-		unknownFrame     = `{"jsonrpc":"2.0","id":5,"method":"resources/list"}`
-		noMethodFrame    = `{"jsonrpc":"2.0","id":6,"params":{}}`
-		malformedFrame   = `{"jsonrpc":"2.0","id":7,"method":`
+		// resources/list + prompts/list are static discovery, open since D-152's
+		// first conscious extension; the corresponding READS stay protected.
+		resListFrame   = `{"jsonrpc":"2.0","id":5,"method":"resources/list"}`
+		promptsFrame   = `{"jsonrpc":"2.0","id":6,"method":"prompts/list"}`
+		resReadFrame   = `{"jsonrpc":"2.0","id":7,"method":"resources/read","params":{"uri":"x://y"}}`
+		promptGetFrame = `{"jsonrpc":"2.0","id":8,"method":"prompts/get","params":{"name":"p"}}`
+		unknownFrame   = `{"jsonrpc":"2.0","id":9,"method":"completion/complete"}`
+		noMethodFrame  = `{"jsonrpc":"2.0","id":10,"params":{}}`
+		malformedFrame = `{"jsonrpc":"2.0","id":11,"method":`
 	)
 
 	tests := []struct {
@@ -52,9 +58,13 @@ func TestClassifyRequest(t *testing.T) {
 		{"post notifications/initialized is open", http.MethodPost, initializedFrame, true},
 		{"post ping is open", http.MethodPost, pingFrame, true},
 		{"post tools/list is open", http.MethodPost, toolsListFrame, true},
+		{"post resources/list is open (static discovery)", http.MethodPost, resListFrame, true},
+		{"post prompts/list is open (static discovery)", http.MethodPost, promptsFrame, true},
 		{"get (sse leg) is open", http.MethodGet, "", true},
 		{"delete (session teardown) is open", http.MethodDelete, "", true},
 		{"post tools/call is protected", http.MethodPost, toolsCallFrame, false},
+		{"post resources/read is protected (a read, not discovery)", http.MethodPost, resReadFrame, false},
+		{"post prompts/get is protected (a read, not discovery)", http.MethodPost, promptGetFrame, false},
 		{"post batch array is protected", http.MethodPost, batchFrame, false},
 		{"post unknown method is protected", http.MethodPost, unknownFrame, false},
 		{"post missing method is protected", http.MethodPost, noMethodFrame, false},

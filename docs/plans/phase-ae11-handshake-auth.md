@@ -62,10 +62,17 @@ Classification rules (default-deny — anything not listed is protected):
 
 1. **POST** with a body that parses (within a peek cap) as a **single**
    JSON-RPC object whose `method` is one of the fixed allowlist
-   `openMethods = {"initialize", "notifications/initialized", "ping", "tools/list"}`
+   `openMethods = {"initialize", "notifications/initialized", "ping", "tools/list",
+   "resources/list", "prompts/list"}`
    → **open**. The tool catalog is static and identity-independent (all tools
    are registered unconditionally in `mcpserver.New`; ae9 views curate
    retrieval *data*, never the tool list), so `tools/list` leaks nothing scoped.
+   *(As-built follow-up, 2026-07-06 — D-152's first conscious extension:
+   `resources/list` + `prompts/list` joined the allowlist after the motivating
+   host's driver was found to dial them on the same no-bearer channel during
+   its connection/tool-call lifecycle. Same static-discovery class as
+   `tools/list`; Stowage registers no resources/prompts. The READS —
+   `resources/read`, `prompts/get` — stay protected.)*
 2. **GET** (the streamable-HTTP SSE listen stream) → **open**. It carries only
    server-initiated frames; Stowage initiates none that carry scoped data. Any
    future server-push feature that would emit scoped frames on this stream
@@ -73,9 +80,9 @@ Classification rules (default-deny — anything not listed is protected):
 3. **DELETE** (session teardown) → **open**. Ends a session addressed by an
    unguessable `Mcp-Session-Id`; touches no scoped data. A bearer-less client
    must be able to tear down the session it opened bearer-less.
-4. Everything else — `tools/call`, resource/prompt methods, a JSON **array**
-   (batch), an unparseable or oversized body, an unknown method, any other
-   HTTP verb — → **protected**.
+4. Everything else — `tools/call`, `resources/read`, `prompts/get`, a JSON
+   **array** (batch), an unparseable or oversized body, an unknown method, any
+   other HTTP verb — → **protected**.
 
 Body peek mechanics: read at most `handshakePeekLimit` (64 KiB — handshake
 frames are tiny; a body larger than the cap is by definition not a handshake)

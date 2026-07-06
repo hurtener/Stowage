@@ -753,10 +753,12 @@ in the store (runtime-managed, never config-file-managed).
 Auth v1: per-tenant API keys (constant-time compare), identity scope claims in
 the key record; Portico can front this for anything fancier. mTLS/JWT deferred.
 In `auth.mode=jwt`, the MCP-over-HTTP connect-time handshake (`initialize`,
-`notifications/initialized`, `ping`, `tools/list`, the SSE GET leg, session
-DELETE) is served unauthenticated while every `tools/call` and resource
-operation still requires the per-call bearer, and that surface runs stateless so
-each call resolves its own identity (D-152).
+`notifications/initialized`, `ping`, and the static-discovery lists
+`tools/list`/`resources/list`/`prompts/list`, plus the SSE GET leg and session
+DELETE) is served unauthenticated while every `tools/call`, `resources/read`,
+and `prompts/get` still requires the per-call bearer, and that surface runs
+stateless so each call resolves its own identity (D-152, incl. its 2026-07-06
+amendment).
 
 ### 9.2 MCP server
 
