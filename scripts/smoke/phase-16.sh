@@ -1,15 +1,17 @@
 #!/usr/bin/env bash
 # Phase 16 smoke test: MCP server registers and exposes the typed tool surface.
 #
-# Phase 16 shipped the original seven tools; phases 17/h4/h5 grew the surface to
-# thirteen (the D-070 reversibility trio + the D-071 tiered control verbs). This
+# Phase 16 shipped the original seven tools; later phases grew the surface to the
+# current canonical 23 (the D-070 reversibility trio, the D-071 tiered control
+# verbs, the episodic/browse reads, and the ae1/ae9 policy+view admin). This
 # smoke tracks the CURRENT canonical surface so it keeps passing across phases
-# (kept honest in the h6 PR — §4.4 same-PR repair).
+# (kept honest per §4.4 same-PR repair — refreshed 20→23 in the ae11 PR after
+# ae5/ae9 grew the surface without updating this count).
 #
 # Starts stowage mcp --stdio with a temp SQLite store and mock gateway,
 # sends JSON-RPC initialize → tools/list over the stdio pipe, and verifies:
-#   - exactly 13 tools are returned
-#   - all 13 expected names are present
+#   - exactly 23 tools are returned
+#   - all 23 expected names are present
 #
 # Mirrors the other phase smoke scripts: temp DB + config, CGo-free build,
 # background server killed after session.
@@ -120,7 +122,7 @@ else
   NAMES=""
 fi
 
-WANT=20
+WANT=23
 if [ "$TOOL_COUNT" -eq "$WANT" ]; then
   ok "tools/list returned exactly $WANT tools (AC-1)"
 else
@@ -131,8 +133,10 @@ fi
 # Verify the expected names (only when jq is available). Sorted to match the
 # `sort` applied to NAMES above. memory_episodes added in Phase 23 (D-080).
 if command -v jq &>/dev/null && [ -n "$NAMES" ]; then
-  EXPECTED="memory_assert
+  EXPECTED="memory_agent_policy
+memory_assert
 memory_branch
+memory_browse
 memory_causal
 memory_drilldown
 memory_episodes
@@ -150,7 +154,8 @@ memory_rollback
 memory_suggestions
 memory_topics
 memory_trace
-memory_verify"
+memory_verify
+memory_views"
 
   if [ "$NAMES" = "$EXPECTED" ]; then
     ok "all $WANT tool names match expected names (AC-1)"

@@ -4263,3 +4263,15 @@ never carried identity anyone enforced on). Any future server-initiated push fea
 emit scoped frames on the SSE GET leg must revisit point 1 explicitly. New pre-auth methods a
 future SDK dials fail loudly (401) rather than leaking — extending the allowlist is a conscious
 one-constant change. No new config keys (D-034: no knob without a consumer).
+
+**Implementation consequence (as-built, ae11).** Making "auth is per-HTTP-request; sessions never
+cache a scope" true required running the jwt-mode MCP-over-HTTP transport **stateless**: the
+go-sdk's stateful streamable transport binds a session's tool-handler context to the request that
+established the session (the bearer-less, open `initialize` — `server.Connect(req.Context(), …)`),
+caching that request's empty scope for the session's life, so a per-call bearer on a later
+`tools/call` never reaches the handler. Both MCP-over-HTTP wiring points (`stowage mcp --http` and
+the `stowage serve` co-mounted port) therefore build the transport with
+`server.HTTPOptions{Stateless: true}` in jwt mode (security posture unchanged — the zero `Security`
+still resolves to `DefaultHTTPSecurity`; the surface is tools-only, so no server-initiated capability
+is lost). In jwt mode no `Mcp-Session-Id` is issued. Keyring mode keeps the stateful default,
+byte-identical to today.

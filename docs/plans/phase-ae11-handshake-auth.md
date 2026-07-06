@@ -121,12 +121,46 @@ at connect time, so there is no reason to open its handshake, and existing
 deployments observe zero behavior change. Stdio mode is untouched (no
 per-request auth by design, D-020/AC-4).
 
+**As-built deviation — jwt-mode MCP-over-HTTP is stateless (required, not a
+knob).** The §17 integration test surfaced a wiring gap the plan's sketch did
+not anticipate: the go-sdk's **stateful** streamable transport binds a session's
+tool-handler context to the request that *established* the session — the
+bearer-less, open `initialize` (`server.Connect(req.Context(), …)`). It caches
+that request's (empty) scope for the session's whole life, so a per-call bearer
+injected on a later `tools/call` POST lands on a request context the handler
+never sees, and the handler resolves "no authenticated scope" — criterion 4/5
+fail. This directly contradicts D-152's own invariant ("sessions never cache a
+scope; auth is per-HTTP-request"), so **statelessness is required by D-152, not a
+deviation from it**: in jwt mode both MCP-over-HTTP wiring points build the
+transport with `server.HTTPOptions{Stateless: true}`, so each POST resolves its
+own identity. Security posture is unchanged (a non-nil `*HTTPOptions` whose
+`Security` is the zero value still resolves to `DefaultHTTPSecurity`), and
+Stowage's MCP surface is tools-only (no server-initiated
+sampling/elicitation/roots), so statelessness costs nothing. Consequence: in jwt
+mode no `Mcp-Session-Id` is issued (criterion 1's "issued in stateful mode"
+parenthetical applies only to keyring mode); the client still composes the full
+dial sequence over one reused transport (criterion 5). Keyring mode keeps the
+stateful default (`nil`) — byte-identical to today.
+
+**As-built deviation — both MCP-over-HTTP wiring points updated.** The plan named
+only `runMCP`. `stowage serve`'s co-mounted MCP port (D-074) is the *same*
+MCP-over-HTTP surface and must behave identically, so the mode-keyed middleware
+and stateless selection are applied at both call sites via two shared helpers
+(`mcpAuthHandler`, `mcpHTTPOptions`) — shipping a state where `stowage mcp --http`
+opens the handshake but the co-mounted port does not would be exactly the
+surface-drift CLAUDE.md §6 warns against.
+
 ### RFC touch-up (same PR)
 
-Add one sentence to RFC §5.5: in jwt mode the MCP-over-HTTP connect-time
-handshake (`initialize`, `notifications/initialized`, `ping`, `tools/list`,
-the SSE GET leg, session DELETE) is served unauthenticated; every `tools/call`
-and resource operation requires the per-call bearer (D-152).
+Add one sentence to the RFC auth posture: in jwt mode the MCP-over-HTTP
+connect-time handshake (`initialize`, `notifications/initialized`, `ping`,
+`tools/list`, the SSE GET leg, session DELETE) is served unauthenticated; every
+`tools/call` and resource operation requires the per-call bearer (D-152).
+
+**As-built deviation — RFC section reference.** The plan cited "§5.5 (identity &
+auth)", but RFC §5.5 is "Branches"; the RFC's actual auth-posture statement is
+the "Auth v1:" paragraph under §9.1 (HTTP/MCP surface). Per CLAUDE.md §2 (the RFC
+wins; fix the plan), the amendment landed on that paragraph.
 
 ### Concurrency & failure posture
 
