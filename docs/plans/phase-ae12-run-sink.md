@@ -42,6 +42,12 @@ accepts `RunCompletionPayload` and adapts it internally to its own storage.
   the payload quad is **cross-checked, fail-closed on mismatch** (D-138
   analog), and D-124's scope-authoritative store write is the structural
   backstop (a record can never escape the bearer's scope even unmapped).
+- **The run outcome is stored across `outcome` + `outcome_detail`, not `outcome`
+  alone** (a §4.3 implementation deviation from the mapping table, documented in
+  the table row): the `outcome` column's day-one CHECK constraint rejects
+  Harbor's vocabulary, so the precise outcome lands verbatim in the unconstrained
+  `outcome_detail` and a `success`/`failure` projection lands in `outcome` (which
+  the reflection sweep consumes). No signal is lost.
 - **The ask's "confirmed" transcript-entry shape (`{role, content}` only) is
   wrong at source** — `TranscriptEntry` is
   `{role, kind, content, step, at?}` (five fields, `at` an optional RFC3339
@@ -132,7 +138,7 @@ Per-entry mapping (the `records.Input` fields):
 | `conversation[i].at` (when set) else `completed_at` | `OccurredAt` | per-entry assertion time when Harbor provides it |
 | `session_id` | `SessionID` | writes stay session-stamped (D-150) |
 | `agent_id` | `SourceAgent` | metadata, never isolation |
-| `outcome` | `Outcome` | run outcome stamped on **all** records (D-024 signal; owner decision) |
+| `outcome` | `Outcome` + `OutcomeDetail` | run outcome stamped on **all** records (D-024 signal; owner decision). **Deviation (§4.3):** the records `outcome` column is CHECK-constrained to `{'', 'success', 'failure'}` (day-one schema) and the Phase-19 reflection sweep keys off that axis, so Harbor's richer vocabulary (goal/no_path/…) cannot be stored verbatim in `outcome`. It is projected — `goal → success`, every other terminal outcome → `failure` — and the PRECISE run outcome is preserved verbatim in the free-text `outcome_detail` column. The D-024 signal is captured losslessly and stays queryable; see `records.projectRunOutcome`. |
 | `run_id` | *(BufferKey, threaded by the handler)* | one run = one extraction buffer |
 | `kind`, `step` | *(dropped)* | wire-validated for shape fidelity; ordering is preserved by append order; content is self-contained. Revisit if drilldown needs them. |
 | `started_at`, `duration_ms`, `step_count`, `tool_invocations`, `format_version` | *(validated, dropped)* | run observability, not memory signal |
