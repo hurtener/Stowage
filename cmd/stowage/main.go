@@ -496,14 +496,14 @@ func runMCP(args []string) {
 	stk.Log.Info("stowage mcp: ready", "tools", len(srv.Tools()), "transport", map[bool]string{true: "http:" + httpAddr, false: "stdio"}[httpAddr != ""])
 
 	if httpAddr != "" {
-		handler, hErr := srv.HTTPHandler(nil)
+		handler, hErr := srv.HTTPHandler(mcpHTTPOptions(cfg.Auth.Mode))
 		if hErr != nil {
 			stk.Log.Error("stowage mcp: http handler", "err", hErr)
 			os.Exit(1)
 		}
 		httpSrv := &http.Server{
 			Addr:              httpAddr,
-			Handler:           mcpserver.AuthMiddleware(authn, handler),
+			Handler:           mcpAuthHandler(cfg.Auth.Mode, authn, handler),
 			ReadHeaderTimeout: 10 * time.Second,
 		}
 		// shutdownDone is closed only after httpSrv.Shutdown FINISHES draining
@@ -602,6 +602,57 @@ func buildAuthenticator(ctx context.Context, cfg config.AuthConfig, keyring auth
 		return nil, fmt.Errorf("auth: jwt mode: build validator: %w", err)
 	}
 	return auth.NewJWTAuthenticator(v), nil
+}
+
+// mcpAuthHandler selects the MCP-over-HTTP auth middleware by auth mode (D-152),
+// used identically at BOTH MCP-over-HTTP wiring points (`stowage mcp --http` and
+// the `stowage serve` co-mounted MCP port) so the two surfaces behave the same:
+//
+//   - jwt mode: MethodAwareAuthMiddleware — the identity-free handshake methods
+//     (initialize, notifications/initialized, ping, tools/list, the SSE GET leg,
+//     session DELETE) are served unauthenticated; every tools/call and resource
+//     operation still requires the per-call bearer. This lets an MCP host that
+//     attaches connections user-agnostically (no per-user credential at connect
+//     time) and injects a per-user bearer per call complete the handshake.
+//   - keyring mode: the strict AuthMiddleware, byte-identical to today — a
+//     keyring client owns its static credential at connect time, so there is no
+//     reason to open its handshake.
+func mcpAuthHandler(mode string, authn *auth.Authenticator, next http.Handler) http.Handler {
+	if mode == string(auth.ModeJWT) {
+		return mcpserver.MethodAwareAuthMiddleware(authn, next)
+	}
+	return mcpserver.AuthMiddleware(authn, next)
+}
+
+// mcpHTTPOptions selects the streamable-HTTP transport options for the MCP
+// surface by auth mode (D-152), used identically at BOTH MCP-over-HTTP wiring
+// points. In jwt mode the transport is STATELESS, and this is REQUIRED for
+// correctness — not a tuning knob:
+//
+// The per-call bearer's identity must reach the tool handler on EACH request
+// (D-152: "sessions never cache a scope; auth is per-HTTP-request"). But the
+// go-sdk's STATEFUL streamable transport binds a session's tool-handler context
+// to the request that established the session — the bearer-less, open
+// `initialize` (server.Connect(req.Context(), …)). It therefore caches that
+// request's (empty) scope for the session's whole life, and a per-call bearer
+// injected on a later `tools/call` POST lands on a request context the handler
+// never sees — stranding the identity (the handler resolves "no authenticated
+// scope"). Stateless serves each POST under its own request context, so the
+// per-call scope resolves. Stowage's MCP surface is tools-only (no
+// server-initiated sampling/elicitation/roots), so statelessness costs nothing.
+//
+// Security posture is unchanged: a non-nil *HTTPOptions whose Security is the
+// zero value still resolves to DefaultHTTPSecurity (dockyard's
+// HTTPOptions.security()), identical to the nil default.
+//
+// Keyring mode keeps the stateful default (nil) — byte-identical to today: a
+// keyring client presents its static credential on every request, including
+// initialize, so the session context carries the scope and nothing is stranded.
+func mcpHTTPOptions(mode string) *server.HTTPOptions {
+	if mode == string(auth.ModeJWT) {
+		return &server.HTTPOptions{Stateless: true}
+	}
+	return nil
 }
 
 const serveUsage = `stowage serve — run the HTTP memory service
@@ -764,15 +815,15 @@ func runServe(args []string) {
 			stk.Log.Error("stowage serve: create mcp server", "err", mcpErr)
 			os.Exit(1)
 		}
-		mcpHandler, hErr := mcpSrv.HTTPHandler(nil)
+		mcpHandler, hErr := mcpSrv.HTTPHandler(mcpHTTPOptions(cfg.Auth.Mode))
 		if hErr != nil {
 			stk.Log.Error("stowage serve: mcp http handler", "err", hErr)
 			os.Exit(1)
 		}
 		mcpHTTP = &http.Server{
 			Addr:              cfg.Server.MCPListen,
-			Handler:           mcpserver.AuthMiddleware(authn, mcpHandler), // SAME Authenticator as the REST API (D-067)
-			ReadHeaderTimeout: 10 * time.Second,                            // no WriteTimeout — MCP streams
+			Handler:           mcpAuthHandler(cfg.Auth.Mode, authn, mcpHandler), // SAME Authenticator as the REST API (D-067)
+			ReadHeaderTimeout: 10 * time.Second,                                 // no WriteTimeout — MCP streams
 		}
 	} else {
 		// Discoverability hint (a3, D-133): the MCP tool surface is opt-in. Say so on
