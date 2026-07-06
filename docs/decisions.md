@@ -4215,3 +4215,63 @@ variant, and a view can only subtract from own-scope.
 **Scope.** Filed for phase ae2b (direct, one-step removal of `project_id`/`user_id` from the MCP read/mutate input contracts that are the sole D-125 sub-tenant read-targeting mechanism — the 13 the plan enumerated **plus `memory_browse`/`BrowseInput`** (ae5/D-143, which postdates the plan and matches the same read pattern), for **14** total per the ae2b plan's As-built deviations). **Removal is hard-gated on ae7 (the JWT verifier, which gives HTTP/MCP a verified `user`/`session` claim to fall back to) and ae8 (`identity.ResolveReadScope`, the effective-scope resolver that sources identity from `_meta`/JWT without the args)** — until both land, MCP has no non-arg source for sub-tenant targeting, and removing the args would collapse MCP reads to tenant-wide, a P3/D-125 regression. This decision governs the *end state* (MCP: `_meta`/JWT only; HTTP: query-param/body projection only). Because Stowage is pre-launch with zero external callers, removal is direct — no interim bake-in period, no notice telemetry — once the ae7+ae8 gate is satisfied.
 
 **Consequences.** SDK's HTTP-mode client is unaffected (it talks to the unchanged HTTP endpoints and keeps sending `project_id`/`user_id` in the wire body); SDK's embedded mode is unaffected (in-process `callScope`, a different, non-`_meta` channel). Tool/API documentation must state the divergence explicitly so operators migrating MCP callers do not mistakenly also attempt to migrate HTTP callers, which were never asked to change. A future phase that wants to *unify* the two surfaces' identity channels must supersede this decision explicitly, not silently reintroduce args on one surface or `_meta` on the other.
+
+## D-152 — MCP connect-time handshake is identity-free in jwt mode; the per-call bearer is the sole identity channel
+
+2026-07-06. Phase ae11 (method-aware MCP handshake auth). **Related:** D-020 (MCP surface / stdio
+posture), D-030 (keyring), D-067 (one auth core), D-135/D-137 (per-call identity, precedence),
+D-140 (MCP identity from `_meta`/JWT only), D-147 (JWKS fail-closed), D-148 (effective-scope
+resolver).
+
+**Context.** An ecosystem MCP host attaches MCP connections **user-agnostically** at the
+agent/runtime level — no per-user credential exists at connect time — and injects a per-user
+bearer lazily, per `tools/call`, minted by token exchange mid-run. Stowage's MCP-over-HTTP auth
+middleware was transport-level and JSON-RPC-method-blind: it 401'd a bearer-less `initialize`
+before the SDK saw it, so such a host could never complete the handshake, load the tool catalog,
+or reach the (fully authenticated) `tools/call` path. That gate was an implementation artifact,
+in tension with the settled per-call identity model this track built (identity arrives per call
+from the verified JWT claim + host `_meta`; the connection carries no identity — D-135/D-140).
+
+**Decision.** In `auth.mode=jwt`, the MCP-over-HTTP middleware is **JSON-RPC-method-aware and
+default-deny**:
+
+1. A fixed, code-constant allowlist of **identity-free handshake requests** is served without
+   authentication: POSTs whose single JSON-RPC message method is `initialize`,
+   `notifications/initialized`, `ping`, or `tools/list`; the streamable-HTTP SSE **GET** leg; and
+   the session **DELETE**. Safe by construction: the tool catalog is static and
+   identity-independent (all tools registered unconditionally; ae9 views curate retrieval *data*,
+   never the tool list), the SSE leg carries no Stowage-initiated scoped frames, and sessions
+   never cache a scope (auth is per-HTTP-request).
+2. **Everything else** — `tools/call`, resource/prompt methods, JSON-RPC batch arrays,
+   unparseable/oversized bodies, unknown methods — takes the existing strict path unchanged:
+   per-call bearer required, same 401/403 contract, same scope + key-id context injection,
+   store-layer scoping untouched (P3). Classification ambiguity always fails **closed to
+   protected**, never open.
+3. **Keyring mode and stdio are unchanged.** A keyring client owns its static credential at
+   connect time, so its handshake stays gated; stdio keeps its no-per-request-auth posture
+   (D-020/AC-4).
+4. **No handshake service credential ships.** With only a static, non-sensitive catalog behind
+   the open methods, connection-level handshake auth adds a credential to provision and rotate
+   for no isolation gain. If a future threat model demands connect-time gating, it must be added
+   as an explicit separate concern riding a **non-`Authorization` header** — the `Authorization`
+   channel is permanently reserved for the per-call bearer — and must supersede this entry.
+
+**Consequences.** The MCP handshake and the identity model now agree: the connection is
+identity-free; identity rides each call. The security invariant is unmoved — isolation is
+enforced by the signed per-call bearer plus store-layer scoping, exactly as before (the handshake
+never carried identity anyone enforced on). Any future server-initiated push feature that would
+emit scoped frames on the SSE GET leg must revisit point 1 explicitly. New pre-auth methods a
+future SDK dials fail loudly (401) rather than leaking — extending the allowlist is a conscious
+one-constant change. No new config keys (D-034: no knob without a consumer).
+
+**Implementation consequence (as-built, ae11).** Making "auth is per-HTTP-request; sessions never
+cache a scope" true required running the jwt-mode MCP-over-HTTP transport **stateless**: the
+go-sdk's stateful streamable transport binds a session's tool-handler context to the request that
+established the session (the bearer-less, open `initialize` — `server.Connect(req.Context(), …)`),
+caching that request's empty scope for the session's life, so a per-call bearer on a later
+`tools/call` never reaches the handler. Both MCP-over-HTTP wiring points (`stowage mcp --http` and
+the `stowage serve` co-mounted port) therefore build the transport with
+`server.HTTPOptions{Stateless: true}` in jwt mode (security posture unchanged — the zero `Security`
+still resolves to `DefaultHTTPSecurity`; the surface is tools-only, so no server-initiated capability
+is lost). In jwt mode no `Mcp-Session-Id` is issued. Keyring mode keeps the stateful default,
+byte-identical to today.
