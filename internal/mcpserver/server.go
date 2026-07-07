@@ -73,15 +73,16 @@ func StdioScopeFn(tenant string) ScopeFn {
 	}
 }
 
-// New creates a Dockyard *server.Server with all 23 Stowage MCP tools registered:
+// New creates a Dockyard *server.Server with all 24 Stowage MCP tools registered:
 // the original seven, the D-070 reversibility trio (memory_get, memory_rollback,
 // memory_resolve), the D-071 Tier control verbs (memory_flush, memory_branch, and the
 // Tier-B memory_grants), the episodic reads (memory_episodes, memory_causal), the
 // deterministic scope walk (memory_browse, ae5/D-143), the
 // §6c trust verbs (memory_verify, memory_review), the §6c trace export (memory_trace),
 // the §6d proactive verbs (memory_suggestions, memory_proactive_config), the
-// read-time agent-policy admin (memory_agent_policy, ae1, D-135/D-146/D-151), and the
-// named per-agent/per-key topic-view admin (memory_views, ae9, D-149/D-151).
+// read-time agent-policy admin (memory_agent_policy, ae1, D-135/D-146/D-151), the
+// named per-agent/per-key topic-view admin (memory_views, ae9, D-149/D-151), and the
+// Harbor run-completion sink (memory_ingest_run, ae12, D-153).
 // It returns an error when any tool fails to register (type mismatch, missing
 // handler) — the caller must handle the error and exit non-zero (AGENTS.md §5).
 func New(info server.Info, svc *Services) (*server.Server, error) {
@@ -93,6 +94,21 @@ func New(info server.Info, svc *Services) (*server.Server, error) {
 	if err := tool.New[IngestInput, IngestOutput]("memory_ingest").
 		Describe("Ingest one or more verbatim interaction records into the caller's own Stowage memory scope. Contribute-mode (target_scope + contributor_user_id) writes into a pool-owner's scope when a covering contribute grant exists; without one the request is rejected (D-071).").
 		Handler(makeIngestHandler(svc)).
+		Register(srv); err != nil {
+		return nil, err
+	}
+
+	// Harbor run-completion sink (ae12, D-153): accepts Harbor's pinned
+	// RunCompletionPayload (format_version 1) as a tools/call and adapts it
+	// internally to verbatim records. Identity is from the verified per-call
+	// bearer (D-152) + _meta; the payload's tenant_id/user_id are cross-checked
+	// and fail closed on a mismatch (D-138 analog), never scope-authoritative
+	// (D-140/D-124). One extraction buffer per run (buffer_key = run_id) with an
+	// eager best-effort flush. MCP-only tiering (the auto-save-target pattern is
+	// an MCP-host contract — D-153 §4).
+	if err := tool.New[IngestRunInput, IngestRunOutput]("memory_ingest_run").
+		Describe("Ingest a Harbor run-completion transcript as verbatim records (the run-completion-sink pattern, D-153). Accepts Harbor's pinned RunCompletionPayload format_version 1 (the run's identity quad, metadata, and ordered two-role conversation[]); format_version != 1 is rejected loudly. Identity comes from the verified per-call bearer + _meta — the payload's tenant_id/user_id are cross-checked and fail closed on a mismatch, never scope-authoritative. Every conversation entry lands as one verbatim record in order (both roles, nothing filtered); all records share buffer_key = run_id (one extraction buffer per run) and are eagerly flushed so extraction begins promptly.").
+		Handler(makeIngestRunHandler(svc)).
 		Register(srv); err != nil {
 		return nil, err
 	}

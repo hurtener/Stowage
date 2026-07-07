@@ -4287,3 +4287,57 @@ scoped data). The corresponding READS (`resources/read`, `prompts/get`) remain p
 everything else — this is exactly the "extending the allowlist is a conscious one-constant change"
 path this entry reserved, exercised once, with a consumer. Isolation is unmoved: the per-call
 bearer still gates `tools/call`, where every scoped operation runs.
+
+## D-153 — The run-completion sink (`memory_ingest_run`): payload identity is cross-checked, never scope-authoritative
+
+2026-07-06. Phase ae12 (run-completion sink). **Related:** D-124 (scope-authoritative writes),
+D-138 (`_meta.tenant` mismatch fails closed), D-140 (identity never rides model/args channels),
+D-152 (per-call bearer on `tools/call`), D-067/D-073 (one logic core), D-024 (day-one signals),
+D-034 (knob guardrail).
+
+**Context.** With ae11/D-152 consumed, a Harbor runtime's run-completion hook reaches a real
+`tools/call` — and fails schema validation dispatching its pinned `RunCompletionPayload`
+(format_version 1: the identity quadruple, run metadata, and the ordered two-role
+`conversation[]` transcript) at `memory_ingest`, whose contract (`records[]`,
+`additionalProperties:false`) shares zero field names with it. The rejection is correct
+contract-first behavior; the gap is that no tool accepts the payload. Harbor's hook exposes only
+`Tool` + `Timeout` — no payload reshaping — so the adaptation belongs server-side, in the
+capability.
+
+**Decision.**
+1. **Stowage adds a dedicated completion-sink tool, `memory_ingest_run`** (24th catalog tool),
+   whose input mirrors Harbor's `RunCompletionPayload` format_version 1 **exactly** — all 13
+   top-level keys and all five `TranscriptEntry` fields (`role`, `kind`, `content`, `step`,
+   `at`), so a real marshaled payload validates. `format_version != 1` is rejected loudly (the
+   pin is the drift gate: a future Harbor v2 fails visibly, never misparses).
+   `memory_ingest`'s verbatim-record contract is untouched.
+2. **Payload identity is cross-checked, never scope-authoritative.** Scope resolves from the
+   verified per-call credential + `_meta` exactly like every MCP write (D-140); the payload's
+   `tenant_id`/`user_id` are compared against it and a mismatch **fails closed** (D-138 analog —
+   a disagreeing host is misconfigured; silently honoring either side would be a P3 bug). D-124's
+   scope-authoritative store write is the structural backstop. `run_id`/`agent_id`/`session_id`
+   are metadata stamps (`buffer_key`/`source_agent`/`session_id`), never isolation keys.
+3. **Conversion lives in the core** (`records.FromRunCompletion`), surface-agnostic: each
+   conversation entry becomes one verbatim record in order (P1 — both roles, nothing filtered),
+   `occurred_at` = the entry's `at` when present else `completed_at`, the run `outcome` stamped
+   on every record (D-024), `buffer_key = run_id` (one run = one extraction buffer) with an
+   eager best-effort `FlushKey` after enqueue (a flush error degrades, never fails the ACK —
+   P2/D-036). The MCP handler is a thin caller of the same stamp→append→enqueue path as
+   `memory_ingest`.
+4. **MCP-only tiering, sanctioned** (the `assert` precedent): the auto-save-target pattern is an
+   MCP-host contract; no HTTP/SDK surface ships until a consumer exists — the core converter
+   makes a future surface a thin caller. No new config keys (D-034).
+5. **The pattern generalizes** (ecosystem-wide): a capability that wants to be a Harbor
+   auto-save target exposes a tool accepting `RunCompletionPayload` and adapts it internally to
+   its own storage — identity from the verified per-call credential, payload quad cross-checked.
+   Stowage's `memory_ingest_run` is the reference implementation.
+
+**Consequences.** The HA-class per-user transcript save composes end-to-end: open handshake
+(D-152) → per-user bearer on `tools/call` → payload accepted → records stamped by the verified
+scope → per-run buffer extraction. Records ingested via this path follow the ordinary verbatim +
+extraction + reconciliation + decay lifecycle (P4) — the sink adds no new lifecycle class.
+Transcript-entry `kind`/`step` are wire-validated but not stored (append order preserves
+sequence; revisit if drilldown needs them — a conscious, documented drop, not an accident). In
+keyring mode (no verified user) the payload `user_id` fills the record's user dimension under
+D-124's fill-empty rule — per-user isolation on this path is credential-verified only in jwt
+mode, the motivating deployment.

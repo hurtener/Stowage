@@ -2,16 +2,17 @@
 # Phase 16 smoke test: MCP server registers and exposes the typed tool surface.
 #
 # Phase 16 shipped the original seven tools; later phases grew the surface to the
-# current canonical 23 (the D-070 reversibility trio, the D-071 tiered control
-# verbs, the episodic/browse reads, and the ae1/ae9 policy+view admin). This
-# smoke tracks the CURRENT canonical surface so it keeps passing across phases
-# (kept honest per §4.4 same-PR repair — refreshed 20→23 in the ae11 PR after
-# ae5/ae9 grew the surface without updating this count).
+# current canonical 24 (the D-070 reversibility trio, the D-071 tiered control
+# verbs, the episodic/browse reads, the ae1/ae9 policy+view admin, and the ae12
+# Harbor run-completion sink memory_ingest_run). This smoke tracks the CURRENT
+# canonical surface so it keeps passing across phases (kept honest per §4.4
+# same-PR repair — refreshed 20→23 in the ae11 PR, then 23→24 in the ae12 PR that
+# added memory_ingest_run, D-153).
 #
 # Starts stowage mcp --stdio with a temp SQLite store and mock gateway,
 # sends JSON-RPC initialize → tools/list over the stdio pipe, and verifies:
-#   - exactly 23 tools are returned
-#   - all 23 expected names are present
+#   - exactly 24 tools are returned
+#   - all 24 expected names are present
 #
 # Mirrors the other phase smoke scripts: temp DB + config, CGo-free build,
 # background server killed after session.
@@ -122,7 +123,7 @@ else
   NAMES=""
 fi
 
-WANT=23
+WANT=24
 if [ "$TOOL_COUNT" -eq "$WANT" ]; then
   ok "tools/list returned exactly $WANT tools (AC-1)"
 else
@@ -145,6 +146,7 @@ memory_flush
 memory_get
 memory_grants
 memory_ingest
+memory_ingest_run
 memory_playbook
 memory_proactive_config
 memory_resolve

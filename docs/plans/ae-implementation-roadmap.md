@@ -131,7 +131,8 @@ Depends on **W2 + W3**. Pre-launch ⇒ **direct removal, no deprecation window**
 - [ ] **ae10** — `layer`/`intent` read-shaping (own-or-drop, M2) · *deferred*
 
 ### Post-track follow-up (consumer-driven; single phase, single PR)
-- [ ] **ae11** — method-aware MCP handshake auth: in `auth.mode=jwt` the connect-time handshake (`initialize`/`notifications/initialized`/`ping`/`tools/list` + SSE GET + session DELETE) is served unauthenticated; `tools/call` keeps the per-call bearer, default-deny everywhere else; keyring/stdio unchanged; no new knobs · D‑152 — *motivated by an ecosystem MCP host that attaches user-agnostically and injects per-user bearers per call*
+- [x] **ae11** — method-aware MCP handshake auth: in `auth.mode=jwt` the connect-time handshake (`initialize`/`notifications/initialized`/`ping`/`tools/list` + SSE GET + session DELETE) is served unauthenticated; `tools/call` keeps the per-call bearer, default-deny everywhere else; keyring/stdio unchanged; no new knobs · D‑152 — *motivated by an ecosystem MCP host that attaches user-agnostically and injects per-user bearers per call.* **MERGED** (PR #102, f87647a; amendment PR #103, 20d858f — `resources/list`/`prompts/list` join the open allowlist)
+- [x] **ae12** — `memory_ingest_run`, the Harbor run-completion sink: a 24th MCP tool mirroring `RunCompletionPayload` format_version 1 exactly; identity from the verified per-call bearer (payload quad cross-checked, fail-closed); conversion in the core (`records.FromRunCompletion`); one extraction buffer per run + eager flush; `memory_ingest` untouched; MCP-only tiering sanctioned · D‑153 — *§4.3 deviation: the run outcome is split across `outcome` (success/failure projection, for the reflection sweep) + `outcome_detail` (verbatim), the day-one CHECK constraint dictating the column choice; no signal lost.*
 
 ---
 

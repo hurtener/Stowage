@@ -1,0 +1,87 @@
+{
+  "type": "object",
+  "properties": {
+    "format_version": {
+      "type": "integer"
+    },
+    "tenant_id": {
+      "type": "string"
+    },
+    "user_id": {
+      "type": "string"
+    },
+    "session_id": {
+      "type": "string"
+    },
+    "run_id": {
+      "type": "string"
+    },
+    "agent_id": {
+      "type": "string"
+    },
+    "outcome": {
+      "type": "string"
+    },
+    "started_at": {
+      "type": "string"
+    },
+    "completed_at": {
+      "type": "string"
+    },
+    "duration_ms": {
+      "type": "integer"
+    },
+    "step_count": {
+      "type": "integer"
+    },
+    "tool_invocations": {
+      "type": "integer"
+    },
+    "conversation": {
+      "type": [
+        "null",
+        "array"
+      ],
+      "items": {
+        "type": "object",
+        "properties": {
+          "role": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "content": {
+            "type": "string"
+          },
+          "step": {
+            "type": "integer"
+          },
+          "at": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "role",
+          "content"
+        ],
+        "additionalProperties": false
+      }
+    }
+  },
+  "required": [
+    "format_version",
+    "tenant_id",
+    "user_id",
+    "session_id",
+    "run_id",
+    "outcome",
+    "started_at",
+    "completed_at",
+    "duration_ms",
+    "step_count",
+    "tool_invocations",
+    "conversation"
+  ],
+  "additionalProperties": false
+}
