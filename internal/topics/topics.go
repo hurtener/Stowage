@@ -63,6 +63,33 @@ func New(ts store.TopicStore, log *slog.Logger, profile string) *Service {
 	return &Service{ts: ts, log: log, profile: profile}
 }
 
+// topicScope projects a caller scope onto the topics table's own scope shape:
+// tenant-only (D-154). Topics are tenant-level extraction curation — Upsert has
+// only ever stored TenantID (see the store.Topic it builds below) — so reads must
+// match writes: a sub-tenant caller scope (user/project/session) must not hide
+// tenant topics behind the store's buildScopeWhere dimension predicates, which
+// add `AND user_id = ?` / `AND project_id = ?` / `AND session_id = ?` whenever
+// those fields are set (P3 enforces each set dimension; it has no notion that the
+// topics table's sub-tenant columns are intentionally unused). Applying this at
+// every Service entry point repairs the three sub-tenant callers — the extract
+// stage (pipeline builds Scope{Tenant, Project, User} for a flush), MCP
+// memory_topics in jwt mode (the verified user rides on the scope), and the
+// embedded SDK's scope-carrying reads — in one place, making drift structurally
+// impossible for future callers (D-067 one-logic-core lens). No store/driver
+// change is needed: the store keeps enforcing scope exactly as before; the
+// service simply passes the scope shape that matches what it writes. Tenant
+// stays required (P3: the store still fails closed on an empty tenant).
+//
+// Write-path normalization (Upsert/Delete) is behaviorally a no-op today — they
+// already use only scope.Tenant — but is applied for symmetry so the
+// "topics scope is always tenant-only" invariant is visible at every entry
+// point, not implicit in field selection. A future per-user/per-project
+// extraction-topic feature would supersede D-154 explicitly and change
+// write+read scope together.
+func topicScope(scope identity.Scope) identity.Scope {
+	return identity.Scope{Tenant: scope.Tenant}
+}
+
 // TopicUpsert is one topic to upsert via Upsert.
 type TopicUpsert struct {
 	Key         string
@@ -75,6 +102,10 @@ type TopicUpsert struct {
 // normal topic whose Key == PackOff, so opting out of the virtual default pack
 // is an Upsert of {key: "pack:off"} (D-043). status defaults to "active".
 func (s *Service) Upsert(ctx context.Context, scope identity.Scope, items []TopicUpsert) (int, error) {
+	// Topics are tenant-level (D-154): normalize the caller scope to tenant-only
+	// before it touches the store, matching the tenant-only shape the write path
+	// persists (and the read path resolves against).
+	scope = topicScope(scope)
 	if len(items) == 0 {
 		return 0, fmt.Errorf("topics: upsert: items must not be empty: %w", ErrInvalidTopic)
 	}
@@ -116,6 +147,9 @@ func (s *Service) Upsert(ctx context.Context, scope identity.Scope, items []Topi
 // Delete soft-deletes a topic by key within scope. Returns store.ErrNotFound
 // (wrapped) when the key is absent.
 func (s *Service) Delete(ctx context.Context, scope identity.Scope, key string) error {
+	// Tenant-level normalization (D-154): symmetric with Upsert/Resolve so the
+	// invariant holds at every entry point, not just the read path.
+	scope = topicScope(scope)
 	if key == "" {
 		return fmt.Errorf("topics: delete: key must not be empty: %w", ErrInvalidTopic)
 	}
@@ -142,6 +176,11 @@ func (s *Service) Delete(ctx context.Context, scope identity.Scope, key string) 
 //
 // Deleted and paused topics are excluded.
 func (s *Service) Resolve(ctx context.Context, scope identity.Scope) (Resolution, error) {
+	// Topics are tenant-level (D-154): a sub-tenant caller scope (user/project/
+	// session) must not hide tenant topics behind buildScopeWhere's dimension
+	// predicates, which would otherwise match zero stored rows and silently fall
+	// back to the profile default pack. Reads match writes — tenant-only.
+	scope = topicScope(scope)
 	stored, err := s.ts.List(ctx, scope)
 	if err != nil {
 		return Resolution{}, fmt.Errorf("topics: list: %w", err)

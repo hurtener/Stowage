@@ -1180,6 +1180,72 @@ func TestHandlerTopics_NilTopicSvc(t *testing.T) {
 	}
 }
 
+// TestHandlerTopics_List_UserCarryingScope is the criterion-3 handler test
+// (D-154). In jwt mode the per-call bearer carries a verified user, so the
+// handler's resolved scope comes back with a User dimension set. Topics are
+// written tenant-only (the only shape Upsert persists, and the HTTP/SDK
+// writers pass tenant-only scopes), so the memory_topics list under a
+// user-carrying scope MUST still return the tenant's explicit topics — not the
+// profile default pack (pack:preferences), which is what a pre-D-154 read
+// silently fell back to (buildScopeWhere added `AND user_id = ?` and matched
+// zero rows).
+func TestHandlerTopics_List_UserCarryingScope(t *testing.T) {
+	t.Parallel()
+	st := newHandlerStore(t)
+	log := noopLog()
+	topicSvc := topics.New(st.Topics(), log, "assistant")
+	//A jwt-mode handler: the ScopeFn returns a user-carrying scope (the
+	// verified per-call bearer rides on the scope), as CtxScopeFn does in HTTP
+	// jwt mode.
+	userScope := identity.Scope{Tenant: "ae13-tenant", User: "ae13-user"}
+	svc := &Services{
+		Store:    st,
+		TopicSvc: topicSvc,
+		Log:      log,
+		ScopeFn: func(context.Context) (identity.Scope, error) {
+			return userScope, nil
+		},
+	}
+	h := makeTopicsHandler(svc)
+	ctx := context.Background()
+
+	// Upsert two explicit topics. The handler passes its (user-carrying)
+	// scope to TopicSvc.Upsert; D-154 normalizes it to tenant-only so the
+	// write lands tenant-scoped exactly as the HTTP/SDK writers do.
+	if _, err := h(ctx, TopicsInput{
+		Action: "upsert",
+		Topics: []TopicItem{
+			{Key: "tenant-topic-one", Description: "first", Status: "active"},
+			{Key: "tenant-topic-two", Description: "second", Status: "active"},
+		},
+	}); err != nil {
+		t.Fatalf("upsert under user-carrying scope: %v", err)
+	}
+
+	// List under the same user-carrying scope — the bug path.
+	result, err := h(ctx, TopicsInput{Action: "list"})
+	if err != nil {
+		t.Fatalf("list under user-carrying scope: %v", err)
+	}
+	if len(result.Structured.Topics) != 2 {
+		var keys []string
+		for _, tv := range result.Structured.Topics {
+			keys = append(keys, tv.Key)
+		}
+		t.Fatalf("want 2 tenant topics under user-carrying scope, got %d (%v) — default-pack fallback indicates D-154 regressed", len(result.Structured.Topics), keys)
+	}
+	seen := map[string]bool{}
+	for _, tv := range result.Structured.Topics {
+		if tv.Source == topics.PackPreferences {
+			t.Errorf("user-carrying scope: got default-pack topic %q (source=%q); want only explicit tenant topics", tv.Key, tv.Source)
+		}
+		seen[tv.Key] = true
+	}
+	if !seen["tenant-topic-one"] || !seen["tenant-topic-two"] {
+		t.Errorf("missing one of the two tenant topics (seen=%v)", seen)
+	}
+}
+
 // clampExcerpt tests moved to internal/retrieval (TestClampExcerpt) — the
 // drill-down excerpt shaper is now the single shared retrieval.ClampExcerpt used
 // by the HTTP, MCP, and embedded SDK surfaces (D-069, BUG-5).

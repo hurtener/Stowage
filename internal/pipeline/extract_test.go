@@ -57,6 +57,26 @@ func makeRecord(t *testing.T, st store.Store, tenantID, content string) string {
 	return id
 }
 
+// makeRecordScoped inserts a store.Record under the given scope (full sub-tenant
+// dimensions) and returns its ID, modelling per-user/per-project ingest.
+func makeRecordScoped(t *testing.T, st store.Store, scope identity.Scope, content string) string {
+	t.Helper()
+	id := ulid.Make().String()
+	rec := store.Record{
+		ID:            id,
+		TenantID:      scope.Tenant,
+		Role:          "user",
+		Content:       content,
+		TokenEstimate: int64(len(content) / 4),
+		OccurredAt:    time.Now().UnixMilli(),
+		CreatedAt:     time.Now().UnixMilli(),
+	}
+	if err := st.Records().Append(context.Background(), scope, []store.Record{rec}); err != nil {
+		t.Fatalf("append record: %v", err)
+	}
+	return id
+}
+
 // newExtractStageAndChan creates an ExtractStage with its own ingest channel.
 func newExtractStageAndChan(
 	st store.Store,
@@ -1052,5 +1072,122 @@ func TestExtract_MarksRecordsProcessed(t *testing.T) {
 
 	if up := unprocessed(); !up[failID] {
 		t.Errorf("failed extraction: record %s marked processed — re-enqueue can no longer retry it", failID)
+	}
+}
+
+// ── ae13: per-user flush resolves tenant topics, not the default pack (D-154) ──
+
+// TestExtract_PerUserFlush_ResolvesTenantTopics is the criterion-2 pipeline test
+// (D-154). Topics are written tenant-only (the only shape Upsert persists),
+// but the flush is per-user — Scope{Tenant, User} — exactly what the reported
+// bug produced: pre-D-154, Resolve matched zero stored topics (buildScopeWhere
+// added `AND user_id = ?`) and fell back to pack:preferences, so the active set
+// the extractor tagged candidates against was the default-pack keys, never the
+// tenant's configured topic. With D-154, the service normalizes the flush scope
+// to tenant-only and the active set = {tenant-topic-key}; the model tags a
+// candidate with both the tenant key and a default-pack key ("user-preferences"),
+// and filterToActiveTopics keeps ONLY the tenant key (explicit topics suppress
+// the default pack), proving the extract stage ran under the tenant's topics.
+func TestExtract_PerUserFlush_ResolvesTenantTopics(t *testing.T) {
+	t.Parallel()
+	st := newTestStore(t)
+	gw, mock := newMockGateway(t)
+
+	// Configure one explicit tenant topic, written tenant-only (as every writer
+	// does). Under the assistant profile the default pack is pack:preferences,
+	// whose key "user-preferences" is what a pre-D-154 fallback would tag against.
+	tenant := "t-d154-pipe"
+	// The flush carries a USER dimension — the sub-tenant shape that exposed the
+	// bug. Records are ingested under the same per-user scope (the real pipeline
+	// stamps the ingest scope); only topic resolution is normalized to
+	// tenant-only by D-154.
+	flushScope := identity.Scope{Tenant: tenant, User: "u-ae13"}
+	writeScope := identity.Scope{Tenant: tenant}
+	now := time.Now().UnixMilli()
+	if err := st.Topics().Upsert(context.Background(), writeScope, store.Topic{
+		ID:        ulid.Make().String(),
+		TenantID:  tenant,
+		Key:       "tenant-topic-key",
+		Status:    "active",
+		CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("upsert tenant topic: %v", err)
+	}
+	svc := topics.New(st.Topics(), noopLog(), "assistant")
+
+	// Ingest under the per-user scope (the real pipeline stamps the ingest
+	// scope); hydrateRecords matches on that scope, and the per-user flush below
+	// carries the same shape.
+	recID := makeRecordScoped(t, st, flushScope, "The user prefers Go for systems programming.")
+
+	// Model tags the candidate with BOTH the tenant topic key and a default-pack
+	// key. Post-D-154 the active set is {tenant-topic-key} (explicit topics
+	// suppress pack:preferences), so only the tenant key survives
+	// filterToActiveTopics; pre-D-154 the active set was the pack keys, so only
+	// "user-preferences" would have survived and "tenant-topic-key" stripped.
+	script, _ := json.Marshal(map[string]interface{}{
+		"candidates": []interface{}{map[string]interface{}{
+			"kind":                "preference",
+			"content":             "User prefers Go for systems programming.",
+			"context":             "stated by the user",
+			"entities":            []string{"Go"},
+			"keywords":            []string{"go"},
+			"anticipated_queries": []string{"preferred language", "go preference", "systems language"},
+			"importance":          3,
+			"confidence":          0.9,
+			"topics":              []string{"tenant-topic-key", "user-preferences"},
+			"provenance": []map[string]interface{}{
+				{"record_id": recID, "span_start": 0, "span_end": 40},
+			},
+		}},
+	})
+	mock.PushScript(mockdrv.Script{JSON: script})
+
+	stage, in := newExtractStageAndChan(st, gw, svc, "assistant")
+	stage.Start(context.Background())
+
+	in <- pipeline.FlushedBuffer{
+		Scope:         flushScope,
+		Key:           "ae13-sess/ae13-br",
+		BranchID:      "ae13-br",
+		RecordIDs:     []string{recID},
+		TokenEstimate: 100,
+		Trigger:       pipeline.TriggerExplicit,
+	}
+	close(in)
+	drainCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	stage.Drain(drainCtx)
+
+	batches := collectBatches(t, stage.Downstream(), 1, 2*time.Second)
+	if len(batches) == 0 {
+		t.Fatal("want CandidateBatch, got none")
+	}
+	if len(batches[0].Candidates) != 1 {
+		t.Fatalf("want 1 candidate, got %d", len(batches[0].Candidates))
+	}
+	c := batches[0].Candidates[0]
+
+	// The tenant key survived (the active set resolved the tenant's topics).
+	keptTenant := false
+	sawDefault := false
+	for _, k := range c.Topics {
+		if k == "tenant-topic-key" {
+			keptTenant = true
+		}
+		if k == "user-preferences" {
+			sawDefault = true
+		}
+	}
+	if !keptTenant {
+		t.Errorf("D-154: tenant topic key missing from candidate tags %v — per-user flush fell back to default pack", c.Topics)
+	}
+	if sawDefault {
+		t.Errorf("D-154: default-pack key present in candidate tags %v — explicit tenant topic should suppress the default pack", c.Topics)
+	}
+	// P3 scope stamping unchanged: the batch carries the flush's per-user scope,
+	// even though topic resolution was tenant-only.
+	if batches[0].Scope.User != "u-ae13" {
+		t.Errorf("batch scope user: want u-ae13 (flush scope), got %q", batches[0].Scope.User)
 	}
 }

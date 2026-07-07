@@ -16,7 +16,11 @@ New terms land here in the same PR that introduces them (CLAUDE.md §14).
   export, not access (access is scope's job).
 - **Topic** (extraction magnet) — a per-scope natural-language description of
   what is worth remembering; extraction only produces candidates that match an
-  active topic.
+  active topic. Topic **configuration is tenant-level** (D-154): `Upsert`
+  persists only the tenant, so resolution normalizes any caller scope to
+  tenant-only — a sub-tenant caller scope (user/project/session) cannot hide
+  tenant topics behind the store's dimension predicates. Per-subject read-time
+  curation is ae9 topic views, not topic config.
 - **Buffer** — a per-(scope, key) accumulator of ingested fragments; flushes to
   extraction on triggers (count, tokens, age, session end, explicit).
 - **Candidate** — an extracted not-yet-committed memory awaiting reconciliation.

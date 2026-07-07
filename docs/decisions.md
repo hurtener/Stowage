@@ -4341,3 +4341,46 @@ sequence; revisit if drilldown needs them — a conscious, documented drop, not 
 keyring mode (no verified user) the payload `user_id` fills the record's user dimension under
 D-124's fill-empty rule — per-user isolation on this path is credential-verified only in jwt
 mode, the motivating deployment.
+
+## D-154 — Topics are tenant-level curation: resolution and admin normalize to tenant-only scope
+
+2026-07-07. Phase ae13 (tenant-topics fix). **Related:** D-043/D-099 (packs/pack:off), D-125/P3
+(sub-tenant scoping), D-149 (topic views — per-subject read-time curation), D-067 (one logic
+core), D-034 (no new knobs).
+
+**Context.** Topics were always **written** tenant-only (`topics.Service.Upsert` stores
+`TenantID` alone — no user, no project, no session) but **resolved** under the caller's full
+scope. `buildScopeWhere` adds `AND user_id = ?` / `AND project_id = ?` whenever those dimensions
+are set, so any sub-tenant read scope matched zero stored topics, `Resolve` saw "no expressed
+intent," and the profile default pack silently replaced the operator's configured topics. First
+observed live on the per-user (jwt) extraction path: a per-user buffer flush
+(`Scope{Tenant, Project, User}`) extracted under `pack:preferences` defaults instead of the
+tenant's configured topics. The same mismatch affected the MCP `memory_topics` read in jwt mode
+and the embedded SDK's scope-carrying reads. The tenant/keyring path never showed it (bare-key
+scopes carry no sub-tenant dimensions), which is why topic-guided extraction looked proven.
+
+**Decision.**
+1. **Topic configuration is tenant-level.** `topics.Service` normalizes EVERY caller scope to
+   tenant-only (`identity.Scope{Tenant: scope.Tenant}`) at each entry point — `Resolve`/
+   `ActiveTopics` (reads) and `Upsert`/`Delete` (admin, already behaviorally tenant-only; the
+   normalization makes the invariant visible rather than implicit). Reads now match the write
+   shape exactly, so a sub-tenant caller scope can never hide tenant topics.
+2. **The store layer is untouched.** `buildScopeWhere`, both drivers, and the conformance suite
+   are unchanged — the tenant remains required and the empty-tenant read still fails closed
+   (P3). This is a service-layer scope *projection*, not a scoping bypass: the tenant boundary
+   is enforced exactly as before.
+3. **Default-pack and `pack:off` semantics are unchanged** (D-043/D-099): a tenant with zero
+   configured topics still resolves the profile default pack; `pack:off` still suppresses packs.
+4. **Per-user topic curation is deliberately NOT added.** The per-user dimension belongs to the
+   *memories* extraction produces (which keep the run's user scope), not to the topic
+   configuration. Per-subject curation already exists at read time as ae9 topic VIEWS (D-149) —
+   that is the sanctioned mechanism for narrowing what an agent/key sees. A genuine per-user or
+   per-project *extraction*-topic requirement must supersede this decision explicitly and change
+   the write and read shapes together, never one side.
+
+**Consequences.** Operator-configured tenant topics steer extraction for every run in the
+tenant — keyring, project-scoped, and per-user (jwt) alike — and every topics read surface
+(HTTP, MCP, SDK) reports the tenant's topics regardless of the caller's sub-tenant scope. The
+topics table's unused sub-tenant columns stay unused (schema untouched, RFC §8.1 inventory
+unchanged). Fixing at the service layer repairs all callers at once and makes the invariant
+structural for future callers (D-067). No new config keys (D-034).
