@@ -655,6 +655,45 @@ func mcpHTTPOptions(mode string) *server.HTTPOptions {
 	return nil
 }
 
+// mcpRootRewrite normalizes a co-mounted MCP request's URL path to "/" before it
+// reaches the streamable handler (D-155). MCP-over-HTTP dispatches JSON-RPC on the
+// request body, not the URL path, and the ae11 handshake-auth classifier peeks the
+// body — neither routes on the path. Rewriting to "/" makes a co-mounted "/mcp"
+// (or "/mcp/…") request byte-identical, at the handler, to the same request on a
+// dedicated listener, so the shared and separate shapes behave the same. The
+// request is cloned (the URL is deep-copied by Clone) so the shared mux's routing
+// state is untouched.
+func mcpRootRewrite(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		r2 := r.Clone(r.Context())
+		r2.URL.Path = "/"
+		r2.URL.RawPath = ""
+		next.ServeHTTP(w, r2)
+	})
+}
+
+// restDeadlineHandler re-imposes the REST read/write bound per-request when the
+// REST surface is co-mounted on a shared http.Server that itself sets no
+// ReadTimeout/WriteTimeout (D-155). The shared server must leave those unset so the
+// co-mounted MCP subtree can stream (SSE + long tool calls) — the whole reason the
+// default shape uses two listeners (D-074). Setting the deadline per-request via
+// http.ResponseController preserves the REST protection without imposing it on the
+// MCP subtree. A zero duration leaves that bound unset; a driver that does not
+// support deadlines simply keeps the shared-server default (best-effort).
+func restDeadlineHandler(read, write time.Duration, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		rc := http.NewResponseController(w)
+		now := time.Now()
+		if read > 0 {
+			_ = rc.SetReadDeadline(now.Add(read))
+		}
+		if write > 0 {
+			_ = rc.SetWriteDeadline(now.Add(write))
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
 const serveUsage = `stowage serve — run the HTTP memory service
 
 Usage:
@@ -775,18 +814,26 @@ func runServe(args []string) {
 	srv.SetGateway(stk.Gateway)         // POST /v1/verify (Phase 25)
 	srv.SetTraceSigner(stk.TraceSigner) // GET /v1/traces (Phase 26)
 
-	// Optional co-mounted MCP-over-HTTP surface (D-074). When server.mcp_listen
-	// is set, serve the SAME mcpserver handlers (h3/h4/h5) over the SAME
-	// stk + p — one result cache, one pipeline, no cross-process staleness
-	// (the D-073 canonical one-process/both-surfaces shape). Built here, before
-	// the listeners start, so a build error exits before any port binds. A
-	// SEPARATE http.Server (not a path-prefix on the api listener) because MCP
-	// streams and must NOT inherit the REST WriteTimeout/middleware — so it sets
-	// only ReadHeaderTimeout, mirroring `stowage mcp --http`. mcpHTTP stays nil
-	// when the knob is empty: `stowage serve` then binds exactly one port,
-	// unchanged.
-	var mcpHTTP *http.Server
-	if cfg.Server.MCPListen != "" {
+	// Optional MCP-over-HTTP surface (D-074/D-155). Two exposure shapes, both
+	// serving the SAME mcpserver handlers (h3/h4/h5) over the SAME stk + p — one
+	// result cache, one pipeline, no cross-process staleness (the D-073 canonical
+	// one-process/both-surfaces shape):
+	//   - "separate" (default): opt-in via server.mcp_listen; MCP binds its OWN
+	//     port and never inherits the REST WriteTimeout/middleware — it sets only
+	//     ReadHeaderTimeout, mirroring `stowage mcp --http`.
+	//   - "shared" (server.mcp_mount=shared): co-mount MCP on the server.listen
+	//     port under "/mcp", for single-port platforms (Render/Heroku/Fly). The
+	//     invariant holds without a second listener: the combined http.Server sets
+	//     no WriteTimeout (so MCP streams) and the REST subtree re-imposes its
+	//     write bound per-request (restDeadlineHandler).
+	// The handler is built here, before any listener binds, so a build error exits
+	// first. mcpHTTPHandler stays nil when MCP is disabled: `stowage serve` then
+	// binds exactly one port with the REST surface only, unchanged.
+	sharedMCP := cfg.Server.MCPMount == "shared"
+	mcpEnabled := sharedMCP || cfg.Server.MCPListen != ""
+
+	var mcpHTTPHandler http.Handler // auth-wrapped MCP handler, ready to mount (nil ⇒ disabled)
+	if mcpEnabled {
 		mcpSvc := &mcpserver.Services{
 			Store:              stk.Store,
 			Retriever:          stk.Retriever,
@@ -820,16 +867,61 @@ func runServe(args []string) {
 			stk.Log.Error("stowage serve: mcp http handler", "err", hErr)
 			os.Exit(1)
 		}
-		mcpHTTP = &http.Server{
-			Addr:              cfg.Server.MCPListen,
-			Handler:           mcpAuthHandler(cfg.Auth.Mode, authn, mcpHandler), // SAME Authenticator as the REST API (D-067)
-			ReadHeaderTimeout: 10 * time.Second,                                 // no WriteTimeout — MCP streams
-		}
+		// SAME Authenticator as the REST API (D-067). Method-aware handshake auth
+		// in jwt mode (ae11/D-152); strict key auth otherwise.
+		mcpHTTPHandler = mcpAuthHandler(cfg.Auth.Mode, authn, mcpHandler)
 	} else {
 		// Discoverability hint (a3, D-133): the MCP tool surface is opt-in. Say so on
-		// startup so an operator who expected MCP knows the knob exists, without
-		// changing the default single-port shape (D-074).
-		stk.Log.Info("stowage serve: MCP surface disabled — set server.mcp_listen (e.g. :7161) to co-mount it, or run `stowage mcp`")
+		// startup so an operator who expected MCP knows both knobs exist, without
+		// changing the default single-port REST-only shape (D-074).
+		stk.Log.Info("stowage serve: MCP surface disabled — set server.mcp_listen (e.g. :7161) for a second-port co-mount, server.mcp_mount=shared to co-mount on the API port at /mcp, or run `stowage mcp`")
+	}
+
+	// Assemble the network listeners from the MCP exposure shape.
+	//   - shared: ONE combined http.Server on server.listen serving REST at "/"
+	//     and MCP at "/mcp" (single-port platforms, D-155).
+	//   - separate: the api's own listener (srv.ListenAndServe) plus, when
+	//     server.mcp_listen is set, a dedicated MCP listener (D-074).
+	var (
+		mcpHTTP *http.Server // separate-mode dedicated MCP listener (nil otherwise)
+		apiHTTP *http.Server // shared-mode combined REST+/mcp listener (nil otherwise)
+	)
+	if sharedMCP {
+		idleTimeout := time.Duration(cfg.Server.IdleTimeout) * time.Second
+		readTimeout := time.Duration(cfg.Server.ReadTimeout) * time.Second
+		writeTimeout := time.Duration(cfg.Server.WriteTimeout) * time.Second
+
+		root := http.NewServeMux()
+		// MCP dispatches JSON-RPC on the request body, not the URL path; normalize
+		// the co-mount path to "/" so the streamable handler and the handshake-auth
+		// classifier (ae11) see exactly the request they would on a dedicated
+		// listener. Register both the exact and subtree patterns.
+		mcpMount := mcpRootRewrite(mcpHTTPHandler)
+		root.Handle("/mcp", mcpMount)
+		root.Handle("/mcp/", mcpMount)
+		// REST owns everything else. The combined server sets no WriteTimeout (so
+		// the MCP subtree can stream — D-074's invariant), so REST re-imposes its
+		// per-request read/write bound here (D-155).
+		root.Handle("/", restDeadlineHandler(readTimeout, writeTimeout, srv))
+
+		apiHTTP = &http.Server{
+			Addr:              cfg.Server.Listen,
+			Handler:           root,
+			ReadHeaderTimeout: 10 * time.Second, // slow-header guard for both subtrees
+			IdleTimeout:       idleTimeout,
+			MaxHeaderBytes:    1 << 20,
+			// Deliberately NO ReadTimeout/WriteTimeout: MCP streams (SSE + long
+			// tool calls) and its body is unbounded, exactly as on the dedicated
+			// listener. REST bounds are re-imposed per-request by
+			// restDeadlineHandler; REST body size stays capped by the api's own
+			// bodyLimitMiddleware, which srv still wraps (D-074/D-155).
+		}
+	} else if cfg.Server.MCPListen != "" {
+		mcpHTTP = &http.Server{
+			Addr:              cfg.Server.MCPListen,
+			Handler:           mcpHTTPHandler,
+			ReadHeaderTimeout: 10 * time.Second, // no WriteTimeout — MCP streams
+		}
 	}
 
 	// Optional dedicated pprof listener (server.pprof_listen). Off by default;
@@ -852,16 +944,27 @@ func runServe(args []string) {
 		}
 	}
 
-	// Start HTTP server in a goroutine.
+	// Start the primary HTTP listener in a goroutine. In shared mode this is the
+	// combined REST+/mcp server on server.listen; otherwise it is the api's own
+	// listener (REST only, or REST + a separate MCP listener below).
 	servErr := make(chan error, 1)
 	go func() {
-		if listenErr := srv.ListenAndServe(); listenErr != nil && !errors.Is(listenErr, http.ErrServerClosed) {
+		var listenErr error
+		if apiHTTP != nil {
+			listenErr = apiHTTP.ListenAndServe()
+		} else {
+			listenErr = srv.ListenAndServe()
+		}
+		if listenErr != nil && !errors.Is(listenErr, http.ErrServerClosed) {
 			servErr <- listenErr
 		}
 	}()
+	if apiHTTP != nil {
+		stk.Log.Info("stowage serve: mcp co-mounted on the API port", "addr", cfg.Server.Listen, "path", "/mcp")
+	}
 
-	// Start the co-mounted MCP listener in a goroutine; surface listen errors
-	// the same way as the api one.
+	// Start the dedicated MCP listener in a goroutine (separate mode); surface
+	// listen errors the same way as the api one.
 	if mcpHTTP != nil {
 		go func() {
 			if listenErr := mcpHTTP.ListenAndServe(); listenErr != nil && !errors.Is(listenErr, http.ErrServerClosed) {
@@ -908,6 +1011,17 @@ func runServe(args []string) {
 	// the h1 ingress-before-Drain invariant).
 	shutdownCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
+	// In shared mode the combined listener owns the socket (REST + /mcp). Shut it
+	// down FIRST so both subtrees stop accepting and in-flight handlers drain
+	// before srv.Shutdown runs the api's post-HTTP cleanup (retriever/injection
+	// close). srv.Shutdown still runs in both modes: its own httpSrv.Shutdown is a
+	// no-op when apiHTTP served (that server never called ListenAndServe), but the
+	// retriever/pipeline cleanup it performs must still happen.
+	if apiHTTP != nil {
+		if err := apiHTTP.Shutdown(shutdownCtx); err != nil {
+			stk.Log.Error("stowage serve: combined listener shutdown", "err", err)
+		}
+	}
 	if err := srv.Shutdown(shutdownCtx); err != nil {
 		stk.Log.Error("stowage serve: shutdown", "err", err)
 	}

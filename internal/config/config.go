@@ -248,6 +248,18 @@ type ServerConfig struct {
 	// path-prefixed single port) because MCP streams and must not inherit the
 	// REST WriteTimeout/middleware.
 	MCPListen string `yaml:"mcp_listen"` // default "" (opt-in)
+	// MCPMount selects HOW the MCP-over-HTTP surface is exposed when enabled:
+	//   "separate" (default) — the two-listener shape (D-074): MCP is opt-in via
+	//     server.mcp_listen and binds its OWN port, so it never inherits the REST
+	//     WriteTimeout/middleware. The production/self-host default.
+	//   "shared"            — co-mount MCP on the SAME port as server.listen, under
+	//     the "/mcp" path prefix. For single-port platforms (Render/Heroku/Fly free
+	//     tiers) that expose exactly one port per service. The invariant is
+	//     preserved WITHOUT a second listener: the shared http.Server sets no
+	//     WriteTimeout (so MCP streams freely) and the REST subtree re-imposes its
+	//     write bound per-request via http.ResponseController (D-155). In "shared"
+	//     mode server.mcp_listen MUST be empty — the two are mutually exclusive.
+	MCPMount string `yaml:"mcp_mount"` // "separate" (default) | "shared"
 	// PprofListen, when non-empty (e.g. "127.0.0.1:6060"), enables the opt-in
 	// loopback address for the auth-gated pprof admin listener. Empty (the
 	// default) disables the listener entirely. Must differ from server.listen
@@ -327,6 +339,7 @@ var allKeys = []string{
 	"profile",
 	"server.listen",
 	"server.mcp_listen",
+	"server.mcp_mount",
 	"server.pprof_listen",
 	"server.read_timeout",
 	"server.write_timeout",
@@ -404,6 +417,7 @@ var envKeys = []struct {
 	{"STOWAGE_PROFILE", "profile"},
 	{"STOWAGE_SERVER_LISTEN", "server.listen"},
 	{"STOWAGE_SERVER_MCP_LISTEN", "server.mcp_listen"},
+	{"STOWAGE_SERVER_MCP_MOUNT", "server.mcp_mount"},
 	{"STOWAGE_SERVER_PPROF_LISTEN", "server.pprof_listen"},
 	{"STOWAGE_SERVER_READ_TIMEOUT", "server.read_timeout"},
 	{"STOWAGE_SERVER_WRITE_TIMEOUT", "server.write_timeout"},
@@ -451,8 +465,9 @@ func Defaults() *Config {
 		Profile: "assistant",
 		Server: ServerConfig{
 			Listen:       ":7160",
-			MCPListen:    "", // opt-in: empty keeps `stowage serve` single-surface (D-074)
-			PprofListen:  "", // opt-in
+			MCPListen:    "",         // opt-in: empty keeps `stowage serve` single-surface (D-074)
+			MCPMount:     "separate", // two-listener shape (D-074); "shared" co-mounts on server.listen (D-155)
+			PprofListen:  "",         // opt-in
 			ReadTimeout:  10,
 			WriteTimeout: 20,
 			IdleTimeout:  60,
@@ -546,6 +561,9 @@ func (c *Config) FillZeroDefaults() {
 
 	if c.Server.Listen == "" {
 		c.Server.Listen = d.Server.Listen
+	}
+	if c.Server.MCPMount == "" {
+		c.Server.MCPMount = d.Server.MCPMount
 	}
 	if c.Server.ReadTimeout == 0 {
 		c.Server.ReadTimeout = d.Server.ReadTimeout
@@ -735,9 +753,21 @@ func (c *Config) Validate() error {
 		errs = append(errs, errors.New("config.server.listen: must not be empty"))
 	}
 
+	// server.mcp_mount selects the MCP exposure shape (D-074/D-155).
+	validMCPMounts := map[string]bool{"separate": true, "shared": true}
+	if !validMCPMounts[c.Server.MCPMount] {
+		errs = append(errs, fmt.Errorf("config.server.mcp_mount: unknown mode %q (valid: separate, shared)", c.Server.MCPMount))
+	}
+	// "shared" co-mounts MCP on server.listen under /mcp (single-port platforms,
+	// D-155). It owns no port of its own, so server.mcp_listen must be empty —
+	// the two exposure modes are mutually exclusive.
+	if c.Server.MCPMount == "shared" && c.Server.MCPListen != "" {
+		errs = append(errs, fmt.Errorf("config.server.mcp_listen: must be empty when server.mcp_mount=shared (shared co-mounts MCP on server.listen at /mcp — it binds no separate port)"))
+	}
+
 	// server.mcp_listen is opt-in (default ""). When set it must be a valid
-	// host:port, and must not collide with the HTTP API listener — co-mount uses
-	// TWO listeners over one stack (D-074).
+	// host:port, and must not collide with the HTTP API listener — the "separate"
+	// mode co-mounts over TWO listeners on one stack (D-074).
 	if c.Server.MCPListen != "" {
 		if _, port, err := net.SplitHostPort(c.Server.MCPListen); err != nil {
 			errs = append(errs, fmt.Errorf("config.server.mcp_listen: invalid host:port %q: %w", c.Server.MCPListen, err))
@@ -1011,6 +1041,8 @@ func (c *Config) getByPath(path string) string {
 		return c.Server.Listen
 	case "server.mcp_listen":
 		return c.Server.MCPListen
+	case "server.mcp_mount":
+		return c.Server.MCPMount
 	case "server.pprof_listen":
 		return c.Server.PprofListen
 	case "server.read_timeout":
@@ -1135,6 +1167,8 @@ func (c *Config) setByPath(path, value string) error {
 		c.Server.Listen = value
 	case "server.mcp_listen":
 		c.Server.MCPListen = value
+	case "server.mcp_mount":
+		c.Server.MCPMount = value
 	case "server.pprof_listen":
 		c.Server.PprofListen = value
 	case "server.read_timeout":

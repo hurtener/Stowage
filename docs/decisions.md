@@ -4384,3 +4384,52 @@ tenant — keyring, project-scoped, and per-user (jwt) alike — and every topic
 topics table's unused sub-tenant columns stay unused (schema untouched, RFC §8.1 inventory
 unchanged). Fixing at the service layer repairs all callers at once and makes the invariant
 structural for future callers (D-067). No new config keys (D-034).
+
+## D-155 — Single-port MCP co-mount (`server.mcp_mount=shared`) for one-port PaaS free tiers
+
+2026-07-20. Phase r1 (single-port co-mount). **Related:** D-074 (two-listener MCP co-mount —
+this extends it), D-126 (the pprof listener's identical "escape the REST WriteTimeout" rationale),
+D-152/ae11 (method-aware MCP handshake auth), D-067 (one Authenticator both surfaces), D-034 (knob
+guardrail), D-036 (graceful degradation).
+
+**Context.** D-074 established that when the MCP-over-HTTP surface is co-mounted with the REST API,
+it binds a **second listener on its own port** — never a path prefix on the API listener — because
+MCP streams (SSE + long-running tool calls) and must NOT inherit the REST `WriteTimeout` or the
+REST body-limit middleware. That is the correct production shape. But single-port PaaS free tiers
+(Render, Heroku, Fly) expose **exactly one port per service**, and the deployed console/Harbor
+reaches Stowage as a memory capability over the **MCP** surface. On those platforms the two-listener
+shape cannot expose MCP at all: the second port is unreachable. Deploying Stowage as the console's
+memory capability on a free tier therefore needs the MCP surface on the one exposed port.
+
+**Decision.**
+1. **A new opt-in knob `server.mcp_mount`** — `"separate"` (default) | `"shared"`
+   (`STOWAGE_SERVER_MCP_MOUNT`). `"separate"` is D-074 unchanged: MCP is opt-in via
+   `server.mcp_listen` and binds its own port. `"shared"` co-mounts MCP on the `server.listen`
+   port under the fixed `"/mcp"` path prefix. The default (`"separate"`, `mcp_listen` empty) keeps
+   the zero-config single-port REST-only shape byte-identical — this knob adds a mode, it does not
+   change any default (D-034: tuned default, present in every profile via `Defaults()`, documented,
+   smoke-tested by `phase-r1.sh`).
+2. **The D-074 invariant is preserved WITHOUT a second listener.** The shared `http.Server` sets no
+   `ReadTimeout`/`WriteTimeout`, so the co-mounted MCP subtree streams exactly as it would on a
+   dedicated listener. The REST subtree re-imposes its per-request read/write bound via
+   `http.ResponseController` (`restDeadlineHandler`), so REST keeps its `server.write_timeout`
+   protection while MCP is unbounded. REST body size stays capped because the REST subtree is still
+   the api server's own middleware-wrapped handler (`bodyLimitMiddleware` intact); the MCP subtree
+   is mounted separately and is body-unbounded, matching the dedicated listener.
+3. **Mutually exclusive with `server.mcp_listen`.** `"shared"` owns no port of its own, so
+   `server.mcp_listen` must be empty in shared mode (config validation rejects the combination). The
+   two co-mount shapes never run at once.
+4. **Auth is identical to the dedicated listener.** The co-mounted handler is wrapped with the SAME
+   `mcpAuthHandler` (D-067) — method-aware handshake auth in jwt mode (D-152), strict key auth
+   otherwise. MCP-over-HTTP dispatches JSON-RPC on the request body, not the URL path, and the ae11
+   classifier peeks the body, so the co-mount normalizes the request path to `"/"` before the
+   handler (`mcpRootRewrite`), making a `/mcp` request byte-identical, at the handler, to the same
+   request on a dedicated listener. Proven by `phase-r1.sh` in jwt mode: bearer-less
+   initialize/tools-list served, `tools/call` still gated.
+
+**Consequences.** Stowage deploys to a single-port PaaS free tier as the console's memory capability
+by setting `STOWAGE_SERVER_MCP_MOUNT=shared` (see `docs/deploy-render.md`): the console registers the
+MCP endpoint at `https://<app>/mcp` and the REST API + `/healthz` share the same port. Self-hosting
+with a real network keeps the default two-listener shape (D-074) — no behavioral change. The knob is
+a mode selector, not a new default, so the zero-config invariant (a3/D-133) and the h6 single-surface
+default hold. Streaming and the strict tools/call gate are unchanged in both shapes.

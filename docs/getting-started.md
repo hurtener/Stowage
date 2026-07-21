@@ -66,7 +66,9 @@ That's it — no config file. You get:
 The **MCP tool surface is opt-in**: `serve` binds exactly one port by default. Set
 `server.mcp_listen` (e.g. `:7161`) to co-mount MCP-over-HTTP on a second listener over the same
 process and key policy, or run `stowage mcp` standalone. `serve` logs a one-line hint when MCP is
-off so you know the knob exists.
+off so you know the knob exists. On a single-port host (Render/Heroku/Fly free tiers), set
+`server.mcp_mount: shared` instead — MCP co-mounts on the API port under `/mcp`, so one port serves
+both surfaces (D-155; see [`deploy-render.md`](deploy-render.md)).
 
 Confirm what you're running:
 

@@ -1,6 +1,7 @@
 profile                                   = assistant                            [default]
 server.listen                             = :7160                                [default]
 server.mcp_listen                         =                                      [default]
+server.mcp_mount                          = separate                             [default]
 server.pprof_listen                       =                                      [default]
 server.read_timeout                       = 10                                   [default]
 server.write_timeout                      = 20                                   [default]

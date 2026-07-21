@@ -1,0 +1,53 @@
+# Render Blueprint — one-click deploy of Stowage on Render's free tier.
+#
+# Render Dashboard → New → Blueprint → pick this repo → Apply. Render reads this
+# file, builds the Dockerfile in the cloud, and prompts for the secrets marked
+# `sync: false` (they are NEVER committed). See docs/deploy-render.md for the full
+# 5-minute recipe (Neon Postgres + console registration).
+#
+# Blueprints must live at the repo root (Render only reads a root-level
+# render.yaml). Everything else — durable state on Neon, MCP on the single port —
+# follows from Render's ephemeral filesystem + one-port-per-service model.
+services:
+  - type: web
+    name: stowage
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    plan: free
+    # Render pings this over HTTP to decide the service is live. The distroless
+    # image ships no curl, so the platform health check (not an in-image
+    # HEALTHCHECK) is what proves liveness.
+    healthCheckPath: /healthz
+    envVars:
+      # ---- Single-port co-mount (D-155) --------------------------------------
+      # Render free exposes ONE port per service; co-mount MCP on the API port so
+      # the console reaches the memory tools at https://<app>.onrender.com/mcp.
+      - key: STOWAGE_SERVER_MCP_MOUNT
+        value: shared
+
+      # ---- Store: Neon Postgres (durable state survives deploys/spin-down) ----
+      - key: STOWAGE_STORE_DRIVER
+        value: postgres
+      # The Neon pooled DSN. postgresql://…-pooler…/<db>?sslmode=require&channel_binding=require
+      # (drop channel_binding if the driver rejects it — keep sslmode=require).
+      - key: STOWAGE_STORE_DSN
+        sync: false
+
+      # ---- Intelligence gateway: one secret (the zero-config rule) ------------
+      # Default gateway driver is Bifrost on OpenRouter — this is the OpenRouter key.
+      - key: STOWAGE_GATEWAY_API_KEY
+        sync: false
+
+      # ---- Identity: verify the console's Harbor-minted bearers (jwt mode) ----
+      # Stowage VERIFIES tokens; it never mints. It fetches the console's JWKS over
+      # HTTPS and validates issuer/audience. No private key on disk → no Render
+      # secret-file wall. Fill issuer/audience from the console's capability
+      # registration panel; the JWKS URL is the console's well-known endpoint.
+      - key: STOWAGE_AUTH_MODE
+        value: jwt
+      - key: STOWAGE_AUTH_JWKS_URL
+        value: https://pengui-white-label.onrender.com/.well-known/jwks.json
+      - key: STOWAGE_AUTH_ISSUER
+        sync: false
+      - key: STOWAGE_AUTH_AUDIENCE
+        sync: false
