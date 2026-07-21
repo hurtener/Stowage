@@ -430,6 +430,13 @@ New terms land here in the same PR that introduces them (CLAUDE.md §14).
   The D-074 invariant holds without the second port — the shared `http.Server`
   sets no `WriteTimeout` (so MCP streams) and the REST subtree re-imposes its
   write bound per-request (D-155). Mutually exclusive with `server.mcp_listen`.
+- **Ledger descriptor** — the JSON document Stowage serves at the public
+  `GET /.well-known/pengui-memory-ledger` (D-157) that tells the Pengui console's
+  memory-ledger admin UI how to render and mutate memory records: the list/get
+  endpoints, the id field, each record field's label/type, and the available
+  mutate ops (`confirm`/`reject`/`rollback`). Built from the real memory API, so
+  the console renders Stowage's authoritative shape (source `well-known`) instead
+  of a descriptor it hardcodes (`builtin:stowage`).
 - **Auto-wired rerank provider** — a synthetic Bifrost custom provider
   (`stowage-rerank`, `BaseProviderType=Cohere`, request path `/rerank`, same
   key/base) the bifrost driver adds so a non-native-rerank primary (e.g.

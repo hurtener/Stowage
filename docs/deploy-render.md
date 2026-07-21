@@ -136,6 +136,11 @@ The console then pushes the memory MCP connection + run-completion ingest hook t
 the runtime, and every memory call carries a per-user, console-minted bearer that
 Stowage verifies against the JWKS it fetched at boot.
 
+The **memory-ledger admin UI** works automatically: Stowage advertises its own
+ledger descriptor at the public `GET /.well-known/pengui-memory-ledger` (D-157), so
+the console renders and mutates memory records from Stowage's authoritative shape —
+nothing to configure.
+
 ---
 
 ## 4. What to expect (free-tier behavior — this is normal)

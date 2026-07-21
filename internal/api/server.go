@@ -152,6 +152,10 @@ func New(cfg *config.Config, st store.Store, log *slog.Logger, reg *prometheus.R
 	mux.HandleFunc("GET /readyz", srv.handleReadyz)
 	mux.Handle("GET /metrics", promhttp.HandlerFor(reg, promhttp.HandlerOpts{Registry: reg}))
 
+	// Ledger descriptor — the Pengui console's memory-ledger self-description
+	// seam (D-157). Public, non-sensitive API-shape metadata, like /healthz.
+	mux.HandleFunc("GET "+ledgerDescriptorPath, srv.handleLedgerDescriptor)
+
 	// Ingest — auth required (agent or admin role).
 	mux.HandleFunc("POST /v1/records", srv.authMiddleware(srv.handleIngest, false))
 

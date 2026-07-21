@@ -1,0 +1,129 @@
+{
+  "version": "1",
+  "provider": "Stowage",
+  "id_field": "id",
+  "list": {
+    "method": "GET",
+    "path": "/v1/memories",
+    "items_field": "memories",
+    "next_cursor_field": "next_cursor"
+  },
+  "get": {
+    "method": "GET",
+    "path_template": "/v1/memories/{id}"
+  },
+  "fields": [
+    {
+      "key": "id",
+      "label": "ID",
+      "type": "string"
+    },
+    {
+      "key": "kind",
+      "label": "Kind",
+      "type": "enum",
+      "managed_by": "system"
+    },
+    {
+      "key": "content",
+      "label": "Content",
+      "type": "string",
+      "managed_by": "system",
+      "primary": true
+    },
+    {
+      "key": "context",
+      "label": "Context",
+      "type": "string",
+      "managed_by": "system"
+    },
+    {
+      "key": "status",
+      "label": "Status",
+      "type": "enum",
+      "managed_by": "system",
+      "primary": true
+    },
+    {
+      "key": "importance",
+      "label": "Importance",
+      "type": "number"
+    },
+    {
+      "key": "confidence",
+      "label": "Confidence",
+      "type": "number"
+    },
+    {
+      "key": "trust_source",
+      "label": "Source",
+      "type": "string"
+    },
+    {
+      "key": "stability",
+      "label": "Stability",
+      "type": "number"
+    },
+    {
+      "key": "valid_from",
+      "label": "Valid from",
+      "type": "timestamp"
+    },
+    {
+      "key": "valid_until",
+      "label": "Valid until",
+      "type": "timestamp"
+    },
+    {
+      "key": "episode_id",
+      "label": "Episode",
+      "type": "string"
+    },
+    {
+      "key": "supersedes_id",
+      "label": "Supersedes",
+      "type": "string"
+    },
+    {
+      "key": "superseded_by_id",
+      "label": "Superseded by",
+      "type": "string"
+    },
+    {
+      "key": "created_at",
+      "label": "Created",
+      "type": "timestamp",
+      "primary": true
+    },
+    {
+      "key": "updated_at",
+      "label": "Updated",
+      "type": "timestamp"
+    }
+  ],
+  "mutate_ops": {
+    "confirm": {
+      "method": "PATCH",
+      "path_template": "/v1/memories/{id}",
+      "body": {
+        "action": "confirm"
+      },
+      "label": "Confirm"
+    },
+    "reject": {
+      "method": "PATCH",
+      "path_template": "/v1/memories/{id}",
+      "body": {
+        "action": "reject"
+      },
+      "label": "Reject",
+      "destructive": true
+    },
+    "rollback": {
+      "method": "POST",
+      "path_template": "/v1/memories/{id}/rollback",
+      "label": "Roll back",
+      "destructive": true
+    }
+  }
+}

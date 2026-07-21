@@ -4474,3 +4474,48 @@ so the console discovers and invokes Stowage's tools. `phase-r1.sh` reproduces t
 (AC-7: a spoofed public Host 403s by default) and proves the fix (AC-8: `trust_proxy=true` serves it),
 both in jwt mode. Direct/self-hosted deployments keep the SDK's secure localhost default (D-034: tuned
 default false, in every profile via `Defaults()`, documented, smoke-tested).
+
+## D-157 — Advertise a ledger descriptor at `/.well-known/pengui-memory-ledger` (a public self-description seam)
+
+2026-07-21. Phase r2 (ledger descriptor). **Related:** D-067 (one logic core / thin surfaces),
+D-064/D-065 (memory management API — the endpoints the descriptor names), P1 (verbatim records never
+deleted — why no delete op), CLAUDE.md §7 (explicit auth posture).
+
+**Context.** The Pengui console's memory-ledger admin UI renders and mutates a memory capability's
+records generically. To do so it fetches `GET {http_url}/.well-known/pengui-memory-ledger` — a
+"ledger descriptor" that says which endpoint lists records, which field is the record id, what each
+field means, and which mutate actions exist. When the provider does not serve it, the console falls
+back to a descriptor it **hardcodes for Stowage** (source `builtin:stowage`). That built-in is a copy
+of Stowage's shape living in the *console* repo: it can silently drift from Stowage's real API as the
+API evolves (a new field, a renamed path), and it was already an approximation (it omitted several
+real `memoryJSON` fields). Stowage returning 404 there is benign (the console falls back) but leaves
+the console as the source of truth for Stowage's own shape.
+
+**Decision.**
+1. **Stowage serves its own authoritative descriptor** at `GET /.well-known/pengui-memory-ledger`,
+   built from the REAL API: list = `GET /v1/memories` (`{"memories":[...],"next_cursor":...}`), get =
+   `GET /v1/memories/{id}`, fields = `memoryJSON`'s keys, mutate ops = the ones the API actually
+   implements — `confirm`/`reject` (`PATCH` with an `{"action":...}` body) and `rollback` (`POST`).
+   No delete op is declared: verbatim records are never deleted outside the retention/DSAR cascade
+   (P1). A Stowage-side golden + self-validation test (mirroring the console's `Validate`) guards the
+   contract, so Stowage's own CI catches drift — verified live to pass the console's real `Validate()`.
+2. **The endpoint is PUBLIC (no auth), like `/healthz`.** The descriptor is non-sensitive API-shape
+   metadata (paths + field names already in the RFC/OpenAPI). The console probes it both
+   authenticated and — on a token-mint failure — unauthenticated, so a public endpoint guarantees the
+   real descriptor is always resolved rather than the console silently falling back. An **invalid or
+   errored** fetch is worse than a 404: the console's `resolveWithBuiltin` only falls back on
+   404/401/403, so any other error (a malformed descriptor, a 500) makes it report the capability
+   unresolved. Public + golden-pinned + validated keeps that from happening.
+3. **HTTP-only surface (not a tiered capability).** This is a discovery document for the console's
+   admin UI, not a memory capability, so it does not fan out to the SDK/MCP surfaces (D-067's tiering
+   applies to capabilities, not to a console-integration discovery endpoint — same class as
+   `/healthz`).
+4. **The Pengui-branded path is accepted coupling.** `/.well-known/pengui-memory-ledger` is Pengui's
+   contract name; Stowage is built to be this ecosystem's memory (RFC §1), so advertising the
+   ecosystem's descriptor is in scope. The descriptor FORMAT is generic; only the URL is branded. If
+   the ecosystem later standardizes a vendor-neutral path, we add it alongside (never break this one).
+
+**Consequences.** The console's memory-ledger admin UI renders Stowage's records from Stowage's own
+descriptor (source `well-known`), so the rendered shape can no longer drift from the real API, and the
+`404`s on that path disappear. No config knob (always on — a static, harmless, non-sensitive document;
+D-034). New endpoint ⇒ smoke check (`phase-r2.sh`) + golden test in the same change.
