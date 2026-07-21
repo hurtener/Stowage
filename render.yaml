@@ -24,6 +24,13 @@ services:
       # the console reaches the memory tools at https://<app>.onrender.com/mcp.
       - key: STOWAGE_SERVER_MCP_MOUNT
         value: shared
+      # Render terminates TLS at its edge and proxies into the container over a
+      # loopback address, which trips the MCP transport's DNS-rebinding localhost
+      # guard ("Forbidden: invalid Host header"). Trust the proxy so that guard is
+      # relaxed (cross-origin + Content-Type protection stay on) — REQUIRED for the
+      # co-mounted MCP surface to answer through the proxy (D-156).
+      - key: STOWAGE_SERVER_MCP_TRUST_PROXY
+        value: "true"
 
       # ---- Store: Neon Postgres (durable state survives deploys/spin-down) ----
       - key: STOWAGE_STORE_DRIVER

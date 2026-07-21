@@ -52,8 +52,15 @@ COPY --from=build --chown=65532:65532 /out/data /data
 # Bind all interfaces on the platform's default web port; the SQLite fallback
 # writes under /data. A managed deployment overrides STOWAGE_STORE_DRIVER/DSN to
 # point at Postgres and never uses /data.
+#
+# STOWAGE_SERVER_MCP_TRUST_PROXY=true because this image is built for hosting
+# behind a reverse proxy (Render/Heroku/Fly/a load balancer) that terminates TLS
+# and forwards over loopback — without it the MCP transport's DNS-rebinding guard
+# 403s every proxied request (D-156). Set it to false only if you run this image
+# bound directly to localhost as a local MCP server.
 ENV STOWAGE_SERVER_LISTEN=0.0.0.0:10000 \
-    STOWAGE_STORE_DSN=/data/stowage.db
+    STOWAGE_STORE_DSN=/data/stowage.db \
+    STOWAGE_SERVER_MCP_TRUST_PROXY=true
 EXPOSE 10000
 
 USER nonroot
