@@ -6,7 +6,9 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -503,7 +505,7 @@ func runMCP(args []string) {
 		}
 		httpSrv := &http.Server{
 			Addr:              httpAddr,
-			Handler:           mcpAuthHandler(cfg.Auth.Mode, authn, handler),
+			Handler:           mcpAccessLog(stk.Log, mcpAuthHandler(cfg.Auth.Mode, authn, handler)),
 			ReadHeaderTimeout: 10 * time.Second,
 		}
 		// shutdownDone is closed only after httpSrv.Shutdown FINISHES draining
@@ -715,6 +717,89 @@ func restDeadlineHandler(read, write time.Duration, next http.Handler) http.Hand
 	})
 }
 
+// mcpAccessLog wraps the MCP-over-HTTP handler with an access-log line, giving the
+// MCP surface parity with the REST "api: request" log. The MCP handler is mounted
+// OUTSIDE the api's request-log middleware (its own listener in separate mode, its
+// own mux branch in co-mount) so its traffic was previously invisible; this makes
+// it observable. Unlike the REST log, it names the JSON-RPC method (and the tool
+// for tools/call) so an operator sees WHICH tool a runtime invoked, not just
+// "POST /mcp". Applied outermost (over the auth wrapper) so the logged status
+// reflects auth verdicts too. next MUST be nil-safe callers' responsibility; a nil
+// logger returns next unwrapped.
+func mcpAccessLog(log *slog.Logger, next http.Handler) http.Handler {
+	if log == nil {
+		return next
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		rpcMethod, tool := peekMCPMethod(r)
+		rec := &mcpStatusRecorder{ResponseWriter: w, status: http.StatusOK}
+		start := time.Now()
+		next.ServeHTTP(rec, r)
+		attrs := []any{"method", r.Method, "rpc", rpcMethod}
+		if tool != "" {
+			attrs = append(attrs, "tool", tool)
+		}
+		attrs = append(attrs, "status", rec.status, "dur_ms", time.Since(start).Milliseconds())
+		log.Info("mcp: request", attrs...)
+	})
+}
+
+// mcpStatusRecorder captures the response status for the access log. It implements
+// Unwrap so http.ResponseController (used by the streamable transport to Flush SSE
+// frames, streamable.go) reaches the real ResponseWriter — the recorder never
+// intercepts the flush path, so streaming is unaffected.
+type mcpStatusRecorder struct {
+	http.ResponseWriter
+	status int
+}
+
+func (m *mcpStatusRecorder) WriteHeader(code int) {
+	m.status = code
+	m.ResponseWriter.WriteHeader(code)
+}
+
+func (m *mcpStatusRecorder) Unwrap() http.ResponseWriter { return m.ResponseWriter }
+
+// peekMCPMethod reads the JSON-RPC method (and, for tools/call, the tool name) from
+// a POST body WITHOUT consuming it: it buffers a bounded prefix, reconstructs
+// r.Body so the downstream handler reads the full stream unchanged, and does a
+// minimal decode. A batch array logs as "batch"; a truncated/undecodable prefix
+// (rare — MCP frames are small) logs an empty rpc. GET (SSE stream) and DELETE
+// (session teardown) carry no method.
+func peekMCPMethod(r *http.Request) (rpcMethod, tool string) {
+	if r.Body == nil || r.Method != http.MethodPost {
+		return "", ""
+	}
+	const peekCap = 64 << 10 // matches the handshake classifier's body peek
+	orig := r.Body
+	buf, _ := io.ReadAll(io.LimitReader(orig, peekCap))
+	// Reconstruct the body: the buffered prefix, then whatever remains unread (for a
+	// body larger than peekCap), closing the original on Close.
+	r.Body = readCloser{Reader: io.MultiReader(bytes.NewReader(buf), orig), Closer: orig}
+
+	trimmed := bytes.TrimSpace(buf)
+	if len(trimmed) > 0 && trimmed[0] == '[' {
+		return "batch", ""
+	}
+	var frame struct {
+		Method string `json:"method"`
+		Params struct {
+			Name string `json:"name"`
+		} `json:"params"`
+	}
+	if err := json.Unmarshal(buf, &frame); err != nil {
+		return "", ""
+	}
+	return frame.Method, frame.Params.Name
+}
+
+// readCloser adapts a separate Reader + Closer into an io.ReadCloser (used to
+// reconstruct a peeked request body).
+type readCloser struct {
+	io.Reader
+	io.Closer
+}
+
 const serveUsage = `stowage serve — run the HTTP memory service
 
 Usage:
@@ -916,8 +1001,10 @@ func runServe(args []string) {
 		// MCP dispatches JSON-RPC on the request body, not the URL path; normalize
 		// the co-mount path to "/" so the streamable handler and the handshake-auth
 		// classifier (ae11) see exactly the request they would on a dedicated
-		// listener. Register both the exact and subtree patterns.
-		mcpMount := mcpRootRewrite(mcpHTTPHandler)
+		// listener. Register both the exact and subtree patterns. mcpAccessLog
+		// wraps it so co-mounted MCP traffic is observable (it bypasses the REST
+		// request-logger).
+		mcpMount := mcpAccessLog(stk.Log, mcpRootRewrite(mcpHTTPHandler))
 		root.Handle("/mcp", mcpMount)
 		root.Handle("/mcp/", mcpMount)
 		// REST owns everything else. The combined server sets no WriteTimeout (so
@@ -940,7 +1027,7 @@ func runServe(args []string) {
 	} else if cfg.Server.MCPListen != "" {
 		mcpHTTP = &http.Server{
 			Addr:              cfg.Server.MCPListen,
-			Handler:           mcpHTTPHandler,
+			Handler:           mcpAccessLog(stk.Log, mcpHTTPHandler),
 			ReadHeaderTimeout: 10 * time.Second, // no WriteTimeout — MCP streams
 		}
 	}
