@@ -698,6 +698,28 @@ func TestMCPMountEnvOverride(t *testing.T) {
 	}
 }
 
+// TestMCPTrustProxy verifies server.mcp_trust_proxy (D-156): defaults false and
+// STOWAGE_SERVER_MCP_TRUST_PROXY overrides it. (Like every env key, a non-bool
+// value is ignored rather than fatal — applyEnv leaves the default in place.)
+func TestMCPTrustProxy(t *testing.T) {
+	clearStowageEnv(t)
+	if config.Defaults().Server.MCPTrustProxy {
+		t.Errorf("Defaults().Server.MCPTrustProxy = true, want false")
+	}
+
+	t.Run("env override true", func(t *testing.T) {
+		clearStowageEnv(t)
+		t.Setenv("STOWAGE_SERVER_MCP_TRUST_PROXY", "true")
+		cfg, err := config.Load(context.Background(), "")
+		if err != nil {
+			t.Fatalf("Load: %v", err)
+		}
+		if !cfg.Server.MCPTrustProxy {
+			t.Errorf("Server.MCPTrustProxy = false, want true")
+		}
+	})
+}
+
 // TestMCPListenEnvOverride verifies STOWAGE_SERVER_MCP_LISTEN overrides config.
 func TestMCPListenEnvOverride(t *testing.T) {
 	clearStowageEnv(t)

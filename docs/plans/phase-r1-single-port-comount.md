@@ -72,6 +72,7 @@ render.yaml                          # Render blueprint
 | Key | Default | Notes |
 |-----|---------|-------|
 | `server.mcp_mount` | `separate` | `separate` = two-listener (D-074); `shared` = co-mount MCP on `server.listen` at `/mcp`. Env: `STOWAGE_SERVER_MCP_MOUNT`. In every profile via `Defaults()`. |
+| `server.mcp_trust_proxy` | `false` | When `true`, relax the MCP transport's DNS-rebinding localhost guard for deployment behind a trusted reverse proxy (cross-origin + Content-Type protection stay on). Env: `STOWAGE_SERVER_MCP_TRUST_PROXY`. Required behind Render/Heroku/Fly (D-156). |
 
 ## Acceptance criteria (binding)
 
@@ -82,7 +83,9 @@ render.yaml                          # Render blueprint
 3. In jwt mode the co-mounted `/mcp` serves the bearer-less handshake
    (initialize/tools-list) and still gates `tools/call`. *(phase-r1 AC-2..4)*
 4. `shared` + a non-empty `server.mcp_listen` fails config validation. *(phase-r1 AC-6, unit test)*
-5. CGo-free build; `-race` clean on `cmd`, `config`, `api`, `mcpserver`.
+5. Behind a proxy (loopback local addr + public Host), the MCP surface 403s by default and is served
+   with `server.mcp_trust_proxy=true` — only the DNS-rebinding guard is relaxed (D-156). *(phase-r1 AC-7/8)*
+6. CGo-free build; `-race` clean on `cmd`, `config`, `api`, `mcpserver`.
 
 ## Smoke script
 
@@ -116,3 +119,4 @@ rejection.
 ## Decisions filed
 
 - **D-155** — Single-port MCP co-mount (`server.mcp_mount=shared`).
+- **D-156** — `server.mcp_trust_proxy` relaxes the MCP DNS-rebinding localhost guard behind a trusted proxy.

@@ -496,7 +496,7 @@ func runMCP(args []string) {
 	stk.Log.Info("stowage mcp: ready", "tools", len(srv.Tools()), "transport", map[bool]string{true: "http:" + httpAddr, false: "stdio"}[httpAddr != ""])
 
 	if httpAddr != "" {
-		handler, hErr := srv.HTTPHandler(mcpHTTPOptions(cfg.Auth.Mode))
+		handler, hErr := srv.HTTPHandler(mcpHTTPOptions(cfg.Auth.Mode, cfg.Server.MCPTrustProxy))
 		if hErr != nil {
 			stk.Log.Error("stowage mcp: http handler", "err", hErr)
 			os.Exit(1)
@@ -648,11 +648,32 @@ func mcpAuthHandler(mode string, authn *auth.Authenticator, next http.Handler) h
 // Keyring mode keeps the stateful default (nil) — byte-identical to today: a
 // keyring client presents its static credential on every request, including
 // initialize, so the session context carries the scope and nothing is stranded.
-func mcpHTTPOptions(mode string) *server.HTTPOptions {
-	if mode == string(auth.ModeJWT) {
-		return &server.HTTPOptions{Stateless: true}
+//
+// trustProxy (server.mcp_trust_proxy, D-156) relaxes the transport's
+// DNS-rebinding LOCALHOST guard for deployment behind a trusted reverse proxy
+// (Render/Heroku/Fly, a load balancer). Such a proxy terminates TLS at the edge
+// and forwards to the container over a loopback address, so the SDK guard — which
+// rejects a request whose local socket address is loopback but whose Host header
+// is non-localhost — 403s every request to the public domain. When true we set an
+// EXPLICIT HTTPSecurity with DNS-rebinding OFF but cross-origin (CSRF) and
+// Content-Type verification ON, so only the localhost guard is dropped. When
+// false the options resolve to the SDK's secure DefaultHTTPSecurity exactly as
+// before (nil in keyring mode, zero-Security in jwt mode).
+func mcpHTTPOptions(mode string, trustProxy bool) *server.HTTPOptions {
+	jwt := mode == string(auth.ModeJWT)
+	if !jwt && !trustProxy {
+		return nil // exact prior keyring default → DefaultHTTPSecurity (all on)
 	}
-	return nil
+	opts := &server.HTTPOptions{Stateless: jwt}
+	if trustProxy {
+		opts.Security = server.HTTPSecurity{
+			CrossOriginProtection:   true,
+			ContentTypeVerification: true,
+			// DNSRebindingProtection deliberately OFF: the trusted proxy sets the
+			// Host and terminates the public edge (D-156).
+		}
+	}
+	return opts
 }
 
 // mcpRootRewrite normalizes a co-mounted MCP request's URL path to "/" before it
@@ -862,7 +883,7 @@ func runServe(args []string) {
 			stk.Log.Error("stowage serve: create mcp server", "err", mcpErr)
 			os.Exit(1)
 		}
-		mcpHandler, hErr := mcpSrv.HTTPHandler(mcpHTTPOptions(cfg.Auth.Mode))
+		mcpHandler, hErr := mcpSrv.HTTPHandler(mcpHTTPOptions(cfg.Auth.Mode, cfg.Server.MCPTrustProxy))
 		if hErr != nil {
 			stk.Log.Error("stowage serve: mcp http handler", "err", hErr)
 			os.Exit(1)
