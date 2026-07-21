@@ -85,7 +85,10 @@ render.yaml                          # Render blueprint
 4. `shared` + a non-empty `server.mcp_listen` fails config validation. *(phase-r1 AC-6, unit test)*
 5. Behind a proxy (loopback local addr + public Host), the MCP surface 403s by default and is served
    with `server.mcp_trust_proxy=true` — only the DNS-rebinding guard is relaxed (D-156). *(phase-r1 AC-7/8)*
-6. CGo-free build; `-race` clean on `cmd`, `config`, `api`, `mcpserver`.
+6. MCP-over-HTTP traffic is access-logged (`mcp: request`) with the JSON-RPC method and, for
+   `tools/call`, the tool name — parity with the REST `api: request` line, in both co-mount and
+   dedicated-listener modes. *(phase-r1 AC-9)*
+7. CGo-free build; `-race` clean on `cmd`, `config`, `api`, `mcpserver`.
 
 ## Smoke script
 

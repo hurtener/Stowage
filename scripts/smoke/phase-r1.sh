@@ -18,6 +18,7 @@
 #   AC-6  config rejects server.mcp_mount=shared together with server.mcp_listen.
 #   AC-7  default (trust_proxy off): a spoofed public Host 403s (DNS-rebinding guard active).
 #   AC-8  server.mcp_trust_proxy=true: the same proxied request is served (guard relaxed, D-156).
+#   AC-9  co-mounted MCP traffic is access-logged with the JSON-RPC method + tool name.
 #
 # Contract: print "OK <check>" per passing check, "FAIL <check>" per failing,
 # "SKIP <check>" where the surface isn't built yet. Exit non-zero iff any FAIL.
@@ -194,6 +195,22 @@ if grep -q 'co-mounted on the API port' "${TMPDIR_SMOKE}/serve.log"; then
 else
   failc "AC-5: serve did not log the co-mount line"
   cat "${TMPDIR_SMOKE}/serve.log" >&2
+fi
+
+# ── AC-9: MCP traffic is access-logged with the JSON-RPC method + tool name ────
+# (parity with the REST "api: request" line; the co-mounted /mcp bypasses that
+# logger). AC-2..4 above already drove initialize/tools-list/tools-call.
+if grep -q 'msg="mcp: request".*rpc=tools/list' "${TMPDIR_SMOKE}/serve.log"; then
+  ok "AC-9: mcp: request log names the JSON-RPC method (rpc=tools/list)"
+else
+  failc "AC-9: mcp: request log missing rpc method"
+  grep 'mcp: request' "${TMPDIR_SMOKE}/serve.log" >&2 || true
+fi
+if grep -q 'msg="mcp: request".*rpc=tools/call tool=memory_retrieve' "${TMPDIR_SMOKE}/serve.log"; then
+  ok "AC-9: tools/call log names the tool (tool=memory_retrieve)"
+else
+  failc "AC-9: tools/call log missing tool name"
+  grep 'mcp: request' "${TMPDIR_SMOKE}/serve.log" >&2 || true
 fi
 
 # ── AC-7: WITHOUT trust_proxy, the SDK DNS-rebinding guard 403s a request whose
