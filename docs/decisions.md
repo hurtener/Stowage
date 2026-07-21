@@ -4433,3 +4433,44 @@ MCP endpoint at `https://<app>/mcp` and the REST API + `/healthz` share the same
 with a real network keeps the default two-listener shape (D-074) — no behavioral change. The knob is
 a mode selector, not a new default, so the zero-config invariant (a3/D-133) and the h6 single-surface
 default hold. Streaming and the strict tools/call gate are unchanged in both shapes.
+
+## D-156 — `server.mcp_trust_proxy`: relax the MCP DNS-rebinding localhost guard behind a trusted proxy
+
+2026-07-21. Phase r1 (single-port co-mount), follow-up. **Related:** D-155 (single-port co-mount —
+this fixes the deploy it enabled), D-152/ae11 (MCP handshake auth), D-041/D-112 (Dockyard's explicit
+HTTP security posture), CLAUDE.md §7.
+
+**Context.** With `server.mcp_mount=shared` deployed to Render, the REST surface worked but the console
+detected **zero MCP tools**. A direct probe returned `403 Forbidden: invalid Host header
+"stowage.onrender.com"`. Root cause: the MCP streamable-HTTP transport (go-sdk v1.6.0) runs
+DNS-rebinding *localhost* protection — it rejects a request whose **local socket address is loopback**
+but whose **Host header is non-localhost** (streamable.go `ServeHTTP`, guarding against a browser DNS-
+rebinding attack on a *local* MCP server). Render (like Heroku/Fly) terminates TLS at its edge and
+forwards to the container over a **loopback** address, so every request to the public domain trips the
+guard. Dockyard runs it via `DefaultHTTPSecurity` (all protections on), and Stowage's `mcpHTTPOptions`
+resolved to that default. In jwt mode `initialize` is auth-open (D-152), so it reaches the guard and
+403s — the console's `ListTools` handshake never completes. (In keyring mode the strict auth
+middleware, which wraps the handler *outside* the SDK, 401s first and masks the guard — which is why
+the co-mount smoke's localhost checks passed and this only surfaced behind a real proxy.)
+
+**Decision.**
+1. **A new opt-in bool `server.mcp_trust_proxy`** (`STOWAGE_SERVER_MCP_TRUST_PROXY`, default false).
+   When true, `mcpHTTPOptions` sets an EXPLICIT `HTTPSecurity{CrossOriginProtection:true,
+   ContentTypeVerification:true}` — i.e. DNS-rebinding protection OFF, the other two protections ON.
+   When false the options resolve to the SDK's secure `DefaultHTTPSecurity` exactly as before (nil in
+   keyring mode, zero-Security in jwt mode), so the direct/self-hosted default is unchanged.
+2. **Only the localhost guard is dropped, and only the localhost guard.** Cross-origin (CSRF) and
+   Content-Type verification stay on. This is safe behind a trusted proxy: the proxy owns the public
+   edge and sets the Host, and every tool *call* still requires a verified bearer (D-152). The
+   DNS-rebinding threat model — a browser tricked into talking to a loopback MCP server — does not
+   apply to a server-fronted, bearer-authenticated capability.
+3. **Independent of `mcp_mount`.** The guard breaks ANY proxied MCP surface (a paid two-listener
+   deployment behind a load balancer hits it too), so the knob is orthogonal to the co-mount mode. The
+   `Dockerfile` bakes `STOWAGE_SERVER_MCP_TRUST_PROXY=true` (the image is built for proxied hosting)
+   and `render.yaml` sets it explicitly; the manual deploy path documents it (`docs/deploy-render.md`).
+
+**Consequences.** The co-mounted (and any proxied) MCP surface answers through Render's loopback proxy,
+so the console discovers and invokes Stowage's tools. `phase-r1.sh` reproduces the exact failure
+(AC-7: a spoofed public Host 403s by default) and proves the fix (AC-8: `trust_proxy=true` serves it),
+both in jwt mode. Direct/self-hosted deployments keep the SDK's secure localhost default (D-034: tuned
+default false, in every profile via `Defaults()`, documented, smoke-tested).

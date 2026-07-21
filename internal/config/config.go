@@ -260,6 +260,18 @@ type ServerConfig struct {
 	//     write bound per-request via http.ResponseController (D-155). In "shared"
 	//     mode server.mcp_listen MUST be empty — the two are mutually exclusive.
 	MCPMount string `yaml:"mcp_mount"` // "separate" (default) | "shared"
+	// MCPTrustProxy relaxes the MCP-over-HTTP transport's DNS-rebinding localhost
+	// guard for deployment behind a trusted reverse proxy (Render/Heroku/Fly, a
+	// load balancer, an API gateway). Those proxies terminate TLS at the edge and
+	// forward to the container over a loopback address, so the SDK's guard — which
+	// rejects a request whose local socket address is loopback but whose Host
+	// header is non-localhost — 403s EVERY request to the public domain
+	// ("Forbidden: invalid Host header"). Set true when Stowage sits behind such a
+	// proxy: it disables ONLY the localhost DNS-rebinding guard; cross-origin
+	// (CSRF) and Content-Type verification stay on. Safe because the proxy sets the
+	// Host and tool calls require a verified bearer (D-156). Default false keeps
+	// the SDK's secure localhost default for direct/self-hosted exposure.
+	MCPTrustProxy bool `yaml:"mcp_trust_proxy"`
 	// PprofListen, when non-empty (e.g. "127.0.0.1:6060"), enables the opt-in
 	// loopback address for the auth-gated pprof admin listener. Empty (the
 	// default) disables the listener entirely. Must differ from server.listen
@@ -340,6 +352,7 @@ var allKeys = []string{
 	"server.listen",
 	"server.mcp_listen",
 	"server.mcp_mount",
+	"server.mcp_trust_proxy",
 	"server.pprof_listen",
 	"server.read_timeout",
 	"server.write_timeout",
@@ -418,6 +431,7 @@ var envKeys = []struct {
 	{"STOWAGE_SERVER_LISTEN", "server.listen"},
 	{"STOWAGE_SERVER_MCP_LISTEN", "server.mcp_listen"},
 	{"STOWAGE_SERVER_MCP_MOUNT", "server.mcp_mount"},
+	{"STOWAGE_SERVER_MCP_TRUST_PROXY", "server.mcp_trust_proxy"},
 	{"STOWAGE_SERVER_PPROF_LISTEN", "server.pprof_listen"},
 	{"STOWAGE_SERVER_READ_TIMEOUT", "server.read_timeout"},
 	{"STOWAGE_SERVER_WRITE_TIMEOUT", "server.write_timeout"},
@@ -464,14 +478,15 @@ func Defaults() *Config {
 	c := &Config{
 		Profile: "assistant",
 		Server: ServerConfig{
-			Listen:       ":7160",
-			MCPListen:    "",         // opt-in: empty keeps `stowage serve` single-surface (D-074)
-			MCPMount:     "separate", // two-listener shape (D-074); "shared" co-mounts on server.listen (D-155)
-			PprofListen:  "",         // opt-in
-			ReadTimeout:  10,
-			WriteTimeout: 20,
-			IdleTimeout:  60,
-			MaxBodyBytes: 1 << 20, // 1 MiB
+			Listen:        ":7160",
+			MCPListen:     "",         // opt-in: empty keeps `stowage serve` single-surface (D-074)
+			MCPMount:      "separate", // two-listener shape (D-074); "shared" co-mounts on server.listen (D-155)
+			MCPTrustProxy: false,      // opt-in: relax the DNS-rebinding guard behind a trusted proxy (D-156)
+			PprofListen:   "",         // opt-in
+			ReadTimeout:   10,
+			WriteTimeout:  20,
+			IdleTimeout:   60,
+			MaxBodyBytes:  1 << 20, // 1 MiB
 		},
 		Store: StoreConfig{
 			Driver: "sqlite",
@@ -1043,6 +1058,8 @@ func (c *Config) getByPath(path string) string {
 		return c.Server.MCPListen
 	case "server.mcp_mount":
 		return c.Server.MCPMount
+	case "server.mcp_trust_proxy":
+		return strconv.FormatBool(c.Server.MCPTrustProxy)
 	case "server.pprof_listen":
 		return c.Server.PprofListen
 	case "server.read_timeout":
@@ -1169,6 +1186,12 @@ func (c *Config) setByPath(path, value string) error {
 		c.Server.MCPListen = value
 	case "server.mcp_mount":
 		c.Server.MCPMount = value
+	case "server.mcp_trust_proxy":
+		b, err := strconv.ParseBool(value)
+		if err != nil {
+			return fmt.Errorf("config.%s: %w", path, err)
+		}
+		c.Server.MCPTrustProxy = b
 	case "server.pprof_listen":
 		c.Server.PprofListen = value
 	case "server.read_timeout":

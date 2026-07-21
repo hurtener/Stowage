@@ -16,6 +16,8 @@
 #   AC-4  shared mode: bearer-less POST /mcp tools/call -> still rejected (strict gate survives).
 #   AC-5  serve logs the "co-mounted on the API port" line (discoverability).
 #   AC-6  config rejects server.mcp_mount=shared together with server.mcp_listen.
+#   AC-7  default (trust_proxy off): a spoofed public Host 403s (DNS-rebinding guard active).
+#   AC-8  server.mcp_trust_proxy=true: the same proxied request is served (guard relaxed, D-156).
 #
 # Contract: print "OK <check>" per passing check, "FAIL <check>" per failing,
 # "SKIP <check>" where the surface isn't built yet. Exit non-zero iff any FAIL.
@@ -194,6 +196,63 @@ else
   cat "${TMPDIR_SMOKE}/serve.log" >&2
 fi
 
+# ── AC-7: WITHOUT trust_proxy, the SDK DNS-rebinding guard 403s a request whose
+# local socket addr is loopback but Host is a public domain — exactly what a
+# reverse proxy (Render) presents. initialize is auth-open in jwt mode, so it
+# reaches the guard (D-156). This is the failure a proxied deploy hits by default.
+GUARD_CODE=$(curl -s -o /dev/null -w '%{http_code}' -X POST "${BASE}/mcp" \
+  -H 'Host: stowage.onrender.com' -H "$CT" -H "$ACCEPT" -d "$INIT" 2>/dev/null || true)
+if [ "$GUARD_CODE" = "403" ]; then
+  ok "AC-7: default (trust_proxy off) 403s a spoofed public Host (DNS-rebinding guard active)"
+else
+  failc "AC-7: spoofed public Host got HTTP ${GUARD_CODE}, want 403 (guard should be active by default)"
+fi
+
+kill "$SRV_PID" 2>/dev/null; wait "$SRV_PID" 2>/dev/null || true; SRV_PID=""
+
+# ── AC-8: WITH server.mcp_trust_proxy=true, the guard is relaxed so the same
+# proxied request (loopback local addr + public Host) is served — the fix that
+# lets the co-mount work behind Render/Heroku/Fly (D-156). Cross-origin +
+# Content-Type protection stay on.
+CFG_TP="${TMPDIR_SMOKE}/trustproxy.yaml"
+cat > "$CFG_TP" <<YAML
+server:
+  listen: "127.0.0.1:${PORT}"
+  mcp_mount: shared
+  mcp_trust_proxy: true
+store:
+  driver: sqlite
+  dsn: "${TMPDIR_SMOKE}/tp.db"
+gateway:
+  driver: mock
+telemetry:
+  metrics_listen: "127.0.0.1:17192"
+auth:
+  mode: jwt
+  issuer: harbor
+  audience: stowage
+  jwks:
+    file: "${JWKS_PATH}"
+    max_stale: 3600
+YAML
+env -u STOWAGE_GATEWAY_API_KEY "$BIN" serve --config "$CFG_TP" >"${TMPDIR_SMOKE}/tp.log" 2>&1 &
+SRV_PID=$!
+READY=0
+for _ in $(seq 1 60); do
+  sleep 0.1
+  [ "$(curl -s -o /dev/null -w '%{http_code}' "${BASE}/healthz" 2>/dev/null)" = "200" ] && { READY=1; break; }
+done
+if [ "$READY" -eq 0 ]; then
+  failc "trust_proxy: serve did not become ready"
+  cat "${TMPDIR_SMOKE}/tp.log" >&2
+else
+  TP_BODY=$(curl -s -X POST "${BASE}/mcp" -H 'Host: stowage.onrender.com' -H "$CT" -H "$ACCEPT" -d "$INIT" 2>/dev/null || true)
+  if printf '%s' "$TP_BODY" | grep -q 'protocolVersion'; then
+    ok "AC-8: trust_proxy=true serves a spoofed public Host (guard relaxed; proxied deploy works)"
+  else
+    failc "AC-8: trust_proxy=true did not serve the proxied initialize (body: ${TP_BODY})"
+  fi
+fi
 kill "$SRV_PID" 2>/dev/null; wait "$SRV_PID" 2>/dev/null || true; SRV_PID=""
 
 # ── AC-6: shared + mcp_listen is rejected (mutually exclusive) ──────────────

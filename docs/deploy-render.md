@@ -77,6 +77,7 @@ Then add the environment variables:
 | Env var | Value |
 |---|---|
 | `STOWAGE_SERVER_MCP_MOUNT` | `shared` — co-mount MCP on the one port under `/mcp` (D-155) |
+| `STOWAGE_SERVER_MCP_TRUST_PROXY` | `true` — relax the MCP DNS-rebinding guard behind Render's proxy (D-156). The `Dockerfile` bakes this in, so you only set it explicitly on the manual path |
 | `STOWAGE_STORE_DRIVER` | `postgres` |
 | `STOWAGE_STORE_DSN` | the Neon DSN from step 1 |
 | `STOWAGE_GATEWAY_API_KEY` | your OpenRouter key (the one zero-config secret) |
@@ -112,9 +113,22 @@ Stowage now serves **both** surfaces on one URL:
 - REST API + health: `https://stowage.onrender.com/`
 - **MCP tools (what the console connects to): `https://stowage.onrender.com/mcp`**
 
+Verify the MCP surface answers through the proxy before registering — a bearer-less
+`initialize` returns a `protocolVersion` result in jwt mode (the handshake is open):
+
+```bash
+curl -s -X POST https://stowage.onrender.com/mcp \
+  -H 'Content-Type: application/json' -H 'Accept: application/json, text/event-stream' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"probe","version":"0"}}}'
+# expect JSON containing "protocolVersion". A 403 "invalid Host header" ⇒ set
+# STOWAGE_SERVER_MCP_TRUST_PROXY=true (§2 / D-156). A 404 ⇒ the MCP URL must end in /mcp.
+```
+
 In the Pengui Console → **Capabilities → add the memory (Stowage) capability**:
 
-- **MCP endpoint** — `https://stowage.onrender.com/mcp`
+- **MCP endpoint** (`mcp_url`) — `https://stowage.onrender.com/mcp` (the console dials
+  this **verbatim**, so it must include `/mcp`)
+- **HTTP endpoint** (`http_url`, for topics/admin) — `https://stowage.onrender.com` (bare host)
 - **Audience** — must match `STOWAGE_AUTH_AUDIENCE` you set in step 2.
 - Activate it on the runtime(s) that should have memory.
 
@@ -147,6 +161,7 @@ Stowage verifies against the JWKS it fetched at boot.
 | `relation ... does not exist` on first calls | migrations didn't apply | They apply on boot; check the boot log for a migrate error and that the DSN points at a reachable, empty database |
 | `invalid config: config.server.mcp_listen: must be empty when server.mcp_mount=shared` | both co-mount modes set | `shared` owns the one port — unset `STOWAGE_SERVER_MCP_LISTEN` |
 | console can't reach the MCP endpoint | wrong path or port | The endpoint is `https://<app>.onrender.com/**mcp**` (co-mount lives at `/mcp`), not the bare host |
+| `403 Forbidden: invalid Host header` on `/mcp` (curl or console tool discovery) | the MCP DNS-rebinding guard is rejecting Render's loopback-proxied request | Set `STOWAGE_SERVER_MCP_TRUST_PROXY=true` and redeploy (the `Dockerfile` sets it; the manual path must add it) — D-156 |
 | `token_expired` / `auth_rejected` in the console | short-lived bearer aged out | Console-side re-mint; retry the request |
 | gateway/embedding errors | the OpenRouter key didn't land | Set `STOWAGE_GATEWAY_API_KEY` in Render → Environment, redeploy |
 
