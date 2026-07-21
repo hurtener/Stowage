@@ -158,7 +158,9 @@ calls) so retrieval quality can't silently regress.
   deployments. The same conformance suite proves both backends behave identically.
 - **MCP co-mount (opt-in).** Set `server.mcp_listen` and `serve` exposes the HTTP API and the MCP
   tool surface from one process over one shared stack (D-074) — no second service to operate.
-  Left empty (the default), `serve` binds exactly one port.
+  Left empty (the default), `serve` binds exactly one port. On single-port PaaS free tiers
+  (Render/Heroku/Fly), set `server.mcp_mount=shared` instead and MCP co-mounts on the API port
+  under `/mcp` — one port serves both surfaces (D-155; see `docs/deploy-render.md`).
 
 Migrations are forward-only (`stowage migrate`). The event stream (`events/v1`) is a versioned,
 consumable audit trail: every memory mutation and lifecycle decision emits an event with its reason.

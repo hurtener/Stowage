@@ -640,6 +640,64 @@ func TestMCPListenValidation(t *testing.T) {
 	}
 }
 
+// TestMCPMountValidation table-tests server.mcp_mount (D-155): default "separate",
+// "shared" is valid, an unknown mode fails, and "shared" is mutually exclusive
+// with server.mcp_listen (shared co-mounts on server.listen at /mcp).
+func TestMCPMountValidation(t *testing.T) {
+	clearStowageEnv(t)
+	tests := []struct {
+		name    string
+		mount   string
+		mcp     string // server.mcp_listen
+		wantErr bool
+		wantKey string // key path the error must name
+	}{
+		{name: "default separate ok", mount: "separate", mcp: "", wantErr: false},
+		{name: "shared ok with empty mcp_listen", mount: "shared", mcp: "", wantErr: false},
+		{name: "separate ok with mcp_listen", mount: "separate", mcp: ":8081", wantErr: false},
+		{name: "unknown mode fails", mount: "bogus", mcp: "", wantErr: true, wantKey: "config.server.mcp_mount"},
+		{name: "shared + mcp_listen is mutually exclusive", mount: "shared", mcp: ":8081", wantErr: true, wantKey: "config.server.mcp_listen"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := config.Defaults()
+			cfg.Server.MCPMount = tt.mount
+			cfg.Server.MCPListen = tt.mcp
+			err := cfg.Validate()
+			if tt.wantErr && err == nil {
+				t.Fatalf("Validate() = nil, want error for mcp_mount=%q mcp_listen=%q", tt.mount, tt.mcp)
+			}
+			if !tt.wantErr && err != nil {
+				t.Fatalf("Validate() = %v, want nil for mcp_mount=%q mcp_listen=%q", err, tt.mount, tt.mcp)
+			}
+			if tt.wantErr && err != nil && tt.wantKey != "" && !strings.Contains(err.Error(), tt.wantKey) {
+				t.Errorf("error %q does not name key path %q", err.Error(), tt.wantKey)
+			}
+		})
+	}
+}
+
+// TestMCPMountDefaultSeparate verifies server.mcp_mount defaults to "separate".
+func TestMCPMountDefaultSeparate(t *testing.T) {
+	clearStowageEnv(t)
+	if got := config.Defaults().Server.MCPMount; got != "separate" {
+		t.Errorf("Defaults().Server.MCPMount = %q, want %q", got, "separate")
+	}
+}
+
+// TestMCPMountEnvOverride verifies STOWAGE_SERVER_MCP_MOUNT overrides config.
+func TestMCPMountEnvOverride(t *testing.T) {
+	clearStowageEnv(t)
+	t.Setenv("STOWAGE_SERVER_MCP_MOUNT", "shared")
+	cfg, err := config.Load(context.Background(), "")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Server.MCPMount != "shared" {
+		t.Errorf("Server.MCPMount = %q, want %q", cfg.Server.MCPMount, "shared")
+	}
+}
+
 // TestMCPListenEnvOverride verifies STOWAGE_SERVER_MCP_LISTEN overrides config.
 func TestMCPListenEnvOverride(t *testing.T) {
 	clearStowageEnv(t)

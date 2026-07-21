@@ -424,6 +424,12 @@ New terms land here in the same PR that introduces them (CLAUDE.md §14).
   opt-in `server.mcp_listen` knob (a second listener); empty keeps `serve`
   single-surface. Two listeners (not one path-prefixed port) because MCP streams
   and must not inherit the REST `WriteTimeout`/middleware.
+- **Shared co-mount** (`server.mcp_mount=shared`) — the single-port variant of a
+  co-mounted server for one-port PaaS free tiers (Render/Heroku/Fly): MCP is
+  mounted on the `server.listen` port under `/mcp` instead of a second listener.
+  The D-074 invariant holds without the second port — the shared `http.Server`
+  sets no `WriteTimeout` (so MCP streams) and the REST subtree re-imposes its
+  write bound per-request (D-155). Mutually exclusive with `server.mcp_listen`.
 - **Auto-wired rerank provider** — a synthetic Bifrost custom provider
   (`stowage-rerank`, `BaseProviderType=Cohere`, request path `/rerank`, same
   key/base) the bifrost driver adds so a non-native-rerank primary (e.g.
