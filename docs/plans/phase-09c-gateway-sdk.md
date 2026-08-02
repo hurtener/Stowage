@@ -59,11 +59,14 @@ the project's life to make the swap.
 
 ### Config
 
-`gateway.driver`: `mock` (default, dev) | `bifrost` (SDK — recommended
-production; all providers) | `openaicompat` (any OpenAI-compatible HTTP
-endpoint; used for OpenRouter live validation). New key `gateway.provider`
-(required when driver=bifrost; validated against the SDK's provider set).
-`config explain` + profiles + example updated.
+`gateway.driver`: `bifrost` (default since D-131; SDK — recommended production,
+all providers) | `mock` (explicit keyless dev/offline escape hatch) |
+`openaicompat` (any OpenAI-compatible HTTP endpoint; used for OpenRouter live
+validation). New key `gateway.provider` is validated against the SDK's provider
+set. D-131 amended D-049 so an omitted provider inherits the accepted
+`openrouter` default; an explicitly unknown provider still fails loud as an
+invalid provider and names the rejected value. `config explain` + profiles +
+example updated.
 
 ## Files added or changed
 
@@ -72,7 +75,7 @@ internal/gateway/openaicompat/   (moved from internal/gateway/bifrost)
 internal/gateway/bifrost/        (new: sdk driver — account.go, driver.go, translate.go, *_test.go)
 internal/config/                 (provider key + driver enum + validation + explain golden)
 cmd/stowage/main.go              (registry imports)
-scripts/smoke/phase-09c.sh       (boot matrix: mock default OK; bifrost without key fails closed with key-path error; openaicompat unchanged)
+scripts/smoke/phase-09c.sh       (boot matrix: explicit mock OK; omitted bifrost provider inherits openrouter with a successful exact explain match; unknown provider/missing key fail closed; openaicompat unchanged; clean shutdown requires delivered TERM + joined zero exit, with bounded forced cleanup)
 go.mod                           (+ github.com/maximhq/bifrost/core)
 docs/decisions.md                (D-049), docs/plans update; D-040 amendment note
 ```
@@ -85,8 +88,10 @@ docs/decisions.md                (D-049), docs/plans update; D-040 amendment not
 2. SDK driver implements the full Gateway contract behind the client seam;
    unit tests cover translate (chat + embed), error classification, and
    fail-closed key/provider validation.
-3. `gateway.provider` validated (unknown provider → boot error with key path);
-   explain shows it; required iff driver=bifrost.
+3. `gateway.provider` validated: omitted with `driver=bifrost` inherits the
+   accepted `openrouter` default (D-131), while an explicitly unknown provider
+   produces a boot error naming the invalid value; explain shows the effective
+   provider.
 4. Seam invariants hold driver-agnostically: schema validation + single
    retry, batching, cache, breaker, metering — proven by running the seam
    test suite against the SDK driver with a fake client.
