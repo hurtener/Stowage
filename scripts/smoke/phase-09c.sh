@@ -2,8 +2,8 @@
 # Smoke test for Phase 09c: gateway SDK remediation.
 #   1. cgo-free build still green (bifrost/core is pure Go).
 #   2. mock driver boots normally — unchanged from previous phases.
-#   3. driver=bifrost without gateway.provider fails closed at boot
-#      with the correct key-path error (config.gateway.provider).
+#   3. driver=bifrost without gateway.provider inherits the accepted OpenRouter
+#      default (D-131); an explicitly unknown provider still fails closed.
 #   4. driver=bifrost with no API key env var set fails closed at boot
 #      (config.gateway.api_key unresolvable).
 #   5. driver=openaicompat boots normally (rename behavior-preserving).
@@ -20,7 +20,86 @@ skip()  { printf 'SKIP %s\n' "$*"; }
 
 BIN=/tmp/stowage-smoke-09c
 TMPDIR_SMOKE=$(mktemp -d)
-trap 'rm -f "$BIN"; rm -rf "$TMPDIR_SMOKE"' EXIT
+SERVER_PIDS=()
+
+cleanup() {
+  local pid
+  for pid in "${SERVER_PIDS[@]}"; do
+    if kill -0 "$pid" 2>/dev/null; then
+      kill -TERM "$pid" 2>/dev/null || true
+      for _ in $(seq 1 10); do
+        if ! kill -0 "$pid" 2>/dev/null; then break; fi
+        sleep 0.1
+      done
+      if kill -0 "$pid" 2>/dev/null; then
+        kill -KILL "$pid" 2>/dev/null || true
+      fi
+    fi
+    wait "$pid" 2>/dev/null || true
+  done
+  rm -f "$BIN"
+  rm -rf "$TMPDIR_SMOKE"
+}
+trap cleanup EXIT
+
+track_pid() {
+  SERVER_PIDS+=("$1")
+}
+
+stop_server() {
+  local name=$1 pid=$2
+
+  kill -TERM "$pid" 2>/dev/null || true
+  for _ in $(seq 1 10); do
+    if ! kill -0 "$pid" 2>/dev/null; then
+      wait "$pid" 2>/dev/null || true
+      ok "$name shutdown cleanly"
+      return
+    fi
+    sleep 0.5
+  done
+
+  failc "$name did not stop within 5 s; forcing termination"
+  kill -KILL "$pid" 2>/dev/null || true
+  wait "$pid" 2>/dev/null || true
+}
+
+expect_boot_failure() {
+  local name=$1 cfg=$2 pattern=$3 log=$4 pid rc=0 exited=0
+
+  "$BIN" serve --config "$cfg" >"$log" 2>&1 &
+  pid=$!
+  track_pid "$pid"
+  for _ in $(seq 1 20); do
+    if ! kill -0 "$pid" 2>/dev/null; then
+      wait "$pid" || rc=$?
+      exited=1
+      break
+    fi
+    sleep 0.25
+  done
+
+  if [ "$exited" -eq 0 ]; then
+    failc "$name: server remained running instead of failing closed"
+    kill -TERM "$pid" 2>/dev/null || true
+    for _ in $(seq 1 10); do
+      if ! kill -0 "$pid" 2>/dev/null; then break; fi
+      sleep 0.1
+    done
+    if kill -0 "$pid" 2>/dev/null; then
+      kill -KILL "$pid" 2>/dev/null || true
+    fi
+    wait "$pid" 2>/dev/null || true
+    return
+  fi
+
+  if [ "$rc" -ne 0 ] && grep -qE "$pattern" "$log"; then
+    ok "$name"
+  else
+    failc "$name: expected non-zero boot error matching $pattern (rc=$rc)"
+    cat "$log" >&2
+  fi
+}
 
 # ── AC-1: cgo-free build ──────────────────────────────────────────────────────
 
@@ -50,6 +129,7 @@ YAML
 
 "$BIN" serve --config "$CFG_MOCK" >"${TMPDIR_SMOKE}/mock.log" 2>&1 &
 MOCK_PID=$!
+track_pid "$MOCK_PID"
 
 for i in $(seq 1 20); do
   if curl -sf "http://localhost:${PORT}/healthz" >/dev/null 2>&1; then break; fi
@@ -63,19 +143,15 @@ for i in $(seq 1 20); do
 done
 ok "mock driver boots normally"
 
-kill -TERM "$MOCK_PID" 2>/dev/null
-for i in $(seq 1 10); do
-  if ! kill -0 "$MOCK_PID" 2>/dev/null; then break; fi
-  sleep 0.5
-done
-ok "mock server shutdown cleanly"
+stop_server "mock server" "$MOCK_PID"
 
-# ── AC-3: driver=bifrost without provider fails closed ───────────────────────
-# gateway.provider is required when driver=bifrost (D-049).
+# ── AC-3: omitted provider defaults; unknown provider fails closed ────────────
+# D-131 amended D-049: an omitted provider inherits the accepted OpenRouter
+# default, while an explicitly unknown provider remains a boot error.
 
 PORT2=$(( PORT + 1 ))
 DB_PATH2="${TMPDIR_SMOKE}/bifrost-noprovider.db"
-CFG_NOPROVIDER="${TMPDIR_SMOKE}/bifrost-noprovider.yaml"
+CFG_NOPROVIDER="${TMPDIR_SMOKE}/bifrost-default-provider.yaml"
 cat > "$CFG_NOPROVIDER" <<YAML
 server:
   listen: ":${PORT2}"
@@ -90,12 +166,32 @@ YAML
 # Export a dummy key so api_key resolution doesn't interfere with provider check.
 export STOWAGE_TEST_DUMMY_KEY="dummy-for-smoke-test"
 
-SERVE_OUT=$("$BIN" serve --config "$CFG_NOPROVIDER" 2>&1 || true)
-if echo "$SERVE_OUT" | grep -q "config.gateway.provider"; then
-  ok "bifrost without provider: boot error contains config.gateway.provider"
+EXPLAIN_NOPROVIDER=$("$BIN" config explain --config "$CFG_NOPROVIDER" 2>&1 || true)
+if printf '%s' "$EXPLAIN_NOPROVIDER" | grep -Eq \
+    'gateway.provider[[:space:]]*=[[:space:]]*openrouter[[:space:]]+\[default\]'; then
+  ok "bifrost without provider inherits openrouter default (D-131)"
 else
-  failc "bifrost without provider: expected config.gateway.provider in error (got: ${SERVE_OUT})"
+  failc "bifrost without provider did not inherit openrouter default"
+  printf '%s\n' "$EXPLAIN_NOPROVIDER" >&2
 fi
+
+CFG_BADPROVIDER="${TMPDIR_SMOKE}/bifrost-invalid-provider.yaml"
+cat > "$CFG_BADPROVIDER" <<YAML
+server:
+  listen: ":${PORT2}"
+store:
+  driver: sqlite
+  dsn: "${TMPDIR_SMOKE}/bifrost-invalid-provider.db"
+gateway:
+  driver: bifrost
+  provider: definitely-not-a-provider
+  api_key: env.STOWAGE_TEST_DUMMY_KEY
+YAML
+
+expect_boot_failure \
+  "bifrost with explicitly unknown provider fails loud naming the invalid value" \
+  "$CFG_BADPROVIDER" 'invalid provider.*definitely-not-a-provider' \
+  "${TMPDIR_SMOKE}/bad-provider.log"
 
 unset STOWAGE_TEST_DUMMY_KEY 2>/dev/null || true
 
@@ -121,12 +217,10 @@ YAML
 # Ensure the env var is definitely unset.
 unset STOWAGE_BIFROST_NONEXISTENT_KEY_09C 2>/dev/null || true
 
-SERVE_OUT=$("$BIN" serve --config "$CFG_NOKEY" 2>&1 || true)
-if echo "$SERVE_OUT" | grep -qE "(STOWAGE_BIFROST_NONEXISTENT_KEY_09C|api_key|unset)"; then
-  ok "bifrost without API key: boot error references the missing env var"
-else
-  failc "bifrost without API key: expected key/unset error (got: ${SERVE_OUT})"
-fi
+expect_boot_failure \
+  "bifrost without API key fails loud naming the missing env var" \
+  "$CFG_NOKEY" 'STOWAGE_BIFROST_NONEXISTENT_KEY_09C|api_key|unset' \
+  "${TMPDIR_SMOKE}/no-key.log"
 
 # ── AC-5: driver=openaicompat boots normally ──────────────────────────────────
 # Renamed from bifrost (Phase 04); registry key changed but behavior unchanged.
@@ -151,6 +245,7 @@ export STOWAGE_TEST_DUMMY_OAC_KEY="dummy-oac-smoke"
 
 "$BIN" serve --config "$CFG_OAC" >"${TMPDIR_SMOKE}/oac.log" 2>&1 &
 OAC_PID=$!
+track_pid "$OAC_PID"
 
 for i in $(seq 1 20); do
   if curl -sf "http://localhost:${PORT4}/healthz" >/dev/null 2>&1; then break; fi
@@ -165,12 +260,7 @@ for i in $(seq 1 20); do
 done
 ok "openaicompat driver boots normally (rename behavior-preserving)"
 
-kill -TERM "$OAC_PID" 2>/dev/null
-for i in $(seq 1 10); do
-  if ! kill -0 "$OAC_PID" 2>/dev/null; then break; fi
-  sleep 0.5
-done
-ok "openaicompat server shutdown cleanly"
+stop_server "openaicompat server" "$OAC_PID"
 
 unset STOWAGE_TEST_DUMMY_OAC_KEY 2>/dev/null || true
 
