@@ -47,7 +47,9 @@ type AssertResult struct {
 // Every assert action changes the active memory set, so on success the optional
 // ScopeInvalidator(s) are invalidated in the core (D-053; D-070 Wave-B
 // checkpoint) — surfaces pass their retrieval cache (or nothing) and none
-// invalidates separately.
+// invalidates separately. Assert invalidates at tenant granularity (D-158): a
+// leaf mutation is observable through tenant/project/user/session prefix reads
+// and agent-keyed cache entries, all of which include the tenant generation.
 func Assert(ctx context.Context, st store.Store, scope identity.Scope, p AssertParams, inv ...ScopeInvalidator) (*AssertResult, error) {
 	if p.Action == "" {
 		return nil, fmt.Errorf("assert: action must be set (add|update|delete)")
@@ -129,6 +131,11 @@ func Assert(ctx context.Context, st store.Store, scope identity.Scope, p AssertP
 		return nil, fmt.Errorf("assert: unknown action %q (want add|update|delete)", p.Action)
 	}
 
-	invalidateScopes(scope, inv)
+	// A mutation written at a precise project/user/session leaf can change the
+	// result of broader prefix/wildcard reads. Bump the tenant ancestor once so
+	// every observable cache shape in this tenant misses immediately, including
+	// read-time-only Agent keys. This is O(1), does not scan cache entries, and
+	// cannot invalidate another tenant.
+	invalidateScopes(identity.Scope{Tenant: scope.Tenant}, inv)
 	return &AssertResult{MemoryID: memoryID, Action: p.Action, Status: status}, nil
 }

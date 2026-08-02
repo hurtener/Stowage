@@ -469,7 +469,9 @@ func (r *Retriever) Retrieve(ctx context.Context, scope identity.Scope, req Requ
 	// of the cache key at all — hasViewApply bypasses caching whenever a subject
 	// (agent or key) is actually present, the same "skip caching" choice ae6 made
 	// rather than widening the key.
-	if !req.Debug && !multiScope && !hasTopicFilter(req) && !r.hasViewApply(scope, req) {
+	cacheEligible := !req.Debug && !multiScope && !hasTopicFilter(req) && !r.hasViewApply(scope, req)
+	var cacheGeneration uint64
+	if cacheEligible {
 		if cachedItems, cachedSup, ok := r.cache.Get(scope, querySig, req.Profile, req.SessionID, req.Window.From, req.Window.Until, req.Kinds, req.IncludeLanes, limit); ok {
 			return &Response{
 				ResponseID: responseID,
@@ -480,6 +482,10 @@ func (r *Retriever) Retrieve(ctx context.Context, scope identity.Scope, req Requ
 				CacheHit:   true,
 			}, nil
 		}
+		// Snapshot after the miss. The eventual cache publish is conditional on
+		// this generation so an assert that commits while lanes are running can
+		// invalidate the read without a stale in-flight result refilling it.
+		cacheGeneration = r.cache.generation(scope)
 	}
 
 	// Embed the query for the vector lane (may fail → degraded).
@@ -928,8 +934,8 @@ func (r *Retriever) Retrieve(ctx context.Context, scope identity.Scope, req Requ
 	// Debug requests are not cached (breakdowns are diagnostic and one-time).
 	// Multi-scope requests are not cached (revocation must be live, D-060).
 	// Topic-filtered requests are not cached (ae6, see the Get-side note above).
-	if !req.Debug && !multiScope && !hasTopicFilter(req) && !r.hasViewApply(scope, req) {
-		r.cache.Put(scope, querySig, req.Profile, req.SessionID, req.Window.From, req.Window.Until, req.Kinds, req.IncludeLanes, limit, items, sup)
+	if cacheEligible {
+		r.cache.putIfGeneration(scope, querySig, req.Profile, req.SessionID, req.Window.From, req.Window.Until, req.Kinds, req.IncludeLanes, limit, items, sup, cacheGeneration)
 	}
 
 	// Feed the hot set with the IDs of injected memories (Phase 12).
