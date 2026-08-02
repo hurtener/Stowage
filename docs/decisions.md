@@ -4519,3 +4519,30 @@ the console as the source of truth for Stowage's own shape.
 descriptor (source `well-known`), so the rendered shape can no longer drift from the real API, and the
 `404`s on that path disappear. No config knob (always on — a static, harmless, non-sensitive document;
 D-034). New endpoint ⇒ smoke check (`phase-r2.sh`) + golden test in the same change.
+
+## D-158 — Direct memory assertions invalidate every tenant-observable result-cache shape
+
+2026-08-02. ST-5 cache-coherence fix. **Related:** D-053 (generation-counter invalidation), D-121
+(invalidation granularity follows cache-key granularity), D-125 (sub-tenant scope isolation and its
+accepted project-asymmetric freshness limitation), D-135 (agent-keyed result cache), D-067 (one
+logic core).
+
+**Context.** `memory_assert` add/update/delete invalidated only the precise mutation scope. A memory
+written at `{tenant,project,user,session}` is also observable through broader tenant/project/user
+prefix or wildcard reads, but those cache generations do not include the more precise leaf. Agent-
+keyed reads had a second mismatch: `Agent` is read-time-only, so their generation key cannot be named
+by a write scope. The result was a same-session identical query serving a deleted memory until the
+60-second TTL expired. D-125 explicitly accepted the project-asymmetric subset of this stale-own-data
+window; ST-5 supersedes that limitation for direct assertions.
+
+**Decision.** After each successful direct assert mutation, the reconcile core invalidates exactly
+once at `{Tenant}` rather than at the write leaf. Every cache generation includes that ancestor, so
+exact, ancestor, prefix/wildcard, and agent-keyed entries all become immediately invisible. The bump
+is O(1), scans no entries, and cannot cross the tenant boundary. Failed mutations do not invalidate.
+To close the concurrent refill race, a retrieval snapshots its generation after a cache miss and
+publishes the result only if that generation is still current; an in-flight read that began before
+the assert may finish for its caller but cannot repopulate stale cache state after the mutation.
+
+**Consequences.** Direct assertions trade cache precision within one tenant for coherent post-write
+reads without enumeration or a new index. Other reconcile/lifecycle invalidation policies remain
+unchanged. No API, schema, migration, config, or event contract changes.

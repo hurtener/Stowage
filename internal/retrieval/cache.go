@@ -174,11 +174,32 @@ func (c *ResultCache) Get(scope identity.Scope, querySig, profile, sessionID str
 	return e.items, e.support, true
 }
 
+// generation returns the current ancestor-summed generation for scope. A
+// retrieval snapshots this after a cache miss and conditionally publishes its
+// result against the same generation, preventing an in-flight read that began
+// before a mutation from repopulating stale data after invalidation (D-158).
+func (c *ResultCache) generation(scope identity.Scope) uint64 {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.scopeGen(scope)
+}
+
 // Put stores a result under the given key. Evicts the LRU tail when at
 // capacity. Updating an existing key refreshes the TTL and moves it to front.
 func (c *ResultCache) Put(scope identity.Scope, querySig, profile, sessionID string, windowFrom, windowTo int64, kinds []string, includeLanes bool, limit int, items []MemoryItem, support Support) {
+	c.put(scope, querySig, profile, sessionID, windowFrom, windowTo, kinds, includeLanes, limit, items, support, nil)
+}
+
+// putIfGeneration stores a result only when scope still has the generation the
+// retrieval observed before reading. It returns false when a concurrent
+// mutation invalidated the scope, leaving the stale in-flight result uncached.
+func (c *ResultCache) putIfGeneration(scope identity.Scope, querySig, profile, sessionID string, windowFrom, windowTo int64, kinds []string, includeLanes bool, limit int, items []MemoryItem, support Support, expected uint64) bool {
+	return c.put(scope, querySig, profile, sessionID, windowFrom, windowTo, kinds, includeLanes, limit, items, support, &expected)
+}
+
+func (c *ResultCache) put(scope identity.Scope, querySig, profile, sessionID string, windowFrom, windowTo int64, kinds []string, includeLanes bool, limit int, items []MemoryItem, support Support, expected *uint64) bool {
 	if cacheOff() {
-		return
+		return false
 	}
 	key := cacheKey(scope, querySig, profile, sessionID, windowFrom, windowTo, kinds, includeLanes, limit)
 	scopeStr := scopeCacheKey(scope)
@@ -188,8 +209,12 @@ func (c *ResultCache) Put(scope identity.Scope, querySig, profile, sessionID str
 	defer c.mu.Unlock()
 
 	// Stamp the entry with the effective (ancestor-summed) generation so a later
-	// tenant-wide InvalidateScope busts it via the same scopeGen sum on read.
+	// tenant-wide InvalidateScope busts it via the same scopeGen sum on read. A
+	// conditional publish refuses to cache when invalidation raced the read.
 	gen := c.scopeGen(scope)
+	if expected != nil && gen != *expected {
+		return false
+	}
 
 	if el, ok := c.entries[key]; ok {
 		c.lru.MoveToFront(el)
@@ -198,7 +223,7 @@ func (c *ResultCache) Put(scope identity.Scope, querySig, profile, sessionID str
 		e.support = support
 		e.generation = gen
 		e.expiresAt = now.Add(cacheTTL)
-		return
+		return true
 	}
 
 	// Evict LRU tail if at capacity.
@@ -222,6 +247,7 @@ func (c *ResultCache) Put(scope identity.Scope, querySig, profile, sessionID str
 	}
 	el := c.lru.PushFront(e)
 	c.entries[key] = el
+	return true
 }
 
 // InvalidateScope bumps the per-scope generation counter, logically
