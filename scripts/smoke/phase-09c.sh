@@ -33,9 +33,15 @@ cleanup() {
       done
       if kill -0 "$pid" 2>/dev/null; then
         kill -KILL "$pid" 2>/dev/null || true
+        for _ in $(seq 1 10); do
+          if ! kill -0 "$pid" 2>/dev/null; then break; fi
+          sleep 0.1
+        done
       fi
     fi
-    wait "$pid" 2>/dev/null || true
+    if ! kill -0 "$pid" 2>/dev/null; then
+      wait "$pid" 2>/dev/null || true
+    fi
   done
   rm -f "$BIN"
   rm -rf "$TMPDIR_SMOKE"
@@ -46,22 +52,56 @@ track_pid() {
   SERVER_PIDS+=("$1")
 }
 
-stop_server() {
-  local name=$1 pid=$2
+force_terminate() {
+  local pid=$1
 
-  kill -TERM "$pid" 2>/dev/null || true
+  if kill -0 "$pid" 2>/dev/null && ! kill -KILL "$pid" 2>/dev/null; then
+    return 1
+  fi
   for _ in $(seq 1 10); do
     if ! kill -0 "$pid" 2>/dev/null; then
       wait "$pid" 2>/dev/null || true
-      ok "$name shutdown cleanly"
-      return
+      return 0
+    fi
+    sleep 0.1
+  done
+  return 1
+}
+
+stop_server() {
+  local name=$1 pid=$2 rc=0
+
+  if ! kill -0 "$pid" 2>/dev/null; then
+    wait "$pid"
+    rc=$?
+    failc "$name exited before SIGTERM (rc=$rc)"
+    return 1
+  fi
+  if ! kill -TERM "$pid" 2>/dev/null; then
+    wait "$pid"
+    rc=$?
+    failc "$name exited before SIGTERM could be delivered (rc=$rc)"
+    return 1
+  fi
+  for _ in $(seq 1 10); do
+    if ! kill -0 "$pid" 2>/dev/null; then
+      wait "$pid"
+      rc=$?
+      if [ "$rc" -eq 0 ]; then
+        ok "$name shutdown cleanly after SIGTERM (rc=0, joined)"
+        return 0
+      fi
+      failc "$name exited nonzero after SIGTERM (rc=$rc)"
+      return 1
     fi
     sleep 0.5
   done
 
   failc "$name did not stop within 5 s; forcing termination"
-  kill -KILL "$pid" 2>/dev/null || true
-  wait "$pid" 2>/dev/null || true
+  if ! force_terminate "$pid"; then
+    failc "$name could not be force-terminated within 1 s"
+  fi
+  return 1
 }
 
 expect_boot_failure() {
@@ -81,15 +121,9 @@ expect_boot_failure() {
 
   if [ "$exited" -eq 0 ]; then
     failc "$name: server remained running instead of failing closed"
-    kill -TERM "$pid" 2>/dev/null || true
-    for _ in $(seq 1 10); do
-      if ! kill -0 "$pid" 2>/dev/null; then break; fi
-      sleep 0.1
-    done
-    if kill -0 "$pid" 2>/dev/null; then
-      kill -KILL "$pid" 2>/dev/null || true
+    if ! force_terminate "$pid"; then
+      failc "$name: server could not be force-terminated within 1 s"
     fi
-    wait "$pid" 2>/dev/null || true
     return
   fi
 
@@ -99,6 +133,23 @@ expect_boot_failure() {
     failc "$name: expected non-zero boot error matching $pattern (rc=$rc)"
     cat "$log" >&2
   fi
+}
+
+check_default_provider() {
+  local executable=$1 cfg=$2 output rc=0
+
+  output=$("$executable" config explain --config "$cfg" 2>&1)
+  rc=$?
+  if [ "$rc" -ne 0 ]; then
+    printf 'config explain exited nonzero (rc=%d)\n%s\n' "$rc" "$output"
+    return 1
+  fi
+  if ! printf '%s\n' "$output" | grep -Eq \
+      '^gateway\.provider[[:space:]]+=[[:space:]]+openrouter[[:space:]]+\[default\]$'; then
+    printf 'config explain omitted the exact effective-provider line\n%s\n' "$output"
+    return 1
+  fi
+  return 0
 }
 
 # ── AC-1: cgo-free build ──────────────────────────────────────────────────────
@@ -166,13 +217,29 @@ YAML
 # Export a dummy key so api_key resolution doesn't interfere with provider check.
 export STOWAGE_TEST_DUMMY_KEY="dummy-for-smoke-test"
 
-EXPLAIN_NOPROVIDER=$("$BIN" config explain --config "$CFG_NOPROVIDER" 2>&1 || true)
-if printf '%s' "$EXPLAIN_NOPROVIDER" | grep -Eq \
-    'gateway.provider[[:space:]]*=[[:space:]]*openrouter[[:space:]]+\[default\]'; then
+if PROVIDER_CHECK_OUT=$(check_default_provider "$BIN" "$CFG_NOPROVIDER"); then
   ok "bifrost without provider inherits openrouter default (D-131)"
 else
   failc "bifrost without provider did not inherit openrouter default"
-  printf '%s\n' "$EXPLAIN_NOPROVIDER" >&2
+  printf '%s\n' "$PROVIDER_CHECK_OUT" >&2
+fi
+
+# Gate-bite: even exact-looking stdout must not pass when config explain exits
+# nonzero. This catches a reintroduction of the old `|| true` false positive.
+FAILING_EXPLAIN="${TMPDIR_SMOKE}/failing-config-explain"
+cat > "$FAILING_EXPLAIN" <<'SH'
+#!/bin/sh
+printf '%s\n' 'gateway.provider = openrouter [default]'
+exit 7
+SH
+chmod +x "$FAILING_EXPLAIN"
+if PROVIDER_BITE_OUT=$(check_default_provider "$FAILING_EXPLAIN" "$CFG_NOPROVIDER"); then
+  failc "provider-default gate-bite: nonzero config explain passed on matching stdout"
+elif printf '%s' "$PROVIDER_BITE_OUT" | grep -q 'config explain exited nonzero (rc=7)'; then
+  ok "provider-default gate bites on nonzero config explain despite matching stdout"
+else
+  failc "provider-default gate-bite returned the wrong failure"
+  printf '%s\n' "$PROVIDER_BITE_OUT" >&2
 fi
 
 CFG_BADPROVIDER="${TMPDIR_SMOKE}/bifrost-invalid-provider.yaml"
@@ -264,6 +331,29 @@ stop_server "openaicompat server" "$OAC_PID"
 
 unset STOWAGE_TEST_DUMMY_OAC_KEY 2>/dev/null || true
 
+# Gate-bite: a child that crashes before TERM must be reported as an early
+# nonzero exit, never as a clean shutdown. Run in a subshell so its expected
+# failc increment does not affect the real smoke result.
+SHUTDOWN_BITE_OUT=$(
+  fails=0
+  (exit 23) &
+  crash_pid=$!
+  for _ in $(seq 1 20); do
+    if ! kill -0 "$crash_pid" 2>/dev/null; then break; fi
+    sleep 0.05
+  done
+  stop_server "shutdown mutation probe" "$crash_pid"
+)
+SHUTDOWN_BITE_RC=$?
+if [ "$SHUTDOWN_BITE_RC" -ne 0 ] \
+    && printf '%s' "$SHUTDOWN_BITE_OUT" | grep -q 'exited before SIGTERM (rc=23)' \
+    && ! printf '%s' "$SHUTDOWN_BITE_OUT" | grep -q 'shutdown cleanly'; then
+  ok "shutdown gate bites on a child that crashes before SIGTERM"
+else
+  failc "shutdown gate-bite did not distinguish a pre-TERM crash"
+  printf '%s\n' "$SHUTDOWN_BITE_OUT" >&2
+fi
+
 # ── AC-6: unit tests for both driver packages ─────────────────────────────────
 
 CGO_ENABLED=1 go test -race -timeout 60s -count=1 \
@@ -275,15 +365,6 @@ CGO_ENABLED=1 go test -race -timeout 60s -count=1 \
   ./internal/gateway/openaicompat/ 2>/dev/null \
   && ok "openaicompat driver unit tests" \
   || failc "openaicompat driver unit tests"
-
-# ── config explain: gateway.provider appears ──────────────────────────────────
-
-EXPLAIN_OUT=$("$BIN" config explain --config "$CFG_MOCK" 2>&1 || true)
-if echo "$EXPLAIN_OUT" | grep -q "gateway.provider"; then
-  ok "config explain: gateway.provider key present"
-else
-  failc "config explain: gateway.provider key missing"
-fi
 
 # ── live check: SKIP without env vars ────────────────────────────────────────
 

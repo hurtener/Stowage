@@ -75,7 +75,7 @@ internal/gateway/openaicompat/   (moved from internal/gateway/bifrost)
 internal/gateway/bifrost/        (new: sdk driver — account.go, driver.go, translate.go, *_test.go)
 internal/config/                 (provider key + driver enum + validation + explain golden)
 cmd/stowage/main.go              (registry imports)
-scripts/smoke/phase-09c.sh       (boot matrix: explicit mock OK; omitted bifrost provider inherits openrouter; unknown provider/missing key fail closed; openaicompat unchanged; every server bounded and terminated)
+scripts/smoke/phase-09c.sh       (boot matrix: explicit mock OK; omitted bifrost provider inherits openrouter with a successful exact explain match; unknown provider/missing key fail closed; openaicompat unchanged; clean shutdown requires delivered TERM + joined zero exit, with bounded forced cleanup)
 go.mod                           (+ github.com/maximhq/bifrost/core)
 docs/decisions.md                (D-049), docs/plans update; D-040 amendment note
 ```
