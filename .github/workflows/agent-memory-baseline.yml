@@ -20,10 +20,12 @@ jobs:
       - uses: actions/checkout@v4
         with:
           path: proposal
+          persist-credentials: false
       - uses: actions/checkout@v4
         with:
           ref: ab7d3a2c0eb3a4c7230d508e5a45dd6996005b38
           path: baseline
+          persist-credentials: false
       - uses: actions/setup-go@v5
         with:
           go-version-file: baseline/go.mod
@@ -40,8 +42,8 @@ jobs:
       - name: Capture actual MCP catalog before implementation changes
         working-directory: baseline
         env:
-          STOWAGE_AGENT_CATALOG_OUTPUT: ../evidence/catalog.json
-        run: go test -count=1 -run '^TestCaptureAgentBaselineCatalog$' ./internal/mcpserver
+          STOWAGE_AGENT_CATALOG_OUTPUT: ${{ github.workspace }}/evidence/catalog.json
+        run: go test -race -count=1 -run '^TestCaptureAgentBaselineCatalog$' ./internal/mcpserver
       - name: Record baseline service behavior
         working-directory: baseline
         shell: bash
@@ -59,4 +61,19 @@ jobs:
           name: agent-memory-baseline
           path: evidence/
           retention-days: 30
+          if-no-files-found: error
+      - name: Package public offline validation inputs
+        working-directory: baseline
+        shell: bash
+        run: |
+          mkdir -p ../offline
+          go mod download
+          tar -czf ../offline/toolchain.tgz -C "$(go env GOROOT)" .
+          tar -czf ../offline/modules.tgz -C "$(go env GOMODCACHE)" --exclude=cache/vcs .
+      - uses: actions/upload-artifact@v4
+        with:
+          name: agent-memory-offline-validation
+          path: offline/
+          retention-days: 1
+          compression-level: 0
           if-no-files-found: error
