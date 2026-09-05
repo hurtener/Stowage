@@ -347,6 +347,8 @@ Usage:
 Flags:
   --config path   path to config file (default: auto-discover)
   --http addr     serve streamable-HTTP on addr instead of stdio (e.g. :7162)
+
+  --catalog agent|full  Stdio catalog (default agent); HTTP retains both endpoints.
 `
 
 // runMCP implements `stowage mcp [--config path] [--http addr]`.

@@ -68,11 +68,13 @@ func (c *embeddedClient) Correct(ctx context.Context, req CorrectRequest) (Memor
 	return *r, nil
 }
 func (c *httpClient) Remember(ctx context.Context, req RememberRequest) (MemoryReceipt, error) {
+	req.ProjectID, req.UserID = c.effScope(req.ProjectID, req.UserID)
 	var out MemoryReceipt
 	err := c.do(ctx, http.MethodPost, "/v1/remember", req, &out)
 	return out, err
 }
 func (c *httpClient) Correct(ctx context.Context, req CorrectRequest) (MemoryReceipt, error) {
+	req.ProjectID, req.UserID = c.effScope(req.ProjectID, req.UserID)
 	var out MemoryReceipt
 	err := c.do(ctx, http.MethodPost, "/v1/correct", req, &out)
 	return out, err

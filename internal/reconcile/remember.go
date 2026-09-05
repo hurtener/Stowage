@@ -151,6 +151,9 @@ func explicitWrite(ctx context.Context, st store.Store, scope identity.Scope, op
 		}
 		guarded = append(guarded, *target)
 		if NormalizeContent(target.Content) == NormalizeContent(req.Quote) {
+			if len(junctions.Provenance) == 0 {
+				return nil, fmt.Errorf("%w: matching target lacks source provenance", store.ErrCommandConflict)
+			}
 			mem = *target
 			cs = store.CommitSet{Action: store.ActionDiscard}
 			outcome = "already_present"

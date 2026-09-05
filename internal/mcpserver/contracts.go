@@ -771,6 +771,8 @@ type GetInput struct {
 
 // GetOutput is the memory_get tool output.
 type GetOutput struct {
+	Revision string `json:"revision"`
+
 	Memory          MemoryRecord    `json:"memory"`
 	Entities        []string        `json:"entities"`
 	Keywords        []string        `json:"keywords"`

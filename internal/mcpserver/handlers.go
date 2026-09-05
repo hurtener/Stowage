@@ -749,6 +749,7 @@ func makeGetHandler(svc *Services) tool.Handler[GetInput, GetOutput] {
 			return tool.Result[GetOutput]{}, fmt.Errorf("memory_get: %w", err)
 		}
 		out := GetOutput{
+			Revision:        store.MemoryRevision(view.Memory),
 			Memory:          memoryToRecord(view.Memory),
 			Entities:        view.Entities,
 			Keywords:        view.Keywords,

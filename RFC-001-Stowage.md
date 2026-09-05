@@ -1061,3 +1061,42 @@ MCP App, managed-cloud control plane.
   retention class is exactly that of the source day-one tables (no separate trace
   store/retention); export bundles are ed25519-signed with an operator-provided,
   env-indirected key (`trace.signing_key`).
+
+
+## Agent-facing interface and explicit-write amendment (ae13)
+
+The ordinary agent surface is a five-tool projection (retrieve, inspect,
+remember, correct, playbook), separately mounted from the retained full runtime/
+curator surface. Stdio defaults to the agent projection with an explicit full
+compatibility option. HTTP uses static catalogs, identity-independent discovery,
+and the existing authentication/scoping seam. No new issuer or permissions
+inference is authorized. See `docs/agent-memory.md` for the binding endpoint and
+source-binding contract.
+
+Explicit remember/correct commands are a new provenance-preserving lifecycle
+path, not aliases for direct assertion. They commit an exact quotation from a
+durable, owned user record; no generated summary can claim user provenance.
+Corrections require the inspected semantic revision and newer source evidence,
+retain the old value and a reversible event, and fail on competing edits. Store
+CommitSet carries an optional command guard. Receipt reservation in the existing
+events table, evidence and revision checks, memory/provenance changes and audit
+events occur in one SQLite/Postgres transaction. Receipt IDs are deterministic
+per owner scope and host key (canonical request digest when omitted); reuse with
+another payload fails. No new schema table or migration is necessary.
+
+Explicit intent bypasses extraction magnets, never scopes or provenance. Exact
+active same-session content with provenance may be reused. Vector backfill and
+ranking are not prerequisites for the durable receipt; current status and
+retrieval eligibility are separately observed. Current topic curation and session
+cooldown still apply. A replay does not re-save a deleted/superseded value.
+
+Model-facing projections retain limitations, conflicts and evidence; evaluation
+rendering remains independently pinned. Historical evidence may answer historical
+questions and never becomes a higher-priority instruction. The service/contract
+baseline is captured from the immutable pre-change commit; no spontaneous model
+selection result is inferred from deterministic tests.
+
+No selective forgetting tool is exposed until suppression, source retention,
+re-extraction, dependents, caches, audit and backup policy have a complete
+contract. Derived-item deletion and reversible correction are not erasure;
+existing authorized whole-user DSAR remains a separate capability.

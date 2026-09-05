@@ -4546,3 +4546,25 @@ the assert may finish for its caller but cannot repopulate stale cache state aft
 **Consequences.** Direct assertions trade cache precision within one tenant for coherent post-write
 reads without enumeration or a new index. Other reconcile/lifecycle invalidation policies remain
 unchanged. No API, schema, migration, config, or event contract changes.
+
+
+## D-159 — Agent catalog and source-backed explicit commands (ae13)
+
+**Date:** 2026-09-05. **Status:** accepted by owner scope.
+
+Separate the ordinary five-tool planner catalog from retained runtime/admin
+compatibility operations. Use task-oriented descriptions and generated-schema
+constraints; preserve response-level evidence warnings in every model-facing
+read projection. Keep Pengui-issued identity authority unchanged.
+
+Remember/correct use the shared transactional reconciliation store, validate an
+exact owned user-source span, attach provenance, and return durable receipts.
+Corrections check an inspected semantic revision and remain reversible. Reuse of
+a scoped idempotency key with another request fails; successful replay observes
+current state without reviving it. Reuse the existing events table for atomic
+receipts rather than add a second command store. Do not alias direct assertions,
+and do not expose selective forgetting as a promise of erasure.
+
+See the ae13 RFC amendment, `docs/plans/phase-ae13-agent-interface.md`, and
+`docs/agent-memory.md`. Baseline catalog/service observations are not live-model
+selection metrics.
