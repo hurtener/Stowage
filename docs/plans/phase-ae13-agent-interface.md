@@ -4,6 +4,7 @@
 - **Owning subsystems:** MCP, retrieval rendering, reconciliation, store transactions, HTTP, SDK, Harbor adapter.
 - **RFC sections:** 5, 6c, 9.2, 9.5, 10 and the ae13 amendment.
 - **Depends on:** ae2b, ae4a, ae7, ae8, ae12.
+- **Informing briefs:** `docs/research/INDEX.md` (API/MCP surface-sprawl and config/adoption context); owner-approved source-level agent-surface review of 2026-09-05.
 - **Review:** PR #112; owner-approved first two memory-usability phases.
 
 ## Goal
