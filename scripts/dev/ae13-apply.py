@@ -31,9 +31,3 @@ for package in ['grants', 'views']:
     return nil, store.ErrNotFound
 }\n'''
         p.write_text(s)
-# Offline inputs were a one-time validation bootstrap, not a permanent CI expense.
-p = Path('.github/workflows/agent-memory-baseline.yml')
-s = p.read_text()
-marker = '      - name: Package public offline validation inputs\n'
-if marker in s:
-    p.write_text(s.split(marker)[0])

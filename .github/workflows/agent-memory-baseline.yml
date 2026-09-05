@@ -1,5 +1,4 @@
 name: agent-memory-baseline
-
 on:
   pull_request:
     paths:
@@ -8,10 +7,8 @@ on:
       - 'internal/retrieval/**'
       - 'eval/agent-use/**'
       - '.github/workflows/agent-memory-baseline.yml'
-
 permissions:
   contents: read
-
 jobs:
   baseline:
     runs-on: ubuntu-latest
@@ -31,10 +28,8 @@ jobs:
           go-version-file: baseline/go.mod
           cache-dependency-path: baseline/go.sum
       - name: Preserve unmodified baseline and provenance
-        shell: bash
         run: |
           mkdir -p evidence
-          git -C baseline archive --format=tar HEAD > evidence/source.tar
           git -C baseline rev-parse HEAD > evidence/commit.txt
           date -u +%FT%TZ > evidence/captured_at.txt
           go version > evidence/toolchain.txt
@@ -52,28 +47,12 @@ jobs:
           go test -race -count=1 -json ./internal/mcpserver ./internal/retrieval ./internal/reconcile | tee ../evidence/tests.jsonl
       - name: Record evaluation limitations
         if: always()
-        shell: bash
         run: |
-          printf '%s\n' '{"kind":"service-contract-baseline","agent_selection_evaluation":"not_run","reason":"No live model credentials are provided to this read-only CI job. Contract and handler tests must not be reported as spontaneous agent tool-selection rates."}' > evidence/evaluation-status.json
+          printf '%s\n' '{"kind":"service-contract-baseline","agent_selection_evaluation":"not_run","reason":"Live model credentials are not provided. Contract tests are not spontaneous agent-selection measurements."}' > evidence/evaluation-status.json
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: agent-memory-baseline
           path: evidence/
           retention-days: 30
-          if-no-files-found: error
-      - name: Package public offline validation inputs
-        working-directory: baseline
-        shell: bash
-        run: |
-          mkdir -p ../offline
-          go mod download
-          tar -czf ../offline/toolchain.tgz -C "$(go env GOROOT)" .
-          tar -czf ../offline/modules.tgz -C "$(go env GOMODCACHE)" --exclude=cache/vcs .
-      - uses: actions/upload-artifact@v4
-        with:
-          name: agent-memory-offline-validation
-          path: offline/
-          retention-days: 1
-          compression-level: 0
           if-no-files-found: error
