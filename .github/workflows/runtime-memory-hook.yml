@@ -43,4 +43,4 @@ jobs:
           STOWAGE_HARBOR_CHECKOUT: ${{ github.workspace }}/harbor
         run: |
           go test -race -count=1 -v -run '^TestRuntime' ./internal/mcpserver
-          go test -race -count=1 -run 'TestAgentHTTPMount|TestMCPCatalogSelection' ./cmd/stowage
+          go test -race -count=1 -run 'TestAgentHTTPMount|TestMCPCatalogSelection|TestSharedMCPProfiles' ./cmd/stowage
