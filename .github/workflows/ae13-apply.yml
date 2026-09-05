@@ -1,0 +1,34 @@
+name: ae13-implementation-validation
+on:
+  pull_request:
+    paths: ['scripts/dev/ae13-apply.py']
+permissions:
+  contents: write
+jobs:
+  apply:
+    if: github.event.pull_request.head.repo.full_name == 'hurtener/Stowage' && github.event.pull_request.head.ref == 'feat/agent-memory-surface'
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Apply reviewed source edits
+        run: |
+          python3 scripts/dev/ae13-apply.py
+          git ls-files -m -o --exclude-standard -- '*.go' | xargs -r gofmt -w
+      - name: Commit generated source edits to the feature branch only
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git config commit.gpgsign false
+          git add internal sdk cmd docs RFC-001-Stowage.md .github/workflows/agent-memory-baseline.yml
+          if ! git diff --cached --quiet; then
+            git commit -m 'feat(memory): apply reviewed agent-memory implementation edits'
+            git push origin HEAD:refs/heads/feat/agent-memory-surface
+          fi
+      - name: Validate actual feature tree
+        run: go test -race -count=1 ./internal/reconcile ./internal/mcpserver ./internal/api ./sdk/stowage
