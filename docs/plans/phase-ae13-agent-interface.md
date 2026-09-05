@@ -1,66 +1,77 @@
-# Phase ae13 — Agent-oriented memory interface and trustworthy explicit writes
+# Phase ae13 — Agent interface and source-backed explicit memory
 
-- **Status:** in-progress
-- **Owning subsystem(s):** MCP, retrieval rendering, reconciliation, SDK, HTTP
-- **RFC sections:** 5, 6c, 9.2, 9.5, 10
-- **Depends on phases:** ae2b, ae4a, ae7, ae8, ae12
-- **Informing briefs:** `docs/research/INDEX.md`; the owner-approved source-level agent-surface review (2026-09-05).
+- **Status:** implemented; release gates are the attached PR checks. Live-model behavioral comparison remains unmeasured.
+- **Owning subsystems:** MCP, retrieval rendering, reconciliation, store transactions, HTTP, SDK, Harbor adapter.
+- **RFC sections:** 5, 6c, 9.2, 9.5, 10 and the ae13 amendment.
+- **Depends on:** ae2b, ae4a, ae7, ae8, ae12.
+- **Review:** PR #112; owner-approved first two memory-usability phases.
 
 ## Goal
 
-An ordinary agent sees a small, task-oriented memory interface rather than runtime and administration machinery. Explicit remembering and correction preserve bound source evidence, return truthful receipts, and are idempotent; no direct-assert shortcut is presented as remembering. Pengui remains the issuer and authorization authority.
+An ordinary planner sees task-oriented recall, inspection, remember, correction and playbook operations rather than runtime/admin machinery. Explicit writes preserve source evidence and return durable, idempotent receipts. Pengui remains the identity/policy issuer; there is no replacement authentication system and no direct-assert alias.
 
-## Brief findings incorporated
+## Findings incorporated
 
-The current catalog mixes 24 agent, runtime, and administrator operations. Source comments do not reach generated parameter schemas. Compact retrieval text omits response-level warnings. Direct assertions bypass provenance and reconciliation. Automatic run capture is already a separate contract and must keep working.
+The previous static catalog mixed 24 operations, descriptions exposed implementation details, schemas omitted parameter guidance, and lean retrieval omitted response-level warnings. The assertion escape hatch bypassed normal provenance and reconciliation. Runtime capture already existed and is preserved separately.
 
-## Findings I'm departing from
+## Baseline and explicit limitation
 
-Do not rename every existing operation or break the runtime sink. Do not claim an empirical agent-selection improvement from schema or handler tests. Do not expose an ambiguous `forget` promise when the existing operation only changes a derived memory's status.
+Before production changes, capture actual MCP discovery and race-enabled MCP/retrieval/reconciliation service behavior from immutable `ab7d3a2c0eb3a4c7230d508e5a45dd6996005b38`. First successful capture: Actions run `33973153758`. The retained read-only baseline workflow always uses that source commit, independently of feature changes.
 
-## Design
+**A live spontaneous-agent-selection baseline was not run because no model credentials were available.** Contract tests are not a substitute for that measurement. Balanced positive/negative cases and an operator-run comparison protocol live in `eval/agent-use`; no numeric adoption or task-quality gain is claimed. This is the remaining measurement limitation, not a fabricated pass criterion.
 
-Capture the unmodified `ab7d3a2c0eb3a4c7230d508e5a45dd6996005b38` MCP catalog and service behavior before changing production code. Preserve the pinned baseline as a reproducible CI artifact. Live-model selection evaluation remains separately identified and never substituted by scripted or lexical selection scores.
+## Design and implemented seams
 
-Use thin, tiered projections over shared services. Keep runtime/admin compatibility explicit, and make the ordinary planner catalog small. Source-backed writes must validate evidence within verified scope, bind provenance server-side, reject inconsistent idempotency replays, and distinguish durable acceptance from searchable completion. Corrections may not destroy the old value without a reversible event and verified replacement evidence. No new identity issuer, model-asserted identity, or locally inferred permissions.
+`mcpserver.NewAgent` exposes five operations at `/mcp/agent` on a shared HTTP port, `/agent` on a dedicated port, and default stdio. `New` retains the full static integration catalog. `--catalog full` retains full stdio compatibility. Both HTTP catalogs use the same existing auth wrapper. Runtime/admin names are unregistered on the agent server, not merely hidden. Catalog visibility is not authorization.
+
+The Harbor adapter's `Tools` defaults to the same five concepts with the `stowage_` prefix; `LegacyTools` retains its old seven operations explicitly. A host can bind an already-persisted actual user record with `WithMemorySource`; neither this helper nor MCP `_meta.stowage` supplies identity authority.
+
+Typed schema inference remains Dockyard-owned. The Stowage declaration wrapper adds task descriptions and semantic parameter constraints through the public registration API. Actual discovery goldens cover the ordinary catalog. Read projections preserve useful contents, provenance, dates, stale-value replacements, conflicts, degradation and fail-open curation warnings. Benchmark rendering retains its pinned text separately from the agent-facing evidence framing.
+
+`reconcile.Remember` and `Correct` are one shared source-backed command core used by MCP, HTTP and embedded SDK. They validate exact UTF-8 user quotations against owned durable records, reject generated/foreign/branch evidence, and create byte-span provenance. Explicit intent bypasses extraction magnets but never scope/provenance controls. New explicit memories default to the personal zone. Corrections inherit the old type/privacy, require the inspected semantic revision and newer source evidence, and preserve reversible supersession history. Exact active same-session content with provenance may be reused; semantic paraphrase deduplication is not claimed.
+
+An optional `CommitSet.Command` reserves a receipt and verifies source/target snapshots in the same transaction as memory, provenance and history effects. The existing events table provides durable idempotency; no new table or migration. SQLite serializes the write transaction; Postgres uses source/target row locks. Different arguments with the same scoped key fail. Current memory status is observed independently on replay, which cannot revive a deleted or superseded value. Retrieval eligibility does not guarantee rank, view inclusion, completed embeddings or bypassing cooldown.
 
 ## Files added or changed
 
-`internal/mcpserver/`, `internal/reconcile/`, `internal/retrieval/`, `sdk/stowage/`, `internal/api/`, `eval/agent-use/`, related smoke and documentation files. Final inventory is updated with implementation.
+Core command and tests: `internal/reconcile/remember*.go`.
+Store guard/revision/receipt support: `internal/store/commands.go`, both SQL-driver `commands.go` files, CommitSet/EventStore seams and transaction callers.
+Agent catalog, descriptions, schemas, bindings and tests: `internal/mcpserver/{agent,catalog,source_binding_test}.go`, registration/handler contracts and `testdata/agent/`.
+Reader projection: `internal/retrieval/{reader_response,render}.go` and tests; HTTP/MCP/SDK callers.
+Public commands/revisions: `internal/api/explicit_handler*.go`, routes and memory inspection; `sdk/stowage/explicit.go`, Client and inspection contracts.
+Host integration: `cmd/stowage/mcp_agent*.go`, CLI mounting; `adapters/harbor/agent*.go` and explicit legacy wiring.
+Baseline/scenarios: `.github/workflows/agent-memory-baseline.yml`, `eval/agent-use/`.
+Migration/semantics: `docs/agent-memory.md`, README, changelog, RFC amendment, decision log, glossary.
 
-## Config keys added
+## Configuration and compatibility
 
-No new config key is authorized by this initial plan. Any needed surface-profile control must be documented with its default and backward-compatibility behavior before implementation.
+No new environment/config key. There is one CLI selector (`--catalog agent|full`) and fixed HTTP paths. Existing deployed planner connections must switch to the agent endpoint and refresh discovery; keep run-completion capture on the full runtime-only connection. Custom Go Client implementations must implement Remember/Correct. Hosts must persist current user evidence before a write or use an existing source reference. This phase does not silently reconfigure Pengui deployments or add automatic per-turn retrieval.
 
-## Acceptance criteria (binding)
+## Acceptance and executable tests
 
-1. Pinned pre-change catalog and handler baseline is captured independently of implementation.
-2. Ordinary catalog omits runtime/admin operations; explicit compatibility surface preserves existing consumers and checks calls independently of discovery.
-3. Task-oriented descriptions and parameter guidance/constraints reach actual MCP discovery.
-4. Model-facing results retain useful contents, provenance, conflicts, freshness, and degradation warnings.
-5. Remembering and correction require source evidence and never delegate to direct Assert.
-6. Durable idempotency and truthful replay/status semantics are covered by concurrency and restart tests.
-7. Shared core ships through SDK, HTTP, and MCP with parity tests and scoped failures.
-8. Forgetting limitations and retention boundaries are documented without claiming full erasure.
-9. Existing run-completion capture continues working.
-10. Race, schema, smoke, lint, and drift gates are checked; unexecuted live-model evaluations are clearly marked.
+1. Pre-change catalog/service baseline is independently captured; empirical model-selection limitation remains explicit.
+2. Five-tool discovery and rejection of runtime/admin calls are tested on the real MCP wire and actual HTTP paths.
+3. Task guidance, schema descriptions, enums, bounds and inspection exclusivity reach advertised schemas; invalid wire inputs fail.
+4. Useful source content and response limitations remain visible to text-only readers and the adapter's final context result.
+5. Remember/correct validate source evidence and do not call Assert; missing sources cannot produce a save claim.
+6. Same-key concurrency, different-body conflicts, deleted/superseded replay, SQLite restart and competing corrections are covered.
+7. Postgres correction tests use an isolated schema to avoid other test packages' public-table truncation. Both drivers use the same command contract.
+8. HTTP/SDK/MCP round-trips expose usable inspection revisions, preserve history and reject foreign/fabricated evidence.
+9. Existing full-catalog/run-completion and adapter legacy tests remain. Repository race/build/vet/coverage/eval/lint/drift checks are retained, not weakened.
+10. Forgetting is defined accurately without exposing an incomplete erasure promise.
 
 ## Smoke script
 
-`scripts/smoke/phase-ae13.sh`.
+`bash scripts/smoke/phase-ae13.sh`. Set `STOWAGE_TEST_PG_DSN` to include Postgres tests; without it those are explicitly skipped. The script tests command durability, scoped evidence, wire schemas, bindings, warnings, HTTP/MCP/SDK integration and the adapter. No provider calls or live-agent selection claims.
 
-## Test plan
+## Forgetting boundary
 
-Pinned baseline catalog + real handler tests; model-use positive and negative cases; schema/wire tests; source binding, cross-scope, correction, retry/concurrency/restart, parity, render-warning tests; existing SQLite/Postgres conformance.
+No ordinary `memory_forget` is shipped. Legacy derived-memory deletion does not erase raw records/backups or prevent re-extraction. Correction preserves history. Existing authorized whole-user DSAR remains separate. A selective forgetting tool requires a complete suppression/erasure contract covering source scope, dependent memories, caches, re-extraction, audit retention and deployment backups.
 
-## Risks & mitigations
+## Risks and mitigations
 
-Discovery is not authorization. Source references are not trusted until resolved. Durable acceptance is not retrieval readiness. A deleted derived memory is not erased raw history. CI cannot manufacture live-model behavioral measurements without a configured provider.
+Source references are untrusted until resolved. Retrieval is evidence, not an instruction channel. A committed receipt is not a promise of ranking or vector readiness. Host credentials and existing grants retain authority independently of tool discovery. Runtime/admin compatibility exposure is unchanged and is not newly certified by this usability phase.
 
-## Glossary additions
+## Glossary and decisions
 
-Agent catalog; source-backed explicit memory; processing receipt; idempotency replay.
-
-## Decisions filed
-
-An RFC/decision amendment will record final surface separation and explicit-write semantics in the implementation commit.
+Agent catalog, source-backed explicit command and processing receipt are added to the glossary. The ae13 RFC amendment and decision entry record surface separation, exact-source semantics, transactional receipts, compatibility changes and the deliberate forgetting boundary.
