@@ -57,3 +57,20 @@ A selective user-facing forgetting command must define and enforce its suppressi
 The pre-change snapshot is pinned to `ab7d3a2c0eb3a4c7230d508e5a45dd6996005b38`. `agent-memory-baseline` captures actual MCP discovery and real service tests from that immutable checkout. The first successful capture is Actions run `33973153758`, before the production implementation commits.
 
 These are service/contract baselines, **not measured spontaneous LLM selection rates**. Model credentials were not supplied, so no numerical agent-use improvement is claimed. `eval/agent-use` defines a balanced operator-run behavioral comparison protocol. Use the same host, model, prompts, seeds, competing tools, and budget before and after; reset mutable memory state per trial. Measure appropriate recall and task benefit, not calls alone.
+
+
+## In-process Harbor adapter
+
+`harbor.Tools(client)` now returns the same five agent concepts with the existing
+`stowage_` naming prefix. The former seven-tool runtime/curator catalog remains
+available only through explicit `harbor.LegacyTools(client)`. Do not attach both
+catalogs to one planner. Runtime outcome wiring is unchanged by this phase.
+
+For a current user message, the host first calls `client.Ingest` with that actual
+message, obtains its record ID, and supplies `harbor.WithMemorySource(ctx, id,
+commandID)` to the tool execution context. This is not model-filled identity or
+permission: the SDK client is constructed with authorized scope and the service
+still verifies the record and exact quotation. An agent with no bound or existing
+source gets a clear error, not a fabricated save. Retrieval returns one useful
+rendered context including response-level warnings; older SDK responses without
+rendered context have a complete structured fallback.

@@ -123,6 +123,15 @@ curl -s localhost:7160/v1/retrieve -X POST -H "Authorization: Bearer $KEY" \
   lessons via reflection, assembled deterministically into an evolving **playbook** (ACE), and
   shareable across a team through **grants**.
 
+## Agent-facing memory interface
+
+Connect ordinary planners to `/mcp/agent` (shared HTTP port) or `/agent` (dedicated MCP port).
+The five tools are recall, inspect, source-backed remember, correct, and playbook.
+Keep runtime transcript capture on the existing full endpoint. Stdio defaults to the agent
+catalog; `--catalog full` preserves the integration catalog. See
+[the source-binding and migration guide](docs/agent-memory.md) for truthful receipts,
+idempotent corrections, and the distinction between deleted memories and erased history.
+
 ## Four surfaces, one core
 
 Every capability is implemented once in the core and exposed through thin, parity-tested surfaces:

@@ -115,7 +115,7 @@ func makeInspectHandler(svc *Services) tool.Handler[InspectInput, InspectOutput]
 		if (in.MemoryID == "") == (in.Citation == "") {
 			return tool.Result[InspectOutput]{}, fmt.Errorf("inspect requires exactly one returned memory_id or citation")
 		}
-		drill, err := makeDrilldownHandler(svc)(ctx, DrilldownInput{MemoryID: in.MemoryID, Citation: in.Citation})
+		drill, err := makeDrilldownHandler(svc)(ctx, DrilldownInput(in))
 		if err != nil {
 			return tool.Result[InspectOutput]{}, err
 		}

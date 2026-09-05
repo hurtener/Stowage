@@ -62,12 +62,13 @@ func TestSourceBackedCommandsHTTPAndMCP(t *testing.T) {
 	}
 	defer func() { _ = session.Close() }()
 	newSource := appendUser("Prefer detailed responses now.", "s2", 200)
-	result, err := session.CallTool(ctx, &mcpsdk.CallToolParams{Name: "memory_correct", Arguments: map[string]any{"memory_id": saved.MemoryID, "expected_revision": inspected.Revision, "source_record_id": newSource, "quote": "Prefer detailed responses now."}})
+	result, err := session.CallTool(ctx, &mcpsdk.CallToolParams{Meta: mcpsdk.Meta{"project": "p"}, Name: "memory_correct", Arguments: map[string]any{"memory_id": saved.MemoryID, "expected_revision": inspected.Revision, "source_record_id": newSource, "quote": "Prefer detailed responses now."}})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if result.IsError {
-		t.Fatalf("MCP correction failed: %+v", result)
+		b, _ := json.Marshal(result.Content)
+		t.Fatalf("MCP correction failed: %s", b)
 	}
 	var receipt reconcile.ExplicitReceipt
 	b, err := json.Marshal(result.StructuredContent)
