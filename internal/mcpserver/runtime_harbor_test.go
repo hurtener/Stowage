@@ -66,9 +66,12 @@ func TestRuntimeHarborCompletion(t *testing.T) {
 		{"alice", "s-missing", "A missing sink must not fail the answer.", 0},
 	} {
 		scope := identity.Scope{Tenant: "acme", User: tc.user}
-		recs := listRecords(t, svc, scope, tc.session)
-		if len(recs) != tc.count {
-			t.Errorf("%s/%s: got %d durable records; want %d", tc.user, tc.session, len(recs), tc.count)
+		recs, cursor, err := svc.Store.Records().ListBySession(ctx, scope, tc.session, "", 100, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if cursor != "" || len(recs) != tc.count {
+			t.Errorf("%s/%s: got %d durable records (cursor=%q); want %d", tc.user, tc.session, len(recs), cursor, tc.count)
 		}
 		foundGoal := false
 		for _, rec := range recs {

@@ -1,7 +1,7 @@
 name: runtime-profile-apply
 on:
   pull_request:
-    paths: ['scripts/dev/runtime-profile-apply.py', 'scripts/dev/runtime-routing-apply.py', '.github/workflows/runtime-profile-apply.yml']
+    paths: ['scripts/dev/runtime-profile-apply.py', 'scripts/dev/runtime-routing-apply.py', 'internal/mcpserver/runtime*.go', '.github/workflows/runtime-profile-apply.yml']
 permissions:
   contents: write
 concurrency:
