@@ -3,8 +3,11 @@ package reconcile_test
 import (
 	"context"
 	"errors"
+	"github.com/jackc/pgx/v5"
+	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 
@@ -65,7 +68,35 @@ func TestExplicitCommandsPostgres(t *testing.T) {
 	ctx := context.Background()
 	cfg := config.Defaults()
 	cfg.Store.Driver = "postgres"
-	cfg.Store.DSN = dsn
+	// Other packages truncate the public test tables. Isolate this suite's
+	// schema so concurrent package tests cannot erase command evidence.
+	admin, err := pgx.Connect(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = admin.Close(ctx) }()
+	schema := "ae13_" + strings.ToLower(ulid.Make().String())
+	quoted := pgx.Identifier{schema}.Sanitize()
+	if _, err := admin.Exec(ctx, "CREATE SCHEMA "+quoted); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if _, err := admin.Exec(ctx, "DROP SCHEMA "+quoted+" CASCADE"); err != nil {
+			t.Error(err)
+		}
+	}()
+	if strings.HasPrefix(dsn, "postgres://") || strings.HasPrefix(dsn, "postgresql://") {
+		u, err := url.Parse(dsn)
+		if err != nil {
+			t.Fatal(err)
+		}
+		q := u.Query()
+		q.Set("search_path", schema)
+		u.RawQuery = q.Encode()
+		cfg.Store.DSN = u.String()
+	} else {
+		cfg.Store.DSN = dsn + " search_path=" + schema
+	}
 	st, err := store.Open(ctx, cfg.Store)
 	if err != nil {
 		t.Fatal(err)
@@ -111,7 +142,10 @@ func competingCorrections(t *testing.T, st store.Store) {
 	close(errs)
 	close(results)
 	if len(results) != 1 || len(errs) != 1 {
-		t.Fatalf("expected one winner and one conflict; got %d/%d", len(results), len(errs))
+		for err := range errs {
+			t.Logf("correction error: %v", err)
+		}
+		t.Fatalf("expected one winner and one conflict; got %d results", len(results))
 	}
 	for err := range errs {
 		if !errors.Is(err, store.ErrCommandConflict) {

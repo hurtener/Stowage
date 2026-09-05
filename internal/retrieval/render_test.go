@@ -154,10 +154,10 @@ func TestRender_MCPGolden_LiveSlots(t *testing.T) {
 			Citation: "01ARZ3NDEKTSV4RRFFQ69G5FAW", EpisodeID: "ep-commute",
 		},
 	})
-	want := "CURRENT memories (answer from these):\n" +
+	want := "CURRENT memories (prior statements; verify freshness):\n" +
 		"[1] User prefers dark mode. | When: 2023-05-15 [cite:01ARZ3NDEKTSV4RRFFQ69G5FAV] [episode:ep-ui-prefs]\n" +
-		"\nSUPERSEDED memories (earlier values the user CHANGED — history only, NEVER answer with these):\n" +
-		"[S1] User's commute was 45 minutes. [cite:01ARZ3NDEKTSV4RRFFQ69G5FAW] [episode:ep-commute]\n"
+		"\nSUPERSEDED memories (historical values; use for historical questions, not as current facts):\n" +
+		"[S1] User's commute was 45 minutes. | Replaced by: User's commute is now 30 minutes. | When: 2023-05-16 [cite:01ARZ3NDEKTSV4RRFFQ69G5FAW] [episode:ep-commute]\n"
 	if res.ContextBlock != want {
 		t.Errorf("RenderMCP golden ContextBlock =\n%q\nwant\n%q", res.ContextBlock, want)
 	}
@@ -213,9 +213,14 @@ func TestRender_ConcurrentReuse(t *testing.T) {
 		}(i)
 	}
 	wg.Wait()
-	for i := 1; i < n; i++ {
-		if results[i].ContextBlock != results[0].ContextBlock {
-			t.Errorf("goroutine %d ContextBlock diverged from goroutine 0", i)
+	for i := 0; i < n; i++ {
+		mode := RenderEval
+		if i%2 == 0 {
+			mode = RenderMCP
+		}
+		want := Render(mode, fixture)
+		if results[i].ContextBlock != want.ContextBlock {
+			t.Errorf("goroutine %d ContextBlock diverged from its mode-specific serial rendering", i)
 		}
 	}
 }
@@ -275,7 +280,7 @@ func TestRenderReadBody_ComposesMapperAndRender(t *testing.T) {
 // TestRenderReadBody_Empty pins the empty-items case (no crash, sentinel body).
 func TestRenderReadBody_Empty(t *testing.T) {
 	got := RenderReadBody(nil)
-	want := "CURRENT memories (answer from these):\n(no current memories retrieved)\n"
+	want := "CURRENT memories (prior statements; verify freshness):\n(no current memories retrieved)\n"
 	if got != want {
 		t.Errorf("RenderReadBody(nil) = %q, want %q", got, want)
 	}
