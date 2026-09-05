@@ -428,7 +428,7 @@ func makeRetrieveHandler(svc *Services) tool.Handler[RetrieveInput, RetrieveOutp
 		// markdown body — episode hooks + per-item [cite:…] drill handles — not
 		// a count string. Structured keeps the full typed result unchanged.
 		return tool.Result[RetrieveOutput]{
-			Text:       retrieval.RenderReadBody(resp.Items),
+			Text:       retrieval.RenderReadResponse(resp),
 			Structured: out,
 		}, nil
 	}

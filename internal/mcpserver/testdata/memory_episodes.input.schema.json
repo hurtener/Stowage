@@ -1,33 +1,43 @@
 {
-  "type": "object",
+  "additionalProperties": false,
   "properties": {
-    "id": {
+    "arc_of": {
+      "description": "A returned episode ID whose cross-session history should be inspected.",
       "type": "string"
-    },
-    "limit": {
-      "type": "integer"
     },
     "cursor": {
-      "type": "string"
-    },
-    "session_id": {
+      "description": "Opaque continuation token from the preceding page. Omit for the first page.",
       "type": "string"
     },
     "from": {
+      "description": "Inclusive lower time bound as Unix milliseconds, not seconds. Omit for no lower bound.",
+      "minimum": 0,
       "type": "integer"
     },
-    "until": {
-      "type": "integer"
-    },
-    "similar_to": {
+    "id": {
+      "description": "An existing returned item identifier for this operation.",
       "type": "string"
     },
     "k": {
       "type": "integer"
     },
-    "arc_of": {
+    "limit": {
+      "description": "Maximum results to return. Omit for the server default; request only the amount of context needed.",
+      "type": "integer"
+    },
+    "session_id": {
+      "description": "An existing host session reference. Omit unless a session-specific operation requires it; verified host identity takes precedence.",
       "type": "string"
+    },
+    "similar_to": {
+      "description": "A natural-language situation to compare with earlier episodes.",
+      "type": "string"
+    },
+    "until": {
+      "description": "Upper time bound as Unix milliseconds, not seconds. Omit for no upper bound.",
+      "minimum": 0,
+      "type": "integer"
     }
   },
-  "additionalProperties": false
+  "type": "object"
 }

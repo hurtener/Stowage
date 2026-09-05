@@ -129,11 +129,11 @@ func TestNew_ConcurrentCreation(t *testing.T) {
 	}
 }
 
-// TestMemoryRetrieveDescribe_M4WireTruth pins AC4 (D-142): the memory_retrieve
+// TestMemoryRetrieveDescribe_TaskTriggers pins AC4 (D-142): the memory_retrieve
 // tool doc states the honest M4 contract — the lean Text body shrinks the
 // model's context, not the wire payload, since Structured still travels
 // alongside it (so the total payload GROWS, never shrinks).
-func TestMemoryRetrieveDescribe_M4WireTruth(t *testing.T) {
+func TestMemoryRetrieveDescribe_TaskTriggers(t *testing.T) {
 	svc := newTestServices(t)
 	srv, err := mcpserver.New(server.Info{Name: "stowage-mcp-test", Version: "0.0.1"}, svc)
 	if err != nil {
@@ -166,12 +166,12 @@ func TestMemoryRetrieveDescribe_M4WireTruth(t *testing.T) {
 	if !found {
 		t.Fatal("memory_retrieve tool not found in ListTools result")
 	}
-	if !strings.Contains(desc, "context, not the wire") && !strings.Contains(desc, "payload grows") {
-		t.Errorf("memory_retrieve Describe() missing the M4 wire-truth phrase (want %q or %q substring); got: %s",
-			"context, not the wire", "payload grows", desc)
+	if !strings.Contains(desc, "prior context") && !strings.Contains(desc, "self-contained") {
+		t.Errorf("memory_retrieve Describe() missing task-selection guidance (want %q or %q substring); got: %s",
+			"prior context", "self-contained", desc)
 	}
-	if !strings.Contains(desc, "larger payload") && !strings.Contains(desc, "payload grows") {
-		t.Errorf("memory_retrieve Describe() must state the payload GROWS (not shrinks); got: %s", desc)
+	if !strings.Contains(desc, "prior evidence") && !strings.Contains(desc, "self-contained") {
+		t.Errorf("memory_retrieve Describe() must explain evidence limitations; got: %s", desc)
 	}
 }
 

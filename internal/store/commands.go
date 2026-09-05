@@ -29,8 +29,8 @@ type CommandGuard struct {
 func MemoryRevision(m Memory) string {
 	v := struct {
 		ID, Tenant, Project, User, Session, Kind, Content, Context, Status string
-		Trust, Hash, Supersedes, SupersededBy, Privacy, Episode string
-		ValidFrom, ValidUntil, CreatedAt, UpdatedAt int64
+		Trust, Hash, Supersedes, SupersededBy, Privacy, Episode            string
+		ValidFrom, ValidUntil, CreatedAt, UpdatedAt                        int64
 	}{m.ID, m.TenantID, m.ProjectID, m.UserID, m.SessionID, m.Kind,
 		m.Content, m.Context, m.Status, m.TrustSource, m.ContentHash,
 		m.SupersedesID, m.SupersededByID, m.PrivacyZone, m.EpisodeID,

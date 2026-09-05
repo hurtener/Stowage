@@ -1,10 +1,13 @@
 {
-  "type": "object",
+  "additionalProperties": false,
   "properties": {
     "action": {
-      "type": "string"
-    },
-    "session_id": {
+      "description": "Select one of this operation's supported actions. Mutating actions change durable state.",
+      "enum": [
+        "fork",
+        "merge",
+        "discard"
+      ],
       "type": "string"
     },
     "branch_id": {
@@ -12,10 +15,14 @@
     },
     "parent_branch_id": {
       "type": "string"
+    },
+    "session_id": {
+      "description": "An existing host session reference. Omit unless a session-specific operation requires it; verified host identity takes precedence.",
+      "type": "string"
     }
   },
   "required": [
     "action"
   ],
-  "additionalProperties": false
+  "type": "object"
 }

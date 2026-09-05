@@ -1,39 +1,50 @@
 {
-  "type": "object",
+  "additionalProperties": false,
   "properties": {
     "action": {
+      "description": "Select one of this operation's supported actions. Mutating actions change durable state.",
+      "enum": [
+        "",
+        "list",
+        "upsert",
+        "delete"
+      ],
+      "type": "string"
+    },
+    "key": {
+      "description": "The existing topic or buffer key appropriate to this operation.",
       "type": "string"
     },
     "topics": {
-      "type": [
-        "null",
-        "array"
-      ],
+      "description": "Topic definitions for explicit extraction-policy administration.",
       "items": {
-        "type": "object",
+        "additionalProperties": false,
         "properties": {
-          "key": {
-            "type": "string"
-          },
           "description": {
             "type": "string"
           },
+          "key": {
+            "description": "The existing topic or buffer key appropriate to this operation.",
+            "type": "string"
+          },
           "status": {
+            "description": "The supported lifecycle state for this item; not a measure of real-world truth.",
             "type": "string"
           }
         },
         "required": [
           "key"
         ],
-        "additionalProperties": false
-      }
-    },
-    "key": {
-      "type": "string"
+        "type": "object"
+      },
+      "type": [
+        "null",
+        "array"
+      ]
     }
   },
   "required": [
     "action"
   ],
-  "additionalProperties": false
+  "type": "object"
 }

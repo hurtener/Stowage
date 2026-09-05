@@ -1,0 +1,100 @@
+{
+  "description": "Preserve a durable user preference, decision, constraint or reusable lesson from an existing user record. Quote it exactly, including qualifications and negation; do not store a generated summary as a user statement. Use a source record returned by inspection or supplied by the host. The receipt states what committed and whether the memory is currently eligible for retrieval. Do not claim saving succeeded on an error.",
+  "inputSchema": {
+    "additionalProperties": false,
+    "properties": {
+      "kind": {
+        "description": "The memory's semantic type. Remember defaults to fact; corrections inherit the inspected type.",
+        "enum": [
+          "",
+          "fact",
+          "preference",
+          "decision",
+          "gotcha",
+          "pattern",
+          "task",
+          "narrative",
+          "strategy",
+          "failure_mode"
+        ],
+        "type": "string"
+      },
+      "quote": {
+        "description": "Exact text from the user source, preserving qualifications and negation. Maximum 8192 UTF-8 bytes; generated summaries are not accepted.",
+        "maxLength": 8192,
+        "minLength": 1,
+        "type": "string"
+      },
+      "source_record_id": {
+        "description": "An existing user-source record ID returned by inspection or supplied by the host. It is validated within the caller's scope.",
+        "type": "string"
+      }
+    },
+    "required": [
+      "quote"
+    ],
+    "type": "object"
+  },
+  "name": "memory_remember",
+  "outputSchema": {
+    "additionalProperties": false,
+    "properties": {
+      "committed_at": {
+        "type": "integer"
+      },
+      "current_status": {
+        "type": "string"
+      },
+      "memory_id": {
+        "type": "string"
+      },
+      "notice": {
+        "type": "string"
+      },
+      "outcome": {
+        "type": "string"
+      },
+      "receipt_id": {
+        "type": "string"
+      },
+      "replaces_memory_id": {
+        "type": "string"
+      },
+      "replayed": {
+        "type": "boolean"
+      },
+      "retrieval_eligible": {
+        "type": "boolean"
+      },
+      "revision": {
+        "type": "string"
+      },
+      "source_record_id": {
+        "type": "string"
+      },
+      "span_end": {
+        "type": "integer"
+      },
+      "span_start": {
+        "type": "integer"
+      },
+      "status_degraded": {
+        "type": "boolean"
+      }
+    },
+    "required": [
+      "receipt_id",
+      "memory_id",
+      "outcome",
+      "committed_at",
+      "replayed",
+      "current_status",
+      "retrieval_eligible",
+      "source_record_id",
+      "span_start",
+      "span_end",
+      "notice"
+    ],
+    "type": "object"
+  }
+}

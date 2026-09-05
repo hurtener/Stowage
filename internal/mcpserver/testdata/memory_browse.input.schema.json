@@ -1,15 +1,23 @@
 {
-  "type": "object",
+  "additionalProperties": false,
   "properties": {
-    "mode": {
+    "cursor": {
+      "description": "Opaque continuation token from the preceding page. Omit for the first page.",
       "type": "string"
     },
     "limit": {
+      "description": "Maximum results to return. Omit for the server default; request only the amount of context needed.",
       "type": "integer"
     },
-    "cursor": {
+    "mode": {
+      "description": "Recent lists newest-created memories first; superseded lists replaced values oldest first.",
+      "enum": [
+        "",
+        "recent",
+        "superseded"
+      ],
       "type": "string"
     }
   },
-  "additionalProperties": false
+  "type": "object"
 }

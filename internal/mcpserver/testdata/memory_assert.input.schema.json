@@ -1,27 +1,49 @@
 {
-  "type": "object",
+  "additionalProperties": false,
   "properties": {
     "action": {
-      "type": "string"
-    },
-    "memory_id": {
+      "description": "Select one of this operation's supported actions. Mutating actions change durable state.",
+      "enum": [
+        "add",
+        "update",
+        "delete"
+      ],
       "type": "string"
     },
     "content": {
-      "type": "string"
-    },
-    "kind": {
+      "description": "The text stored in this item. For ingestion it must be the actual verbatim interaction.",
       "type": "string"
     },
     "context": {
       "type": "string"
     },
+    "kind": {
+      "description": "The memory's semantic type. Remember defaults to fact; corrections inherit the inspected type.",
+      "enum": [
+        "",
+        "fact",
+        "preference",
+        "decision",
+        "gotcha",
+        "pattern",
+        "task",
+        "narrative",
+        "strategy",
+        "failure_mode"
+      ],
+      "type": "string"
+    },
+    "memory_id": {
+      "description": "A memory ID returned by Stowage. Do not invent one.",
+      "type": "string"
+    },
     "review": {
+      "description": "For the legacy assertion escape hatch: true leaves an unsupported assertion pending human/curator review.",
       "type": "boolean"
     }
   },
   "required": [
     "action"
   ],
-  "additionalProperties": false
+  "type": "object"
 }

@@ -362,6 +362,7 @@ func runMCP(args []string) {
 	var (
 		configPath string
 		httpAddr   string
+		catalog    = "agent"
 	)
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
@@ -371,6 +372,13 @@ func runMCP(args []string) {
 				os.Exit(2)
 			}
 			configPath = args[i+1]
+			i++
+		case "--catalog":
+			if i+1 >= len(args) || (args[i+1] != "agent" && args[i+1] != "full") {
+				fmt.Fprintln(os.Stderr, "stowage mcp: --catalog must be agent or full")
+				os.Exit(2)
+			}
+			catalog = args[i+1]
 			i++
 		case "--http":
 			if i+1 >= len(args) {
@@ -485,7 +493,11 @@ func runMCP(args []string) {
 		},
 	}
 
-	srv, err := mcpserver.New(server.Info{
+	constructor := mcpserver.New
+	if httpAddr == "" && catalog == "agent" {
+		constructor = mcpserver.NewAgent
+	}
+	srv, err := constructor(server.Info{
 		Name:    "stowage",
 		Title:   "Stowage Memory MCP Server",
 		Version: version.Version,
@@ -501,6 +513,11 @@ func runMCP(args []string) {
 		handler, hErr := srv.HTTPHandler(mcpHTTPOptions(cfg.Auth.Mode, cfg.Server.MCPTrustProxy))
 		if hErr != nil {
 			stk.Log.Error("stowage mcp: http handler", "err", hErr)
+			os.Exit(1)
+		}
+		handler, hErr = withAgentMCP(handler, svc, cfg.Auth.Mode, cfg.Server.MCPTrustProxy)
+		if hErr != nil {
+			stk.Log.Error("stowage mcp: agent catalog", "err", hErr)
 			os.Exit(1)
 		}
 		httpSrv := &http.Server{
@@ -975,7 +992,12 @@ func runServe(args []string) {
 		}
 		// SAME Authenticator as the REST API (D-067). Method-aware handshake auth
 		// in jwt mode (ae11/D-152); strict key auth otherwise.
-		mcpHTTPHandler = mcpAuthHandler(cfg.Auth.Mode, authn, mcpHandler)
+		dualHandler, agentErr := withAgentMCP(mcpHandler, mcpSvc, cfg.Auth.Mode, cfg.Server.MCPTrustProxy)
+		if agentErr != nil {
+			stk.Log.Error("stowage serve: agent catalog", "err", agentErr)
+			os.Exit(1)
+		}
+		mcpHTTPHandler = mcpAuthHandler(cfg.Auth.Mode, authn, dualHandler)
 	} else {
 		// Discoverability hint (a3, D-133): the MCP tool surface is opt-in. Say so on
 		// startup so an operator who expected MCP knows both knobs exist, without

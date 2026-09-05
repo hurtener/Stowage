@@ -1,21 +1,23 @@
 {
-  "type": "object",
+  "additionalProperties": false,
   "properties": {
-    "claim": {
-      "type": "string"
-    },
     "citations": {
+      "description": "Citation identifiers returned by retrieval that support the claim.",
+      "items": {
+        "type": "string"
+      },
       "type": [
         "null",
         "array"
-      ],
-      "items": {
-        "type": "string"
-      }
+      ]
+    },
+    "claim": {
+      "description": "The precise claim to test against its cited evidence.",
+      "type": "string"
     }
   },
   "required": [
     "claim"
   ],
-  "additionalProperties": false
+  "type": "object"
 }

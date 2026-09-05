@@ -1,21 +1,32 @@
 {
-  "type": "object",
+  "additionalProperties": false,
   "properties": {
-    "response_id": {
+    "citation": {
+      "description": "A citation handle returned by retrieval. Pass its identifier without the surrounding [cite:] marker.",
       "type": "string"
     },
     "memory_id": {
+      "description": "A memory ID returned by Stowage. Do not invent one.",
       "type": "string"
     },
-    "citation": {
+    "response_id": {
+      "description": "A retrieval response identifier returned by Stowage; used for attribution or audit, not a query.",
       "type": "string"
     },
     "signal": {
+      "description": "The observed quality signal, not an inference from overall task completion.",
+      "enum": [
+        "use",
+        "save",
+        "fail",
+        "noise",
+        "wrong_citation"
+      ],
       "type": "string"
     }
   },
   "required": [
     "signal"
   ],
-  "additionalProperties": false
+  "type": "object"
 }

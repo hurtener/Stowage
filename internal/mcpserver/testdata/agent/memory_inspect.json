@@ -1,0 +1,112 @@
+{
+  "description": "Inspect a memory or returned citation to see its exact source evidence, dates, current status and revision. Use before correcting a remembered value, resolving conflicting memories, or relying on a precise claim. Use only references returned by memory tools; do not invent IDs.",
+  "inputSchema": {
+    "additionalProperties": false,
+    "oneOf": [
+      {
+        "required": [
+          "memory_id"
+        ]
+      },
+      {
+        "required": [
+          "citation"
+        ]
+      }
+    ],
+    "properties": {
+      "citation": {
+        "description": "A citation handle returned by retrieval. Pass its identifier without the surrounding [cite:] marker.",
+        "minLength": 1,
+        "type": "string"
+      },
+      "memory_id": {
+        "description": "A memory ID returned by Stowage. Do not invent one.",
+        "minLength": 1,
+        "type": "string"
+      }
+    },
+    "type": "object"
+  },
+  "name": "memory_inspect",
+  "outputSchema": {
+    "additionalProperties": false,
+    "properties": {
+      "content": {
+        "type": "string"
+      },
+      "kind": {
+        "type": "string"
+      },
+      "memory_id": {
+        "type": "string"
+      },
+      "occurred_at": {
+        "type": "integer"
+      },
+      "revision": {
+        "type": "string"
+      },
+      "sources": {
+        "items": {
+          "additionalProperties": false,
+          "properties": {
+            "excerpt": {
+              "type": "string"
+            },
+            "occurred_at": {
+              "type": "integer"
+            },
+            "record_id": {
+              "type": "string"
+            },
+            "role": {
+              "type": "string"
+            },
+            "span_end": {
+              "type": "integer"
+            },
+            "span_start": {
+              "type": "integer"
+            }
+          },
+          "required": [
+            "record_id",
+            "span_start",
+            "span_end",
+            "excerpt",
+            "occurred_at",
+            "role"
+          ],
+          "type": "object"
+        },
+        "type": [
+          "null",
+          "array"
+        ]
+      },
+      "status": {
+        "type": "string"
+      },
+      "superseded_by_id": {
+        "type": "string"
+      },
+      "supersedes_id": {
+        "type": "string"
+      },
+      "warning": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "memory_id",
+      "content",
+      "kind",
+      "status",
+      "revision",
+      "occurred_at",
+      "sources"
+    ],
+    "type": "object"
+  }
+}

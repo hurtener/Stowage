@@ -1,12 +1,13 @@
 {
-  "type": "object",
+  "additionalProperties": false,
   "properties": {
     "memory_id": {
+      "description": "A memory ID returned by Stowage. Do not invent one.",
       "type": "string"
     }
   },
   "required": [
     "memory_id"
   ],
-  "additionalProperties": false
+  "type": "object"
 }

@@ -255,7 +255,7 @@ func (s *Server) handleRetrieve(w http.ResponseWriter, r *http.Request) {
 		DegradedView:        resp.DegradedView,
 		CacheHit:            resp.CacheHit,
 		API:                 resp.API,
-		Rendered:            retrieval.RenderReadBody(resp.Items),
+		Rendered:            retrieval.RenderReadResponse(resp),
 	})
 }
 

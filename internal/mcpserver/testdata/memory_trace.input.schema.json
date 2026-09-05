@@ -1,12 +1,13 @@
 {
-  "type": "object",
+  "additionalProperties": false,
   "properties": {
     "response_id": {
+      "description": "A retrieval response identifier returned by Stowage; used for attribution or audit, not a query.",
       "type": "string"
     }
   },
   "required": [
     "response_id"
   ],
-  "additionalProperties": false
+  "type": "object"
 }

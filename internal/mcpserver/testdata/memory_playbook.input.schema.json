@@ -1,9 +1,10 @@
 {
-  "type": "object",
+  "additionalProperties": false,
   "properties": {
     "session_id": {
+      "description": "An existing host session reference. Omit unless a session-specific operation requires it; verified host identity takes precedence.",
       "type": "string"
     }
   },
-  "additionalProperties": false
+  "type": "object"
 }

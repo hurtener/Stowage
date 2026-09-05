@@ -254,6 +254,10 @@ func New(cfg *config.Config, st store.Store, log *slog.Logger, reg *prometheus.R
 	// here is documentation, not a correctness requirement.
 	mux.HandleFunc("GET /v1/memories", srv.authMiddleware(srv.handleBrowseMemories, false))
 
+	// Source-backed explicit commands; authentication remains Pengui/keyring-owned.
+	mux.HandleFunc("POST /v1/remember", srv.authMiddleware(srv.handleRemember, false))
+	mux.HandleFunc("POST /v1/correct", srv.authMiddleware(srv.handleCorrect, false))
+
 	// Memory management — Phase 18 (D-064, D-065).
 	mux.HandleFunc("GET /v1/memories/{id}", srv.authMiddleware(srv.handleGetMemory, false))
 	mux.HandleFunc("POST /v1/memories/{id}/rollback", srv.authMiddleware(srv.handleRollbackMemory, false))

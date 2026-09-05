@@ -288,6 +288,9 @@ func buildSchemas(name string) (inJSON, outJSON []byte, err error) {
 		outJSON, err = marshal(out)
 	}
 
+	if err == nil {
+		inJSON, err = mcpserver.DescribeInputJSON(name, inJSON)
+	}
 	return inJSON, outJSON, err
 }
 

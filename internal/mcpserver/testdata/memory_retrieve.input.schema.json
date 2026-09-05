@@ -1,66 +1,101 @@
 {
-  "type": "object",
+  "additionalProperties": false,
   "properties": {
-    "query": {
-      "type": "string"
-    },
-    "limit": {
-      "type": "integer"
-    },
-    "from": {
-      "type": "integer"
-    },
-    "until": {
-      "type": "integer"
-    },
-    "kinds": {
-      "type": [
-        "null",
-        "array"
-      ],
-      "items": {
-        "type": "string"
-      }
-    },
-    "include_lanes": {
-      "type": "boolean"
-    },
-    "session_id": {
-      "type": "string"
-    },
     "debug": {
+      "description": "Operator diagnostic flag. Omit for ordinary recall.",
       "type": "boolean"
-    },
-    "response_id": {
-      "type": "string"
-    },
-    "profile": {
-      "type": "string"
-    },
-    "include_topics": {
-      "type": [
-        "null",
-        "array"
-      ],
-      "items": {
-        "type": "string"
-      }
     },
     "exclude_topics": {
+      "description": "Optional topic keys to exclude from the caller's results. A relevance filter, never an access boundary.",
+      "items": {
+        "type": "string"
+      },
       "type": [
         "null",
         "array"
-      ],
+      ]
+    },
+    "from": {
+      "description": "Inclusive lower time bound as Unix milliseconds, not seconds. Omit for no lower bound.",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "include_lanes": {
+      "description": "Operator diagnostic: include retrieval-channel details. Omit for ordinary recall.",
+      "type": "boolean"
+    },
+    "include_topics": {
+      "description": "Optional topic keys to include in the caller's results. A relevance filter, never an access grant.",
       "items": {
         "type": "string"
-      }
+      },
+      "type": [
+        "null",
+        "array"
+      ]
+    },
+    "kinds": {
+      "description": "Optional memory-type filter. Omit to search all supported kinds.",
+      "items": {
+        "enum": [
+          "fact",
+          "preference",
+          "decision",
+          "gotcha",
+          "pattern",
+          "task",
+          "narrative",
+          "strategy",
+          "failure_mode"
+        ],
+        "type": "string"
+      },
+      "type": [
+        "null",
+        "array"
+      ]
+    },
+    "limit": {
+      "description": "Maximum results to return. Omit for the server default; request only the amount of context needed.",
+      "maximum": 100,
+      "minimum": 0,
+      "type": "integer"
+    },
+    "profile": {
+      "description": "Optional retrieval preset: precise, balanced or broad. Omit for configured behavior.",
+      "enum": [
+        "",
+        "precise",
+        "balanced",
+        "broad"
+      ],
+      "type": "string"
+    },
+    "query": {
+      "description": "Describe the current task and which earlier preferences, decisions, constraints or lessons would help. Use natural language, not database syntax.",
+      "minLength": 1,
+      "type": "string"
+    },
+    "response_id": {
+      "description": "A retrieval response identifier returned by Stowage; used for attribution or audit, not a query.",
+      "type": "string"
+    },
+    "session_id": {
+      "description": "An existing host session reference. Omit unless a session-specific operation requires it; verified host identity takes precedence.",
+      "type": "string"
+    },
+    "until": {
+      "description": "Upper time bound as Unix milliseconds, not seconds. Omit for no upper bound.",
+      "minimum": 0,
+      "type": "integer"
     },
     "view_name": {
+      "description": "An existing named topic view for this caller. Omit for the default view.",
       "type": "string"
     }
   },
   "required": [
     "query"
   ],
-  "additionalProperties": false
+  "type": "object"
 }

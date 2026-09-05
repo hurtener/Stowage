@@ -1,18 +1,29 @@
 {
-  "type": "object",
+  "additionalProperties": false,
   "properties": {
     "action": {
-      "type": "string"
-    },
-    "session_id": {
-      "type": "string"
-    },
-    "query": {
+      "description": "Select one of this operation's supported actions. Mutating actions change durable state.",
+      "enum": [
+        "",
+        "list",
+        "accept",
+        "dismiss"
+      ],
       "type": "string"
     },
     "id": {
+      "description": "An existing returned item identifier for this operation.",
+      "type": "string"
+    },
+    "query": {
+      "description": "Describe the current task and which earlier preferences, decisions, constraints or lessons would help. Use natural language, not database syntax.",
+      "minLength": 1,
+      "type": "string"
+    },
+    "session_id": {
+      "description": "An existing host session reference. Omit unless a session-specific operation requires it; verified host identity takes precedence.",
       "type": "string"
     }
   },
-  "additionalProperties": false
+  "type": "object"
 }

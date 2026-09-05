@@ -1,10 +1,16 @@
 {
-  "type": "object",
+  "additionalProperties": false,
   "properties": {
-    "memory_id": {
+    "action": {
+      "description": "Select one of this operation's supported actions. Mutating actions change durable state.",
+      "enum": [
+        "confirm",
+        "reject"
+      ],
       "type": "string"
     },
-    "action": {
+    "memory_id": {
+      "description": "A memory ID returned by Stowage. Do not invent one.",
       "type": "string"
     }
   },
@@ -12,5 +18,5 @@
     "memory_id",
     "action"
   ],
-  "additionalProperties": false
+  "type": "object"
 }
