@@ -1,0 +1,62 @@
+name: agent-memory-baseline
+
+on:
+  pull_request:
+    paths:
+      - 'internal/mcpserver/**'
+      - 'internal/reconcile/**'
+      - 'internal/retrieval/**'
+      - 'eval/agent-use/**'
+      - '.github/workflows/agent-memory-baseline.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  baseline:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: proposal
+      - uses: actions/checkout@v4
+        with:
+          ref: ab7d3a2c0eb3a4c7230d508e5a45dd6996005b38
+          path: baseline
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: baseline/go.mod
+          cache-dependency-path: baseline/go.sum
+      - name: Preserve unmodified baseline and provenance
+        shell: bash
+        run: |
+          mkdir -p evidence
+          git -C baseline archive --format=tar HEAD > evidence/source.tar
+          git -C baseline rev-parse HEAD > evidence/commit.txt
+          date -u +%FT%TZ > evidence/captured_at.txt
+          go version > evidence/toolchain.txt
+          cp proposal/eval/agent-use/capture_test.go.txt baseline/internal/mcpserver/agent_baseline_capture_test.go
+      - name: Capture actual MCP catalog before implementation changes
+        working-directory: baseline
+        env:
+          STOWAGE_AGENT_CATALOG_OUTPUT: ../evidence/catalog.json
+        run: go test -count=1 -run '^TestCaptureAgentBaselineCatalog$' ./internal/mcpserver
+      - name: Record baseline service behavior
+        working-directory: baseline
+        shell: bash
+        run: |
+          set -o pipefail
+          go test -race -count=1 -json ./internal/mcpserver ./internal/retrieval ./internal/reconcile | tee ../evidence/tests.jsonl
+      - name: Record evaluation limitations
+        if: always()
+        shell: bash
+        run: |
+          printf '%s\n' '{"kind":"service-contract-baseline","agent_selection_evaluation":"not_run","reason":"No live model credentials are provided to this read-only CI job. Contract and handler tests must not be reported as spontaneous agent tool-selection rates."}' > evidence/evaluation-status.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: agent-memory-baseline
+          path: evidence/
+          retention-days: 30
+          if-no-files-found: error

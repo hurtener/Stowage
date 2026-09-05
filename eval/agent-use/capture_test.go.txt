@@ -1,0 +1,45 @@
+// This fixture is copied into the PINNED baseline checkout by the baseline CI
+// job. It does not alter production source or estimate agent-selection rates.
+package mcpserver_test
+
+import (
+	"context"
+	"encoding/json"
+	"os"
+	"testing"
+
+	"github.com/hurtener/dockyard/runtime/server"
+	"github.com/hurtener/stowage/internal/mcpserver"
+	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
+)
+
+func TestCaptureAgentBaselineCatalog(t *testing.T) {
+	path := os.Getenv("STOWAGE_AGENT_CATALOG_OUTPUT")
+	if path == "" {
+		t.Fatal("STOWAGE_AGENT_CATALOG_OUTPUT is required")
+	}
+	srv, err := mcpserver.New(server.Info{Name: "stowage-baseline", Version: "ab7d3a2c"}, newTestServices(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	client := mcpsdk.NewClient(&mcpsdk.Implementation{Name: "baseline", Version: "1"}, nil)
+	session, err := client.Connect(ctx, srv.ServeInMemory(ctx), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = session.Close() }()
+	catalog, err := session.ListTools(ctx, &mcpsdk.ListToolsParams{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := json.MarshalIndent(catalog, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, append(data, '\n'), 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("captured %d real MCP tool definitions", len(catalog.Tools))
+}
