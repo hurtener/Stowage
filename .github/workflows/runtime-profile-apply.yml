@@ -1,0 +1,30 @@
+name: runtime-profile-apply
+on:
+  pull_request:
+    paths: ['scripts/dev/runtime-profile-apply.py', '.github/workflows/runtime-profile-apply.yml']
+permissions:
+  contents: write
+jobs:
+  apply:
+    if: github.event.pull_request.head.repo.full_name == 'hurtener/Stowage' && github.event.pull_request.head.ref == 'feat/agent-memory-surface'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Apply reviewed CLI and documentation edits and test
+        run: python3 scripts/dev/runtime-profile-apply.py
+      - name: Commit only the reviewed changes to this PR branch
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git config commit.gpgsign false
+          git add cmd/stowage/main.go internal/mcpserver/runtime*.go cmd/stowage/mcp_agent*.go README.md CHANGELOG.md RFC-001-Stowage.md docs scripts/smoke/phase-ae13.sh
+          if ! git diff --cached --quiet; then
+            git commit -m 'fix(memory): wire runtime profile selection and correct Pengui rollout contract'
+            git push origin HEAD:refs/heads/feat/agent-memory-surface
+          fi

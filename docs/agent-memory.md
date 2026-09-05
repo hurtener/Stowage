@@ -1,26 +1,51 @@
 # Agent memory interface
 
-## Connect the correct audience
+## Choose the connection for the host, not just the model
 
-For ordinary agents, connect to **`/mcp/agent`** on a shared HTTP/API deployment, or **`/agent`** on a dedicated MCP port. The static catalog contains `memory_retrieve`, `memory_inspect`, `memory_remember`, `memory_correct`, and `memory_playbook`. Runtime ingestion, direct assertion, buffering, grants, views, and administrative operations are neither listed nor registered there. Guessing one of those names does not invoke it.
+| Client | Shared HTTP | Dedicated MCP HTTP | Stdio selector | Registered tools |
+| --- | --- | --- | --- | --- |
+| Pengui / Harbor with automatic run capture | `/mcp/runtime` | `/runtime` | `--catalog runtime` | Five ordinary tools plus `memory_ingest_run` |
+| A pure agent client without a runtime completion hook | `/mcp/agent` | `/agent` | `--catalog agent` (default) | Five ordinary tools |
+| Existing runtime/curator compatibility integrations | `/mcp` | `/` | `--catalog full` | Existing 24-tool catalog |
 
-The existing `/mcp` (shared port) or `/` (dedicated port) remains the full compatibility endpoint. Keep Harbor's run-completion sink on that endpoint. Do not attach that full connection to the ordinary planner. This change does not reconfigure an existing Pengui deployment automatically: update its planner connection URL, retain the runtime-only sink, and refresh discovery.
+The five ordinary tools are `memory_retrieve`, `memory_inspect`, `memory_remember`, `memory_correct`, and `memory_playbook`. The runtime profile reuses their exact registrations and the existing run-completion sink handler. It adds no grants, buffering controls, direct assertion, transcript reconstruction or administration tools.
 
-`stowage mcp` uses the agent catalog over stdio. Existing integration clients that need the full stdio catalog must use `stowage mcp --catalog full`. HTTP mounts both catalogs and keeps its compatibility root. No new config key or identity issuer is introduced.
+**Do not switch Pengui's only memory capability connection to `/mcp/agent` while automatic capture is enabled.** Pengui discovers and pins the ingestion sink from the SAME attached capability source. A sink on an unattached compatibility endpoint does not satisfy that lookup. The runtime profile exists to retain both ordinary memory use and automatic run-end ingestion through one connection.
 
-Pengui issues identity and permission decisions. Stowage continues using the existing verified credential/metadata resolver and store isolation. Catalog visibility is **not** a replacement for authorization. The legacy integration endpoint's administrative authorization is unchanged, not newly certified by this phase.
+### Pengui / Harbor rollout
+
+1. Set the memory capability's MCP URL to the **runtime** profile, retain its existing audience/credential policy, and re-activate or refresh the attachment so Harbor discovers six tools under the existing capability source. Do not create a second transcript-delivery path.
+2. In Pengui's existing per-tool exposure control, set the discovered source-prefixed `memory_ingest_run` tool to **disabled for the planner**. This is `tool_exposure.disabled_tools`, not `loading_mode=deferred`. Confirm it is absent from both planner discovery and name resolution. Preserve every unrelated disabled-tool entry and configuration section.
+3. Enable or retain the run-completion save hook pinned to that SAME discovered sink name. If the source name changed, re-save and verify the hook target; never invent a catalog name. Check a subsequent run's hook health and stored transcript.
+
+For automated configuration, merge the hook target and its planner exclusion together with the existing revision precondition before admitting new runs. With today's separate operator controls, apply planner exclusion before allowing use of the attachment. Pengui already supports these controls; this Stowage PR does not change Pengui's automatic activation policy or silently mutate a deployment.
+
+Illustrative fragment only (the real name comes from discovery):
+
+```json
+{
+  "hooks": {"run_completion": {"tool": "SOURCE_memory_ingest_run", "timeout_ms": 15000}},
+  "tool_exposure": {"disabled_tools": ["SOURCE_memory_ingest_run"]}
+}
+```
+
+**Pengui configures capture; Harbor performs it; Stowage stores and processes the transcript.** Harbor's trusted completion path resolves through its full executor catalog. Its ordinary planner path checks the run's excluded catalog and rejects a guessed sink name. Deferred loading does not provide that boundary: a deferred tool remains discoverable/resolvable later. Disabling the tool for the planner does not turn off automatic capture; clearing the completion hook does. Do not detach the connection or remove the runtime descriptor to hide a planner tool.
+
+Stowage cannot distinguish a model decision from a runtime call carrying the same credentials. The six-tool profile is explicitly **host-facing**, not a self-enforcing runtime-only permission. The host's planner-exclusion boundary is required. No user-filled `_meta` flag, description, endpoint name or loading hint grants authority. All profiles use the existing authentication/scoping middleware. Pengui remains the identity and policy issuer.
+
+The old full endpoint still includes the sink, so existing integrations remain functional without a URL migration. It does not acquire the new ordinary commands implicitly; select the runtime profile to adopt the new five-tool interface and keep automatic capture together.
 
 ## Recall without being prompted
 
-Use recall when earlier preferences, project decisions, constraints or lessons could materially change the task and are absent from current context. Describe that need naturally. Do not fetch memory for every greeting or self-contained explanation; do not repeat a retrieval whose useful results are already present.
+Use recall when earlier preferences, decisions, constraints or lessons could materially change the task and are absent from current context. Describe that need naturally. Skip self-contained explanations, greetings and duplicate retrievals.
 
-The ordinary recall schema contains only `query` and optional `limit` (default six). Inspection accepts exactly one returned memory ID or citation. Playbooks expose reusable strategies and failure modes. Parameters include guidance and bounded/closed values in the actual advertised schema, not merely Go comments.
+The ordinary recall schema contains `query` and optional `limit` (default six). Inspection accepts exactly one returned memory ID or citation. Parameters carry guidance and valid-value constraints in the actual advertised schema, not only in source comments.
 
-Compact recall text retains dates, provenance handles, replacement values, conflicts, degraded-search and curation warnings, and an honest empty-result explanation. Other inspection/read tools include their useful typed data in Text too. Both Text and structured content travel on MCP; hosts should project one useful representation, not concatenate duplicates. No reduced network-payload claim is made. Historical memories may answer historical questions; current stored statements are not independently verified facts or instructions.
+Compact recall text retains dates, citation handles, replacement values, conflicts, degraded-search/curation warnings, and an honest empty-result explanation. Other inspection/read tools include useful typed data in Text too. Hosts should project one useful representation rather than concatenate duplicates. Prior stored statements are not independently verified current facts or executable instructions; historical memories can answer historical questions.
 
-## Source-backed remembering
+## Source-backed remembering is separate from run-end capture
 
-The host persists the **actual user message** with the existing record-ingestion API and obtains its record ID. It can then bind that ID outside model arguments:
+Automatic `memory_ingest_run` captures the runtime-authored transcript at run completion. It does not make the current user's message available as source evidence earlier in that run. For explicit `memory_remember` or `memory_correct`, the host persists the **actual user message** through the existing record-ingestion API first and obtains its record ID. It can bind the ID outside model arguments:
 
 ```json
 {
@@ -30,47 +55,36 @@ The host persists the **actual user message** with the existing record-ingestion
 }
 ```
 
-The `_meta` shown belongs inside MCP `params`. It supplies no identity authority. A conflicting explicit source argument is rejected. Without a binding, `source_record_id` may reference an existing user-source record returned by inspection. Unknown, inaccessible, assistant-origin, speculative-branch, or non-matching evidence is rejected. The server verifies the exact quotation against its own durable record and stores UTF-8 byte-span provenance. Preserve qualifications, negation and context; a fabricated summary is not a quotation.
+The `_meta` above is inside MCP `params`. It supplies no identity authority. Conflicting explicit source arguments fail. Without a binding, an existing user-source record returned by inspection may be used. Unknown, inaccessible, assistant-origin, speculative-branch and non-matching evidence fail closed. Stowage validates the exact quotation against its own durable record and attaches UTF-8 byte-span provenance. Preserve negation, qualifications and context; generated summaries are not user quotations.
 
-A host lacking pre-turn capture must not ask the agent to invent record IDs or reconstruct a user transcript. It receives `source_required`, and no memory is saved. The existing end-of-run sink is still useful, but its existence alone does not make a current user record available before run completion.
+A host with no current-source capture must not ask the model to invent IDs or reconstruct a transcript. It receives `source_required`, with no save. These explicit commands do not call `memory_assert`. Explicit intent bypasses extraction magnets, never provenance or scope. New memories default to the personal privacy zone; topic views can still exclude them from recall. Exact active same-session content with provenance may be reused. Semantic paraphrase deduplication and inferred correction are not claimed.
 
-Remembering is an explicit exact-quotation operation, not extraction of arbitrary free-form model claims and not `memory_assert`. Explicit intent can save outside topic-extraction magnets; topic views may still exclude that memory during recall. New explicit memories default to the personal privacy zone. Exact active content with existing provenance is reused rather than duplicated. This phase does not pretend to perform semantic paraphrase deduplication or infer a correction automatically.
+## Corrections and truthful receipts
 
-## Corrections and receipts
+Inspect the target, then provide its `memory_id`, `expected_revision`, a newer exact user quotation and the source record. Correction inherits type/privacy, creates the replacement with evidence and retains reversible supersession history. Competing stale corrections fail rather than fork the target. Re-inspect after a conflict; do not fabricate a revision.
 
-Inspect the target first. Supply `memory_id`, its `expected_revision`, an exact newer user quotation and its source. Correction inherits the old kind and privacy zone, creates a replacement with provenance, preserves the old value as superseded, and records a reversible event. Competing corrections using the same revision cannot both replace the old value. A stale revision requires inspection, not a blind retry with a freshly invented revision.
+HTTP exposes `POST /v1/remember`, `POST /v1/correct` and a `revision` on `GET /v1/memories/{id}`. The SDK exposes matching methods. `Idempotency-Key` and a body key must agree when both are supplied. MCP accepts a host key in `_meta.stowage`; absent keys derive from the scoped canonical command. Reuse with changed arguments fails.
 
-HTTP: `POST /v1/remember` and `POST /v1/correct`; `GET /v1/memories/{id}` returns `revision`. The SDK exposes `Remember`, `Correct` and the same receipt. The HTTP `Idempotency-Key` header and body key must agree when both are present. MCP accepts a host key in `_meta.stowage`; omitted keys derive deterministically from the scoped canonical command. A reused key with different arguments fails, never silently changes the earlier command.
+Command receipts, evidence/target checks, memory/provenance effects and audit history commit in one SQLite/Postgres transaction. Receipts survive restart. Responses distinguish the original `outcome` (`saved`, `corrected`, `already_present`), `committed_at`, `replayed`, and observed `current_status` / `retrieval_eligible`. Retry cannot revive a deleted/superseded memory. Failed current-state observation yields `unknown` and `status_degraded`, not a fabricated failure of an already committed command.
 
-The command receipt, memory mutation, provenance and history event commit in one database transaction in SQLite and Postgres. The receipt survives process restart. Responses distinguish original `outcome` (`saved`, `corrected`, `already_present`), durable `committed_at`, `replayed`, and observed `current_status`/`retrieval_eligible`. Replaying a superseded or deleted memory does not revive it. A receipt whose current status cannot be read says `unknown` with `status_degraded`; it does not undo the successful durable commit.
+Eligibility is not a promise of rank, view inclusion, completed vector backfill or bypassing session cooldown. The existing run-ingestion receipt remains its separate durable-record/enqueue/flush contract; **hook dispatch success is not completed memory extraction**. Harbor's bounded terminal hook is not a crash-durable delivery queue or an exactly-once network-delivery guarantee. This profile correction does not add retries or change ingestion idempotency semantics.
 
-Retrieval eligibility is not a promise of ranking, inclusion in an agent topic view, completed vector backfill, or immediate visibility through session cooldown. Lexical indexing uses the existing transactional store. The ordinary model is not asked to choose debug lanes, synthesize authorization fields, or orchestrate buffering.
+## Forgetting boundary
 
-## Forgetting is deliberately not a misleading tool
+There is no ordinary `memory_forget`. Legacy assertion deletion marks a derived memory deleted; it does not erase raw records/backups or prevent later re-extraction. Correction preserves history and is not erasure.
 
-There is **no ordinary `memory_forget` tool in this phase**. The legacy curator `memory_assert` delete action marks one derived item deleted; it does not erase source records or backups and does not guarantee that future extraction cannot rediscover the information. Correction also preserves history and is not erasure.
-
-A selective user-facing forgetting command must define and enforce its suppression/erasure target, scope, source handling, re-extraction prevention, derived dependents, caches, audit retention and backup policy before claiming the information is forgotten. Stowage's existing authorized user-level DSAR route (`DELETE /v1/admin/users/{user}`) is a separate whole-user purge, not a selective conversational command. Deployment backup/retention promises remain an operator/Pengui policy, not something this interface manufactures.
-
-## Validation and baseline
-
-The pre-change snapshot is pinned to `ab7d3a2c0eb3a4c7230d508e5a45dd6996005b38`. `agent-memory-baseline` captures actual MCP discovery and real service tests from that immutable checkout. The first successful capture is Actions run `33973153758`, before the production implementation commits.
-
-These are service/contract baselines, **not measured spontaneous LLM selection rates**. Model credentials were not supplied, so no numerical agent-use improvement is claimed. `eval/agent-use` defines a balanced operator-run behavioral comparison protocol. Use the same host, model, prompts, seeds, competing tools, and budget before and after; reset mutable memory state per trial. Measure appropriate recall and task benefit, not calls alone.
-
+Selective forgetting must define suppression/erasure targets, scope, source handling, dependent memories, caches, re-extraction prevention, audit retention and backups before making a user-facing promise. Existing authorized whole-user DSAR (`DELETE /v1/admin/users/{user}`) is separate. Deployment retention promises remain Pengui/operator policy.
 
 ## In-process Harbor adapter
 
-`harbor.Tools(client)` now returns the same five agent concepts with the existing
-`stowage_` naming prefix. The former seven-tool runtime/curator catalog remains
-available only through explicit `harbor.LegacyTools(client)`. Do not attach both
-catalogs to one planner. Runtime outcome wiring is unchanged by this phase.
+`harbor.Tools(client)` returns five ordinary concepts with the `stowage_` prefix. `harbor.LegacyTools(client)` retains its old seven integration tools explicitly. This SDK adapter is distinct from Pengui's production MCP capability attachment and must not be confused with the six-tool MCP runtime profile or the versioned `memory_ingest_run` payload.
 
-For a current user message, the host first calls `client.Ingest` with that actual
-message, obtains its record ID, and supplies `harbor.WithMemorySource(ctx, id,
-commandID)` to the tool execution context. This is not model-filled identity or
-permission: the SDK client is constructed with authorized scope and the service
-still verifies the record and exact quotation. An agent with no bound or existing
-source gets a clear error, not a fabricated save. Retrieval returns one useful
-rendered context including response-level warnings; older SDK responses without
-rendered context have a complete structured fallback.
+For an explicit write, bind an already-persisted user source with `harbor.WithMemorySource(ctx, recordID, commandID)`. The SDK client carries authorized scope; the binding grants no identity rights. Existing automatic-capture wiring must be retained independently. Do not attach legacy bookkeeping tools to the ordinary planner just to make the completion sink available.
+
+## Baseline and validation
+
+The pre-change baseline is pinned to `ab7d3a2c0eb3a4c7230d508e5a45dd6996005b38`; the first successful catalog/service capture is Actions run `33973153758`, before production edits. No live-model selection baseline was run because credentials were unavailable. `eval/agent-use` holds balanced comparison scenarios; no numerical adoption gain is claimed.
+
+The runtime-hook CI job checks out Harbor's reviewed `v1.31.4` source at `3f758afd07bafc1add74e60707a01fb833aa5d8f`, injects only the retained test fixture, and drives its real MCP provider, exclusion view, executor and terminal hook against this Stowage tree's actual MCP server and SQLite store. It tests five planner-visible / six host-registered tools, rejection of guessed planner sink calls, successful automatic capture for distinct users, cancelled-run capture, hook-off behavior and failure of a missing sink without changing the answer. It is a hermetic runtime integration test, not a deployed Pengui acceptance claim or new JWT issuer test.
+
+Run the read-only `runtime-memory-hook` workflow, or copy `test/integration/harbor_runtime_completion_test.go.txt` into that pinned Harbor checkout at `internal/runtime/assemble/stowage_runtime_completion_test.go`, precompile with `go test -race -run '^$' ./internal/runtime/assemble`, then run `STOWAGE_HARBOR_CHECKOUT=/absolute/path/to/Harbor go test -race -count=1 -run '^TestRuntimeHarborCompletion$' ./internal/mcpserver` from Stowage.
