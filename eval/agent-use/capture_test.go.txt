@@ -16,7 +16,7 @@ import (
 func TestCaptureAgentBaselineCatalog(t *testing.T) {
 	path := os.Getenv("STOWAGE_AGENT_CATALOG_OUTPUT")
 	if path == "" {
-		t.Fatal("STOWAGE_AGENT_CATALOG_OUTPUT is required")
+		t.Skip("catalog capture runs separately with STOWAGE_AGENT_CATALOG_OUTPUT")
 	}
 	srv, err := mcpserver.New(server.Info{Name: "stowage-baseline", Version: "ab7d3a2c"}, newTestServices(t))
 	if err != nil {
