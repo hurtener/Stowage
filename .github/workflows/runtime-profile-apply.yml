@@ -1,9 +1,12 @@
 name: runtime-profile-apply
 on:
   pull_request:
-    paths: ['scripts/dev/runtime-profile-apply.py', '.github/workflows/runtime-profile-apply.yml']
+    paths: ['scripts/dev/runtime-profile-apply.py', 'scripts/dev/runtime-routing-apply.py', '.github/workflows/runtime-profile-apply.yml']
 permissions:
   contents: write
+concurrency:
+  group: runtime-profile-apply-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
 jobs:
   apply:
     if: github.event.pull_request.head.repo.full_name == 'hurtener/Stowage' && github.event.pull_request.head.ref == 'feat/agent-memory-surface'
@@ -16,15 +19,18 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
-      - name: Apply reviewed CLI and documentation edits and test
-        run: python3 scripts/dev/runtime-profile-apply.py
+      - name: Apply reviewed CLI, routing and documentation edits
+        run: |
+          python3 scripts/dev/runtime-routing-apply.py
+          python3 scripts/dev/runtime-profile-apply.py
+          go test -race -count=1 -run '^TestSharedMCPProfiles' ./cmd/stowage
       - name: Commit only the reviewed changes to this PR branch
         run: |
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git config commit.gpgsign false
-          git add cmd/stowage/main.go internal/mcpserver/runtime*.go cmd/stowage/mcp_agent*.go README.md CHANGELOG.md RFC-001-Stowage.md docs scripts/smoke/phase-ae13.sh
+          git add cmd/stowage/main.go internal/mcpserver/runtime*.go cmd/stowage/mcp_agent*.go cmd/stowage/mcp_shared*.go README.md CHANGELOG.md RFC-001-Stowage.md docs scripts/smoke/phase-ae13.sh .github/workflows/runtime-memory-hook.yml
           if ! git diff --cached --quiet; then
-            git commit -m 'fix(memory): wire runtime profile selection and correct Pengui rollout contract'
+            git commit -m 'fix(memory): wire runtime profile and preserve shared-port profile routing'
             git push origin HEAD:refs/heads/feat/agent-memory-surface
           fi
