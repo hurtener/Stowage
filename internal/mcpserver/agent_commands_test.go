@@ -8,12 +8,24 @@ import (
 
 	"github.com/hurtener/dockyard/runtime/server"
 	"github.com/hurtener/stowage/internal/reconcile"
+	"github.com/hurtener/stowage/internal/retrieval"
 	"github.com/hurtener/stowage/internal/store"
+	"github.com/hurtener/stowage/internal/vindex"
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 func TestAgentExplicitCommandsOnTheWire(t *testing.T) {
 	svc := newFullServices(t)
+	// Unlike the lightweight query-only fixture, citation inspection requires
+	// the durable injection writer used by the production boot wiring.
+	vi := vindex.New(svc.Store.Vectors(), 8, "mock-embed")
+	svc.Retriever = retrieval.NewWithInjections(svc.Store.Memories(), svc.Store.Records(), vi, svc.Gateway, svc.Store.Injections(), svc.Log)
+	drained := false
+	defer func() {
+		if !drained {
+			svc.Retriever.Close()
+		}
+	}()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	for _, rec := range []store.Record{
@@ -78,6 +90,10 @@ func TestAgentExplicitCommandsOnTheWire(t *testing.T) {
 	}
 	var recall RetrieveOutput
 	call("memory_retrieve", map[string]any{"query": "authentication Pengui"}, &recall)
+	// Injection receipts are asynchronous by the existing retrieval contract.
+	// Drain deterministically rather than use sleeps or fabricate stored handles.
+	svc.Retriever.Close()
+	drained = true
 	for _, item := range recall.Items {
 		if item.Citation != "" {
 			var evidence InspectOutput
