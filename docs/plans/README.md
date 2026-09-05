@@ -511,3 +511,8 @@ under the protocol and live wave-board in `docs/plans/ae-implementation-roadmap.
 (workers = Sonnet; dual adversarial review; orchestrator fixes same-wave; mandatory
 live 3-surface SDK/HTTP/MCP validation; merge on web-CI green; roadmap marked per
 wave). The orchestrator keeps that file's checkboxes current.
+
+
+### ae13 — Agent interface and source-backed explicit commands
+
+See [ae13](phase-ae13-agent-interface.md) and [integration contract](../agent-memory.md).

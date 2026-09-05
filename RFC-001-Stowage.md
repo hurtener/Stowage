@@ -1061,3 +1061,65 @@ MCP App, managed-cloud control plane.
   retention class is exactly that of the source day-one tables (no separate trace
   store/retention); export bundles are ed25519-signed with an operator-provided,
   env-indirected key (`trace.signing_key`).
+
+
+## Agent-facing interface and explicit-write amendment (ae13)
+
+The ordinary agent surface is a five-tool projection (retrieve, inspect,
+remember, correct, playbook), separately mounted from the retained full runtime/
+curator surface. Stdio defaults to the agent projection with an explicit full
+compatibility option. HTTP uses static catalogs, identity-independent discovery,
+and the existing authentication/scoping seam. No new issuer or permissions
+inference is authorized. See `docs/agent-memory.md` for the binding endpoint and
+source-binding contract.
+
+Explicit remember/correct commands are a new provenance-preserving lifecycle
+path, not aliases for direct assertion. They commit an exact quotation from a
+durable, owned user record; no generated summary can claim user provenance.
+Corrections require the inspected semantic revision and newer source evidence,
+retain the old value and a reversible event, and fail on competing edits. Store
+CommitSet carries an optional command guard. Receipt reservation in the existing
+events table, evidence and revision checks, memory/provenance changes and audit
+events occur in one SQLite/Postgres transaction. Receipt IDs are deterministic
+per owner scope and host key (canonical request digest when omitted); reuse with
+another payload fails. No new schema table or migration is necessary.
+
+Explicit intent bypasses extraction magnets, never scopes or provenance. Exact
+active same-session content with provenance may be reused. Vector backfill and
+ranking are not prerequisites for the durable receipt; current status and
+retrieval eligibility are separately observed. Current topic curation and session
+cooldown still apply. A replay does not re-save a deleted/superseded value.
+
+Model-facing projections retain limitations, conflicts and evidence; evaluation
+rendering remains independently pinned. Historical evidence may answer historical
+questions and never becomes a higher-priority instruction. The service/contract
+baseline is captured from the immutable pre-change commit; no spontaneous model
+selection result is inferred from deterministic tests.
+
+No selective forgetting tool is exposed until suppression, source retention,
+re-extraction, dependents, caches, audit and backup policy have a complete
+contract. Derived-item deletion and reversible correction are not erasure;
+existing authorized whole-user DSAR remains a separate capability.
+
+
+## Runtime-completion compatibility correction (ae13, PR #112)
+
+The five-tool ordinary projection is preserved, but it is NOT the correct sole
+connection for Pengui automatic capture. Pengui discovers the completion target
+on the same attached memory capability; a sink on an unattached full endpoint
+is not usable. NewRuntime therefore composes the same five registrations with
+memory_ingest_run (six host-facing tools) at /mcp/runtime or /runtime and through
+--catalog runtime. The existing full catalog and versioned sink are unchanged.
+
+The host excludes the sink from planner List AND Resolve/dispatch using Harbor's
+existing DisabledTools projection, while its trusted completion path resolves
+the full catalog. Deferred loading does not close planner execution. This is
+host-governed exposure, NOT new provider authorization; no _meta marker can grant
+runtime rights. Pengui configures the hook, Harbor executes it, Stowage processes
+the transcript. Disabling planner access does not disable automatic capture.
+
+This correction supersedes ae13's earlier endpoint-only Pengui migration advice.
+It does not automatically modify Pengui activation defaults or deployed revisions;
+operators must pair sink exclusion with the existing save-hook control. It adds
+no second issuer, duplicate transcript collector, new ingestion payload, retries,
+or exactly-once delivery promise. See docs/agent-memory.md for the safe sequence.

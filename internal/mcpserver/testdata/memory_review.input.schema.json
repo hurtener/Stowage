@@ -1,21 +1,30 @@
 {
-  "type": "object",
+  "additionalProperties": false,
   "properties": {
     "action": {
+      "description": "Select one of this operation's supported actions. Mutating actions change durable state.",
+      "enum": [
+        "list",
+        "approve",
+        "reject"
+      ],
+      "type": "string"
+    },
+    "cursor": {
+      "description": "Opaque continuation token from the preceding page. Omit for the first page.",
       "type": "string"
     },
     "id": {
+      "description": "An existing returned item identifier for this operation.",
       "type": "string"
     },
     "limit": {
+      "description": "Maximum results to return. Omit for the server default; request only the amount of context needed.",
       "type": "integer"
-    },
-    "cursor": {
-      "type": "string"
     }
   },
   "required": [
     "action"
   ],
-  "additionalProperties": false
+  "type": "object"
 }

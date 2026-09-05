@@ -9,7 +9,6 @@ import (
 	"net/http"
 
 	"github.com/hurtener/dockyard/runtime/server"
-	"github.com/hurtener/dockyard/runtime/tool"
 
 	"github.com/hurtener/stowage/internal/auth"
 	"github.com/hurtener/stowage/internal/gateway"
@@ -91,8 +90,8 @@ func New(info server.Info, svc *Services) (*server.Server, error) {
 		return nil, err
 	}
 
-	if err := tool.New[IngestInput, IngestOutput]("memory_ingest").
-		Describe("Ingest one or more verbatim interaction records into the caller's own Stowage memory scope. Contribute-mode (target_scope + contributor_user_id) writes into a pool-owner's scope when a covering contribute grant exists; without one the request is rejected (D-071).").
+	if err := declare[IngestInput, IngestOutput]("memory_ingest").
+		Describe(toolDescription("memory_ingest")).
 		Handler(makeIngestHandler(svc)).
 		Register(srv); err != nil {
 		return nil, err
@@ -106,140 +105,137 @@ func New(info server.Info, svc *Services) (*server.Server, error) {
 	// (D-140/D-124). One extraction buffer per run (buffer_key = run_id) with an
 	// eager best-effort flush. MCP-only tiering (the auto-save-target pattern is
 	// an MCP-host contract — D-153 §4).
-	if err := tool.New[IngestRunInput, IngestRunOutput]("memory_ingest_run").
-		Describe("Ingest a Harbor run-completion transcript as verbatim records (the run-completion-sink pattern, D-153). Accepts Harbor's pinned RunCompletionPayload format_version 1 (the run's identity quad, metadata, and ordered two-role conversation[]); format_version != 1 is rejected loudly. Identity comes from the verified per-call bearer + _meta — the payload's tenant_id/user_id are cross-checked and fail closed on a mismatch, never scope-authoritative. Every conversation entry lands as one verbatim record in order (both roles, nothing filtered); all records share buffer_key = run_id (one extraction buffer per run) and are eagerly flushed so extraction begins promptly.").
+	if err := declare[IngestRunInput, IngestRunOutput]("memory_ingest_run").
+		Describe(toolDescription("memory_ingest_run")).
 		Handler(makeIngestRunHandler(svc)).
 		Register(srv); err != nil {
 		return nil, err
 	}
 
-	if err := tool.New[RetrieveInput, RetrieveOutput]("memory_retrieve").
-		Describe("Retrieve relevant memories for a query using the four-lane (lexical+queries+structured+vector) retrieval pipeline. " +
-			"Returns a lean markdown reader body in the model-facing Text block (episode hooks + per-item [cite:…] drill handles for " +
-			"memory_drilldown) and the full typed result in Structured (D-142). The lean body shrinks the model's context, not the wire " +
-			"payload: both blocks travel, so a host reading both receives a larger payload, not a smaller one.").
+	if err := declare[RetrieveInput, RetrieveOutput]("memory_retrieve").
+		Describe(toolDescription("memory_retrieve")).
 		Handler(makeRetrieveHandler(svc)).
 		Register(srv); err != nil {
 		return nil, err
 	}
 
-	if err := tool.New[PlaybookInput, PlaybookOutput]("memory_playbook").
-		Describe("Assemble the deterministic, sectioned, utility-ranked, budget-packed memory playbook for the caller's scope: strategy and failure_mode memories first, then decision/gotcha/pattern building blocks, with provenance. LLM-free (mirrors GET /v1/playbook; D-072). session_id narrows to one session.").
+	if err := declare[PlaybookInput, PlaybookOutput]("memory_playbook").
+		Describe(toolDescription("memory_playbook")).
 		Handler(makePlaybookHandler(svc)).
 		Register(srv); err != nil {
 		return nil, err
 	}
 
-	if err := tool.New[EpisodesInput, EpisodesOutput]("memory_episodes").
-		Describe("Read the caller's episodes + their narratives (mirrors GET /v1/episodes; RFC §6b, D-080): most-recent-first list, or one episode when id is set, narrowed by session_id and the [from,until] time window. Deterministic + LLM-free.").
+	if err := declare[EpisodesInput, EpisodesOutput]("memory_episodes").
+		Describe(toolDescription("memory_episodes")).
 		Handler(makeEpisodesHandler(svc)).
 		Register(srv); err != nil {
 		return nil, err
 	}
 
-	if err := tool.New[BrowseInput, BrowseOutput]("memory_browse").
-		Describe("Walk the caller's memories deterministically and gateway-free (mirrors GET /v1/memories; ae5, D-143): mode=recent (default) returns the scope's memories most-recent-first (created_at DESC) via a new store method; mode=superseded returns the scope's superseded memories by reusing the EXISTING status query — an ordering asymmetry (superseded is OLDEST-first) accepted as the cost of not adding a new query (H4). Neither mode ranks by relevance — for that use memory_retrieve.").
+	if err := declare[BrowseInput, BrowseOutput]("memory_browse").
+		Describe(toolDescription("memory_browse")).
 		Handler(makeBrowseHandler(svc)).
 		Register(srv); err != nil {
 		return nil, err
 	}
 
-	if err := tool.New[CausalInput, CausalOutput]("memory_causal").
-		Describe("Walk the causal graph from a memory (mirrors GET /v1/causal; RFC §5.6/§6b, D-083): backward to its causes ('why did this happen'), forward to its effects, or both, with provenance at every hop. Deterministic + LLM-free.").
+	if err := declare[CausalInput, CausalOutput]("memory_causal").
+		Describe(toolDescription("memory_causal")).
 		Handler(makeCausalHandler(svc)).
 		Register(srv); err != nil {
 		return nil, err
 	}
 
-	if err := tool.New[VerifyInput, VerifyOutput]("memory_verify").
-		Describe("Verify that a claim is entailed by its cited memories (mirrors POST /v1/verify; RFC §6c, D-084): a schema-constrained gateway entailment check. Returns verdict (entailed|not_entailed|unclear) + confidence + explanation; degrades to unclear when the gateway is unreachable.").
+	if err := declare[VerifyInput, VerifyOutput]("memory_verify").
+		Describe(toolDescription("memory_verify")).
 		Handler(makeVerifyHandler(svc)).
 		Register(srv); err != nil {
 		return nil, err
 	}
 
-	if err := tool.New[ReviewInput, ReviewOutput]("memory_review").
-		Describe("List the scope's pending_review memories (uncited agent assertions) and approve (→active) or reject (→quarantined) them (RFC §6c, D-084). action: list | approve | reject.").
+	if err := declare[ReviewInput, ReviewOutput]("memory_review").
+		Describe(toolDescription("memory_review")).
 		Handler(makeReviewHandler(svc)).
 		Register(srv); err != nil {
 		return nil, err
 	}
 
-	if err := tool.New[TraceInput, traces.Bundle]("memory_trace").
-		Describe("Export the reasoning trace for a response_id (mirrors GET /v1/traces/{response_id}; RFC §6c, D-086): the memory-into-conclusion chain (query, injected memories, drill-down spans, typed links, verification verdicts) reconstructed from the day-one tables, as an optionally ed25519-signed bundle. Deterministic + LLM-free.").
+	if err := declare[TraceInput, traces.Bundle]("memory_trace").
+		Describe(toolDescription("memory_trace")).
 		Handler(makeTraceHandler(svc)).
 		Register(srv); err != nil {
 		return nil, err
 	}
 
-	if err := tool.New[DrilldownInput, DrilldownOutput]("memory_drilldown").
-		Describe("Drill down into the provenance spans of a memory or citation (mirrors POST /v1/drilldown).").
+	if err := declare[DrilldownInput, DrilldownOutput]("memory_drilldown").
+		Describe(toolDescription("memory_drilldown")).
 		Handler(makeDrilldownHandler(svc)).
 		Register(srv); err != nil {
 		return nil, err
 	}
 
-	if err := tool.New[FeedbackInput, FeedbackOutput]("memory_feedback").
-		Describe("Submit feedback on retrieved memories: use, save, fail, noise, or wrong_citation (mirrors POST /v1/feedback).").
+	if err := declare[FeedbackInput, FeedbackOutput]("memory_feedback").
+		Describe(toolDescription("memory_feedback")).
 		Handler(makeFeedbackHandler(svc)).
 		Register(srv); err != nil {
 		return nil, err
 	}
 
-	if err := tool.New[AssertInput, AssertOutput]("memory_assert").
-		Describe("Directly assert (add, update, or delete) a memory in the store, bypassing the ingestion pipeline.").
+	if err := declare[AssertInput, AssertOutput]("memory_assert").
+		Describe(toolDescription("memory_assert")).
 		Handler(makeAssertHandler(svc)).
 		Register(srv); err != nil {
 		return nil, err
 	}
 
-	if err := tool.New[TopicsInput, TopicsOutput]("memory_topics").
-		Describe("Manage extraction topics: list, upsert, or delete (mirrors GET/PUT/DELETE /v1/topics).").
+	if err := declare[TopicsInput, TopicsOutput]("memory_topics").
+		Describe(toolDescription("memory_topics")).
 		Handler(makeTopicsHandler(svc)).
 		Register(srv); err != nil {
 		return nil, err
 	}
 
 	// Reversibility tools (D-070) — single-purpose, mirroring the HTTP verbs.
-	if err := tool.New[GetInput, GetOutput]("memory_get").
-		Describe("Read a memory by id with its junctions and supersedes chain (mirrors GET /v1/memories/{id}).").
+	if err := declare[GetInput, GetOutput]("memory_get").
+		Describe(toolDescription("memory_get")).
 		Handler(makeGetHandler(svc)).
 		Register(srv); err != nil {
 		return nil, err
 	}
 
-	if err := tool.New[RollbackInput, RollbackOutput]("memory_rollback").
-		Describe("Roll back (invert) the newest reconciliation event for a memory, restoring its prior state (mirrors POST /v1/memories/{id}/rollback; D-064).").
+	if err := declare[RollbackInput, RollbackOutput]("memory_rollback").
+		Describe(toolDescription("memory_rollback")).
 		Handler(makeRollbackHandler(svc)).
 		Register(srv); err != nil {
 		return nil, err
 	}
 
-	if err := tool.New[ResolveInput, ResolveOutput]("memory_resolve").
-		Describe("Resolve a pending_confirmation memory: action=confirm promotes it to active (superseding any target); action=reject expires it (mirrors PATCH /v1/memories/{id}; D-065).").
+	if err := declare[ResolveInput, ResolveOutput]("memory_resolve").
+		Describe(toolDescription("memory_resolve")).
 		Handler(makeResolveHandler(svc)).
 		Register(srv); err != nil {
 		return nil, err
 	}
 
 	// Tier-A control verbs (D-071) — single-user, mirroring the HTTP routes.
-	if err := tool.New[FlushInput, FlushOutput]("memory_flush").
-		Describe("Flush a named buffer key with trigger explicit|session_end (mirrors POST /v1/buffers/{key}/flush; D-071).").
+	if err := declare[FlushInput, FlushOutput]("memory_flush").
+		Describe(toolDescription("memory_flush")).
 		Handler(makeFlushHandler(svc)).
 		Register(srv); err != nil {
 		return nil, err
 	}
 
-	if err := tool.New[BranchInput, BranchOutput]("memory_branch").
-		Describe("Manage session branches: action=fork creates a branch; merge marks it merged; discard marks it discarded and flushes its buffered turns without promoting them (mirrors POST /v1/branches; D-029).").
+	if err := declare[BranchInput, BranchOutput]("memory_branch").
+		Describe(toolDescription("memory_branch")).
 		Handler(makeBranchHandler(svc)).
 		Register(srv); err != nil {
 		return nil, err
 	}
 
 	// Phase 27: proactive suggestions (RFC §6d, D-087) — single-user tier.
-	if err := tool.New[SuggestionsInput, SuggestionsOutput]("memory_suggestions").
-		Describe("Proactive memory suggestions (RFC §6d, D-087): action=list evaluates the scope's trigger rules (recent/similar episodes, expiring memories) and offers the budgeted, governance-gated set for a session — each offer carries the memory's content inline (no extra fetch needed). session_id is REQUIRED (it keys the per-session dedupe). NOTE: list is a write — each offer is recorded once per session, so a second list does not re-offer the same memory. action=accept|dismiss resolves an offer id and tunes that trigger's confidence; accept is acknowledgement/feedback, NOT a memory mutation (to keep an 'expiring' memory alive, reaffirm it with memory_assert). score is a relative utility weight (higher = stronger), not a 0-1 probability. Mirrors GET /v1/suggestions + POST /v1/suggestions/{id}.").
+	if err := declare[SuggestionsInput, SuggestionsOutput]("memory_suggestions").
+		Describe(toolDescription("memory_suggestions")).
 		Handler(makeSuggestionsHandler(svc)).
 		Register(srv); err != nil {
 		return nil, err
@@ -247,8 +243,8 @@ func New(info server.Info, svc *Services) (*server.Server, error) {
 
 	// Phase 27: proactive governance (RFC §6d, D-087) — admin tier; deliberately
 	// ABSENT from the single-user SDK (D-067).
-	if err := tool.New[ProactiveConfigInput, ProactiveConfigOutput]("memory_proactive_config").
-		Describe("Read or write a scope's proactive governance (RFC §6d, D-087): action=get returns the effective config (profile default overlaid by the scope's stored override); action=set writes the override (enabled, threshold, budget, classes). Mirrors GET/PUT /v1/admin/proactive. Opt-out is enabled=false.").
+	if err := declare[ProactiveConfigInput, ProactiveConfigOutput]("memory_proactive_config").
+		Describe(toolDescription("memory_proactive_config")).
 		Handler(makeProactiveConfigHandler(svc)).
 		Register(srv); err != nil {
 		return nil, err
@@ -256,8 +252,8 @@ func New(info server.Info, svc *Services) (*server.Server, error) {
 
 	// Tier-B admin verb (D-071) — multi-user; matches the HTTP admin routes,
 	// deliberately ABSENT from the single-user SDK (D-067).
-	if err := tool.New[GrantsInput, GrantsOutput]("memory_grants").
-		Describe("Manage team-sharing groups and grants: create_group, list_groups, add_member, remove_member, list_members, create_grant, list_grants, revoke_grant (mirrors the HTTP /v1/admin/groups + /v1/scopes/grants routes; D-016).").
+	if err := declare[GrantsInput, GrantsOutput]("memory_grants").
+		Describe(toolDescription("memory_grants")).
 		Handler(makeGrantsHandler(svc)).
 		Register(srv); err != nil {
 		return nil, err
@@ -266,8 +262,8 @@ func New(info server.Info, svc *Services) (*server.Server, error) {
 	// Phase ae1: read-time agent-policy admin (D-135/D-146/D-151) — policy-admin
 	// tier; deliberately ABSENT from the single-user SDK (D-067), matching
 	// memory_grants' tiering.
-	if err := tool.New[AgentPolicyInput, AgentPolicyOutput]("memory_agent_policy").
-		Describe("Manage the read-time agent->topic policy binding: action=create|get|list|delete a (agent_id) -> {allow_topics, deny_topics} binding that curates (never isolates, D-139) the agent's own-scope memory_retrieve results (mirrors HTTP /v1/scopes/agent-policies; ae1, D-135/D-146/D-151).").
+	if err := declare[AgentPolicyInput, AgentPolicyOutput]("memory_agent_policy").
+		Describe(toolDescription("memory_agent_policy")).
 		Handler(makeAgentPolicyHandler(svc)).
 		Register(srv); err != nil {
 		return nil, err
@@ -276,8 +272,8 @@ func New(info server.Info, svc *Services) (*server.Server, error) {
 	// Phase ae9: named per-agent/per-key topic-view admin (D-149/D-151) — view-admin
 	// tier; deliberately ABSENT from the single-user SDK (D-067), matching
 	// memory_grants/memory_agent_policy's tiering.
-	if err := tool.New[ViewsInput, ViewsOutput]("memory_views").
-		Describe("Manage named topic VIEWS: action=create_view|update_view|delete_view|list_views a (subject_kind, subject_id, view_name) -> {allow_topics, deny_topics} curation lens that narrows (never isolates, D-139) the subject's own-scope memory_retrieve results when applied via view_name (mirrors HTTP /v1/scopes/views; ae9, D-149/D-151). Generalizes memory_agent_policy's single binding — that binding IS the (\"agent\", …, \"default\") view.").
+	if err := declare[ViewsInput, ViewsOutput]("memory_views").
+		Describe(toolDescription("memory_views")).
 		Handler(makeViewsHandler(svc)).
 		Register(srv); err != nil {
 		return nil, err

@@ -494,6 +494,9 @@ type RollbackMemory struct {
 // calling Commit; the driver writes them directly into the transaction
 // (EventStore.Emit cannot join an existing tx — see D-045).
 type CommitSet struct {
+	// Command atomically guards a source-backed write and reserves its durable receipt.
+	Command *CommandGuard
+
 	// Action is the reconciliation outcome.
 	Action ReconcileAction
 

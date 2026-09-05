@@ -7,6 +7,15 @@ All notable changes to Stowage are documented here. Format follows
 
 ### Changed
 
+- Ordinary agents now use a five-tool memory catalog with task-oriented guidance,
+  constrained schemas, and evidence/warning-preserving read projections. Connect
+  planners to `/mcp/agent` (shared HTTP) or `/agent` (dedicated MCP); the existing
+  full endpoint remains for runtime/curator integrations. Stdio defaults to the
+  agent catalog; `--catalog full` preserves the integration catalog. Harbor's
+  `Tools` also defaults to five tools; `LegacyTools` retains its old catalog.
+  See `docs/agent-memory.md` for required connection/source-binding migration.
+- Go Client implementations now include `Remember` and `Correct`. Standard HTTP
+  and embedded clients implement both; custom implementations must add them.
 - Adversarial scope review (D-033–D-036): plan restructured into a 21-phase
   launch track (every differentiator + proof) and post-launch tracks v1.1–v1.3
   (episodic, trust extensions, proactive); eval pulled forward as its own wave
@@ -18,6 +27,24 @@ All notable changes to Stowage are documented here. Format follows
 
 ### Added
 
+- Runtime-completion compatibility correction: `/mcp/runtime`, `/runtime`, and
+  `--catalog runtime` expose the five ordinary memory tools plus the existing
+  ingestion sink on one host connection. Pengui must exclude the sink from the
+  planner while retaining its completion hook; deferred loading is not enough.
+  The pure agent and full compatibility profiles remain unchanged. A real
+  pinned-Harbor/MCP/SQLite regression covers the hidden-sink boundary.
+
+- Source-backed remember/correct commands across MCP, HTTP and SDK. Exact owned
+  user quotations carry byte-span provenance; corrections require inspected
+  revisions and retain reversible history. SQLite/Postgres transactions atomically
+  commit effects and durable idempotency receipts. Replay reports current status
+  without reviving deleted/superseded memories; rank/indexing readiness is not
+  promised. Direct assertion is not the implementation shortcut.
+- Pinned pre-change MCP/service baseline, agent-use scenario protocol, actual
+  catalog/schema goldens, cross-surface command tests, restart/concurrency tests,
+  and `scripts/smoke/phase-ae13.sh`. Live-model selection rates are not measured.
+- Explicit forgetting/retention documentation. No incomplete selective-forgetting
+  tool is exposed, and derived-item deletion is not represented as erasure.
 - Roadmap integration: day-one signal-capture schema (injections, links,
   episodes, branches, suggestions, runtime API keys — RFC §5.0/§8.1), episodic
   & temporal memory (§6b), trust layer — citations, verification, reasoning

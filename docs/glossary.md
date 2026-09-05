@@ -600,3 +600,27 @@ transparency; ae6).
 - **Handshake methods (MCP)** — the fixed, identity-free JSON-RPC methods (`initialize`, `notifications/initialized`, `ping`, and the static-discovery lists `tools/list`, `resources/list`, `prompts/list`) plus the streamable-HTTP SSE GET leg and session DELETE, served **without** authentication on the MCP-over-HTTP surface when `auth.mode=jwt`. Everything else (notably `tools/call`, `resources/read`, `prompts/get`) requires the per-call bearer; classification ambiguity fails closed to protected. (Phase ae11, D-152 incl. its 2026-07-06 amendment.)
 
 - **Run-completion sink** — an MCP tool that accepts Harbor's pinned `RunCompletionPayload` (format_version 1: the identity quadruple, run metadata, and the ordered two-role `conversation[]` transcript) and adapts it internally to the capability's own storage, making the capability a Harbor auto-save target. Stowage's is `memory_ingest_run` (phase ae12, D-153): identity from the verified per-call bearer (the payload quad is cross-checked, fail-closed, never scope-authoritative — D-124/D-138/D-140), every transcript entry stored as a verbatim record in order (P1), one extraction buffer per run (`buffer_key = run_id`) with an eager best-effort flush.
+
+
+### Source-backed explicit command (ae13)
+An intentional remember/correct operation that validates a durable user quotation
+and stores its provenance through the shared transactional lifecycle seam. It is
+not a model-authored assertion or a transcript reconstructed by an agent.
+
+### Processing receipt (ae13)
+Durable command outcome plus an independently observed current memory status.
+Replay returns the original outcome without repeating effects; eligible does not
+promise rank, completed embeddings, topic-view inclusion, or bypassing cooldown.
+
+### Agent catalog (ae13)
+A small static planner projection, separate from runtime and curator operations.
+Absence from this server's catalog also means no registered handler for that
+name. It does not replace authentication on any endpoint.
+
+
+### Runtime memory profile (ae13)
+The host-facing six-tool MCP catalog: five ordinary operations and the existing
+run-completion sink. The host retains all six for execution but excludes the
+sink from the planner. Endpoint choice, deferred loading and descriptive hints
+are not authorization. Pengui configures capture; Harbor invokes its trusted
+completion hook; Stowage accepts the transcript.

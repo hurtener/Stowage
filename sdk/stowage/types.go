@@ -542,6 +542,8 @@ type MemoryProvenanceRef struct {
 
 // GetMemoryResponse mirrors the HTTP memoryResponse for GET /v1/memories/{id}.
 type GetMemoryResponse struct {
+	Revision string `json:"revision"`
+
 	Memory          Memory                `json:"memory"`
 	Entities        []string              `json:"entities"`
 	Keywords        []string              `json:"keywords"`

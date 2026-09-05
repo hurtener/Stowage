@@ -1,12 +1,14 @@
 {
-  "type": "object",
+  "additionalProperties": false,
   "properties": {
-    "memory_id": {
+    "citation": {
+      "description": "A citation handle returned by retrieval. Pass its identifier without the surrounding [cite:] marker.",
       "type": "string"
     },
-    "citation": {
+    "memory_id": {
+      "description": "A memory ID returned by Stowage. Do not invent one.",
       "type": "string"
     }
   },
-  "additionalProperties": false
+  "type": "object"
 }

@@ -224,7 +224,7 @@ func (b *fakeBus) Close(_ context.Context) error {
 // descriptors with non-nil Invoke functions (AC-3: tool catalog registration).
 func TestTools_Registration(t *testing.T) {
 	client := &fakeClient{}
-	descs := Tools(client)
+	descs := LegacyTools(client)
 
 	expectedNames := []string{
 		"stowage_ingest",
@@ -263,7 +263,7 @@ func TestTools_Registration(t *testing.T) {
 // The test stamps a Harbor identity Quadruple on the context (AC-3 identity lift).
 func TestTools_IngestRoundTrip(t *testing.T) {
 	client := &fakeClient{}
-	descs := Tools(client)
+	descs := LegacyTools(client)
 
 	// Find the stowage_ingest descriptor.
 	var ingestDesc *harborevents.Event // reuse type placeholder
@@ -455,7 +455,7 @@ func TestWireOutcomes_NoResponseID(t *testing.T) {
 // only DOCUMENTED lifting — no identity.From call existed in code.
 func TestIdentityLift(t *testing.T) {
 	client := &fakeClient{}
-	descs := Tools(client)
+	descs := LegacyTools(client)
 	invokers := map[string]func(context.Context, json.RawMessage) (interface{}, error){}
 	for _, d := range descs {
 		invoke := d.Invoke

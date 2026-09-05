@@ -27,6 +27,8 @@ import (
 
 // memoryResponse is the wire format for GET /v1/memories/{id}.
 type memoryResponse struct {
+	Revision string `json:"revision"`
+
 	Memory          memoryJSON    `json:"memory"`
 	Entities        []string      `json:"entities"`
 	Keywords        []string      `json:"keywords"`
@@ -105,6 +107,7 @@ func (s *Server) handleGetMemory(w http.ResponseWriter, r *http.Request) {
 
 	mem := view.Memory
 	resp := memoryResponse{
+		Revision:        store.MemoryRevision(mem),
 		Memory:          memoryToJSON(&mem),
 		Entities:        view.Entities,
 		Keywords:        view.Keywords,

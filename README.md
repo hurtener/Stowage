@@ -123,6 +123,20 @@ curl -s localhost:7160/v1/retrieve -X POST -H "Authorization: Bearer $KEY" \
   lessons via reflection, assembled deterministically into an evolving **playbook** (ACE), and
   shareable across a team through **grants**.
 
+## Agent-facing memory interface
+
+For **Pengui / Harbor with run-end capture**, attach `/mcp/runtime` (shared HTTP)
+or `/runtime` (dedicated MCP). It registers the five ordinary memory operations
+plus `memory_ingest_run` on the SAME capability connection. Use Pengui's existing
+tool-exposure control to disable that sink **for the planner**, while keeping the
+run-completion hook enabled. Deferred loading is not sufficient.
+
+Pure agent clients without automatic capture can use `/mcp/agent` or `/agent`.
+The legacy full endpoint is unchanged. Stdio supports `--catalog runtime`,
+`--catalog agent` (default), and `--catalog full`. See the
+[source-binding and rollout guide](docs/agent-memory.md), including the distinction
+between planner exclusion, hook disablement, and erased history.
+
 ## Four surfaces, one core
 
 Every capability is implemented once in the core and exposed through thin, parity-tested surfaces:

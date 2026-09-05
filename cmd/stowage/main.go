@@ -347,6 +347,8 @@ Usage:
 Flags:
   --config path   path to config file (default: auto-discover)
   --http addr     serve streamable-HTTP on addr instead of stdio (e.g. :7162)
+
+  --catalog agent|runtime|full  Stdio catalog (default agent); HTTP mounts all three profiles.
 `
 
 // runMCP implements `stowage mcp [--config path] [--http addr]`.
@@ -362,6 +364,7 @@ func runMCP(args []string) {
 	var (
 		configPath string
 		httpAddr   string
+		catalog    = "agent"
 	)
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
@@ -371,6 +374,13 @@ func runMCP(args []string) {
 				os.Exit(2)
 			}
 			configPath = args[i+1]
+			i++
+		case "--catalog":
+			if i+1 >= len(args) || (args[i+1] != "agent" && args[i+1] != "runtime" && args[i+1] != "full") {
+				fmt.Fprintln(os.Stderr, "stowage mcp: --catalog must be agent, runtime, or full")
+				os.Exit(2)
+			}
+			catalog = args[i+1]
 			i++
 		case "--http":
 			if i+1 >= len(args) {
@@ -485,7 +495,11 @@ func runMCP(args []string) {
 		},
 	}
 
-	srv, err := mcpserver.New(server.Info{
+	profile := "full" // HTTP keeps the compatibility root and mounts both other profiles.
+	if httpAddr == "" {
+		profile = catalog
+	}
+	srv, err := newMCPCatalog(profile, server.Info{
 		Name:    "stowage",
 		Title:   "Stowage Memory MCP Server",
 		Version: version.Version,
@@ -501,6 +515,11 @@ func runMCP(args []string) {
 		handler, hErr := srv.HTTPHandler(mcpHTTPOptions(cfg.Auth.Mode, cfg.Server.MCPTrustProxy))
 		if hErr != nil {
 			stk.Log.Error("stowage mcp: http handler", "err", hErr)
+			os.Exit(1)
+		}
+		handler, hErr = withAgentMCP(handler, svc, cfg.Auth.Mode, cfg.Server.MCPTrustProxy)
+		if hErr != nil {
+			stk.Log.Error("stowage mcp: agent catalog", "err", hErr)
 			os.Exit(1)
 		}
 		httpSrv := &http.Server{
@@ -975,7 +994,12 @@ func runServe(args []string) {
 		}
 		// SAME Authenticator as the REST API (D-067). Method-aware handshake auth
 		// in jwt mode (ae11/D-152); strict key auth otherwise.
-		mcpHTTPHandler = mcpAuthHandler(cfg.Auth.Mode, authn, mcpHandler)
+		dualHandler, agentErr := withAgentMCP(mcpHandler, mcpSvc, cfg.Auth.Mode, cfg.Server.MCPTrustProxy)
+		if agentErr != nil {
+			stk.Log.Error("stowage serve: agent catalog", "err", agentErr)
+			os.Exit(1)
+		}
+		mcpHTTPHandler = mcpAuthHandler(cfg.Auth.Mode, authn, dualHandler)
 	} else {
 		// Discoverability hint (a3, D-133): the MCP tool surface is opt-in. Say so on
 		// startup so an operator who expected MCP knows both knobs exist, without
@@ -997,20 +1021,12 @@ func runServe(args []string) {
 		readTimeout := time.Duration(cfg.Server.ReadTimeout) * time.Second
 		writeTimeout := time.Duration(cfg.Server.WriteTimeout) * time.Second
 
-		root := http.NewServeMux()
-		// MCP dispatches JSON-RPC on the request body, not the URL path; normalize
-		// the co-mount path to "/" so the streamable handler and the handshake-auth
-		// classifier (ae11) see exactly the request they would on a dedicated
-		// listener. Register both the exact and subtree patterns. mcpAccessLog
-		// wraps it so co-mounted MCP traffic is observable (it bypasses the REST
-		// request-logger).
-		mcpMount := mcpAccessLog(stk.Log, mcpRootRewrite(mcpHTTPHandler))
-		root.Handle("/mcp", mcpMount)
-		root.Handle("/mcp/", mcpMount)
-		// REST owns everything else. The combined server sets no WriteTimeout (so
-		// the MCP subtree can stream — D-074's invariant), so REST re-imposes its
-		// per-request read/write bound here (D-155).
-		root.Handle("/", restDeadlineHandler(readTimeout, writeTimeout, srv))
+		// Preserve /mcp/agent and /mcp/runtime until the profile mux selects
+		// the leaf handler. Only that leaf rewrites its path for Dockyard.
+		root := sharedMCPMux(
+			mcpAccessLog(stk.Log, mcpHTTPHandler),
+			restDeadlineHandler(readTimeout, writeTimeout, srv),
+		)
 
 		apiHTTP = &http.Server{
 			Addr:              cfg.Server.Listen,

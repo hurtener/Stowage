@@ -1,72 +1,78 @@
 {
-  "type": "object",
+  "additionalProperties": false,
   "properties": {
-    "format_version": {
-      "type": "integer"
-    },
-    "tenant_id": {
-      "type": "string"
-    },
-    "user_id": {
-      "type": "string"
-    },
-    "session_id": {
-      "type": "string"
-    },
-    "run_id": {
-      "type": "string"
-    },
     "agent_id": {
-      "type": "string"
-    },
-    "outcome": {
-      "type": "string"
-    },
-    "started_at": {
       "type": "string"
     },
     "completed_at": {
       "type": "string"
     },
-    "duration_ms": {
-      "type": "integer"
-    },
-    "step_count": {
-      "type": "integer"
-    },
-    "tool_invocations": {
-      "type": "integer"
-    },
     "conversation": {
-      "type": [
-        "null",
-        "array"
-      ],
       "items": {
-        "type": "object",
+        "additionalProperties": false,
         "properties": {
-          "role": {
-            "type": "string"
-          },
-          "kind": {
+          "at": {
             "type": "string"
           },
           "content": {
+            "description": "The text stored in this item. For ingestion it must be the actual verbatim interaction.",
+            "type": "string"
+          },
+          "kind": {
+            "description": "The memory's semantic type. Remember defaults to fact; corrections inherit the inspected type.",
+            "type": "string"
+          },
+          "role": {
+            "description": "The actual origin of an interaction: user, assistant or tool. Never relabel generated text as user evidence.",
             "type": "string"
           },
           "step": {
             "type": "integer"
-          },
-          "at": {
-            "type": "string"
           }
         },
         "required": [
           "role",
           "content"
         ],
-        "additionalProperties": false
-      }
+        "type": "object"
+      },
+      "type": [
+        "null",
+        "array"
+      ]
+    },
+    "duration_ms": {
+      "type": "integer"
+    },
+    "format_version": {
+      "type": "integer"
+    },
+    "outcome": {
+      "type": "string"
+    },
+    "run_id": {
+      "type": "string"
+    },
+    "session_id": {
+      "description": "An existing host session reference. Omit unless a session-specific operation requires it; verified host identity takes precedence.",
+      "type": "string"
+    },
+    "started_at": {
+      "type": "string"
+    },
+    "step_count": {
+      "type": "integer"
+    },
+    "tenant_id": {
+      "description": "Runtime identity context; authenticated scope remains authoritative.",
+      "type": "string"
+    },
+    "tool_invocations": {
+      "type": "integer"
+    },
+    "user_id": {
+      "description": "Runtime user context; a verified user claim cannot be overridden.",
+      "type": "string"
     }
   },
   "required": [
@@ -83,5 +89,5 @@
     "tool_invocations",
     "conversation"
   ],
-  "additionalProperties": false
+  "type": "object"
 }

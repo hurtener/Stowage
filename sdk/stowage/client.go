@@ -8,6 +8,11 @@ import "context"
 // Concurrency: implementations must be safe for concurrent use by multiple
 // goroutines (D-025 discipline).
 type Client interface {
+	// Remember preserves an exact user quotation with a durable idempotent receipt.
+	Remember(context.Context, RememberRequest) (MemoryReceipt, error)
+	// Correct replaces an inspected memory with newer user evidence, reversibly.
+	Correct(context.Context, CorrectRequest) (MemoryReceipt, error)
+
 	// Ingest durably appends records and enqueues them for processing.
 	// Implements P2 fire-and-forget: ACKs after the durable append; pipeline
 	// processing is asynchronous.

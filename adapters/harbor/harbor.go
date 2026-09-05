@@ -59,7 +59,7 @@ const (
 	eventTypeTaskFailed    harborevents.EventType = "task.failed"
 )
 
-// Tools registers the seven Stowage memory operations as in-process Harbor
+// LegacyTools registers the seven Stowage memory operations as in-process Harbor
 // tools on the catalog. The returned []tools.ToolDescriptor can be placed
 // directly into assemble.Options.PreRegisterTools:
 //
@@ -79,7 +79,7 @@ const (
 //	stowage_resolve         — resolve citation handles
 //	stowage_topics          — list effective topics
 //	stowage_playbook        — stub in Phase 17; full assembly later
-func Tools(client stowage.Client) []harbortools.ToolDescriptor {
+func LegacyTools(client stowage.Client) []harbortools.ToolDescriptor {
 	cat := harbortools.NewCatalog()
 
 	mustRegister(cat, "stowage_ingest", ingestFn(client),

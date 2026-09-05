@@ -129,7 +129,11 @@ func Render(mode RenderMode, items []RenderItem) RenderResult {
 			// Dual-visibility (D-105) + self-contained successor (D-114): mark the
 			// retired value AND name what replaced it and when.
 			lines = append(lines, staleTag(it)+dated)
-			superseded = append(superseded, dated)
+			historical := dated
+			if mode == RenderMCP && it.SupersededByContent != "" {
+				historical += " | Replaced by: " + withDate(it.SupersededByContent, it.SupersededByDate)
+			}
+			superseded = append(superseded, historical)
 			supersededMarkers = append(supersededMarkers, marker)
 			continue
 		}
@@ -140,7 +144,11 @@ func Render(mode RenderMode, items []RenderItem) RenderResult {
 	}
 
 	var b strings.Builder
-	b.WriteString("CURRENT memories (answer from these):\n")
+	if mode == RenderMCP {
+		b.WriteString("CURRENT memories (prior statements; verify freshness):\n")
+	} else {
+		b.WriteString("CURRENT memories (answer from these):\n")
+	}
 	if len(current) == 0 {
 		b.WriteString("(no current memories retrieved)\n")
 	}
@@ -148,7 +156,11 @@ func Render(mode RenderMode, items []RenderItem) RenderResult {
 		fmt.Fprintf(&b, "[%d] %s%s\n", i+1, strings.TrimSpace(c), currentMarkers[i])
 	}
 	if len(superseded) > 0 {
-		b.WriteString("\nSUPERSEDED memories (earlier values the user CHANGED — history only, NEVER answer with these):\n")
+		if mode == RenderMCP {
+			b.WriteString("\nSUPERSEDED memories (historical values; use for historical questions, not as current facts):\n")
+		} else {
+			b.WriteString("\nSUPERSEDED memories (earlier values the user CHANGED — history only, NEVER answer with these):\n")
+		}
 		for i, c := range superseded {
 			fmt.Fprintf(&b, "[S%d] %s%s\n", i+1, strings.TrimSpace(c), supersededMarkers[i])
 		}

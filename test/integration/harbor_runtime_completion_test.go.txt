@@ -1,0 +1,152 @@
+// This test fixture is copied into the PINNED Harbor v1.31.4 checkout's
+// internal/runtime/assemble package. It uses the upstream test stack helper,
+// production MCP transport, production planner exclusion and real dispatch.
+package assemble_test
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"os"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/hurtener/Harbor/internal/identity"
+	"github.com/hurtener/Harbor/internal/planner"
+	"github.com/hurtener/Harbor/internal/runtime/steering"
+	"github.com/hurtener/Harbor/internal/tools"
+	mcpdriver "github.com/hurtener/Harbor/internal/tools/drivers/mcp"
+)
+
+type stowageTerminalPlanner struct {
+	cancel context.CancelFunc
+}
+
+func (p stowageTerminalPlanner) Next(_ context.Context, rc planner.RunContext) (planner.Decision, error) {
+	if _, found := rc.Catalog.Resolve("stowage_memory_ingest_run"); found {
+		return nil, errors.New("runtime sink leaked into planner resolution")
+	}
+	if p.cancel != nil {
+		p.cancel()
+		return nil, context.Canceled
+	}
+	return planner.Finish{Reason: planner.FinishGoal, Payload: "Acknowledged."}, nil
+}
+
+func TestStowageRuntimeCompletion(t *testing.T) {
+	url := os.Getenv("STOWAGE_RUNTIME_TEST_URL")
+	if url == "" {
+		t.Skip("run through Stowage's TestRuntimeHarborCompletion")
+	}
+	ctx := context.Background()
+	stack := hookedRunnableStack(t, "")
+	defer func() { _ = stack.Close(ctx) }()
+	provider, err := mcpdriver.New(mcpdriver.Config{
+		Name: "stowage", TransportMode: mcpdriver.TransportStreamableHTTP,
+		URL: url, Bus: stack.Bus,
+		DefaultIdentity: identity.Identity{TenantID: "acme", UserID: "bootstrap", SessionID: "discovery"},
+	})
+	if err != nil { t.Fatal(err) }
+	if err := provider.Connect(ctx); err != nil { t.Fatal(err) }
+	defer func() { _ = provider.Close(ctx) }()
+	descriptors, err := provider.Discover(ctx)
+	if err != nil { t.Fatal(err) }
+	if len(descriptors) != 6 { t.Fatalf("runtime connection discovered %d tools, want six", len(descriptors)) }
+	const sink = "stowage_memory_ingest_run"
+	var mu sync.Mutex
+	seen := map[string]steering.RunCompletionPayload{}
+	calls := map[string]int{}
+	for _, desc := range descriptors {
+		if desc.Tool.Name == sink {
+			invoke := desc.Invoke
+			desc.Invoke = func(ctx context.Context, args json.RawMessage) (tools.ToolResult, error) {
+				if ctx.Err() != nil { return tools.ToolResult{}, errors.New("completion inherited cancelled context") }
+				var payload steering.RunCompletionPayload
+				if err := json.Unmarshal(args, &payload); err != nil { return tools.ToolResult{}, err }
+				result, err := invoke(ctx, args) // REAL Harbor driver -> REAL Stowage MCP
+				if err != nil { return result, err }
+				mu.Lock()
+				seen[payload.RunID] = payload
+				calls[payload.RunID]++
+				mu.Unlock()
+				return result, nil
+			}
+		}
+		if err := stack.Catalog.Register(desc); err != nil { t.Fatal(err) }
+	}
+	for _, tc := range []struct {
+		user, session, goal string
+		cancelled, disabled, missing bool
+	}{
+		{user: "alice", session: "s-alice", goal: "Remember Alice's project decision."},
+		{user: "bob", session: "s-bob", goal: "Remember Bob's project decision."},
+		{user: "alice", session: "s-cancel", goal: "Preserve a cancelled conversation.", cancelled: true},
+		{user: "alice", session: "s-off", goal: "Do not automatically capture this run.", disabled: true},
+		{user: "alice", session: "s-missing", goal: "A missing sink must not fail the answer.", missing: true},
+	} {
+		t.Run(tc.session, func(t *testing.T) {
+			id := identity.Identity{TenantID: "acme", UserID: tc.user, SessionID: tc.session}
+			q := identity.Quadruple{Identity: id, RunID: "run-" + tc.session}
+			runCtx, err := identity.WithRun(ctx, id, q.RunID)
+			if err != nil { t.Fatal(err) }
+			runCtx, cancel := context.WithCancel(runCtx)
+			defer cancel()
+			view := tools.NewExclusionView(tools.NewPlannerView(stack.Catalog, tools.CatalogFilter{
+				TenantID: id.TenantID, UserID: id.UserID, SessionID: id.SessionID,
+			}), nil, []string{sink})
+			visible := 0
+			for _, tool := range view.List() {
+				if tool.Name == sink { t.Fatal("sink in planner discovery") }
+				if tool.Source == "stowage" { visible++ }
+			}
+			if visible != 5 { t.Fatalf("planner sees %d memory tools, want five", visible) }
+			base := planner.RunContext{Quadruple: q, Goal: tc.goal, Catalog: view, Trajectory: &planner.Trajectory{Query: tc.goal}}
+			// A model guessing the hidden name still fails at REAL dispatch.
+			if _, _, err := stack.Executor.ExecuteDecision(runCtx, base, planner.CallTool{Tool: sink, Args: json.RawMessage(`{}`)}); !errors.Is(err, tools.ErrToolNotFound) {
+				t.Fatalf("ordinary dispatch was not denied: %v", err)
+			}
+			p := stowageTerminalPlanner{}
+			if tc.cancelled { p.cancel = cancel }
+			hook := &steering.CompletionHookSpec{Tool: sink, Timeout: 5 * time.Second}
+			if tc.disabled { hook = nil }
+			if tc.missing { hook.Tool = "absent_memory_ingest_run" }
+			finish, runErr := stack.RunLoop.Run(runCtx, steering.RunSpec{
+				Planner: p, Base: base, ToolExecutor: stack.Executor, MaxSteps: 4, CompletionHook: hook,
+			})
+			if tc.cancelled {
+				if !errors.Is(runErr, context.Canceled) { t.Fatalf("cancel outcome changed: %v", runErr) }
+			} else if runErr != nil || finish.Reason != planner.FinishGoal || finish.Payload != "Acknowledged." {
+				t.Fatalf("hook changed terminal answer: %+v %v", finish, runErr)
+			}
+			mu.Lock()
+			payload, found := seen[q.RunID]
+			count := calls[q.RunID]
+			mu.Unlock()
+			if tc.disabled || tc.missing {
+				if found || count != 0 { t.Fatal("disabled/missing hook unexpectedly ingested") }
+				return
+			}
+			if !found || count != 1 { t.Fatalf("completion did not dispatch exactly once: %d", count) }
+			if payload.UserID != tc.user || payload.TenantID != "acme" || payload.SessionID != tc.session || payload.FormatVersion != 1 {
+				t.Fatalf("runtime identity or format lost: %+v", payload)
+			}
+			wantOutcome := "goal"
+			if tc.cancelled { wantOutcome = "cancelled" }
+			if payload.Outcome != wantOutcome { t.Fatalf("ingestion outcome = %q; want %q", payload.Outcome, wantOutcome) }
+			if payload.ToolInvocations != 0 { t.Fatal("completion counted as a planner tool invocation") }
+			if len(payload.Conversation) == 0 || payload.Conversation[0].Role != "user" || payload.Conversation[0].Content != tc.goal {
+				t.Fatalf("runtime transcript was not verbatim: %+v", payload.Conversation)
+			}
+			finalAnswers := 0
+			for _, entry := range payload.Conversation {
+				if entry.Kind != "final_answer" { continue }
+				finalAnswers++
+				if entry.Role != "assistant" || entry.Content != "Acknowledged." { t.Fatalf("final answer provenance changed: %+v", entry) }
+			}
+			wantFinalAnswers := 1
+			if tc.cancelled { wantFinalAnswers = 0 }
+			if finalAnswers != wantFinalAnswers { t.Fatalf("captured %d final answers; want %d", finalAnswers, wantFinalAnswers) }
+		})
+	}
+}

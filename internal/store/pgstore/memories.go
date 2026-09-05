@@ -671,6 +671,9 @@ func (m *memoryStore) Commit(ctx context.Context, scope identity.Scope, cs store
 // execCommitPG runs the full commit logic inside a pgx.Tx.
 func execCommitPG(ctx context.Context, tx pgx.Tx, scope identity.Scope, cs store.CommitSet) error {
 	now := time.Now().UnixMilli()
+	if err := guardCommandPG(ctx, tx, scope, cs.Command, now); err != nil {
+		return err
+	}
 
 	switch cs.Action {
 	case store.ActionAdd, store.ActionPark:

@@ -1,15 +1,22 @@
 {
-  "type": "object",
+  "additionalProperties": false,
   "properties": {
     "key": {
+      "description": "The existing topic or buffer key appropriate to this operation.",
       "type": "string"
     },
     "trigger": {
+      "description": "Explicit flush or session_end. Neither promises completed extraction.",
+      "enum": [
+        "",
+        "explicit",
+        "session_end"
+      ],
       "type": "string"
     }
   },
   "required": [
     "key"
   ],
-  "additionalProperties": false
+  "type": "object"
 }

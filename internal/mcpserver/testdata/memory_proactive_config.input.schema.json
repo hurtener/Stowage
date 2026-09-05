@@ -1,26 +1,14 @@
 {
-  "type": "object",
+  "additionalProperties": false,
   "properties": {
     "action": {
+      "description": "Select one of this operation's supported actions. Mutating actions change durable state.",
+      "enum": [
+        "",
+        "get",
+        "set"
+      ],
       "type": "string"
-    },
-    "user": {
-      "type": "string"
-    },
-    "project": {
-      "type": "string"
-    },
-    "enabled": {
-      "type": [
-        "null",
-        "boolean"
-      ]
-    },
-    "threshold": {
-      "type": [
-        "null",
-        "number"
-      ]
     },
     "budget": {
       "type": [
@@ -29,11 +17,29 @@
       ]
     },
     "classes": {
-      "type": "object",
       "additionalProperties": {
         "type": "boolean"
-      }
+      },
+      "type": "object"
+    },
+    "enabled": {
+      "type": [
+        "null",
+        "boolean"
+      ]
+    },
+    "project": {
+      "type": "string"
+    },
+    "threshold": {
+      "type": [
+        "null",
+        "number"
+      ]
+    },
+    "user": {
+      "type": "string"
     }
   },
-  "additionalProperties": false
+  "type": "object"
 }

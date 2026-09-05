@@ -1,6 +1,9 @@
 {
   "type": "object",
   "properties": {
+    "revision": {
+      "type": "string"
+    },
     "memory": {
       "type": "object",
       "properties": {
@@ -157,6 +160,7 @@
     }
   },
   "required": [
+    "revision",
     "memory",
     "entities",
     "keywords",

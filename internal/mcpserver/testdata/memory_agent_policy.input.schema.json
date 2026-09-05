@@ -1,33 +1,40 @@
 {
-  "type": "object",
+  "additionalProperties": false,
   "properties": {
     "action": {
+      "description": "Select one of this operation's supported actions. Mutating actions change durable state.",
+      "enum": [
+        "create",
+        "get",
+        "list",
+        "delete"
+      ],
       "type": "string"
     },
     "agent_id": {
       "type": "string"
     },
     "allow_topics": {
+      "items": {
+        "type": "string"
+      },
       "type": [
         "null",
         "array"
-      ],
-      "items": {
-        "type": "string"
-      }
+      ]
     },
     "deny_topics": {
+      "items": {
+        "type": "string"
+      },
       "type": [
         "null",
         "array"
-      ],
-      "items": {
-        "type": "string"
-      }
+      ]
     }
   },
   "required": [
     "action"
   ],
-  "additionalProperties": false
+  "type": "object"
 }

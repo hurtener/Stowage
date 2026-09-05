@@ -1,40 +1,28 @@
 {
-  "type": "object",
+  "additionalProperties": false,
   "properties": {
+    "contributor_user_id": {
+      "type": "string"
+    },
     "records": {
-      "type": [
-        "null",
-        "array"
-      ],
+      "description": "Actual verbatim interaction records supplied by the runtime, not a model-reconstructed transcript.",
       "items": {
-        "type": "object",
+        "additionalProperties": false,
         "properties": {
-          "tenant_id": {
-            "type": "string"
-          },
-          "project_id": {
-            "type": "string"
-          },
-          "user_id": {
-            "type": "string"
-          },
-          "session_id": {
-            "type": "string"
-          },
           "branch_id": {
             "type": "string"
           },
-          "role": {
+          "buffer_key": {
+            "description": "Runtime extraction-buffer key. Ordinary agents must not construct buffer bookkeeping.",
             "type": "string"
           },
           "content": {
+            "description": "The text stored in this item. For ingestion it must be the actual verbatim interaction.",
             "type": "string"
           },
-          "source_agent": {
-            "type": "string"
-          },
-          "response_id": {
-            "type": "string"
+          "occurred_at": {
+            "description": "The actual source assertion time in Unix milliseconds.",
+            "type": "integer"
           },
           "outcome": {
             "type": "string"
@@ -42,43 +30,68 @@
           "outcome_detail": {
             "type": "string"
           },
-          "occurred_at": {
-            "type": "integer"
+          "project_id": {
+            "description": "Runtime project context within the authenticated scope, not authority to access another project.",
+            "type": "string"
           },
-          "buffer_key": {
+          "response_id": {
+            "description": "A retrieval response identifier returned by Stowage; used for attribution or audit, not a query.",
+            "type": "string"
+          },
+          "role": {
+            "description": "The actual origin of an interaction: user, assistant or tool. Never relabel generated text as user evidence.",
+            "type": "string"
+          },
+          "session_id": {
+            "description": "An existing host session reference. Omit unless a session-specific operation requires it; verified host identity takes precedence.",
+            "type": "string"
+          },
+          "source_agent": {
+            "type": "string"
+          },
+          "tenant_id": {
+            "description": "Runtime identity context; authenticated scope remains authoritative.",
+            "type": "string"
+          },
+          "user_id": {
+            "description": "Runtime user context; a verified user claim cannot be overridden.",
             "type": "string"
           }
         },
         "required": [
           "content"
         ],
-        "additionalProperties": false
-      }
-    },
-    "target_scope": {
+        "type": "object"
+      },
       "type": [
         "null",
-        "object"
-      ],
+        "array"
+      ]
+    },
+    "target_scope": {
+      "additionalProperties": false,
       "properties": {
         "project_id": {
-          "type": "string"
-        },
-        "user_id": {
+          "description": "Runtime project context within the authenticated scope, not authority to access another project.",
           "type": "string"
         },
         "session_id": {
+          "description": "An existing host session reference. Omit unless a session-specific operation requires it; verified host identity takes precedence.",
+          "type": "string"
+        },
+        "user_id": {
+          "description": "Runtime user context; a verified user claim cannot be overridden.",
           "type": "string"
         }
       },
-      "additionalProperties": false
-    },
-    "contributor_user_id": {
-      "type": "string"
+      "type": [
+        "null",
+        "object"
+      ]
     }
   },
   "required": [
     "records"
   ],
-  "additionalProperties": false
+  "type": "object"
 }

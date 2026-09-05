@@ -1,18 +1,27 @@
 {
-  "type": "object",
+  "additionalProperties": false,
   "properties": {
-    "memory_id": {
-      "type": "string"
+    "depth": {
+      "description": "Maximum causal traversal depth. Omit for the bounded server default.",
+      "type": "integer"
     },
     "direction": {
+      "description": "Traverse backward to causes, forward to effects, or both.",
+      "enum": [
+        "",
+        "backward",
+        "forward",
+        "both"
+      ],
       "type": "string"
     },
-    "depth": {
-      "type": "integer"
+    "memory_id": {
+      "description": "A memory ID returned by Stowage. Do not invent one.",
+      "type": "string"
     }
   },
   "required": [
     "memory_id"
   ],
-  "additionalProperties": false
+  "type": "object"
 }

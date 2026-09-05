@@ -1,0 +1,46 @@
+name: runtime-memory-hook
+
+on:
+  pull_request:
+    paths:
+      - 'internal/mcpserver/**'
+      - 'cmd/stowage/**'
+      - 'test/integration/harbor_runtime_completion_test.go.txt'
+      - '.github/workflows/runtime-memory-hook.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  integration:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: stowage
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: hurtener/Harbor
+          ref: 3f758afd07bafc1add74e60707a01fb833aa5d8f
+          path: harbor
+          persist-credentials: false
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: stowage/go.mod
+          cache-dependency-path: |
+            stowage/go.sum
+            harbor/go.sum
+      - name: Install test fixture into immutable Harbor source
+        run: cp stowage/test/integration/harbor_runtime_completion_test.go.txt harbor/internal/runtime/assemble/stowage_runtime_completion_test.go
+      - name: Compile pinned Harbor harness
+        working-directory: harbor
+        run: go test -race -run '^$' ./internal/runtime/assemble
+      - name: Runtime profile and real completion-hook integration
+        working-directory: stowage
+        env:
+          STOWAGE_HARBOR_CHECKOUT: ${{ github.workspace }}/harbor
+        run: |
+          go test -race -count=1 -v -run '^TestRuntime' ./internal/mcpserver
+          go test -race -count=1 -run 'TestAgentHTTPMount|TestMCPCatalogSelection|TestSharedMCPProfiles' ./cmd/stowage

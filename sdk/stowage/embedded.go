@@ -388,7 +388,7 @@ func (c *embeddedClient) Retrieve(ctx context.Context, req RetrieveRequest) (Ret
 		DegradedView:        resp.DegradedView,
 		CacheHit:            resp.CacheHit,
 		API:                 resp.API,
-		Rendered:            retrieval.RenderReadBody(resp.Items),
+		Rendered:            retrieval.RenderReadResponse(resp),
 	}, nil
 }
 
@@ -807,6 +807,7 @@ func (c *embeddedClient) GetMemory(ctx context.Context, id string) (GetMemoryRes
 		return GetMemoryResponse{}, fmt.Errorf("sdk: get_memory: %w", err)
 	}
 	resp := GetMemoryResponse{
+		Revision:        store.MemoryRevision(view.Memory),
 		Memory:          memoryToSDK(view.Memory),
 		Entities:        view.Entities,
 		Keywords:        view.Keywords,

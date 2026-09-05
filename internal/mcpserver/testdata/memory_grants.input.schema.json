@@ -1,45 +1,69 @@
 {
-  "type": "object",
+  "additionalProperties": false,
   "properties": {
-    "action": {
+    "access": {
+      "enum": [
+        "",
+        "read",
+        "contribute"
+      ],
       "type": "string"
     },
-    "name": {
+    "action": {
+      "description": "Select one of this operation's supported actions. Mutating actions change durable state.",
+      "enum": [
+        "create_group",
+        "list_groups",
+        "add_member",
+        "remove_member",
+        "list_members",
+        "create_grant",
+        "list_grants",
+        "revoke_grant"
+      ],
+      "type": "string"
+    },
+    "grant_id": {
       "type": "string"
     },
     "group_id": {
       "type": "string"
     },
-    "user_id": {
-      "type": "string"
-    },
-    "project_id": {
-      "type": "string"
-    },
-    "session_id": {
-      "type": "string"
-    },
-    "access": {
-      "type": "string"
-    },
-    "topic_filter": {
-      "type": "string"
-    },
     "kind_filter": {
       "type": "string"
     },
-    "zone_ceiling": {
+    "name": {
+      "type": "string"
+    },
+    "project_id": {
+      "description": "Runtime project context within the authenticated scope, not authority to access another project.",
       "type": "string"
     },
     "redaction_profile": {
       "type": "string"
     },
-    "grant_id": {
+    "session_id": {
+      "description": "An existing host session reference. Omit unless a session-specific operation requires it; verified host identity takes precedence.",
+      "type": "string"
+    },
+    "topic_filter": {
+      "type": "string"
+    },
+    "user_id": {
+      "description": "Runtime user context; a verified user claim cannot be overridden.",
+      "type": "string"
+    },
+    "zone_ceiling": {
+      "enum": [
+        "",
+        "public",
+        "work"
+      ],
       "type": "string"
     }
   },
   "required": [
     "action"
   ],
-  "additionalProperties": false
+  "type": "object"
 }

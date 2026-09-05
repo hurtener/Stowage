@@ -454,7 +454,9 @@ func TestHandlerRetrieve_TextEqualsRenderReadBody(t *testing.T) {
 		t.Fatal("expected at least one retrieved item")
 	}
 
-	want := retrieval.RenderReadBody(reconstructMemoryItems(result.Structured.Items))
+	fixture := &retrieval.Response{Items: reconstructMemoryItems(result.Structured.Items), Degraded: result.Structured.Degraded, DegradedRerank: result.Structured.DegradedRerank, DegradedTopicFilter: result.Structured.DegradedTopicFilter, DegradedAgentFilter: result.Structured.DegradedAgentFilter, DegradedView: result.Structured.DegradedView}
+	fixture.Support.Strength = result.Structured.Support.Strength
+	want := retrieval.RenderReadResponse(fixture)
 	if result.Text != want {
 		t.Errorf("Text = %q, want %q (must equal retrieval.RenderReadBody(resp.Items))", result.Text, want)
 	}
@@ -471,8 +473,8 @@ func TestHandlerRetrieve_EmptyResultRendersSentinel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("retrieve empty store: %v", err)
 	}
-	want := "CURRENT memories (answer from these):\n(no current memories retrieved)\n"
-	if result.Text != want {
+	want := "CURRENT memories (prior statements; verify freshness):\n(no current memories retrieved)\n"
+	if !strings.Contains(result.Text, want) || !strings.Contains(result.Text, "not proof") {
 		t.Errorf("Text = %q, want empty-context sentinel %q", result.Text, want)
 	}
 	if result.Structured.ResponseID != "resp-empty" {
