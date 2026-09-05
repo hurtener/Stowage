@@ -381,3 +381,14 @@ func TestCreateView_CrossTenantIsolation(t *testing.T) {
 		t.Errorf("cross-tenant GetView: got %v want ErrNotFound", err)
 	}
 }
+
+func (e *mockEventStore) Get(_ context.Context, _ identity.Scope, id string) (*store.Event, error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	for _, ev := range e.events {
+		if ev.ID == id {
+			return &ev, nil
+		}
+	}
+	return nil, store.ErrNotFound
+}

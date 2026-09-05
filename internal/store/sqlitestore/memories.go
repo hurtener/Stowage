@@ -653,6 +653,9 @@ func (m *memoryStore) Commit(ctx context.Context, scope identity.Scope, cs store
 // execCommitSQLite runs the full commit logic inside a sql.Tx.
 func execCommitSQLite(tx *sql.Tx, scope identity.Scope, cs store.CommitSet) error {
 	now := time.Now().UnixMilli()
+	if err := guardCommandSQLite(tx, scope, cs.Command, now); err != nil {
+		return err
+	}
 
 	switch cs.Action {
 	case store.ActionAdd, store.ActionPark:

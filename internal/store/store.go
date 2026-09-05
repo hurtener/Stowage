@@ -467,6 +467,9 @@ type BufferStore interface {
 
 // EventStore is the audit trail (RFC §5.8, D-024).
 type EventStore interface {
+	// Get reads an event by ID at the EXACT scope leaf; inaccessible is ErrNotFound.
+	Get(ctx context.Context, scope identity.Scope, id string) (*Event, error)
+
 	// Emit records an audit event.
 	Emit(ctx context.Context, scope identity.Scope, e Event) error
 
