@@ -39,7 +39,8 @@ func RunCommands(t *testing.T, st store.Store) {
 	command := func() store.CommitSet {
 		return store.CommitSet{Action: store.ActionDiscard, Command: &store.CommandGuard{
 			Receipt: store.Event{ID: ulid.Make().String(), Type: "memory.command_committed", SubjectID: targetID, Reason: "command conformance", Payload: "{}", CreatedAt: 200},
-			Source: *source, Targets: []store.Memory{*target},
+			Source:  *source,
+			Targets: []store.Memory{*target},
 		}}
 	}
 	cs := command()
@@ -68,7 +69,7 @@ func RunCommands(t *testing.T, st store.Store) {
 	}
 
 	cases := []struct {
-		name string
+		name   string
 		change func(*store.CommandGuard)
 	}{
 		{"missing_receipt", func(g *store.CommandGuard) { g.Receipt.ID = "" }},

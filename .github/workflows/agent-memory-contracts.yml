@@ -1,0 +1,52 @@
+name: agent-memory-contracts
+
+on:
+  pull_request:
+    paths:
+      - 'internal/mcpserver/**'
+      - 'internal/reconcile/**'
+      - 'internal/store/**'
+      - 'internal/api/**'
+      - '.github/workflows/agent-memory-contracts.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  contracts:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: stowage
+          POSTGRES_PASSWORD: stowage
+          POSTGRES_DB: stowage
+        ports: ['5432:5432']
+        options: --health-cmd "pg_isready -U stowage" --health-interval 10s --health-timeout 5s --health-retries 5
+    env:
+      STOWAGE_TEST_PG_DSN: postgres://stowage:stowage@localhost:5432/stowage
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Command, evidence and wire boundary regressions
+        run: |
+          go test -race -count=1 -run 'TestCommandGuardContract|TestAgentExplicitCommandsOnTheWire|TestExplicitValidationAndExistingContent|TestExplicitHTTPRejectsAmbiguousRequests|TestMemoryRevisionTracksSemanticStateNotObservationCounters' ./internal/mcpserver ./internal/reconcile ./internal/store ./internal/store/sqlitestore ./internal/store/pgstore ./internal/api
+      - name: Owning-package coverage evidence
+        run: |
+          go test -race -count=1 -coverprofile=agent-memory-coverage.out ./internal/mcpserver ./internal/reconcile ./internal/store ./internal/store/sqlitestore ./internal/store/pgstore ./internal/api
+          go tool cover -func=agent-memory-coverage.out > agent-memory-functions.txt
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: agent-memory-contract-coverage
+          path: |
+            agent-memory-coverage.out
+            agent-memory-functions.txt
+          if-no-files-found: warn
+          retention-days: 7

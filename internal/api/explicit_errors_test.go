@@ -10,12 +10,12 @@ func TestExplicitHTTPRejectsAmbiguousRequests(t *testing.T) {
 	_, ts, st := newTestServer(t)
 	_, key := mustCreateAgentKey(t, st, "explicit-errors")
 	for _, tc := range []struct {
-		name string
-		path string
-		body string
+		name        string
+		path        string
+		body        string
 		contentType string
-		key string
-		status int
+		key         string
+		status      int
 	}{
 		{"malformed", "/v1/remember", "{", "application/json", "", 400},
 		{"trailing", "/v1/remember", "{} {}", "application/json", "", 400},
