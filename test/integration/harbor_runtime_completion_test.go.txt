@@ -116,7 +116,7 @@ func TestStowageRuntimeCompletion(t *testing.T) {
 			})
 			if tc.cancelled {
 				if !errors.Is(runErr, context.Canceled) { t.Fatalf("cancel outcome changed: %v", runErr) }
-			} else if runErr != nil || finish.Reason != planner.FinishGoal {
+			} else if runErr != nil || finish.Reason != planner.FinishGoal || finish.Payload != "Acknowledged." {
 				t.Fatalf("hook changed terminal answer: %+v %v", finish, runErr)
 			}
 			mu.Lock()
@@ -131,10 +131,22 @@ func TestStowageRuntimeCompletion(t *testing.T) {
 			if payload.UserID != tc.user || payload.TenantID != "acme" || payload.SessionID != tc.session || payload.FormatVersion != 1 {
 				t.Fatalf("runtime identity or format lost: %+v", payload)
 			}
+			wantOutcome := "goal"
+			if tc.cancelled { wantOutcome = "cancelled" }
+			if payload.Outcome != wantOutcome { t.Fatalf("ingestion outcome = %q; want %q", payload.Outcome, wantOutcome) }
 			if payload.ToolInvocations != 0 { t.Fatal("completion counted as a planner tool invocation") }
 			if len(payload.Conversation) == 0 || payload.Conversation[0].Role != "user" || payload.Conversation[0].Content != tc.goal {
 				t.Fatalf("runtime transcript was not verbatim: %+v", payload.Conversation)
 			}
+			finalAnswers := 0
+			for _, entry := range payload.Conversation {
+				if entry.Kind != "final_answer" { continue }
+				finalAnswers++
+				if entry.Role != "assistant" || entry.Content != "Acknowledged." { t.Fatalf("final answer provenance changed: %+v", entry) }
+			}
+			wantFinalAnswers := 1
+			if tc.cancelled { wantFinalAnswers = 0 }
+			if finalAnswers != wantFinalAnswers { t.Fatalf("captured %d final answers; want %d", finalAnswers, wantFinalAnswers) }
 		})
 	}
 }
