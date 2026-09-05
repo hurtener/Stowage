@@ -616,3 +616,11 @@ promise rank, completed embeddings, topic-view inclusion, or bypassing cooldown.
 A small static planner projection, separate from runtime and curator operations.
 Absence from this server's catalog also means no registered handler for that
 name. It does not replace authentication on any endpoint.
+
+
+### Runtime memory profile (ae13)
+The host-facing six-tool MCP catalog: five ordinary operations and the existing
+run-completion sink. The host retains all six for execution but excludes the
+sink from the planner. Endpoint choice, deferred loading and descriptive hints
+are not authorization. Pengui configures capture; Harbor invokes its trusted
+completion hook; Stowage accepts the transcript.

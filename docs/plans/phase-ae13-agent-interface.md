@@ -76,3 +76,36 @@ Source references are untrusted until resolved. Retrieval is evidence, not an in
 ## Glossary and decisions
 
 Agent catalog, source-backed explicit command and processing receipt are added to the glossary. The ae13 RFC amendment and decision entry record surface separation, exact-source semantics, transactional receipts, compatibility changes and the deliberate forgetting boundary.
+
+
+## Runtime-completion compatibility correction (ae13, PR #112)
+
+The five-tool ordinary projection is preserved, but it is NOT the correct sole
+connection for Pengui automatic capture. Pengui discovers the completion target
+on the same attached memory capability; a sink on an unattached full endpoint
+is not usable. NewRuntime therefore composes the same five registrations with
+memory_ingest_run (six host-facing tools) at /mcp/runtime or /runtime and through
+--catalog runtime. The existing full catalog and versioned sink are unchanged.
+
+The host excludes the sink from planner List AND Resolve/dispatch using Harbor's
+existing DisabledTools projection, while its trusted completion path resolves
+the full catalog. Deferred loading does not close planner execution. This is
+host-governed exposure, NOT new provider authorization; no _meta marker can grant
+runtime rights. Pengui configures the hook, Harbor executes it, Stowage processes
+the transcript. Disabling planner access does not disable automatic capture.
+
+This correction supersedes ae13's earlier endpoint-only Pengui migration advice.
+It does not automatically modify Pengui activation defaults or deployed revisions;
+operators must pair sink exclusion with the existing save-hook control. It adds
+no second issuer, duplicate transcript collector, new ingestion payload, retries,
+or exactly-once delivery promise. See docs/agent-memory.md for the safe sequence.
+
+### Additional acceptance checks
+
+The runtime catalog has six tools; its ordinary registrations match the pure
+agent catalog and its sink matches full compatibility discovery. All three HTTP
+profiles and stdio selectors remain explicit. A real Harbor v1.31.4 fixture must
+reject planner calls to the disabled sink yet deliver the actual terminal
+transcript through its trusted hook. Verify distinct users, cancellation,
+hook-disabled and missing-sink outcomes against Stowage's durable store. The
+read-only runtime-memory-hook workflow owns that cross-repository regression.

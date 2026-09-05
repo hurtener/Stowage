@@ -1100,3 +1100,26 @@ No selective forgetting tool is exposed until suppression, source retention,
 re-extraction, dependents, caches, audit and backup policy have a complete
 contract. Derived-item deletion and reversible correction are not erasure;
 existing authorized whole-user DSAR remains a separate capability.
+
+
+## Runtime-completion compatibility correction (ae13, PR #112)
+
+The five-tool ordinary projection is preserved, but it is NOT the correct sole
+connection for Pengui automatic capture. Pengui discovers the completion target
+on the same attached memory capability; a sink on an unattached full endpoint
+is not usable. NewRuntime therefore composes the same five registrations with
+memory_ingest_run (six host-facing tools) at /mcp/runtime or /runtime and through
+--catalog runtime. The existing full catalog and versioned sink are unchanged.
+
+The host excludes the sink from planner List AND Resolve/dispatch using Harbor's
+existing DisabledTools projection, while its trusted completion path resolves
+the full catalog. Deferred loading does not close planner execution. This is
+host-governed exposure, NOT new provider authorization; no _meta marker can grant
+runtime rights. Pengui configures the hook, Harbor executes it, Stowage processes
+the transcript. Disabling planner access does not disable automatic capture.
+
+This correction supersedes ae13's earlier endpoint-only Pengui migration advice.
+It does not automatically modify Pengui activation defaults or deployed revisions;
+operators must pair sink exclusion with the existing save-hook control. It adds
+no second issuer, duplicate transcript collector, new ingestion payload, retries,
+or exactly-once delivery promise. See docs/agent-memory.md for the safe sequence.

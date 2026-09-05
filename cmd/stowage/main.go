@@ -348,7 +348,7 @@ Flags:
   --config path   path to config file (default: auto-discover)
   --http addr     serve streamable-HTTP on addr instead of stdio (e.g. :7162)
 
-  --catalog agent|full  Stdio catalog (default agent); HTTP retains both endpoints.
+  --catalog agent|runtime|full  Stdio catalog (default agent); HTTP mounts all three profiles.
 `
 
 // runMCP implements `stowage mcp [--config path] [--http addr]`.
@@ -376,8 +376,8 @@ func runMCP(args []string) {
 			configPath = args[i+1]
 			i++
 		case "--catalog":
-			if i+1 >= len(args) || (args[i+1] != "agent" && args[i+1] != "full") {
-				fmt.Fprintln(os.Stderr, "stowage mcp: --catalog must be agent or full")
+			if i+1 >= len(args) || (args[i+1] != "agent" && args[i+1] != "runtime" && args[i+1] != "full") {
+				fmt.Fprintln(os.Stderr, "stowage mcp: --catalog must be agent, runtime, or full")
 				os.Exit(2)
 			}
 			catalog = args[i+1]
@@ -495,11 +495,11 @@ func runMCP(args []string) {
 		},
 	}
 
-	constructor := mcpserver.New
-	if httpAddr == "" && catalog == "agent" {
-		constructor = mcpserver.NewAgent
+	profile := "full" // HTTP keeps the compatibility root and mounts both other profiles.
+	if httpAddr == "" {
+		profile = catalog
 	}
-	srv, err := constructor(server.Info{
+	srv, err := newMCPCatalog(profile, server.Info{
 		Name:    "stowage",
 		Title:   "Stowage Memory MCP Server",
 		Version: version.Version,
@@ -1021,20 +1021,12 @@ func runServe(args []string) {
 		readTimeout := time.Duration(cfg.Server.ReadTimeout) * time.Second
 		writeTimeout := time.Duration(cfg.Server.WriteTimeout) * time.Second
 
-		root := http.NewServeMux()
-		// MCP dispatches JSON-RPC on the request body, not the URL path; normalize
-		// the co-mount path to "/" so the streamable handler and the handshake-auth
-		// classifier (ae11) see exactly the request they would on a dedicated
-		// listener. Register both the exact and subtree patterns. mcpAccessLog
-		// wraps it so co-mounted MCP traffic is observable (it bypasses the REST
-		// request-logger).
-		mcpMount := mcpAccessLog(stk.Log, mcpRootRewrite(mcpHTTPHandler))
-		root.Handle("/mcp", mcpMount)
-		root.Handle("/mcp/", mcpMount)
-		// REST owns everything else. The combined server sets no WriteTimeout (so
-		// the MCP subtree can stream — D-074's invariant), so REST re-imposes its
-		// per-request read/write bound here (D-155).
-		root.Handle("/", restDeadlineHandler(readTimeout, writeTimeout, srv))
+		// Preserve /mcp/agent and /mcp/runtime until the profile mux selects
+		// the leaf handler. Only that leaf rewrites its path for Dockyard.
+		root := sharedMCPMux(
+			mcpAccessLog(stk.Log, mcpHTTPHandler),
+			restDeadlineHandler(readTimeout, writeTimeout, srv),
+		)
 
 		apiHTTP = &http.Server{
 			Addr:              cfg.Server.Listen,

@@ -27,6 +27,13 @@ All notable changes to Stowage are documented here. Format follows
 
 ### Added
 
+- Runtime-completion compatibility correction: `/mcp/runtime`, `/runtime`, and
+  `--catalog runtime` expose the five ordinary memory tools plus the existing
+  ingestion sink on one host connection. Pengui must exclude the sink from the
+  planner while retaining its completion hook; deferred loading is not enough.
+  The pure agent and full compatibility profiles remain unchanged. A real
+  pinned-Harbor/MCP/SQLite regression covers the hidden-sink boundary.
+
 - Source-backed remember/correct commands across MCP, HTTP and SDK. Exact owned
   user quotations carry byte-span provenance; corrections require inspected
   revisions and retain reversible history. SQLite/Postgres transactions atomically
