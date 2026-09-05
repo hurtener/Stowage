@@ -24,12 +24,12 @@ jobs:
           python3 scripts/dev/runtime-routing-apply.py
           python3 scripts/dev/runtime-profile-apply.py
           go test -race -count=1 -run '^TestSharedMCPProfiles' ./cmd/stowage
-      - name: Commit only the reviewed changes to this PR branch
+      - name: Commit only the reviewed source changes to this PR branch
         run: |
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git config commit.gpgsign false
-          git add cmd/stowage/main.go internal/mcpserver/runtime*.go cmd/stowage/mcp_agent*.go cmd/stowage/mcp_shared*.go README.md CHANGELOG.md RFC-001-Stowage.md docs scripts/smoke/phase-ae13.sh .github/workflows/runtime-memory-hook.yml
+          git add cmd/stowage/main.go internal/mcpserver/runtime*.go cmd/stowage/mcp_agent*.go cmd/stowage/mcp_shared*.go README.md CHANGELOG.md RFC-001-Stowage.md docs scripts/smoke/phase-ae13.sh
           if ! git diff --cached --quiet; then
             git commit -m 'fix(memory): wire runtime profile and preserve shared-port profile routing'
             git push origin HEAD:refs/heads/feat/agent-memory-surface
